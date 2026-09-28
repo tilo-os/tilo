@@ -644,16 +644,13 @@ mod launch_tests {
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             self.root.local_resource_operation_handlers()
         }
-        fn invoke_resource_operation(
+        fn start_operation(
             &mut self,
-            kind: ui::tilo_actions::OperationKind,
-            type_id: &str,
-            payload: &[u8],
-            doc: &automerge::AutoCommit,
+            op: &ui::widget::ResourceOperation<'_>,
+            doc: &mut automerge::AutoCommit,
             path: &automerge::ObjId,
-        ) -> Result<bool, String> {
-            self.root
-                .invoke_resource_operation(kind, type_id, payload, doc, path)
+        ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+            self.root.start_operation(op, doc, path)
         }
         fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
             let value = self.root.take_control_invocation();

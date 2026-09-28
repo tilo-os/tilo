@@ -2200,6 +2200,27 @@ struct Correction {
     tail: String,
 }
 
+impl OskWidget {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != OperationKind::Effect || type_id != "osk.suggestions" {
+            return Ok(false);
+        }
+        let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        if value != "clear-personal" {
+            return Ok(false);
+        }
+        self.clear_personalization();
+        Ok(true)
+    }
+}
+
 impl Widget for OskWidget {
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(crate::framework_history::definition(
@@ -2228,23 +2249,25 @@ impl Widget for OskWidget {
         layouts.sort();
         crate::actions::resources(layouts, &self.preferred_text_layout)
     }
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind != OperationKind::Effect || type_id != "osk.suggestions" {
-            return Ok(false);
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        if value != "clear-personal" {
-            return Ok(false);
-        }
-        self.clear_personalization();
-        Ok(true)
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.drafts.take()
