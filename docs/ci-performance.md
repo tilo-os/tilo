@@ -90,9 +90,8 @@ web core depends on the toolkit and every app of its collection, so every
 change to the SDK crates beneath them), a separate `wasm` job type-checks the
 selected browser crates for `wasm32-unknown-unknown` with `-D warnings`, then
 runs `tools/ci/check-wasm.sh`: each wasm32 build with the packages and
-features its build script uses (the `dylink` core with its app collection, the
-Cloud frontend, the registry verifier), code the default-feature check does not
-compile. Native jobs compile neither code gated to wasm32 nor the browser's
+features its build script uses (the web desktop with every web app, the page
+runtime, the registry verifier), code the per-crate check does not compile. Native jobs compile neither code gated to wasm32 nor the browser's
 view of modules gated away from it. It is a type check, not a build: linking
 needs wasm-bindgen and binaryen. The aggregate requires the job exactly when
 the selector does.
