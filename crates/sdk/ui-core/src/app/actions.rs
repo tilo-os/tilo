@@ -1745,6 +1745,14 @@ impl App {
         )
     }
 
+    /// The canonical route the app's primary document currently syncs on.
+    fn primary_document_route(&self) -> Option<crate::collaboration::RouteSpec> {
+        self.collaboration
+            .manager
+            .primary_route()
+            .map(|witness| witness.route.clone())
+    }
+
     fn encode_resource_action(
         resources: &[tilo_actions::Resource],
         address: &tilo_actions::ActionAddress,
@@ -1933,22 +1941,26 @@ impl App {
         // Encoding failures and broker routing must leave the caller's pending
         // edit intact; the executor still receives the same committed baseline.
         let before = self.state.doc.get_heads();
-        let started = crate::bound_dispatch::execute_resource_operation(
-            self.root_widget.as_mut(),
-            &mut self.state.doc,
-            &self.state.root,
-            &self.actions.action_registry,
-            self.actions.action_transport.as_mut(),
-            address,
-            resource,
-            spec,
-            encoded,
-            actor,
-            &self.collaboration.local_author.0,
-            broker_admitted,
-            tilo_actions::InvocationId::new(),
-            ambient_context,
-        )?;
+        let route = self.primary_document_route();
+        let started =
+            crate::invocation_scope::with_mounted_document(route, &mut self.state.doc, |doc| {
+                crate::bound_dispatch::execute_resource_operation(
+                    self.root_widget.as_mut(),
+                    doc,
+                    &self.state.root,
+                    &self.actions.action_registry,
+                    self.actions.action_transport.as_mut(),
+                    address,
+                    resource,
+                    spec,
+                    encoded,
+                    actor,
+                    &self.collaboration.local_author.0,
+                    broker_admitted,
+                    tilo_actions::InvocationId::new(),
+                    ambient_context,
+                )
+            })?;
         if before != self.state.doc.get_heads() {
             self.state.record_committed_action_authored(
                 before,
@@ -2699,22 +2711,25 @@ impl App {
                 Ok(started)
             })()
         } else {
-            crate::bound_dispatch::execute_resource_operation(
-                self.root_widget.as_mut(),
-                &mut self.state.doc,
-                &self.state.root,
-                &self.actions.action_registry,
-                self.actions.action_transport.as_mut(),
-                address,
-                resource,
-                resolved,
-                encoded,
-                actor,
-                &self.collaboration.local_author.0,
-                broker_admitted,
-                operation_invocation,
-                ambient_context,
-            )
+            let route = self.primary_document_route();
+            crate::invocation_scope::with_mounted_document(route, &mut self.state.doc, |doc| {
+                crate::bound_dispatch::execute_resource_operation(
+                    self.root_widget.as_mut(),
+                    doc,
+                    &self.state.root,
+                    &self.actions.action_registry,
+                    self.actions.action_transport.as_mut(),
+                    address,
+                    resource,
+                    resolved,
+                    encoded,
+                    actor,
+                    &self.collaboration.local_author.0,
+                    broker_admitted,
+                    operation_invocation,
+                    ambient_context,
+                )
+            })
         };
         let started = match operation_result {
             Ok(started) => started,
