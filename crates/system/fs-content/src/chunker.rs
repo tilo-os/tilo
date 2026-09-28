@@ -268,7 +268,7 @@ pub fn rebuild(
     previous_tier: Option<ChunkTier>,
 ) -> (Manifest, ChunkStats) {
     let tier = ChunkTier::sticky(
-        previous.and_then(Manifest::tier).or(previous_tier),
+        previous.map(Manifest::tier).or(previous_tier),
         data.len() as u64,
     );
     rebuild_in(tier, previous, data, changed)
@@ -300,7 +300,7 @@ fn rebuild_in(
         };
         return (Manifest::new(tier, chunks), stats);
     };
-    let reusable = previous.filter(|p| p.tier() == Some(tier));
+    let reusable = previous.filter(|p| p.tier() == tier);
     let mut changed: Vec<Range<u64>> = changed.to_vec();
     changed.sort_by_key(|r| r.start);
     let mut pieces = Vec::new();
@@ -522,7 +522,7 @@ mod tests {
     fn chunks_cover_the_body_within_tier_bounds() {
         let data = pseudo_random(3 * 1024 * 1024 + 17, 3);
         let (m, stats) = build(&data, None);
-        assert_eq!(m.tier(), Some(ChunkTier::Small));
+        assert_eq!(m.tier(), ChunkTier::Small);
         for (i, c) in m.chunks().iter().enumerate() {
             let r = m.chunk_range(i).unwrap();
             assert!(u64::from(c.len) <= 256 * KIB);
@@ -543,7 +543,7 @@ mod tests {
     fn small_bodies_are_one_chunk() {
         let data = pseudo_random(60_000, 2);
         let (m, _) = build(&data, None);
-        assert_eq!(m.tier(), Some(ChunkTier::Single));
+        assert_eq!(m.tier(), ChunkTier::Single);
         assert_eq!(m.chunks().len(), 1);
         assert_eq!(&m.chunks()[0].hash, blake3::hash(&data).as_bytes());
         let (empty, _) = build(&[], None);
@@ -594,7 +594,7 @@ mod tests {
                 ranges.retain(|r| r.start < new_len as u64);
             }
             let (inc, _) = rebuild(Some(&old), &data, &ranges, None);
-            let (full, _) = build(&data, old.tier());
+            let (full, _) = build(&data, Some(old.tier()));
             assert_eq!(inc, full, "round {round}");
         }
     }

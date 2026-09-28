@@ -1,13 +1,12 @@
 //! The content format (`fs-content`), as the daemon uses it.
 //!
 //! A file version is identified by the hash of its manifest (its content
-//! id). New versions are written in format 2: size-tiered `FastCDC` chunks
-//! described by a self-contained `HashSeq` manifest. Legacy manifests of
-//! gear-hash chunks remain readable everywhere a manifest is decoded.
+//! id). Versions are written as size-tiered `FastCDC` chunks
+//! described by a self-contained `HashSeq` manifest.
 
 pub use fs_content::{
-    ChunkRef, ChunkStats, ChunkTier, DecodeError, Format, MAX_CHUNK_LEN, Manifest, RangeSet, build,
-    build_reader, is_manifest_v2, legacy, rebuild,
+    ChunkRef, ChunkStats, ChunkTier, DecodeError, MAX_CHUNK_LEN, Manifest, RangeSet, build,
+    build_reader, rebuild,
 };
 
 /// Content larger than this lives in the store's file-backed area; smaller
@@ -17,7 +16,7 @@ pub const FILE_BACKED_MIN: u64 = 1024 * 1024;
 
 /// Whether `manifest`'s content lives in the file-backed area.
 pub fn is_file_backed(manifest: &Manifest) -> bool {
-    manifest.format() == Format::V2 && manifest.total_len() > FILE_BACKED_MIN
+    manifest.total_len() > FILE_BACKED_MIN
 }
 
 /// `(hash, offset, len)` of every chunk, for the area's chunk index.
