@@ -32,6 +32,11 @@ public key and the proof line described below. Every command that needs the
 key reads `--key`, then `$TILO_PUBLISHER_KEY` (the file's contents or its bare
 hex seed, which is how CI passes it), then the default path.
 
+On Tilo OS, the App Publisher app does the same with buttons and actions:
+it creates the key, shows the public key and proof line, copies the key for a
+CI secret, applies for namespaces and checks the application. It uses the
+same file, which the sandbox keeps private to App Publisher.
+
 ## Your namespace
 
 A package id is lowercase reverse DNS with at least three labels, such as
@@ -158,3 +163,7 @@ constraint of the design, and may change before Tilo leaves alpha.
 12. **Packages are signed by the publisher key by default.** `tilo-app
     package` signs with the key `publish` would use, so a package built on
     any machine with the key can be published unchanged.
+13. **The key stays on the machine.** App Publisher keeps the key in its file,
+    never in its synced, versioned resource. Creating or copying the key
+    needs the owner's role and a confirmation, whether a person, a script or
+    an agent asks.
