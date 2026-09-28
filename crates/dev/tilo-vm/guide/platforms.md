@@ -63,10 +63,11 @@ the Hyper-V PowerShell module, `vm create` selects `whpx` automatically; use
 `--hypervisor whpx` to select it explicitly. It never falls back to software
 CPU emulation.
 
-For component swaps that build inside the VM, install MSYS2's `rsync`
-package too (`pacman -S rsync`). `tilo-vm` discovers the default per-user
-location automatically without changing `PATH` and passes the Windows
-worktree as an MSYS2 `/c/...` path, so `rsync` treats it as a local source.
+For component swaps that build inside the VM, install MSYS2's `rsync` and
+`openssh` packages too (`pacman -S rsync openssh`). `tilo-vm` discovers their
+default per-user location without changing `PATH`, uses the matching MSYS2
+SSH transport, and passes the Windows worktree as an MSYS2 `/c/...` path so
+`rsync` treats it as a local source.
 
 The published QCOW2 remains unchanged. Each VM gets a small QCOW2 child and
 its own copy of the UEFI variables template beside that child. Before a
@@ -241,7 +242,7 @@ at creation where the hypervisor has a channel for credentials:
 | Adapter | How the key gets in |
 |---|---|
 | libvirt | at creation: an SMBIOS type 11 OEM string in the domain XML (`<sysinfo type='smbios'><oemStrings><entry>io.systemd.credential.binary:ssh.authorized_keys.root=<base64></entry>`, with `<smbios mode='sysinfo'/>`) |
-| whpx | at boot: the same credential in QEMU's SMBIOS type 11 OEM string |
+| whpx | at boot: direct-kernel ARM64 passes the public key with `systemd.set_credential_binary=` on the kernel command line; firmware boots use QEMU's SMBIOS type 11 OEM string |
 | UTM, Hyper-V, qemu | once, after the first boot (below). Apple Virtualization and Hyper-V offer no SMBIOS strings or fw_cfg, the image has no cloud-init, and `os/dev/vm.sh` takes no extra QEMU arguments |
 
 The one-time step logs in with the dev account's password (`quickuser`,
