@@ -46,12 +46,6 @@ pub fn valid_worktree_id(id: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
 }
 
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 impl TargetStore {
     pub fn new(root: &Path) -> Self {
         Self {
@@ -83,7 +77,7 @@ impl TargetStore {
             worktree: worktree.to_owned(),
             owner,
             last_used: crate::slots::now(),
-            last_used_unix: unix_now(),
+            last_used_unix: tilo_clock::unix_now(),
             bytes: previous.map_or(0, |p| p.bytes),
         };
         self.save(&record)?;
