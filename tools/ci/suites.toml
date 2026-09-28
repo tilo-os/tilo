@@ -125,6 +125,7 @@ suites = [
   "os/tests/test_native_resume_admission.py",
   "os/tests/test_native_resume_launcher.py",
   "os/tests/test_native_source_compatibility.py",
+  "os/tests/test_oci_image_diff.py",
   "os/tests/test_pack_apps_cleanup.py",
   "os/tests/test_prepare_wpe_stage.py",
   "os/tests/test_prepare_windows_direct_source.py",
