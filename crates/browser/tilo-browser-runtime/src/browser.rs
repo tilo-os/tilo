@@ -84,6 +84,10 @@ struct Config {
     /// With [`DESKTOP`] and no peer: the page's own desktop, seeded thus.
     #[serde(default)]
     local: Option<crate::local_desktop::Seed>,
+    /// The display name of the agent this mount acts as. `author` must then
+    /// be an agent task participant (`agent-task:<task>`).
+    #[serde(default)]
+    agent: Option<String>,
 }
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -593,6 +597,8 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         ));
     }
     let definition = crate::catalog::resolve_mount(&config.app).map_err(error)?;
+    let agent =
+        crate::mount_agent::mount_agent(&config.author, config.agent.as_deref()).map_err(error)?;
     let storage = load_cache(&config.profile, &config.device, &hydrated)?;
     let records = RecordOwners::portable(storage.clone())
         .open(definition.app_id, &config.room)
@@ -724,6 +730,9 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         },
     )
     .map_err(error)?;
+    if let Some((participant, label)) = &agent {
+        frame.join_participant(participant, label);
+    }
     frame.set_input_scale(dpr).map_err(error)?;
     frame.set_platform_conventions(ui::platform::PlatformConventions::new(if config.mac {
         ui::platform::Platform::MacOs
