@@ -634,7 +634,6 @@ impl ExtendedDirectory {
     }
 }
 impl Widget for ExtendedDirectory {
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         t: &mut TaffyTree<()>,

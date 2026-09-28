@@ -275,11 +275,6 @@ impl ConflictBanner {
 }
 
 impl Widget for ConflictBanner {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
-        // The banner is driven exclusively by the host via
-        // `set_conflict_count`. No CRDT path to read.
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -37,11 +37,6 @@ impl RebuildHarness {
 }
 
 impl Widget for RebuildHarness {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        for c in &mut self.children {
-            c.sync(state, path);
-        }
-    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

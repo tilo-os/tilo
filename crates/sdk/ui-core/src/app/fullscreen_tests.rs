@@ -45,7 +45,6 @@ impl Widget for FsRoot {
     fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn crate::widget::FullscreenProvider> {
         Some(self)
     }
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

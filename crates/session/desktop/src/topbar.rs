@@ -4857,7 +4857,6 @@ impl Widget for TopBarChrome {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
         if let Some(chrome) = self.chrome.clone() {

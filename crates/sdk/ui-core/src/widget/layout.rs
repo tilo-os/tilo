@@ -742,7 +742,6 @@ impl Widget for AnonymousFocusProbe {
     fn name(&self) -> &str {
         "AnonymousFocusProbe"
     }
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -819,7 +818,6 @@ mod tests {
         fn name(&self) -> &'static str {
             "UnsettledStyles"
         }
-        fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
         fn build_layout(
             &mut self,
             tree: &mut TaffyTree<()>,

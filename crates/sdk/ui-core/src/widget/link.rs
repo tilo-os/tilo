@@ -133,8 +133,6 @@ impl Link {
 }
 
 impl Widget for Link {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

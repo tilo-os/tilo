@@ -287,12 +287,6 @@ impl Widget for Column {
         )
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        for child in &mut self.children {
-            child.sync(state, path);
-        }
-    }
-
     /// Forward the per-frame update pass; every child runs, and a
     /// change in any of them is a change here. Not short-circuited —
     /// a child that skipped its pass would miss a frame of state.

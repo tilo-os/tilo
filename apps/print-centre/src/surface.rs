@@ -634,10 +634,6 @@ impl DashboardCard {
 }
 
 impl Widget for DashboardCard {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.inner.sync(state, path);
-    }
-
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
         self.inner.update(state, path)
     }
@@ -3274,9 +3270,6 @@ impl Default for PrintCentre {
     }
 }
 impl Widget for PrintCentre {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.inner.sync(state, path);
-    }
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
         if self.poll_picker() {
             self.inner.sync(state, path);

@@ -2566,7 +2566,6 @@ impl Widget for ActionPalette {
     fn modal_capture(&self) -> Option<Rect> {
         self.is_presented().then_some(self.rect)
     }
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,

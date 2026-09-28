@@ -679,8 +679,6 @@ impl Widget for Autocomplete {
         self.input.install_control_custody(domain, attachment);
     }
 
-    fn sync(&mut self, _state: &mut AutoCommit, _root: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

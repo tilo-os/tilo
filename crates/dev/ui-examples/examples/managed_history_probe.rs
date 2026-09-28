@@ -146,9 +146,6 @@ impl Widget for Note {
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
         vec![&mut self.0]
     }
-    fn sync(&mut self, doc: &mut AutoCommit, root: &ObjId) {
-        self.0.sync(doc, root);
-    }
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,

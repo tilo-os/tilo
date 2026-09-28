@@ -141,8 +141,6 @@ impl TriStateControl {
 }
 
 impl Widget for TriStateControl {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -506,8 +504,6 @@ impl Default for ColorSwatchPicker {
 }
 
 impl Widget for ColorSwatchPicker {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

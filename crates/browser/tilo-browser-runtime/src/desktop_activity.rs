@@ -130,7 +130,6 @@ impl BrowserActivity {
     }
 }
 impl Widget for BrowserActivity {
-    fn sync(&mut self, _doc: &mut AutoCommit, _path: &ObjId) {}
     fn name(&self) -> &str {
         "WorkspaceActivity"
     }

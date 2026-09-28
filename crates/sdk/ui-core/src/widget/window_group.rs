@@ -2551,7 +2551,6 @@ mod tests {
     }
 
     impl Widget for Starting {
-        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -2759,7 +2758,6 @@ mod tests {
     }
 
     impl Widget for Latching {
-        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,

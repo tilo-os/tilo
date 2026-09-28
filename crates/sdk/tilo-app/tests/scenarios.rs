@@ -111,14 +111,6 @@ impl Default for Staged {
 }
 
 impl Widget for Staged {
-    fn sync(
-        &mut self,
-        doc: &mut tilo_app::automerge::AutoCommit,
-        path: &tilo_app::automerge::ObjId,
-    ) {
-        self.inner.sync(doc, path);
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

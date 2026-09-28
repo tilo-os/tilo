@@ -19,11 +19,6 @@ impl TwoKids {
     }
 }
 impl Widget for TwoKids {
-    fn sync(&mut self, s: &mut automerge::AutoCommit, p: &automerge::ObjId) {
-        for c in &mut self.kids {
-            c.sync(s, p);
-        }
-    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

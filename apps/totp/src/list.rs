@@ -800,8 +800,6 @@ fn stroke(w: f64) -> vello::kurbo::Stroke {
 }
 
 impl Widget for AccountList {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

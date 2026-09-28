@@ -36,11 +36,6 @@ impl ResponsiveRoot {
     }
 }
 impl Widget for ResponsiveRoot {
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-        for child in &mut self.children {
-            child.sync(doc, path);
-        }
-    }
     fn name(&self) -> &'static str {
         "ResponsiveRoot"
     }

@@ -513,12 +513,6 @@ struct EventDispatch<'a> {
 }
 
 impl Widget for Flex {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        for c in &mut self.children {
-            c.sync(state, path);
-        }
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "translates this box's dozen independent layout properties (align, justify, \

@@ -87,7 +87,6 @@ impl Widget for StripView {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

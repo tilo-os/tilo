@@ -915,15 +915,6 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for TimeDatePane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        // Time service and locale values are device-local effects. Do not
-        // seed, observe, or compensate them through Automerge: a remote
-        // replay must never change this machine's clock configuration.
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

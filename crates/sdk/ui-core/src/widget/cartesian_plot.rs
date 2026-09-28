@@ -2920,7 +2920,6 @@ fn format_bytes(value: f64, places: u8) -> String {
 }
 
 impl Widget for CartesianPlot {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

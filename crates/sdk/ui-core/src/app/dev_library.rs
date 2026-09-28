@@ -420,8 +420,6 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
     struct ReloadedProbe;
 
     impl crate::widget::Widget for ReloadedProbe {
-        fn sync(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) {}
-
         fn build_layout(
             &mut self,
             taffy: &mut taffy::TaffyTree<()>,

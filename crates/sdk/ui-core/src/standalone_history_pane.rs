@@ -253,12 +253,6 @@ impl StandaloneHistoryPane {
 }
 
 impl Widget for StandaloneHistoryPane {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        for child in self.children_mut() {
-            child.sync(state, path);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

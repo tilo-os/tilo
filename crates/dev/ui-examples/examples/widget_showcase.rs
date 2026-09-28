@@ -56,7 +56,6 @@ impl LabelTile {
     }
 }
 impl Widget for LabelTile {
-    fn sync(&mut self, _: &mut AutoCommit, _: &automerge::ObjId) {}
     // taffy 0.10's `new_leaf` is typed `-> TaffyResult<NodeId>` for API
     // generality but cannot actually return `Err` for a leaf with no
     // children (see `tilo_ui::widget::TaffyTreeExt`'s doc comment, which documents
