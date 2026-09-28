@@ -313,6 +313,24 @@ impl App {
         }
     }
 
+    /// Answer a participant who just arrived with what this app shows: its
+    /// caret or selection, its location and its view. Presence is sent only
+    /// when it changes, so without this a late joiner (a person opening the
+    /// room, or an in-process participant such as a session recording)
+    /// would see none of it until it next moved, the way documents answer a
+    /// late joiner's snapshot request.
+    fn restate_presence(&mut self) {
+        self.presence.last_focus = None;
+        self.presence.last_location = None;
+        self.presence.last_view = None;
+        #[cfg(feature = "native")]
+        {
+            self.broadcast_focus_presence();
+            self.broadcast_location_presence();
+            self.broadcast_view_presence();
+        }
+    }
+
     /// Unlike focus presence, this is polled on the root regardless of
     /// focus.
     #[cfg(feature = "native")]

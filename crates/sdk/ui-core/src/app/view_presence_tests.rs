@@ -721,3 +721,115 @@ fn a_mirrored_modal_never_takes_a_live_followers_controls() {
     );
     assert!(dialog_open(&mut replay));
 }
+
+/// A focusable field holding its caret at a fixed position.
+struct CaretField {
+    rect: KurboRect,
+}
+
+impl Widget for CaretField {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: taffy::NodeId, _o: Point) {}
+    fn draw(
+        &mut self,
+        _s: &mut Scene,
+        _t: Affine,
+        _tr: &mut TextRenderer,
+        _th: &Theme,
+        _p: &PresenceCtx,
+    ) {
+    }
+    fn name(&self) -> &'static str {
+        "caret-field"
+    }
+    fn get_rect(&self) -> KurboRect {
+        self.rect
+    }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
+        Some((
+            PresenceKey::Resource {
+                app: "notes".into(),
+                id: "block:1".into(),
+                kind: "block".into(),
+            },
+            PresencePayload::Caret { pos: 14 },
+        ))
+    }
+}
+
+#[test]
+fn a_late_viewer_sees_the_caret_placed_before_it_arrived() {
+    let mut writer = App::new(
+        State::new(),
+        Box::new(CaretField {
+            rect: KurboRect::new(0.0, 0.0, 200.0, 24.0),
+        }),
+    );
+    writer.init_layout();
+    let field = writer
+        .layout
+        .node_map
+        .keys()
+        .copied()
+        .next()
+        .expect("the field is laid out");
+    writer.set_focused_node(Some(field));
+    let sent: Arc<Mutex<Vec<(PresenceKey, PresencePayload)>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&sent);
+    writer.set_presence_broadcast_sink(move |k, p| {
+        sink.lock().unwrap().push((k.clone(), p.clone()));
+    });
+    let caret = PresencePayload::Caret { pos: 14 };
+    // The caret is placed, and announced, before anyone else is here.
+    writer.broadcast_focus_presence();
+    assert!(
+        sent.lock().unwrap().iter().any(|(_, p)| *p == caret),
+        "the caret went out once"
+    );
+    sent.lock().unwrap().clear();
+    writer.broadcast_focus_presence();
+    assert!(
+        sent.lock().unwrap().is_empty(),
+        "an unchanged caret is not sent again"
+    );
+
+    // A viewer arrives afterwards: the writer answers with what it shows.
+    writer.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
+        user_id: "viewer".into(),
+        key: PresenceKey::Workspace { id: "room".into() },
+        payload: PresencePayload::Arrived,
+    });
+    let restated = sent.lock().unwrap().clone();
+    assert!(
+        restated.iter().any(|(_, p)| *p == caret),
+        "the arrival is answered with the caret: {restated:?}"
+    );
+
+    let mut viewer = app_with_root(ViewRoot::new());
+    for (key, payload) in restated {
+        viewer.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
+            user_id: "writer".into(),
+            key,
+            payload,
+        });
+    }
+    let writer_id = crate::permissions::UserId("writer".into());
+    assert!(
+        viewer.presence_ctx().carets.values().any(|held| held
+            .iter()
+            .any(|(user, pos)| *user == writer_id && *pos == 14)),
+        "the late viewer holds the writer's caret"
+    );
+}
