@@ -1,0 +1,53 @@
+//! `tilo-browser-peer` — the browser as a real Tilo peer.
+//!
+//! The page holds only a device key. [`custody::certify`] asks the user's
+//! host for a root-signed `DeviceCert`, which a root-holding device issues
+//! through the host. [`session::PeerHandle`] then keeps one certified relay
+//! session to that host:
+//!
+//! - the **durable plane**: signed document envelopes ([`document`]) sent as
+//!   acknowledged commits from a persisted outbox and replayed after every
+//!   reconnect;
+//! - the **live plane** ([`live`]): ephemeral presence and previews relayed
+//!   by the host to live members.
+//!
+//! [`health`] derives `PeerSnapshot` and `SessionHealth` v1 from it. With the
+//! `toolkit` feature, [`transport::RelayCollabTransport`] plugs the session
+//! into `CollaborationManager::with_transport`.
+//!
+//! See `docs/architecture/browser-runtime.md`, "Transport from browser to
+//! machine".
+
+#![deny(rust_2018_idioms)]
+#![warn(missing_docs)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
+pub mod carrier;
+mod clock;
+pub mod custody;
+pub mod document;
+pub mod health;
+pub mod live;
+pub mod session;
+#[cfg(feature = "toolkit")]
+pub mod transport;
+
+pub use carrier::{HttpClient, HttpFuture, HttpsLink, LinkError};
+pub use custody::{CertifyError, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, certify};
+pub use document::{ContentCipher, DocumentRoute, OpenedDocument};
+pub use health::{PeerSnapshot, SessionHealth};
+pub use live::{LiveChange, LiveState, RemoteMember};
+pub use session::{
+    Failure, FailureSubject, Host, LocalState, PAGE_FAILURE_CODES, PeerConfig, PeerEvent,
+    PeerEvents, PeerHandle, PeerStatus, TransportPhase,
+};
+pub use tilo_relay_client::{DeviceSigner, SignError, SignFuture};

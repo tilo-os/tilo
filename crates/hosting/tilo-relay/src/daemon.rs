@@ -199,6 +199,12 @@ pub struct Relay {
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     /// Atomic filesystem completeness proof shared with the headless replica.
     full_replica_status: PathBuf,
+    /// What the browser carriers need to serve sessions of this relay.
+    #[cfg_attr(
+        not(feature = "web"),
+        allow(dead_code, reason = "read by the web listener")
+    )]
+    web: Box<WebContext>,
     /// Live proof that the owned signed-package compute worker completed all
     /// health checks and still owns its authenticated session.
     compute_ready: Arc<AtomicBool>,
@@ -209,6 +215,24 @@ pub struct Relay {
     /// certified host retains the existing dynamic multi-workspace behavior.
     interactive_workspace_id: Option<u64>,
     interactive_owner_trust: Option<tilo_delivery_protocol::workspace_join::InteractiveOwnerTrust>,
+}
+
+/// The relay state the browser carriers serve sessions with.
+#[derive(Clone)]
+#[cfg_attr(
+    not(feature = "web"),
+    allow(dead_code, reason = "read by the web listener")
+)]
+pub(crate) struct WebContext {
+    pub(crate) relay: RelayProtocol,
+    pub(crate) certification: crate::certification::CertificationProtocol,
+}
+
+impl Relay {
+    #[cfg(feature = "web")]
+    pub(crate) fn web_context(&self) -> &WebContext {
+        &self.web
+    }
 }
 
 /// A tokio `JoinHandle` that aborts on drop — used so that dropping
@@ -569,6 +593,8 @@ impl Relay {
                 state_root: cfg.state_root.clone(),
             }),
             app_serving,
+            live_bridge: Arc::default(),
+            agents: Arc::default(),
         };
         let discovery = DiscoveryProtocol {
             workspaces: workspaces.clone(),
@@ -605,6 +631,16 @@ impl Relay {
             identity.device_signing_key.clone(),
             revocations.clone(),
         );
+        let certification = crate::certification::CertificationProtocol::new(
+            identity.user_public_key,
+            identity.device_cert.clone(),
+            identity.device_signing_key.clone(),
+            revocations.clone(),
+        );
+        let web = Box::new(WebContext {
+            relay: handler.clone(),
+            certification: certification.clone(),
+        });
         let mut router = Router::builder(endpoint.clone())
             .accept(
                 tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
@@ -614,7 +650,8 @@ impl Relay {
                     ..handler.clone()
                 },
             )
-            .accept(ALPN, handler);
+            .accept(ALPN, handler)
+            .accept(crate::certify::CERTIFY_ALPN, certification);
         if startup_mode == RelayStartupMode::CertifiedHost {
             router = router
                 .accept(DISCOVERY_ALPN, discovery)
@@ -689,6 +726,7 @@ impl Relay {
             peer_relay_tasks,
             mesh_profile,
             full_replica_status: cfg.full_replica_status.clone(),
+            web,
             compute_ready,
             handshake_trust,
             governed_access_update: Arc::new(AsyncMutex::new(())),
@@ -801,6 +839,39 @@ impl Relay {
             full_replica_status: self.full_replica_status.clone(),
             compute_ready: Arc::clone(&self.compute_ready),
         }
+    }
+
+    /// Tell the host that a device is an agent: verify its root-signed
+    /// delegation against this relay's user and confine the device to the
+    /// delegated rooms from its next envelope on. Replaces an earlier
+    /// delegation of the same device.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the delegation is not usable now.
+    pub fn register_agent(
+        &self,
+        delegation: tilo_relay_protocol::agents::AgentDelegation,
+    ) -> Result<(), tilo_relay_protocol::agents::DelegationError> {
+        delegation.verify(&self.web.relay.own_user_pk, tilo_clock::unix_now_ns())?;
+        self.web
+            .relay
+            .agents
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(delegation.agent_device_public_key, Some(delegation));
+        Ok(())
+    }
+
+    /// Withdraw an agent device: its sessions end within the access audit
+    /// interval and it is refused from then on.
+    pub fn withdraw_agent(&self, agent_device_public_key: [u8; 32]) {
+        self.web
+            .relay
+            .agents
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(agent_device_public_key, None);
     }
 
     /// The iroh endpoint address (node id + reachable addresses) —
@@ -1733,18 +1804,40 @@ fn validate_native_interactive_workspace_identity(
 
 /// The `ProtocolHandler` iroh wires to the ALPN.
 #[derive(Clone)]
-struct RelayProtocol {
-    v2: bool,
-    agent_reads_v1: bool,
-    workspaces: WorkspaceRegistry,
-    trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
-    revocations: Arc<std::sync::RwLock<RevocationList>>,
-    own_user_pk: [u8; 32],
-    own_cert: DeviceCert,
-    own_sk: ed25519_dalek::SigningKey,
-    metrics: Arc<Metrics>,
-    autobind: Option<WorkspaceAutobind>,
-    app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+pub(crate) struct RelayProtocol {
+    pub(crate) v2: bool,
+    pub(crate) agent_reads_v1: bool,
+    pub(crate) workspaces: WorkspaceRegistry,
+    pub(crate) trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
+    pub(crate) revocations: Arc<std::sync::RwLock<RevocationList>>,
+    pub(crate) own_user_pk: [u8; 32],
+    pub(crate) own_cert: DeviceCert,
+    pub(crate) own_sk: ed25519_dalek::SigningKey,
+    pub(crate) metrics: Arc<Metrics>,
+    pub(crate) autobind: Option<WorkspaceAutobind>,
+    pub(crate) app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+    /// Set once when the host starts serving browsers.
+    pub(crate) live_bridge: Arc<std::sync::OnceLock<crate::peer::LiveBridge>>,
+    pub(crate) agents: crate::peer::AgentRegistry,
+}
+
+impl RelayProtocol {
+    /// The peer context a session of this relay runs with.
+    pub(crate) fn peer_context(&self) -> PeerContext {
+        PeerContext {
+            workspaces: self.workspaces.clone(),
+            autobind: self.autobind.clone(),
+            revocations: self.revocations.clone(),
+            trust_policy: self.trust_policy.clone(),
+            own_user_public_key: self.own_user_pk,
+            own_device_cert: self.own_cert.clone(),
+            metrics: self.metrics.clone(),
+            own_device_public_key: self.own_cert.device_public_key,
+            app_serving: self.app_serving.clone(),
+            live_bridge: self.live_bridge.get().cloned(),
+            agents: self.agents.clone(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -2172,17 +2265,7 @@ async fn handle_conn(
         connection.clone(),
         recv,
         send,
-        PeerContext {
-            workspaces: ctx.workspaces.clone(),
-            autobind: ctx.autobind,
-            revocations: ctx.revocations,
-            trust_policy: ctx.trust_policy,
-            own_user_public_key: ctx.own_user_pk,
-            own_device_cert: ctx.own_cert.clone(),
-            metrics: ctx.metrics,
-            own_device_public_key: ctx.own_cert.device_public_key,
-            app_serving: ctx.app_serving,
-        },
+        ctx.peer_context(),
         ctx.v2,
         ctx.agent_reads_v1,
     ))

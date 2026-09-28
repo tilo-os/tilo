@@ -24,10 +24,5 @@ runs:
       id: cargo-downloads
       uses: ./.forgejo/actions/restore-cargo-downloads
 
-    - name: Select the compiler cache
-      shell: bash
-      run: bash tools/ci/compiler_cache_env.sh
-
-    - name: Configure optional compiler cache
-      shell: bash
-      run: bash tools/ci/sccache.sh prepare
+    - name: Use the compiler cache
+      uses: ./.forgejo/actions/compiler-cache
