@@ -133,7 +133,8 @@ jobs:
           -E "not ($GOLDEN_FILTER)"
 
       # Both nextest runs below write target/nextest/ci/junit.xml; keep each
-      # run's report and list flaky (passed only on retry) and retried tests.
+      # run's report. The ci profile does not retry; the summary still lists
+      # slow tests and any case that only passed on a retry.
       - name: Report retried workspace tests
         if: always()
         run: |

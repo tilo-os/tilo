@@ -26,6 +26,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::i18n::ArgValue;
 use ui::icons::AppImage;
+use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
@@ -949,10 +950,6 @@ impl WindowSwitcher {
     }
 
     /// Paint the panel once it is revealed.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a paint step taking the caller's scene, theme, host rect, clock and previews"
-    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -1083,10 +1080,7 @@ impl WindowSwitcher {
                     false,
                 );
                 self.draw_card(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
                     *card,
                     window,
                     state,
@@ -1143,21 +1137,16 @@ impl WindowSwitcher {
 
     /// One window's card: its live preview (or app mark) over its elided
     /// title, lifted by the shared selection tier when selected or hovered.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a paint step taking the caller's scene, theme, laid-out card and previews"
-    )]
     fn draw_card(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         card: Rect,
         window: &SwitcherWindow,
         state: ui::chrome::SelectionState,
         previews: &mut dyn WindowThumbnails,
     ) {
+        let (scene, transform, text_renderer, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let m = self.metrics;

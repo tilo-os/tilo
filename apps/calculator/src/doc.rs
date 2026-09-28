@@ -33,10 +33,8 @@ pub(crate) fn ensure_map(doc: &mut AutoCommit, key: &str) -> Option<ObjId> {
     map_at(doc, key).or_else(|| doc.put_object(&ROOT, key, ObjType::Map).ok())
 }
 
-/// Includes the old marker so existing user state is migrated rather than lost.
 pub fn is_seeded(doc: &AutoCommit) -> bool {
     doc.get(&ROOT, SCHEMA).ok().flatten().is_some()
-        || doc.get(&ROOT, "mode").ok().flatten().is_some()
 }
 
 /// Stable IDs in presentation order. The ordinal is only for display; callers
@@ -100,48 +98,15 @@ pub(crate) fn load_graph(doc: &AutoCommit, collection: &str) -> Vec<PlotFn> {
         Some(PlotFn { expr: read_str_or_text(doc, &row, "expr").unwrap_or_default(), visible: !matches!(doc.get(&row, "visible").ok().flatten(), Some((Value::Scalar(v), _)) if matches!(v.as_ref(), ScalarValue::Boolean(false))) })
     }).collect()
 }
-pub(crate) fn legacy_rows(doc: &AutoCommit, key: &str) -> Vec<(String, String, bool)> {
-    let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, key) else {
-        return Vec::new();
-    };
-    (0..doc.length(&list)).filter_map(|i| {
-        let Some((Value::Object(ObjType::Map), row)) = doc.get(&list, i).ok().flatten() else { return None };
-        Some((read_str_or_text(doc, &row, "expr").unwrap_or_default(), read_str_or_text(doc, &row, "result").unwrap_or_default(), !matches!(doc.get(&row, "visible").ok().flatten(), Some((Value::Scalar(v), _)) if matches!(v.as_ref(), ScalarValue::Boolean(false)))))
-    }).collect()
-}
-fn legacy_id(collection: &str, rank: usize) -> String {
-    format!("legacy-{collection}-{rank}")
-}
-fn migrate_legacy(doc: &mut AutoCommit) {
-    if doc.get(&ROOT, SCHEMA).ok().flatten().is_some() {
-        return;
-    }
-    for collection in [HISTORY, FUNCS, SURFACES] {
-        let legacy = legacy_rows(doc, collection);
-        let Some(rows) = ensure_map(doc, collection) else {
-            continue;
-        };
-        for (rank, (expr, result, visible)) in legacy.into_iter().enumerate() {
-            let id = legacy_id(collection, rank);
-            let Ok(row) = doc.put_object(&rows, &id, ObjType::Map) else {
-                continue;
-            };
-            put_text_diffed(doc, &row, "expr", &expr);
-            if collection == HISTORY {
-                put_text_diffed(doc, &row, "result", &result);
-            } else {
-                put_if_changed(doc, &row, "visible", visible);
-            }
-            put_if_changed(doc, &row, "rank", i64::try_from(rank).unwrap_or(i64::MAX));
-            put_if_changed(doc, &row, "deleted", false);
-        }
-    }
-    let _ = doc.put(&ROOT, SCHEMA, true);
+fn fixture_id(collection: &str, rank: usize) -> String {
+    format!("fixture-{collection}-{rank}")
 }
 
 /// Fixture/bootstrap storage only. Live mutations use `CalculatorAction`.
 pub fn store(doc: &mut AutoCommit, model: &CalcModel) {
-    migrate_legacy(doc);
+    if !is_seeded(doc) {
+        let _ = doc.put(&ROOT, SCHEMA, true);
+    }
     for (collection, graph) in [(FUNCS, &model.funcs), (SURFACES, &model.surfaces)] {
         let Some(rows) = ensure_map(doc, collection) else {
             continue;
@@ -154,7 +119,7 @@ pub fn store(doc: &mut AutoCommit, model: &CalcModel) {
         return;
     };
     for (rank, h) in model.history.iter().enumerate() {
-        let id = legacy_id(HISTORY, rank);
+        let id = fixture_id(HISTORY, rank);
         let row = match doc.get(&rows, &id).ok().flatten() {
             Some((Value::Object(ObjType::Map), row)) => row,
             _ => match doc.put_object(&rows, &id, ObjType::Map) {
@@ -196,7 +161,7 @@ fn put_graph_fixture(
     rank: usize,
     f: &PlotFn,
 ) {
-    let id = legacy_id(collection, rank);
+    let id = fixture_id(collection, rank);
     let row = match doc.get(rows, &id).ok().flatten() {
         Some((Value::Object(ObjType::Map), row)) => row,
         _ => match doc.put_object(rows, &id, ObjType::Map) {
@@ -229,8 +194,7 @@ pub fn load(doc: &AutoCommit) -> Option<CalcModel> {
     load_into(doc, &mut m).then_some(m)
 }
 
-/// Read a checked Existing record without migrating, seeding, or repairing it.
-/// Both current map documents and the Calculator's legacy list documents are
+/// Read a checked Existing record without seeding or repairing it. It is
 /// projected by the same history schema used by native version restoration.
 ///
 /// # Errors
@@ -241,16 +205,9 @@ pub fn load_existing(doc: &AutoCommit) -> Result<CalcModel, String> {
     if !is_seeded(doc) {
         return Err("Calculator record is missing its schema marker".into());
     }
-    // Current keyed-map documents have one strict schema. Validate before the
-    // lossy UI projection can skip an invalid row or default an invalid field.
-    // Legacy list documents are validated by `project`'s dedicated list path.
-    if doc
-        .get(&ROOT, SCHEMA)
-        .map_err(|error| error.to_string())?
-        .is_some()
-    {
-        crate::framework_history::validate(doc)?;
-    }
+    // Validate before the lossy UI projection can skip an invalid row or
+    // default an invalid field.
+    crate::framework_history::validate(doc)?;
     crate::framework_history::project(doc)
 }
 
@@ -283,7 +240,7 @@ mod tests {
             let mut d = AutoCommit::new();
             store(&mut d, &CalcModel::seeded());
             let rows = map_at(&d, FUNCS).unwrap();
-            let row = d.get(&rows, "legacy-funcs-0").unwrap().unwrap().1;
+            let row = d.get(&rows, "fixture-funcs-0").unwrap().unwrap().1;
             assert!(
                 matches!(
                     d.get(&row, "expr"),

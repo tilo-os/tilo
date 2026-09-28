@@ -295,10 +295,6 @@ fn draw_frame(
 /// Stage the requested `--scenario` after the first layout pass: select
 /// words, open the find bar, drive the live terminal's PTY, and so on. A
 /// `None` scenario (the default cold-start frame) stages nothing.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "threads the same handful of already-built shots context (app, state, renderer, theme, presence, permission) to whichever scenario arm needs it; grouping them into a struct would not make the call clearer"
-)]
 fn stage_scenario(
     app: &mut code_editor::CodeApp,
     scenario: Option<&str>,

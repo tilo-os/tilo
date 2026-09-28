@@ -36,8 +36,6 @@ use uuid::Uuid;
 
 /// Where an annotation keeps its note: rich text.
 const TEXT: &str = "text";
-/// Where the first format kept it: a plain string.
-const LEGACY_NOTE: &str = "note";
 
 use crate::model::{
     AnnoKind, Annotation, AnnotationAnchor, ColorScheme, FontEntry, FontKind, HiColor,
@@ -86,7 +84,7 @@ impl BooksDoc {
     }
 
     /// Every concurrent map object stored at one root key. Fresh documents
-    /// normally have one; legacy/lazily-created roots may conflict when two
+    /// normally have one; lazily-created roots may conflict when two
     /// offline peers create the first child simultaneously, and reads must
     /// materialise all branches instead of accepting Automerge's one winner.
     fn root_maps(doc: &AutoCommit, key: &str) -> Vec<ObjId> {
@@ -438,9 +436,6 @@ impl BooksDoc {
         let added =
             existing_added.unwrap_or_else(|| if e.added > 0 { e.added } else { unix_now_ms() });
         for entry in entries {
-            // Earlier development snapshots stored a raw source path here.
-            // Clear it in every conflicting branch while repairing the row.
-            let _ = doc.delete(&entry, "path");
             let _ = doc.put(&entry, "title", e.title.as_str());
             let _ = doc.put(&entry, "author", e.author.as_str());
             let _ = doc.put(&entry, "subject", e.subject.as_str());
@@ -503,32 +498,6 @@ impl BooksDoc {
         }
         out.sort_by(|a, b| a.added.cmp(&b.added).then_with(|| a.id.cmp(&b.id)));
         out
-    }
-
-    /// Remove raw path fields left by older app versions. The metadata and
-    /// content id survive, so a device can rediscover a local file through a
-    /// user-granted watched folder and peers can resolve the canonical shared
-    /// object without learning where either device stored it.
-    pub fn strip_legacy_library_paths(doc: &mut AutoCommit) {
-        for lib in Self::root_maps(doc, "library") {
-            let keys: Vec<String> = doc.keys(&lib).collect();
-            for key in keys {
-                let entries = doc
-                    .get_all(&lib, key.as_str())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|(value, entry)| {
-                        matches!(value, Value::Object(ObjType::Map)).then_some(entry)
-                    })
-                    .collect::<Vec<_>>();
-                for entry in entries {
-                    let _ = doc.delete(&entry, "path");
-                }
-            }
-        }
-        // Folder watches are local capability grants, never collaborative
-        // preferences. Older documents held them as raw strings too.
-        let _ = doc.delete(&ROOT, "watched_folders");
     }
 
     // --- colour schemes ----------------------------------------------------
@@ -794,14 +763,10 @@ impl BooksDoc {
     }
 
     /// Write an annotation's text as rich text under [`TEXT`], replacing
-    /// what it held, and drop a plain `note` left by the first format.
+    /// what it held.
     fn write_text(doc: &mut AutoCommit, entry: &ObjId, clips: &[tilo_document::ClipBlock]) {
         if let Err(error) = tilo_rich_text::put_rich_text(doc, entry, TEXT, clips) {
             tracing::warn!(%error, "annotation text not written");
-            return;
-        }
-        if doc.get(entry, LEGACY_NOTE).ok().flatten().is_some() {
-            let _ = doc.delete(entry, LEGACY_NOTE);
         }
     }
 
@@ -814,9 +779,7 @@ impl BooksDoc {
             .find_map(|entry| tilo_rich_text::rich_text_at(doc, entry, TEXT))
     }
 
-    /// An annotation's text, plain and as written, from its rows. Rows of
-    /// the first format (a plain `note`) read as a paragraph per line until
-    /// [`Self::migrate_annotation_text`] rewrites them.
+    /// An annotation's text, plain and as written, from its rows.
     fn read_text(doc: &AutoCommit, entries: &[ObjId]) -> (String, Vec<ui::widget::BlockContent>) {
         if let Some(root) = entries
             .iter()
@@ -827,32 +790,7 @@ impl BooksDoc {
                 tilo_rich_text::blocks_under(doc, &root).unwrap_or_default(),
             );
         }
-        let note = Self::merged_str(doc, entries, LEGACY_NOTE).unwrap_or_default();
-        let blocks = tilo_rich_text::plain_blocks(&note);
-        (note, blocks)
-    }
-
-    /// Rewrite every annotation row still holding the first format's plain
-    /// `note` as rich text, a paragraph per line, in place and once: a row
-    /// that has rich text is left as it is. Returns whether anything was
-    /// rewritten.
-    pub fn migrate_annotation_text(doc: &mut AutoCommit) -> bool {
-        let rows: Vec<ObjId> = Self::keyed_map_entries(doc, "annotations")
-            .into_values()
-            .flatten()
-            .collect();
-        let mut changed = false;
-        for row in rows {
-            if tilo_rich_text::rich_text_at(doc, &row, TEXT).is_some() {
-                continue;
-            }
-            let Some(note) = read_str(doc, &row, LEGACY_NOTE) else {
-                continue;
-            };
-            Self::write_text(doc, &row, &tilo_rich_text::plain_clips(&note));
-            changed = true;
-        }
-        changed
+        (String::new(), Vec::new())
     }
 
     pub fn write_annotation_created(doc: &mut AutoCommit, id: Uuid, created: u64) -> bool {
@@ -995,81 +933,6 @@ mod tests {
     use super::*;
     use crate::model::{AnnoKind, HiColor};
     use tilo_automerge::ApplyIncoming;
-
-    /// A reader store written before notes were rich text: each annotation
-    /// row holding its note as a plain `note` string, as the first format
-    /// stored it.
-    fn first_format_notes() -> (AutoCommit, Uuid, Uuid) {
-        let mut doc = AutoCommit::new();
-        let note = Annotation::new("book:x", AnnoKind::Note, 0, 1)
-            .with_note("First line\n\nThird, after a blank line");
-        let bookmark = Annotation::new("book:x", AnnoKind::Bookmark, 0, 2);
-        for annotation in [&note, &bookmark] {
-            BooksDoc::upsert_annotation(&mut doc, annotation);
-        }
-        let texts = [
-            (note.id, "First line\n\nThird, after a blank line"),
-            (bookmark.id, ""),
-        ];
-        for (id, text) in texts {
-            for row in BooksDoc::keyed_map_entries(&doc, "annotations")
-                .remove(&id.to_string())
-                .unwrap()
-            {
-                doc.delete(&row, TEXT).unwrap();
-                doc.put(&row, LEGACY_NOTE, text).unwrap();
-            }
-        }
-        doc.commit();
-        (doc, note.id, bookmark.id)
-    }
-
-    #[test]
-    fn first_format_notes_come_across_whole_and_once() {
-        let (mut doc, note, bookmark) = first_format_notes();
-        let find = |doc: &AutoCommit, id: Uuid| {
-            BooksDoc::list_annotations(doc)
-                .into_iter()
-                .find(|annotation| annotation.id == id)
-                .unwrap()
-        };
-        assert_eq!(
-            find(&doc, note).note,
-            "First line\n\nThird, after a blank line"
-        );
-        assert_eq!(
-            find(&doc, note).blocks.len(),
-            3,
-            "read as a paragraph per line"
-        );
-
-        assert!(BooksDoc::migrate_annotation_text(&mut doc));
-        let migrated = find(&doc, note);
-        assert_eq!(
-            migrated.note, "First line\n\nThird, after a blank line",
-            "nothing is lost"
-        );
-        let texts: Vec<&str> = migrated.blocks.iter().map(|b| b.text.as_str()).collect();
-        assert_eq!(texts, ["First line", "", "Third, after a blank line"]);
-        assert_eq!(find(&doc, bookmark).note, "");
-        assert!(BooksDoc::annotation_text(&doc, note).is_some());
-        for row in BooksDoc::keyed_map_entries(&doc, "annotations")
-            .remove(&note.to_string())
-            .unwrap()
-        {
-            assert!(
-                doc.get(&row, LEGACY_NOTE).unwrap().is_none(),
-                "the plain note is gone"
-            );
-        }
-
-        // Once is enough: a second pass writes nothing.
-        let heads = doc.get_heads();
-        assert!(!BooksDoc::migrate_annotation_text(&mut doc));
-        assert_eq!(doc.get_heads(), heads);
-        let reloaded = AutoCommit::load(&doc.save()).unwrap();
-        assert_eq!(find(&reloaded, note).note, migrated.note);
-    }
 
     /// Settings, fonts, progress, library prefs, schemes and library entries round-trip through the document.
     #[allow(
@@ -1359,31 +1222,9 @@ mod tests {
         }
     }
 
-    /// Legacy location fields are removed before syncing and independently created keyed roots materialise every branch.
+    /// Independently created keyed roots materialise every branch.
     #[test]
-    fn document_migrates_legacy_fields_and_merges_keyed_roots() {
-        // --- phase: legacy_location_fields_are_removed_before_syncing ---
-        {
-            let mut doc = AutoCommit::new();
-            let library = doc.put_object(&ROOT, "library", ObjType::Map).unwrap();
-            let entry = doc
-                .put_object(&library, "book:legacy", ObjType::Map)
-                .unwrap();
-            doc.put(&entry, "path", "/private/device/novel.epub")
-                .unwrap();
-            let watches = doc
-                .put_object(&ROOT, "watched_folders", ObjType::List)
-                .unwrap();
-            doc.insert(&watches, 0, "/private/device/books").unwrap();
-
-            BooksDoc::strip_legacy_library_paths(&mut doc);
-            // Automerge preserves historical operation payloads for existing
-            // replicas, but after migration the current collaborative state has no
-            // readable location field and future changes cannot replicate one.
-            assert!(doc.get(&entry, "path").unwrap().is_none());
-            assert!(doc.get(&ROOT, "watched_folders").unwrap().is_none());
-        }
-
+    fn document_merges_keyed_roots() {
         // --- phase: independently_created_keyed_roots_materialise_every_branch ---
         {
             let mut left = AutoCommit::new().with_actor(ActorId::random());

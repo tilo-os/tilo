@@ -5,6 +5,7 @@
 //! the small [`Action`] values emitted here to the current view and anchor.
 
 use chrono::{Datelike, NaiveDate};
+use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use vello::Scene;
@@ -107,10 +108,6 @@ impl Topbar {
         self.view_rect
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The calendar bar combines render context with the current view, anchor date, and pointer for action hit regions."
-    )]
     pub(crate) fn draw(
         &mut self,
         scene: &mut Scene,
@@ -141,13 +138,8 @@ impl Topbar {
         let title_x = self.draw_navigation(scene, transform, text, theme, pointer, center_y);
         let title_right = self.draw_actions(scene, transform, text, theme, view, pointer, center_y);
         self.draw_title(
-            scene,
-            transform,
-            text,
-            theme,
-            view,
-            anchor,
-            center_y,
+            &mut PaintCtx::new(scene, transform, text, theme),
+            &period_title_variants(view, anchor),
             title_x,
             title_right,
         );
@@ -228,10 +220,6 @@ impl Topbar {
         today.x1 + 14.0
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "View and new-event controls share render context, current view, pointer position, and the measured bar center."
-    )]
     fn draw_actions(
         &mut self,
         scene: &mut Scene,
@@ -332,24 +320,18 @@ impl Topbar {
         new_event.x0 - 12.0
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Period title fitting needs render context, view and anchor date, vertical alignment, and the available title span."
-    )]
+    /// Paint the longest of the period title `variants` that fits between
+    /// `title_x` and `title_right`, or the shortest clipped to that span.
     fn draw_title(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        view: View,
-        anchor: NaiveDate,
-        center_y: f64,
+        ctx: &mut PaintCtx<'_>,
+        variants: &[String],
         title_x: f64,
         title_right: f64,
     ) {
+        let (scene, transform, text) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text);
+        let center_y = self.rect.center().y;
         let available = (title_right - title_x).max(0.0);
-        let variants = period_title_variants(view, anchor);
         let title = variants
             .iter()
             .find(|variant| f64::from(text.measure(variant, 19.0, None).0) <= available)
@@ -369,7 +351,7 @@ impl Topbar {
             scene,
             title,
             19.0,
-            theme.tokens.colors.text_primary,
+            ctx.theme.tokens.colors.text_primary,
             transform * Affine::translate((title_x, center_y - 11.0)),
             None,
         );

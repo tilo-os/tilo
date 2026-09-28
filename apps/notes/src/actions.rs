@@ -306,9 +306,6 @@ pub enum NotesAction {
     /// store and keep only their references, so the notebook stops paying
     /// for image bytes in every replica and sync message. Idempotent.
     MoveAssetsToContentStore { digests: Vec<String> },
-    /// Bring every page stored in the first format to rich text, in place.
-    /// Dispatched when a notebook opens; a no-op once nothing is left.
-    UpgradeNotebook,
 }
 
 /// One block of a page, as an import carries it: the editor's kind (its
@@ -610,12 +607,6 @@ pub fn history_context(action: &NotesAction) -> tilo_actions::ActionContext {
             "notes.notebook",
             "Notes".into(),
         ),
-        NotesAction::UpgradeNotebook => (
-            "Upgrade notebook",
-            "notes.notebook".into(),
-            "notes.notebook",
-            "Notes".into(),
-        ),
         NotesAction::UpsertPage(page) => (
             "Update note",
             format!("notes.page:{}", page.id),
@@ -791,9 +782,6 @@ impl Action for NotesAction {
             }
             NotesAction::MoveAssetsToContentStore { digests } => {
                 crate::notebook::move_inline_assets(doc, digests).map_err(ActionError::Refused)?;
-            }
-            NotesAction::UpgradeNotebook => {
-                NotesDoc::upgrade(doc).map_err(ActionError::Refused)?;
             }
             NotesAction::UpsertPage(data) => {
                 if let Some(meta) = data.to_meta() {
@@ -3363,9 +3351,6 @@ mod tests {
                 }
                 NotesAction::AddImageAsset { .. } => {
                     panic!("new-child built the wrong action: AddImageAsset")
-                }
-                NotesAction::UpgradeNotebook => {
-                    panic!("new-child built the wrong action: UpgradeNotebook")
                 }
                 NotesAction::UpsertTag(_) => panic!("new-child built the wrong action: UpsertTag"),
                 NotesAction::DeleteTag { .. } => {

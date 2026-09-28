@@ -3403,17 +3403,16 @@ impl TopBarChrome {
                 .copied()
                 .unwrap_or(colors.accent[5]);
             ui::widget::Avatar::draw_ringed_at(
-                scene,
-                transform,
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 &initial.to_string(),
                 fill,
-                // Must read against the bar it's drawn on — a literal
-                // black is a hard outline on a light bar.
-                colors.surfaces.overlay,
-                1.5,
-                theme,
-                text_renderer,
+                ui::widget::AvatarRing {
+                    // Must read against the bar it's drawn on — a literal
+                    // black is a hard outline on a light bar.
+                    color: colors.surfaces.overlay,
+                    width: 1.5,
+                },
             );
         }
 
@@ -3428,15 +3427,13 @@ impl TopBarChrome {
                 center.y + 10.0,
             );
             ui::widget::Avatar::draw_overflow_at(
-                scene,
-                transform,
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 self.collaborator_overflow,
-                colors.surfaces.raised,
-                colors.surfaces.overlay,
-                1.5,
-                colors.text_dim,
-                text_renderer,
+                ui::widget::AvatarRing {
+                    color: colors.surfaces.overlay,
+                    width: 1.5,
+                },
             );
         }
 

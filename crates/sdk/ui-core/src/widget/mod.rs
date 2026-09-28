@@ -974,14 +974,6 @@ pub trait Widget {
     /// Exclusive counterpart to [`Widget::provide`].
     fn provide_mut<'a>(&'a mut self, _request: &mut capability::RequestMut<'a, '_>) {}
 
-    /// Retained session topology. Presentation children are the ordinary
-    /// default; owners with hidden or inactive live sessions override this
-    /// without exposing those descendants to drawing or input traversal.
-    #[doc(hidden)]
-    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.children_mut()
-    }
-
     /// Attach native child views through this owner's retained lifecycle topology.
     ///
     /// Presentation containers with inactive or hidden live descendants override
@@ -1819,55 +1811,6 @@ pub trait Widget {
         self.resource(doc, id)
     }
 
-    /// A participant (an agent task) joined the record this tree serves. A
-    /// multi-participant widget creates that participant's own view here
-    /// (Writer: caret at the document end) and publishes it as presence.
-    /// Idempotent. The default reaches retained descendants; returns whether
-    /// a view was newly created (so the host drops resource caches only then).
-    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-        let mut joined = false;
-        for child in self.collaboration_children_mut() {
-            joined |= child.join_participant(participant);
-        }
-        joined
-    }
-
-    /// Drop a participant's view (its task ended). Idempotent.
-    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
-        for child in self.collaboration_children_mut() {
-            child.leave_participant(participant);
-        }
-    }
-
-    /// Name shown beside a participant's caret (the agent's display name).
-    /// The default reaches retained descendants.
-    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
-        for child in self.collaboration_children_mut() {
-            child.set_participant_label(participant, label);
-        }
-    }
-
-    /// Current presence of every remote participant this tree holds a view
-    /// for, derived from that participant's own view exactly as the local
-    /// window derives its own presence. The default collects descendants.
-    fn participant_presence(&self, doc: &AutoCommit) -> Vec<ParticipantPresence> {
-        let mut out = Vec::new();
-        self.for_each_child(&mut |child| out.extend(child.participant_presence(doc)));
-        out
-    }
-
-    /// The host serves only remote participants and has no local person (a
-    /// headless host worker). A multi-participant widget then publishes its
-    /// participant-independent catalogue schema
-    /// ([`tilo_actions::ResourceProvider::catalogue_schema`]) as its own
-    /// view's tree instead of one caret's snapshot, so the publication and
-    /// its revision do not change when a caret moves.
-    fn set_participant_host(&mut self, host: bool) {
-        for child in self.collaboration_children_mut() {
-            child.set_participant_host(host);
-        }
-    }
-
     /// Explicit disclosure authority for an actionless resource container in
     /// the broker pull directory. Returning `None` means its label and
     /// hierarchy are not remotely discoverable unless the resource itself has
@@ -2013,136 +1956,7 @@ pub trait Widget {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        // Widgets that still override the legacy hooks below are reached
-        // through their adapter chain; a required operation never is. The
-        // legacy chains disagreed: an override of the read-only start could
-        // decline a type its synchronous handler answers, so both are offered.
-        let Some(request) = op.unscoped() else {
-            return start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = self.start_resource_operation_with_document(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .invoke_resource_operation_v2(
-                request.kind,
-                request.type_id,
-                request.payload,
-                doc,
-                path,
-            )?
-            .map(ResourceOperationStart::Completed))
-    }
-
-    /// Legacy adapter for [`Self::start_operation`]; the repository policy
-    /// ratchets its remaining overrides to zero. Returns `Ok(true)` when the
-    /// widget handled the payload.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first error reported while routing the operation through
-    /// the retained widget tree.
-    fn invoke_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        for child in self.children_mut() {
-            if child.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    /// Legacy adapter for [`Self::start_operation`] with a typed result.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the legacy operation handler rejects the payload
-    /// or fails while routing it through the retained widget tree.
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        self.invoke_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
-    }
-
-    /// Legacy read-only adapter for [`Self::start_operation`].
-    ///
-    /// # Errors
-    ///
-    /// Returns the first admission or synchronous-operation error reported
-    /// while routing the payload through the retained widget tree.
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        // Give descendants their lifecycle-aware route before falling back to
-        // the v2 synchronous adapter. Without this pass, an async leaf nested
-        // under an ordinary retained container would be downgraded to the
-        // legacy immediate route.
-        for child in self.children_mut() {
-            if let Some(started) =
-                child.start_resource_operation(invocation, kind, type_id, payload, doc, path)?
-            {
-                return Ok(Some(started));
-            }
-        }
-        self.invoke_resource_operation_v2(kind, type_id, payload, doc, path)
-            .map(|result| result.map(ResourceOperationStart::Completed))
-    }
-
-    /// Legacy mutable adapter for [`Self::start_operation`].
-    ///
-    /// The default offers the operation to every retained child through
-    /// [`Self::start_operation`] first, then falls back to this widget's own
-    /// read-only adapter; a child that declined the first offer declines the
-    /// read-only one again.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same admission/operation failures as
-    /// [`Self::start_resource_operation`].
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        let op = ResourceOperation::local(invocation, kind, type_id, payload);
-        for child in self.children_mut() {
-            if let Some(started) = child.start_operation(&op, doc, path)? {
-                return Ok(Some(started));
-            }
-        }
-        self.start_resource_operation(invocation, kind, type_id, payload, doc, path)
+        start_in_children(self, op, doc, path)
     }
 
     /// Inert immutable-reader registrations owned by this actual widget.
@@ -2616,7 +2430,7 @@ pub(crate) fn take_collab_requests(
     };
     let mut requests = capability::capability_mut::<dyn Collaborative>(&mut *widget)
         .map_or_else(Vec::new, Collaborative::take_collab_requests);
-    for child in widget.collaboration_children_mut() {
+    for child in crate::collaboration::participants::collaboration_children(widget) {
         requests.extend(take_collab_requests(child));
     }
     requests
@@ -2634,7 +2448,7 @@ pub(crate) fn handle_collab_event(
     if let Some(collaborative) = capability::capability_mut::<dyn Collaborative>(&mut *widget) {
         collaborative.handle_collab_event(event);
     }
-    for child in widget.collaboration_children_mut() {
+    for child in crate::collaboration::participants::collaboration_children(widget) {
         handle_collab_event(child, event);
     }
 }
@@ -2839,7 +2653,7 @@ pub use app_widget::{
 pub mod command_palette;
 pub mod input_hint;
 pub mod shortcut_recorder;
-pub use input_hint::{InputDeviceGlyph, InputHint};
+pub use input_hint::{InputDeviceGlyph, InputHint, LegendConventions};
 pub mod canvas_navigation_hint;
 pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
 pub use shortcut_recorder::ShortcutRecorder;
@@ -2921,7 +2735,7 @@ pub use undo_button::UndoButton;
 pub mod breadcrumb;
 pub use breadcrumb::Breadcrumb;
 pub mod avatar;
-pub use avatar::Avatar;
+pub use avatar::{Avatar, AvatarRing};
 pub mod badge;
 pub use badge::{Badge, BadgeTone};
 pub mod icon;
@@ -2978,7 +2792,7 @@ pub use sunburst::{SunburstChart, SunburstNode, SunburstStyle};
 pub mod funnel_chart;
 pub use funnel_chart::{FunnelChart, FunnelDirection, FunnelStage, FunnelStyle};
 pub mod gauge;
-pub use gauge::{BarGauge, GaugeStyle, GaugeThresholds, RingGauge};
+pub use gauge::{BarGauge, GaugeReading, GaugeStyle, GaugeThresholds, RingGauge};
 pub mod function_plane;
 pub use function_plane::FunctionPlane;
 pub mod resizable_split;
@@ -3017,15 +2831,15 @@ pub use toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup, segment_color
 // entry point for apps that render straight to a `Scene` rather than a
 // widget tree.
 pub mod empty_state;
-pub use empty_state::EmptyState;
+pub use empty_state::{EmptyState, EmptyStateContent};
 pub mod search_field;
 pub use search_field::SearchField;
 pub mod search_results;
 pub use search_results::SearchResultsView;
 pub mod stat_tile;
-pub use stat_tile::{StatTile, Trend};
+pub use stat_tile::{StatTile, StatTileContent, Trend};
 pub mod banner;
-pub use banner::{Banner, BannerKind};
+pub use banner::{Banner, BannerContent, BannerKind};
 pub mod chip;
 pub use chip::{Chip, ChipLead, ChipStyle};
 mod card_composition;
@@ -3038,8 +2852,8 @@ pub use section::{DEFAULT_SECTION_GAP, Section};
 pub mod capture_studio;
 pub use capture_studio::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
-    CapturePreview, CaptureStudio, CaptureTarget, PipLayout, RecordingCommand, ReplayCommand,
-    ScreenshotCommand, ScreenshotSendDevice, ScreenshotSendTarget, SourceMode,
+    CapturePreview, CaptureStudio, CaptureTarget, LiveCapture, PipLayout, RecordingCommand,
+    ReplayCommand, ScreenshotCommand, ScreenshotSendDevice, ScreenshotSendTarget, SourceMode,
 };
 pub mod screenshot_markup;
 pub use screenshot_markup::{

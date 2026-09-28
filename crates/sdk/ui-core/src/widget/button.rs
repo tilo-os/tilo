@@ -1,4 +1,5 @@
 use crate::i18n;
+use crate::paint::PaintCtx;
 use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::{TextRenderer, TextStyle};
@@ -903,71 +904,66 @@ fn label_width(rect: Rect, icon: Option<crate::icons::Icon>, padding: f32) -> f3
     (rect.width() as f32 - padding * 2.0 - icon_width as f32).max(0.0)
 }
 
-/// Paints the icon and/or label centred in `rect`: icon-only centres the
-/// glyph, otherwise the icon (if any) sits left of the label with a fixed
-/// gap, the cluster as a whole centred. Shared by the immediate-mode
-/// [`Button::paint`] and the retained widget's cached [`Widget::draw`] so
-/// the two stay pixel-identical.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a painting primitive shared by two call sites; splitting further would only re-bundle these into a throwaway struct"
-)]
-fn paint_icon_and_label(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    rect: Rect,
+/// What sits inside a button's face: an optional icon, the label, the style
+/// it is set in, and the width it wraps to (if any).
+struct ButtonLabel<'a> {
     icon: Option<crate::icons::Icon>,
-    label: &str,
-    text_size: f32,
-    max_label_width: Option<f32>,
-    weight: crate::text_render::TextWeight,
-    fg: vello::peniko::Color,
-) {
-    let icon_px = icon_edge(rect.height());
-    match (icon, label.is_empty()) {
-        (Some(icon), true) => {
-            // Icon-only — centre the glyph.
-            let ix = rect.center().x - icon_px / 2.0;
-            let iy = rect.center().y - icon_px / 2.0;
-            crate::icons::draw_icon(
-                scene,
-                transform,
-                Rect::new(ix, iy, ix + icon_px, iy + icon_px),
-                icon,
-                fg,
-                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-        }
-        (icon, _) => {
-            let (text_width, text_height) =
-                text_renderer.measure_weighted(label, text_size, max_label_width, weight);
-            let gap = if icon.is_some() { ICON_LABEL_GAP } else { 0.0 };
-            let icon_w = if icon.is_some() { icon_px } else { 0.0 };
-            let cluster_w = icon_w + gap + f64::from(text_width);
-            let start_x = rect.center().x - cluster_w / 2.0;
-            if let Some(icon) = icon {
+    text: &'a str,
+    style: TextStyle,
+    wrap_width: Option<f32>,
+}
+
+impl ButtonLabel<'_> {
+    /// Paints the icon and/or label centred in `rect`: icon-only centres the
+    /// glyph, otherwise the icon (if any) sits left of the label with a fixed
+    /// gap, the cluster as a whole centred. Shared by the immediate-mode
+    /// [`Button::paint`] and the retained widget's cached [`Widget::draw`] so
+    /// the two stay pixel-identical.
+    fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect, fg: vello::peniko::Color) {
+        let icon_px = icon_edge(rect.height());
+        match (self.icon, self.text.is_empty()) {
+            (Some(icon), true) => {
+                // Icon-only — centre the glyph.
+                let ix = rect.center().x - icon_px / 2.0;
                 let iy = rect.center().y - icon_px / 2.0;
                 crate::icons::draw_icon(
-                    scene,
-                    transform,
-                    Rect::new(start_x, iy, start_x + icon_px, iy + icon_px),
+                    ctx.scene,
+                    ctx.transform,
+                    Rect::new(ix, iy, ix + icon_px, iy + icon_px),
                     icon,
                     fg,
                     crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
             }
-            let text_x = start_x + icon_w + gap;
-            let text_y = rect.y0 + (rect.height() - f64::from(text_height)) / 2.0;
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                text_size,
-                fg,
-                transform.pre_translate(Vec2::new(text_x, text_y)),
-                max_label_width,
-                weight,
-            );
+            (icon, _) => {
+                let (text_width, text_height) =
+                    ctx.text
+                        .measure_style(self.text, self.wrap_width, &self.style);
+                let gap = if icon.is_some() { ICON_LABEL_GAP } else { 0.0 };
+                let icon_w = if icon.is_some() { icon_px } else { 0.0 };
+                let cluster_w = icon_w + gap + f64::from(text_width);
+                let start_x = rect.center().x - cluster_w / 2.0;
+                if let Some(icon) = icon {
+                    let iy = rect.center().y - icon_px / 2.0;
+                    crate::icons::draw_icon(
+                        ctx.scene,
+                        ctx.transform,
+                        Rect::new(start_x, iy, start_x + icon_px, iy + icon_px),
+                        icon,
+                        fg,
+                        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    );
+                }
+                let text_x = start_x + icon_w + gap;
+                let text_y = rect.y0 + (rect.height() - f64::from(text_height)) / 2.0;
+                ctx.text(
+                    self.text,
+                    &self.style,
+                    fg,
+                    Point::new(text_x, text_y),
+                    self.wrap_width,
+                );
+            }
         }
     }
 }
@@ -1025,17 +1021,17 @@ impl Button {
         }
 
         let label = localized_label(face.label);
-        paint_icon_and_label(
-            scene,
-            transform,
-            text_renderer,
-            face.rect,
-            face.icon,
-            &label,
-            face.text_size,
-            face.wrap_label
+        ButtonLabel {
+            icon: face.icon,
+            text: &label,
+            style: TextStyle::new(face.text_size).with_weight(face.weight),
+            wrap_width: face
+                .wrap_label
                 .then(|| label_width(face.rect, face.icon, theme.padding_standard)),
-            face.weight,
+        }
+        .paint(
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            face.rect,
             fg,
         );
         if face.interact.disabled {
@@ -1442,17 +1438,20 @@ impl Widget for Button {
         // the `_weighted` entry points shared with `ButtonFace`'s
         // (independently weighted/sized) immediate-mode path.
         let label = localized_label(&self.label);
-        paint_icon_and_label(
-            scene,
-            transform,
-            text_renderer,
-            self.rect,
-            self.icon,
-            &label,
-            renderer_label_size(theme.tokens.typography.scale.base, text_renderer),
-            self.content_sized
+        ButtonLabel {
+            icon: self.icon,
+            text: &label,
+            style: TextStyle::new(renderer_label_size(
+                theme.tokens.typography.scale.base,
+                text_renderer,
+            )),
+            wrap_width: self
+                .content_sized
                 .then(|| label_width(self.rect, self.icon, self.content_padding)),
-            crate::text_render::TextWeight::Regular,
+        }
+        .paint(
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            self.rect,
             fg_color,
         );
         if !enabled {
@@ -1623,21 +1622,6 @@ impl Widget for Button {
             .then(|| {
                 super::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
             }))
-    }
-
-    /// Legacy adapter: apps not yet on [`Widget::start_operation`] still reach
-    /// a shared button through their read-only routing.
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        Ok(self
-            .invoke_native_control(kind, type_id, payload)?
-            .then(tilo_actions::ActionOutput::default))
     }
 
     fn refresh_control_action_availability(
@@ -1837,7 +1821,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
-    fn a_shared_button_answers_both_the_single_entry_and_legacy_routing() {
+    fn a_shared_button_answers_through_an_ordinary_container() {
         let clicks = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&clicks);
         let mut column = crate::widget::Column::new().push(Box::new(
@@ -1863,34 +1847,7 @@ mod tests {
                 .is_some()
         );
 
-        // An app still routing through the read-only hooks reaches the button
-        // through an ordinary container, as it did before the single entry.
-        let legacy = column
-            .start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                kind,
-                "tilo.ui.control.invoke",
-                payload,
-                &doc,
-                &automerge::ROOT,
-            )
-            .unwrap();
-        assert!(legacy.is_some(), "legacy start reaches the shared button");
-        let child = &mut column.children_mut()[0];
-        assert!(
-            child
-                .invoke_resource_operation_v2(
-                    kind,
-                    "tilo.ui.control.invoke",
-                    payload,
-                    &doc,
-                    &automerge::ROOT
-                )
-                .unwrap()
-                .is_some(),
-            "a direct legacy call on the button is answered"
-        );
-        assert_eq!(clicks.load(Ordering::SeqCst), 3);
+        assert_eq!(clicks.load(Ordering::SeqCst), 1);
     }
 
     fn layout_fit_host(
@@ -2254,16 +2211,15 @@ mod tests {
             let mut scene = Scene::new();
             let rect = Rect::new(0.0, 0.0, 200.0, 40.0);
             let (_, height) = text.measure("Refresh", 14.0, None);
-            paint_icon_and_label(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text,
+            ButtonLabel {
+                icon: None,
+                text: "Refresh",
+                style: TextStyle::new(14.0),
+                wrap_width: None,
+            }
+            .paint(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark()),
                 rect,
-                None,
-                "Refresh",
-                14.0,
-                None,
-                crate::text_render::TextWeight::Regular,
                 vello::peniko::Color::WHITE,
             );
             let actual = &scene.encoding().resources.glyph_runs[0];

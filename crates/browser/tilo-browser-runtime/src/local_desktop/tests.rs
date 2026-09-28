@@ -1,5 +1,5 @@
 use super::*;
-use crate::desktop_host::{DesktopHandle, DesktopRoot};
+use crate::desktop_host::{DesktopHandle, DesktopRoot, DesktopSources};
 use std::sync::Arc;
 use tilo_desktop_model::commands::CommandSource;
 use ui::portable_storage::PortableStorage;
@@ -244,16 +244,18 @@ fn mount(seed_json: serde_json::Value, storage: &PortableStorage) -> (DesktopRoo
         vec![],
     );
     let (root, handle) = DesktopRoot::new(
-        local.admission().unwrap(),
-        storage.clone(),
+        DesktopSources {
+            admission: local.admission().unwrap(),
+            storage: storage.clone(),
+            permissions,
+            content: None,
+            local: Some(local),
+        },
         ROOM,
         "device",
         "author",
         1,
-        permissions,
         Arc::new(|| {}),
-        None,
-        Some(local),
     )
     .unwrap();
     assert!(

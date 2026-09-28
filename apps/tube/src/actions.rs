@@ -251,11 +251,6 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<TubeOper
         .map_err(|e| e.to_string())
 }
 
-/// Composite comment key: stable across the ordered `Video.comments` list.
-fn legacy_comment_key(video_id: &str, index: usize) -> String {
-    format!("{video_id}#{index}")
-}
-
 /// Stable content identity for a comment. The upstream model has no comment
 /// id, so hash all immutable source fields with an explicitly fixed FNV-1a
 /// algorithm rather than addressing a row by its current list position.
@@ -302,13 +297,8 @@ pub enum TubeAction {
         video_id: String,
         liked: bool,
     },
-    /// Append a video to the shared watch queue.
-    AddToQueue {
-        video_id: String,
-    },
-    /// Set one queue membership explicitly. Unlike the legacy append-shaped
-    /// [`Self::AddToQueue`] envelope this is safe to replay, retry and merge:
-    /// `false` is a tombstone, never a list deletion whose index can drift.
+    /// Set one queue membership explicitly. This is safe to replay, retry and
+    /// merge: `false` is a tombstone, never a list deletion whose index can drift.
     SetQueueMembership {
         video_id: String,
         queued: bool,
@@ -358,26 +348,12 @@ pub enum TubeAction {
         category: crate::model::Category,
         mode: crate::model::SkipMode,
     },
-    /// Like a comment (addressed by its video + ordered index).
-    LikeComment {
-        video_id: String,
-        index: usize,
-        #[serde(default)]
-        comment_id: String,
-    },
     /// Absolute comment-like membership. `liked: false` is retained as a
     /// tombstone rather than deleting an address that a concurrent client may
     /// still be updating.
     SetCommentLiked {
         comment_id: String,
         liked: bool,
-    },
-    ReplyToComment {
-        video_id: String,
-        index: usize,
-        #[serde(default)]
-        comment_id: String,
-        text: String,
     },
     /// Set one deterministic reply entity. Reply mutations are host-mediated
     /// because a host may apply moderation before making the value visible.
@@ -451,13 +427,6 @@ impl Action for TubeAction {
                 let likes_map = child_map(doc, &tube, "likes")?;
                 doc.put(&likes_map, video_id.as_str(), ScalarValue::Boolean(*liked))?;
             }
-            TubeAction::AddToQueue { video_id } => {
-                // Preserve the public legacy action name while migrating its
-                // storage to keyed absolute membership.  Old envelopes remain
-                // meaningful, while new callers use SetQueueMembership.
-                let queue = child_map(doc, &tube, "queue")?;
-                doc.put(&queue, video_id.as_str(), ScalarValue::Boolean(true))?;
-            }
             TubeAction::SetQueueMembership { video_id, queued } => {
                 let queue = child_map(doc, &tube, "queue")?;
                 doc.put(&queue, video_id.as_str(), ScalarValue::Boolean(*queued))?;
@@ -497,41 +466,9 @@ impl Action for TubeAction {
             TubeAction::SetSponsorCategory { category, mode } => {
                 apply_sponsor_category(doc, &tube, *category, *mode)?;
             }
-            TubeAction::LikeComment {
-                video_id,
-                index,
-                comment_id,
-            } => {
-                let likes = child_map(doc, &tube, "comment_likes")?;
-                let key = if comment_id.is_empty() {
-                    legacy_comment_key(video_id, *index)
-                } else {
-                    comment_id.clone()
-                };
-                doc.put(&likes, key, ScalarValue::Boolean(true))?;
-            }
             TubeAction::SetCommentLiked { comment_id, liked } => {
                 let likes = child_map(doc, &tube, "comment_likes")?;
                 doc.put(&likes, comment_id, ScalarValue::Boolean(*liked))?;
-            }
-            TubeAction::ReplyToComment {
-                video_id,
-                index,
-                comment_id,
-                text,
-            } => {
-                let replies_map = child_map(doc, &tube, "comment_replies")?;
-                let key = if comment_id.is_empty() {
-                    legacy_comment_key(video_id, *index)
-                } else {
-                    comment_id.clone()
-                };
-                let replies = child_map(doc, &replies_map, &key)?;
-                doc.put(
-                    &replies,
-                    reply_key(&key, text),
-                    ScalarValue::Str(text.as_str().into()),
-                )?;
             }
             TubeAction::SetCommentReply {
                 comment_id,
@@ -555,17 +492,15 @@ impl Action for TubeAction {
     fn locus(&self) -> ExecutionLocus {
         match self {
             // Shared, host-serialized state.
-            TubeAction::AddToQueue { .. }
-            | TubeAction::SetQueueMembership { .. }
-            | TubeAction::ReplyToComment { .. }
-            | TubeAction::SetCommentReply { .. } => ExecutionLocus::ServerPreferred,
+            TubeAction::SetQueueMembership { .. } | TubeAction::SetCommentReply { .. } => {
+                ExecutionLocus::ServerPreferred
+            }
             // Client-local shared-document mutations. History variants above
             // are rejected by `apply` and cannot enter this document.
             TubeAction::LikeVideo { .. }
             | TubeAction::SetVideoLiked { .. }
             | TubeAction::SetHistoryEntry { .. }
             | TubeAction::ClearHistory { .. }
-            | TubeAction::LikeComment { .. }
             | TubeAction::SetCommentLiked { .. }
             | TubeAction::ToggleSubscription { .. }
             | TubeAction::SetSubscription { .. }

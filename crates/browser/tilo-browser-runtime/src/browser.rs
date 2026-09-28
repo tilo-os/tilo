@@ -7,7 +7,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 use ui::{
-    application::{ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput},
+    application::{
+        ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    },
     application_view::InstanceViewStore,
     headless::FrameHarness,
     permissions::{Actor, PermissionContext, Role, UserId},
@@ -23,6 +25,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
+use crate::desktop_host::DesktopSources;
 #[cfg(feature = "cloud")]
 use crate::peer as cloud_peer;
 /// Without `cloud` no certified peer exists, so a mount that names one fails.
@@ -641,13 +644,15 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     }));
     let mut context = HostContext::prepare(
         definition,
-        records.clone(),
-        views,
-        config.device.clone(),
-        config.instance,
-        permissions,
-        UserId(config.author),
-        tilo_actions::ActionContext::default(),
+        HostContextInputs {
+            records: records.clone(),
+            views,
+            device_id: config.device.clone(),
+            instance_id: config.instance,
+            permissions,
+            author: UserId(config.author),
+            action_context: tilo_actions::ActionContext::default(),
+        },
         &target,
     )
     .map_err(error)?;
@@ -800,12 +805,14 @@ fn begin_desktop(
     let storage = load_cache(&config.profile, &config.device, &hydrated)?;
     let permissions = crate::peer::permissions(peer).map_err(error)?;
     let desktop = DesktopMount {
-        admission,
-        storage,
-        permissions,
+        sources: DesktopSources {
+            admission,
+            storage,
+            permissions,
+            content: None,
+            local: None,
+        },
         peer: Some(peer),
-        content: None,
-        local: None,
     };
     begin_desktop_root(event_loop, id, canvas, config, fonts, status, desktop)
 }
@@ -824,26 +831,25 @@ fn begin_local_desktop(
     let local = crate::local_desktop::LocalDesktop::new(&config.room, &config.author, &seed)
         .map_err(error)?;
     let desktop = DesktopMount {
-        admission: local.admission().map_err(error)?,
-        storage: load_cache(&config.profile, &config.device, &hydrated)?,
-        permissions: PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Owner), &config.author),
-            vec![],
-        ),
+        sources: DesktopSources {
+            admission: local.admission().map_err(error)?,
+            storage: load_cache(&config.profile, &config.device, &hydrated)?,
+            permissions: PermissionContext::from_capabilities(
+                Actor::person(Some(Role::Owner), &config.author),
+                vec![],
+            ),
+            content: Some(content_store(&config.profile, &config.device)),
+            local: Some(local),
+        },
         peer: None,
-        content: Some(content_store(&config.profile, &config.device)),
-        local: Some(local),
     };
     begin_desktop_root(event_loop, id, canvas, config, fonts, status, desktop)
 }
-/// What a canonical desktop mount is built from.
+/// What a canonical desktop mount is built from: the desktop's own sources,
+/// and the peer serving it when the room is hosted elsewhere.
 struct DesktopMount {
-    admission: crate::desktop::Admission,
-    storage: PortableStorage,
-    permissions: PermissionContext,
+    sources: DesktopSources,
     peer: Option<u32>,
-    content: Option<tilo_content::ContentStore>,
-    local: Option<crate::local_desktop::LocalDesktop>,
 }
 fn begin_desktop_root(
     event_loop: &ActiveEventLoop,
@@ -854,14 +860,8 @@ fn begin_desktop_root(
     status: Function,
     desktop: DesktopMount,
 ) -> Result<(), JsValue> {
-    let DesktopMount {
-        admission,
-        storage,
-        permissions,
-        peer,
-        content,
-        local,
-    } = desktop;
+    let DesktopMount { sources, peer } = desktop;
+    let storage = sources.storage.clone();
     let system = ui::font_catalog::FontCatalog::product("", "en-US")
         .load_browser_startup_bytes(|name| {
             Reflect::get(&fonts, &name.into())
@@ -884,18 +884,14 @@ fn begin_desktop_root(
     let dpr = window.scale_factor();
     let wake = proxy()?;
     let (root, desktop) = crate::desktop_host::DesktopRoot::new(
-        admission,
-        storage.clone(),
+        sources,
         &config.room,
         &config.device,
         &config.author,
         config.instance,
-        permissions,
         Arc::new(move || {
             let _ = wake.send_event(id);
         }),
-        content,
-        local,
     )
     .map_err(error)?;
     let mut frame = FrameHarness::new_with_controlled_inputs(

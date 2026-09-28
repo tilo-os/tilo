@@ -468,7 +468,7 @@ impl App {
                     &self.bindings,
                     &self.layout.node_map,
                     node,
-                    |widget| widget.take_undo_request(),
+                    |widget| crate::undo::take_undo_request(widget),
                 )
             }
             .ok()
@@ -546,7 +546,7 @@ impl App {
                     &self.bindings,
                     &self.layout.node_map,
                     node,
-                    |widget| widget.set_undo_status(&mut status),
+                    |widget| crate::undo::set_undo_status(widget, &mut status),
                 )
             };
         }
@@ -1343,9 +1343,7 @@ impl App {
                     return Err("Deferred action accepts no argument".into());
                 }
                 let actor = self.collaboration.local_author.0.clone();
-                match self.invoke_resource_action_scoped(
-                    &address, None, &actor, false, false, None, None, None, None,
-                ) {
+                match self.invoke_resource_action(ResourceInvocation::new(&address, &actor)) {
                     Ok(_) => {
                         self.needs_sync = true;
                         self.layout.layout_dirty = true;

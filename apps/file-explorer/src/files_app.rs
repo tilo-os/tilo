@@ -14,7 +14,7 @@ use crate::i18n::{arg, t, t_args};
 use crate::metadata_refresh;
 use crate::model::{Entry, SortBy, SortOrder, ViewMode, initial_path, read_dir_sync, sort_entries};
 use crate::places_sidebar::{self, FavStore, PlacesSidebar};
-use crate::views::file_view::ThumbCtx;
+use crate::views::file_view::{FileView, ThumbCtx};
 use crate::{config, favorites, fileops, templates};
 use host_fs::attributes as xattr;
 use sha2::{Digest, Sha256};
@@ -25,6 +25,7 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use thumbnail::{ThumbKey, ThumbnailService};
+use ui::paint::PaintCtx;
 use ui::tilo_actions::{
     ActionContract, ActionSpec, Availability, ConfirmationPolicy, EncodedAction, ExecutionMode,
     OperationKind, PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
@@ -32,8 +33,8 @@ use ui::tilo_actions::{
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
-    Button, Collaborative, Column, EmptyState, NavShell, ResourceOperation, ScrollAxis, Scrollable,
-    ShellMode, Spacer, Spinner, Text, TextInput, Widget,
+    Button, Collaborative, Column, EmptyState, EmptyStateContent, NavShell, ResourceOperation,
+    ScrollAxis, Scrollable, ShellMode, Spacer, Spinner, Text, TextInput, Widget,
 };
 use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
@@ -1073,18 +1074,20 @@ impl FileExplorerWidget {
     /// Refresh the persistent top bar with the current navigation context
     /// (path, history availability, view mode) before it is laid out.
     fn update_toolbar(&mut self) {
-        let can_back = !self.history.is_empty();
-        let can_forward = !self.forward.is_empty();
-        let can_up = self.current_path.parent().is_some() && !self.is_recent_view();
+        let nav = crate::toolbar::NavAvailability {
+            back: !self.history.is_empty(),
+            forward: !self.forward.is_empty(),
+            up: self.current_path.parent().is_some() && !self.is_recent_view(),
+        };
         self.toolbar.set_context(
+            nav,
+            self.view_mode,
+            crate::archive::location(&self.current_path).is_some(),
+        );
+        self.toolbar.set_path(
             self.current_path.clone(),
             self.home_path.clone(),
             self.workspace_roots.clone(),
-            can_back,
-            can_forward,
-            can_up,
-            self.view_mode,
-            crate::archive::location(&self.current_path).is_some(),
         );
     }
 
@@ -1130,33 +1133,22 @@ impl FileExplorerWidget {
         let displayed = self.displayed_entries();
         let scale = self.zoom_scale();
         let text_scale = theme.text_scale;
+        // `renaming` marks the item edited in place, publishing its label rect
+        // into `rename_rect` for the host to draw the shared editor over. The
+        // cursor seeds the view's pointer position so a press hit-tests
+        // correctly on the frame it is rebuilt (see `FileView::with_cursor`).
+        let view = FileView::new(&displayed, &self.selection, &self.cmds)
+            .with_scale(scale)
+            .with_text_scale(text_scale)
+            .with_rename(self.renaming, self.rename_rect.clone())
+            .with_cursor(self.last_cursor)
+            .with_drop_targets(self.drop_targets.clone())
+            .with_thumbs(self.thumb_ctx());
         let view_child: Box<dyn Widget> = match self.view_mode {
-            ViewMode::List => crate::views::list_view::build_list(
-                &displayed,
-                &self.selection,
-                &self.cmds,
-                scale,
-                text_scale,
-                self.sort_by,
-                self.sort_order,
-                self.renaming,
-                self.rename_rect.clone(),
-                self.last_cursor,
-                self.drop_targets.clone(),
-                self.thumb_ctx(),
-            ),
-            ViewMode::Grid => crate::views::grid_view::build_grid(
-                &displayed,
-                &self.selection,
-                &self.cmds,
-                scale,
-                text_scale,
-                self.renaming,
-                self.rename_rect.clone(),
-                self.last_cursor,
-                self.drop_targets.clone(),
-                self.thumb_ctx(),
-            ),
+            ViewMode::List => {
+                crate::views::list_view::build_list(view, self.sort_by, self.sort_order)
+            }
+            ViewMode::Grid => crate::views::grid_view::build_grid(view),
         };
         // The hamburger chip that summons the places drawer floats over this
         // pane's top-left in the narrow layout. `NavShell` reserves that band
@@ -1314,15 +1306,14 @@ impl FileExplorerWidget {
             // behaviour keeps the production control. Hover is suppressed on
             // the underlay because the Button draws its own.
             let action_rect = EmptyState::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
-                Some(ui::icons::Icon::FolderOpen),
-                &title,
-                Some(&detail),
-                Some(&t("files-try-again")),
+                &EmptyStateContent {
+                    icon: Some(ui::icons::Icon::FolderOpen),
+                    title: &title,
+                    message: Some(&detail),
+                    action_label: Some(&t("files-try-again")),
+                },
                 Point::new(-1.0, -1.0),
             );
             let button_rect = action_rect.map_or(vello::kurbo::Rect::ZERO, |r| {
@@ -1338,15 +1329,14 @@ impl FileExplorerWidget {
                 .draw(scene, transform, text_renderer, theme, presence);
         } else {
             EmptyState::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
-                None,
-                &title,
-                Some(&detail),
-                None,
+                &EmptyStateContent {
+                    icon: None,
+                    title: &title,
+                    message: Some(&detail),
+                    action_label: None,
+                },
                 self.last_cursor,
             );
             let center = rect.center();
@@ -4288,7 +4278,6 @@ impl FileExplorerWidget {
     }
 
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "modal painting keeps scene, transform, text and theme together while deriving geometry and hit targets in one pass"
     )]

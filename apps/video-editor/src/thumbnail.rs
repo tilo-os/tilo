@@ -534,10 +534,6 @@ impl ThumbnailCache {
     ///
     /// Failure is recorded exactly as the live path records it, so a source
     /// that cannot be decoded is written off here too rather than retried.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the swatch request plus `ensure_strip`'s filmstrip span, spelled the same way"
-    )]
     pub fn warm_blocking(
         &mut self,
         id: MediaId,

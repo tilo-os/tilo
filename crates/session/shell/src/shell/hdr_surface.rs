@@ -237,13 +237,15 @@ impl HdrPlane {
             signal.colorimetry.range,
             crate::collab::colorimetry::ColorRange::Limited
         );
+        let planes = crate::shell::hdr_tonemap::P010Planes {
+            luma,
+            chroma,
+            luma_stride: y_stride,
+            chroma_stride: uv_stride,
+            limited,
+        };
         let rgb = (0..height).flat_map(|row| {
-            (0..width).map(move |col| {
-                crate::shell::hdr_tonemap::p010_signal_at(
-                    luma, chroma, y_stride, uv_stride, col, row, limited,
-                )
-                .unwrap_or([0.0; 3])
-            })
+            (0..width).map(move |col| planes.signal_at(col, row).unwrap_or([0.0; 3]))
         });
         Self::from_signal_rgb(width, height, rgb, signal)
     }

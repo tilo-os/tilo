@@ -955,11 +955,12 @@ impl FrameHarness {
                 &self.bindings,
                 &self.node_map,
                 node,
-                &mut self.state.doc,
-                &self.state.root,
                 action,
-                &self.permissions,
-                &author,
+                &mut self.state,
+                crate::bound_dispatch::SemanticCaller {
+                    authority: &self.permissions,
+                    author: &author,
+                },
                 callback,
             )
         }
@@ -1253,10 +1254,6 @@ impl FrameHarness {
         )
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "private constructor behind the public entry points"
-    )]
     fn with_inputs_and_host(
         state: State,
         root: Box<dyn Widget>,
@@ -1771,7 +1768,7 @@ impl FrameHarness {
                     &self.bindings,
                     &self.node_map,
                     node,
-                    |widget| widget.take_undo_request(),
+                    |widget| crate::undo::take_undo_request(widget),
                 )
             } {
                 requests.push((
@@ -1878,7 +1875,7 @@ impl FrameHarness {
                     &self.bindings,
                     &self.node_map,
                     node,
-                    |widget| widget.set_undo_status(&mut status),
+                    |widget| crate::undo::set_undo_status(widget, &mut status),
                 )
             };
         }
@@ -4533,7 +4530,7 @@ impl FrameHarness {
                     if framework {
                         return;
                     }
-                    if self.root.handle_local_undo_request(request) {
+                    if crate::undo::handle_local_undo_request(self.root.as_mut(), request) {
                         self.relayout();
                     } else {
                         match request {
@@ -4680,13 +4677,16 @@ impl FrameHarness {
             history.route_event(
                 self.root.as_mut(),
                 event,
-                self.input_scale,
-                &self.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                &mut handled,
-                &mut focus_target,
-                &self.taffy,
+                &mut EventCtx {
+                    scale_factor: self.input_scale,
+                    modifiers: &self.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: self.child_node,
+                    taffy: &self.taffy,
+                },
             );
         } else if !history_handled && self.history_layout.is_none_or(|layout| layout.app_visible) {
             self.root.handle_event(
@@ -4978,13 +4978,16 @@ impl FrameHarness {
             &mut self.state.doc,
             &target,
             self.action_transport.as_mut(),
-            None,
-            Some(arguments),
-            &self.author.0,
-            confirmed,
-            false,
-            invocation,
-            None,
+            crate::bound_dispatch::ResourceActionRequest {
+                argument: None,
+                arguments: Some(arguments),
+                actor: &self.author.0,
+                confirmed,
+                broker_admitted: false,
+                invocation,
+                ambient: None,
+                scope: None,
+            },
         )?;
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
             self.bound_invocations.insert(invocation, target);
@@ -5150,13 +5153,16 @@ impl FrameHarness {
             &mut self.state.doc,
             &target,
             self.action_transport.as_mut(),
-            None,
-            Some(&intent.arguments),
-            &self.author.0,
-            false,
-            false,
-            invocation,
-            None,
+            crate::bound_dispatch::ResourceActionRequest {
+                argument: None,
+                arguments: Some(&intent.arguments),
+                actor: &self.author.0,
+                confirmed: false,
+                broker_admitted: false,
+                invocation,
+                ambient: None,
+                scope: None,
+            },
         )
         .map_err(crate::bound_dispatch::BoundActionError::into_door);
         if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
@@ -5472,13 +5478,16 @@ impl FrameHarness {
                     &mut self.state.doc,
                     &target,
                     self.action_transport.as_mut(),
-                    argument,
-                    json,
-                    &self.author.0,
-                    confirmed,
-                    false,
-                    invocation_id,
-                    None,
+                    crate::bound_dispatch::ResourceActionRequest {
+                        argument,
+                        arguments: json,
+                        actor: &self.author.0,
+                        confirmed,
+                        broker_admitted: false,
+                        invocation: invocation_id,
+                        ambient: None,
+                        scope: None,
+                    },
                 )
                 .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
                 if matches!(result, crate::widget::ResourceOperationStart::Accepted) {
@@ -5598,15 +5607,18 @@ impl FrameHarness {
                     &self.state.root,
                     &self.action_registry,
                     self.action_transport.as_mut(),
-                    address,
-                    resource,
-                    spec,
-                    encoded,
-                    &self.author.0,
-                    &self.author.0,
-                    false,
-                    invocation_id,
-                    None,
+                    crate::bound_dispatch::ResourceOperation {
+                        address,
+                        resource,
+                        spec,
+                        encoded,
+                        actor: &self.author.0,
+                        local_author: &self.author.0,
+                        broker_admitted: false,
+                        invocation: invocation_id,
+                        ambient: None,
+                        scope: None,
+                    },
                 )?;
                 if let Some(before) = before {
                     self.state.record_committed_action_authored(
@@ -5727,15 +5739,18 @@ impl FrameHarness {
                     &self.state.root,
                     &self.action_registry,
                     self.action_transport.as_mut(),
-                    &intent.address,
-                    resource,
-                    spec,
-                    encoded,
-                    &self.author.0,
-                    &self.author.0,
-                    false,
-                    invocation,
-                    None,
+                    crate::bound_dispatch::ResourceOperation {
+                        address: &intent.address,
+                        resource,
+                        spec,
+                        encoded,
+                        actor: &self.author.0,
+                        local_author: &self.author.0,
+                        broker_admitted: false,
+                        invocation,
+                        ambient: None,
+                        scope: None,
+                    },
                 )?;
                 if let Some(before) = before {
                     self.state.record_committed_action_authored(
@@ -5821,15 +5836,18 @@ impl FrameHarness {
             &self.state.root,
             &self.action_registry,
             self.action_transport.as_mut(),
-            address,
-            resource,
-            spec,
-            encoded,
-            &self.author.0,
-            &self.author.0,
-            false,
-            invocation,
-            None,
+            crate::bound_dispatch::ResourceOperation {
+                address,
+                resource,
+                spec,
+                encoded,
+                actor: &self.author.0,
+                local_author: &self.author.0,
+                broker_admitted: false,
+                invocation,
+                ambient: None,
+                scope: None,
+            },
         )?;
         if let Some(before) = before {
             self.state.record_committed_action_authored(
@@ -6523,8 +6541,12 @@ impl FrameHarness {
     /// first invocation (`HostWorker::join_participant`). A host whose own author
     /// is that participant makes the component act as the agent. Idempotent.
     pub fn join_participant(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
-        self.root.join_participant(participant);
-        self.root.set_participant_label(participant, label);
+        crate::collaboration::participants::join_participant(self.root.as_mut(), participant);
+        crate::collaboration::participants::set_participant_label(
+            self.root.as_mut(),
+            participant,
+            label,
+        );
     }
 
     /// The scene the last laid-out frame encoded: what [`Self::render_rgba`]
@@ -6591,13 +6613,16 @@ impl FrameHarness {
             &mut self.state.doc,
             &target,
             self.action_transport.as_mut(),
-            None,
-            Some(arguments),
-            &self.author.0,
-            confirmed,
-            false,
-            invocation,
-            None,
+            crate::bound_dispatch::ResourceActionRequest {
+                argument: None,
+                arguments: Some(arguments),
+                actor: &self.author.0,
+                confirmed,
+                broker_admitted: false,
+                invocation,
+                ambient: None,
+                scope: None,
+            },
         )
         .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
@@ -10899,7 +10924,7 @@ mod undo_driver_tests {
 /// `on_commit`, where the widget writes the document itself. An app built on
 /// [`ActionHost`](crate::action_host::ActionHost) never sets `needs_commit`:
 /// its boundary arrives through
-/// [`take_committed_action`](crate::widget::Widget::take_committed_action)
+/// [`take_committed_action`](crate::undo::CommittedActions::take_committed_action)
 /// instead. Until the driver drained that, a headless test of such an app could
 /// deliver the input but could not observe the undo history the input produced,
 /// so undo behaviour was untestable for the majority of the fleet.
@@ -10975,6 +11000,8 @@ mod dispatched_action_driver_tests {
     }
 
     impl crate::widget::Widget for ActionEditor {
+        crate::provides!(dyn crate::undo::CommittedActions);
+
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -11076,10 +11103,6 @@ mod dispatched_action_driver_tests {
             true
         }
 
-        fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-            self.actions.take_committed()
-        }
-
         fn name(&self) -> &'static str {
             "ActionEditor"
         }
@@ -11106,6 +11129,12 @@ mod dispatched_action_driver_tests {
                     .with_name("Editor")
                     .with_state(AccessState::new().focusable(true).focused(self.focused)),
             )
+        }
+    }
+
+    impl crate::undo::CommittedActions for ActionEditor {
+        fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+            self.actions.take_committed()
         }
     }
 
@@ -11408,6 +11437,8 @@ mod prepared_driver_tests {
         }
     }
     impl Widget for Observer {
+        crate::provides!(dyn crate::undo::UndoControl);
+
         fn set_motion_reduced(&mut self, _: bool) {
             if !std::mem::replace(&mut self.motion_delivered, true)
                 && let Some(local) = self.observed.local.borrow().as_ref()
@@ -11480,9 +11511,6 @@ mod prepared_driver_tests {
                 *ctx.handled = true;
             }
         }
-        fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
-            *self.observed.published.borrow_mut() = status();
-        }
         fn is_focusable(&self) -> bool {
             true
         }
@@ -11500,6 +11528,12 @@ mod prepared_driver_tests {
         }
         fn get_state(&self) -> Option<String> {
             Some(self.snapshot.clone())
+        }
+    }
+
+    impl crate::undo::UndoControl for Observer {
+        fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
+            *self.observed.published.borrow_mut() = status();
         }
     }
     impl crate::widget::AppWidget for Observer {

@@ -183,8 +183,6 @@ impl WpFormat {
         content: &dyn tilo_content::ContentSource,
     ) -> Result<Vec<u8>, tilo_doc_codecs::CodecError> {
         use tilo_doc_codecs::FormatProvider;
-        // Content an older document still carries inline answers when the store lacks it.
-        let content = &(content, tilo_doc::model::inline_contents(dr.doc, dr.c));
         match self {
             WpFormat::Odt => tilo_doc_codecs::OdtCodec.export(dr, content),
             WpFormat::Docx => tilo_doc_codecs::DocxCodec.export(dr, content),

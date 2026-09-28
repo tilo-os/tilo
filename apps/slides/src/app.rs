@@ -25,10 +25,11 @@ use winit::keyboard::{Key, NamedKey};
 use tilo_rich_text::{FieldOutcome, RichTextField, RichTextSurface, SubmitKey};
 use ui::ColorCompat;
 use ui::icons::{Icon, draw_icon};
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Embedded;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
@@ -49,9 +50,9 @@ use crate::model::{
 };
 use crate::overview_grid::{OverviewGrid, scroll_from_thumb_drag, scrollbar_rects};
 use crate::presentation::{Blank, Command as PresentCommand, Presentation, PresentationFrame};
-use crate::render;
+use crate::render::{self, DeckAssets};
 use crate::strings::{tr, tr_args};
-use crate::toolbar_tools::{MenuPress, ToolbarTools, ToolbarToolsLayout};
+use crate::toolbar_tools::{MenuPress, ToolMetrics, ToolbarTools, ToolbarToolsLayout};
 use tilo_content::ContentStore;
 use ui::i18n::ArgValue;
 
@@ -469,6 +470,16 @@ struct ChromeMetrics {
     s4: f64,
 }
 
+impl ToolMetrics for ChromeMetrics {
+    fn pill_w(&self, label: &str, icon: bool) -> f64 {
+        Self::pill_w(self, label, icon)
+    }
+
+    fn menu_row_h(&self) -> f64 {
+        self.control_h()
+    }
+}
+
 impl ChromeMetrics {
     fn key(text: &str, font: f32, weight: TextWeight) -> (String, u16, u16) {
         (
@@ -677,14 +688,6 @@ struct RoutedEvent<'a> {
     focus_target: &'a mut Option<NodeId>,
     node_id: NodeId,
     taffy: &'a TaffyTree<()>,
-}
-
-/// Mutable rendering resources forwarded together through editor paint layers.
-struct PaintContext<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    text: &'a mut TextRenderer,
-    theme: &'a Theme,
 }
 
 /// The words of one text box being edited on the canvas: the SDK editor,
@@ -1911,14 +1914,9 @@ impl SlidesApp {
         let tools_first = buttons.len();
         let toolbar_tools = self.toolbar_tools.layout(
             &mut buttons,
-            tools_x,
-            tools_right,
-            by,
-            bh,
+            Rect::new(tools_x, by, tools_right, by + bh),
             toolbar,
-            &|label| m.pill_w(label, false),
-            &|label| m.pill_w(label, true),
-            m.control_h(),
+            m,
         );
         // The overflow button may sit left of the nominal tools slot when
         // nothing else fits, so the title yields to the leftmost control that
@@ -2071,14 +2069,9 @@ impl SlidesApp {
         ];
         let toolbar_tools = self.toolbar_tools.layout(
             &mut buttons,
-            r.x0 + 390.0,
-            r.x0 + 620.0,
-            r.y0 + 10.0,
-            62.0,
+            Rect::new(r.x0 + 390.0, r.y0 + 10.0, r.x0 + 620.0, r.y0 + 72.0),
             toolbar,
-            &|label| self.chrome_metrics.pill_w(label, false),
-            &|label| self.chrome_metrics.pill_w(label, true),
-            self.chrome_metrics.control_h(),
+            &self.chrome_metrics,
         );
         let mut labels = vec![Label {
             pos: Point::new(r.x0 + 650.0, r.y0 + 22.0),
@@ -4161,7 +4154,7 @@ impl SlidesApp {
         tr.set_text_scale(1.0);
 
         {
-            let mut paint = PaintContext {
+            let mut paint = PaintCtx {
                 scene,
                 transform: t,
                 text: tr,
@@ -4203,7 +4196,7 @@ impl SlidesApp {
         }
 
         {
-            let mut paint = PaintContext {
+            let mut paint = PaintCtx {
                 scene,
                 transform: t,
                 text: tr,
@@ -4224,7 +4217,7 @@ impl SlidesApp {
     /// painted later, on top of the dimming scrim.
     fn draw_editor_panels_base(
         &self,
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         chrome: &Chrome,
         rail_overlay: bool,
         insp_overlay: bool,
@@ -4311,15 +4304,14 @@ impl SlidesApp {
             .filter(|_| self.editing_text)
             .map(|editor| editor.element_id.as_str());
         render::draw_slide_except(
-            scene,
-            t,
-            tr,
-            theme,
-            pal,
+            &mut PaintCtx::new(scene, t, tr, theme),
+            DeckAssets {
+                palette: pal,
+                images: &self.images,
+            },
             slide,
             chrome.slide_dest,
             14.0,
-            &self.images,
             editing,
         );
         chrome::stroke_round(
@@ -4454,7 +4446,7 @@ impl SlidesApp {
     /// viewport so it can never bleed over the pinned Add/Dup/Del row.
     fn draw_editor_rail(
         &mut self,
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         chrome: &Chrome,
         pal: &Palette,
         rail_overlay: bool,
@@ -4544,7 +4536,16 @@ impl SlidesApp {
         let images = &self.images;
         sb.render(scene, t, tr, theme, |scene, tr, base, i, rect| {
             if let Some(slide) = deck.slides.get(i) {
-                render::draw_slide(scene, base, tr, theme, pal, slide, rect, 6.0, images);
+                render::draw_slide(
+                    &mut PaintCtx::new(scene, base, tr, theme),
+                    DeckAssets {
+                        palette: pal,
+                        images,
+                    },
+                    slide,
+                    rect,
+                    6.0,
+                );
             }
         });
         self.page_sidebar = sb;
@@ -4611,7 +4612,7 @@ impl SlidesApp {
     /// labels.
     fn draw_editor_inspector_layer(
         &mut self,
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         chrome: &Chrome,
         pal: &Palette,
         insp_overlay: bool,
@@ -4834,7 +4835,7 @@ impl SlidesApp {
         b: &UiButton,
     ) {
         let c = &theme.tokens.colors;
-        let mut paint = PaintContext {
+        let mut paint = PaintCtx {
             scene,
             transform: t,
             text: tr,
@@ -4886,7 +4887,7 @@ impl SlidesApp {
     }
 
     fn draw_button_text(
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         pal: &Palette,
         rect: Rect,
         label: &str,
@@ -4916,20 +4917,17 @@ impl SlidesApp {
         };
         if !label.is_empty() {
             chrome::text_centered(
-                paint.scene,
-                paint.transform,
-                paint.text,
+                paint,
                 label,
                 rect,
-                13.0,
+                &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
                 fg,
-                TextWeight::Semibold,
             );
         }
     }
 
     fn draw_button_icon_text(
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         pal: &Palette,
         rect: Rect,
         icon: Icon,
@@ -4947,15 +4945,14 @@ impl SlidesApp {
         let ir = Rect::new(rect.x0 + 11.0, rect.y0 + 8.0, rect.x0 + 29.0, rect.y1 - 8.0);
         draw_icon(paint.scene, paint.transform, ir, icon, fg, 1.8);
         chrome::text_vcenter(
-            paint.scene,
-            paint.transform,
-            paint.text,
+            paint,
             label,
-            rect,
-            ir.x1 + 5.0,
-            13.0,
+            Rect {
+                x0: ir.x1 + 5.0,
+                ..rect
+            },
+            &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
             fg,
-            TextWeight::Semibold,
         );
     }
 
@@ -5011,7 +5008,7 @@ impl SlidesApp {
     }
 
     fn draw_button_palette(
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         rect: Rect,
         kind: PaletteKind,
         selected: bool,
@@ -5042,22 +5039,21 @@ impl SlidesApp {
                 &rect,
             );
             chrome::text_vcenter(
-                paint.scene,
-                paint.transform,
-                paint.text,
+                paint,
                 kind.label(),
-                rect,
-                dot.x1 + 6.0,
-                12.0,
+                Rect {
+                    x0: dot.x1 + 6.0,
+                    ..rect
+                },
+                &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                 c.text_primary,
-                TextWeight::Semibold,
             );
             paint.scene.pop_layer();
         }
     }
 
     fn draw_button_segment(
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         pal: &Palette,
         rect: Rect,
         label: &str,
@@ -5094,14 +5090,11 @@ impl SlidesApp {
             &shape_of(rect.inset(-0.5), r - 0.5),
         );
         chrome::text_centered(
-            paint.scene,
-            paint.transform,
-            paint.text,
+            paint,
             label,
             rect,
-            12.5,
+            &TextStyle::new(12.5).with_weight(TextWeight::Semibold),
             fg,
-            TextWeight::Semibold,
         );
     }
 
@@ -5208,15 +5201,14 @@ impl SlidesApp {
     fn draw_overview(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let palette = self.palette(theme);
         self.overview.draw(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             self.rect,
             &self.deck,
             self.cur_slide,
-            &palette,
-            &self.images,
+            DeckAssets {
+                palette: &palette,
+                images: &self.images,
+            },
         );
     }
 }
@@ -5632,7 +5624,8 @@ impl AudiencePresentationProvider for SlidesApp {
 impl Widget for SlidesApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
-        dyn ui::widget::AudiencePresentationProvider
+        dyn ui::widget::AudiencePresentationProvider,
+        dyn ui::undo::CommittedActions
     );
 
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
@@ -6356,6 +6349,15 @@ impl Widget for SlidesApp {
         Self::publish_resource(self, doc, id)
     }
 
+    /// Fold the deck's slides, elements, text and notes into the unified Ctrl+K
+    /// palette. Every row addresses an exported resource `View` operation, so
+    /// search uses the same brokered navigation route as agents and a11y.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl ui::undo::CommittedActions for SlidesApp {
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its slides action, so it records one undo boundary for it (see
     /// `Self::perform_action`). Rising-edge: cleared on read.
@@ -6366,19 +6368,11 @@ impl Widget for SlidesApp {
             .and_then(|editor| editor.host.widget_mut().take_committed_action());
         typed.or_else(|| self.actions.take_committed())
     }
-
     /// Typing a word into a text box is one undo step, open until the word ends.
     fn keeps_undo_step_open(&self) -> bool {
         self.text_editor
             .as_ref()
             .is_some_and(|editor| editor.host.widget().keeps_undo_step_open())
-    }
-
-    /// Fold the deck's slides, elements, text and notes into the unified Ctrl+K
-    /// palette. Every row addresses an exported resource `View` operation, so
-    /// search uses the same brokered navigation route as agents and a11y.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
     }
 }
 

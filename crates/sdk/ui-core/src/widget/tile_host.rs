@@ -1580,7 +1580,8 @@ impl Widget for TileHost {
         dyn crate::widget::FullscreenProvider,
         dyn crate::widget::Continuable,
         dyn crate::widget::FloatingSurfaceProvider,
-        dyn crate::widget::AudiencePresentationProvider
+        dyn crate::widget::AudiencePresentationProvider,
+        dyn crate::collaboration::participants::CollaborationTopology
     );
 
     fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
@@ -1779,12 +1780,6 @@ impl Widget for TileHost {
             live.native_view_frame_start();
         }
     }
-    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        match &mut self.content {
-            TileContent::App(live) => vec![live.as_mut()],
-            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
-        }
-    }
     fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
         if let TileContent::App(app) = &mut self.content {
             app.on_external_event(payload, state, root);
@@ -1876,23 +1871,6 @@ impl Widget for TileHost {
             self.owner_bound_custody.get_or_insert(owner);
         }
         Ok(started)
-    }
-
-    /// Legacy adapter: offered through [`Widget::start_operation`].
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        self.start_operation(
-            &crate::widget::ResourceOperation::local(invocation, kind, type_id, payload),
-            doc,
-            path,
-        )
     }
 
     fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
@@ -2324,17 +2302,7 @@ impl Widget for TileHost {
         if let Some(history) = &mut self.history {
             history.observe_pointer(event, ctx.scale_factor);
             if history.controls_event(event, ctx.scale_factor) {
-                history.route_event(
-                    app.as_mut(),
-                    event,
-                    ctx.scale_factor,
-                    ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.handled,
-                    ctx.focus_target,
-                    ctx.taffy,
-                );
+                history.route_event(app.as_mut(), event, ctx);
                 return;
             }
             if !history.live_interactive() {
@@ -2537,6 +2505,15 @@ impl Widget for TileHost {
     }
 }
 
+impl crate::collaboration::participants::CollaborationTopology for TileHost {
+    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        match &mut self.content {
+            TileContent::App(live) => vec![live.as_mut()],
+            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
+        }
+    }
+}
+
 impl TileHost {
     /// Ambient drop shadow, and — only when focused — the coloured bloom
     /// that reads as a window being lit rather than fenced. Split out of
@@ -2658,16 +2635,15 @@ impl TileHost {
             self.rect.y1 - margin,
         );
         crate::widget::Banner::paint(
-            scene,
-            transform,
-            tr,
-            theme,
+            &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
             banner,
-            crate::widget::BannerKind::Error,
-            crate::icons::Icon::Ban,
-            "Document switch blocked",
-            Some(detail),
-            false,
+            &crate::widget::BannerContent {
+                kind: crate::widget::BannerKind::Error,
+                icon: crate::icons::Icon::Ban,
+                title: "Document switch blocked",
+                message: Some(detail),
+                dismissible: false,
+            },
             Point::ZERO,
         );
     }
@@ -2805,10 +2781,6 @@ impl TileHost {
 // Standard immediate-mode paint-helper signature for this vello renderer
 // (scene + transform + text_renderer + theme, plus this draw's own
 // content); every parameter is independently load-bearing.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "An opening card combines render context and presence with card bounds, application name, and its mutable spinner."
-)]
 fn draw_opening_card(
     scene: &mut Scene,
     transform: Affine,

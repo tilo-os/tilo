@@ -217,6 +217,13 @@ struct DurableV6<'a> {
 /// Each encrypted record's sealed writes, in admission order.
 type SealedHistory = Vec<(Route, Vec<SignedOp>)>;
 
+/// How a local write reaches admission: plain, or sealed and opened by its
+/// key holder once the sealed envelope passed every check.
+pub(crate) enum LocalWrite<'a> {
+    Plain,
+    Opened(&'a mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>),
+}
+
 /// Most sealed writes, and their bytes, one record keeps for a key holder.
 const MAX_SEALED_OPS: usize = 4096;
 const MAX_SEALED_BYTES: usize = 16 * 1024 * 1024;
@@ -781,10 +788,6 @@ impl StatePeer {
     ///
     /// Returns an error if the device is not a current governed member at `now` or the
     /// challenge cannot be signed.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Keep the membership challenge's authenticated protocol fields explicit"
-    )]
     pub fn membership_challenge(
         &self,
         workspace_id: u64,
@@ -1016,14 +1019,20 @@ impl StatePeer {
     pub fn has_governance(&self) -> bool {
         self.core.room_doc.is_some()
     }
-    /// An encrypted record with no durable history: state kept before sealed
-    /// writes were stored, which this replica cannot serve or publish.
+    /// An encrypted record a replica without exact admission evidence could
+    /// only mark, not keep. A v5 replica keeps every sealed write, as its
+    /// ciphertext or, as the key holder, as the plaintext it verified.
     pub fn incomplete_reason(&self) -> Option<String> {
-        self.core
-            .documents
-            .values()
-            .any(|entry| entry.encryption_required && entry.sealed.is_empty())
-            .then(|| "incomplete: an encrypted record has no durable sealed history".into())
+        (!self.core.admission_v5
+            && self
+                .core
+                .documents
+                .values()
+                .any(|entry| entry.encryption_required))
+        .then(|| {
+            "incomplete: authenticated persisted MLS group required; plaintext downgrade forbidden"
+                .into()
+        })
     }
     /// Validated data from this exact snapshot, not an authorization credential.
     /// Missing exact Chat prerequisites and unpromoted local revocations fail
@@ -1683,7 +1692,7 @@ impl StatePeer {
         strict_report: bool,
     ) -> Result<AdmissionReport, AdmissionError> {
         let mut outcome =
-            self.admit_document(source, message, now, false, retained_replay, strict_report)?;
+            self.admit_document(source, message, now, None, retained_replay, strict_report)?;
         if outcome.deferred || self.core.pending.is_empty() {
             return Ok(outcome);
         }
@@ -1724,6 +1733,17 @@ impl StatePeer {
         envelope: collab_types::SignedOp,
         now: SystemTime,
     ) -> Result<ReceiveOutcome, String> {
+        self.admit_local(app, record, envelope, LocalWrite::Plain, now)
+    }
+
+    fn admit_local(
+        &mut self,
+        app: &str,
+        record: &str,
+        envelope: collab_types::SignedOp,
+        write: LocalWrite<'_>,
+        now: SystemTime,
+    ) -> Result<ReceiveOutcome, String> {
         if self.document(app, record).is_none() {
             return Err("local app publication cannot create a record owner".into());
         }
@@ -1738,7 +1758,7 @@ impl StatePeer {
                 envelope: Box::new(envelope),
             },
             now,
-            true,
+            Some(write),
             false,
             false,
         )
@@ -1755,10 +1775,11 @@ impl StatePeer {
         source: [u8; 32],
         message: NeighbourMsg,
         now: SystemTime,
-        local_app: bool,
+        local: Option<LocalWrite<'_>>,
         retained_replay: bool,
         strict_report: bool,
     ) -> Result<AdmissionReport, AdmissionError> {
+        let local_app = local.is_some();
         let NeighbourMsg::AppDocument {
             peer,
             app_id,
@@ -1875,7 +1896,19 @@ impl StatePeer {
             }
             Err(error) => return Err(err(error).into()),
         }
-        let mutation=match payload {
+        let mutation = match (payload, local) {
+            (collab_types::WholeDocumentPayload::Encrypted { .. }, Some(LocalWrite::Opened(open))) => {
+                // Every check on the sealed envelope, its author's signature over
+                // the ciphertext included, passed above: only now is it opened,
+                // and the plaintext takes the normal admission path below.
+                let plaintext = open(&envelope)?;
+                candidate.encryption_required = true;
+                DocumentMutation::decode(&plaintext).map_err(err)?
+            }
+            (_, Some(LocalWrite::Opened(_))) => {
+                return Err("only a sealed write is opened by its key holder".into());
+            }
+            (payload, _) => match payload {
             collab_types::WholeDocumentPayload::Cleartext(mutation) if !candidate.encryption_required=>mutation,
             collab_types::WholeDocumentPayload::Encrypted { .. } if !self.core.admission_v5 => {
                 // A replica without exact admission evidence keeps no sealed
@@ -1911,6 +1944,7 @@ impl StatePeer {
                 return self.admit_sealed(route, candidate, *envelope);
             }
             collab_types::WholeDocumentPayload::Cleartext(_)=>return Err("incomplete: authenticated persisted MLS group required; plaintext downgrade forbidden".into()),
+            },
         };
         candidate.channel = validated_channel;
         if let DocumentMutation::Snapshot(bytes) = &mutation

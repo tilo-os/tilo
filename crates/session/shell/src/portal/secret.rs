@@ -31,8 +31,6 @@ const SECRET_BYTES: usize = 32;
 const MAX_APP_ID: usize = 255;
 #[cfg(target_os = "linux")]
 const MAX_TOKEN: usize = 512;
-const LEGACY_NONCE_BYTES: usize = 24;
-const LEGACY_STORE_MAGIC: &[u8; 5] = b"QPSV1";
 const STORE_RECORD: &[u8] = b"portal-secrets";
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -176,19 +174,9 @@ fn seal_store(key: &[u8; SECRET_BYTES], plaintext: &[u8]) -> Option<Vec<u8>> {
     tilo_seal::envelope::seal(&SymmetricKey::from_bytes(*key), store_context(), plaintext).ok()
 }
 
-/// Open the store in either the current envelope format or the `QPSV1`
-/// layout earlier builds wrote (`magic || nonce || ciphertext`, no
-/// associated data). The next commit rewrites a legacy store in the current
-/// format.
+/// Open a store sealed by [`seal_store`].
 fn open_store(key: &[u8; SECRET_BYTES], bytes: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
-    let key = SymmetricKey::from_bytes(*key);
-    if tilo_seal::envelope::is_envelope(bytes) {
-        return tilo_seal::envelope::open(&key, store_context(), bytes).ok();
-    }
-    let rest = bytes.strip_prefix(LEGACY_STORE_MAGIC)?;
-    let (nonce, ciphertext) = rest.split_at_checked(LEGACY_NONCE_BYTES)?;
-    let nonce: &[u8; LEGACY_NONCE_BYTES] = nonce.try_into().ok()?;
-    tilo_seal::legacy::open_xchacha20poly1305(&key, nonce, b"", ciphertext).ok()
+    tilo_seal::envelope::open(&SymmetricKey::from_bytes(*key), store_context(), bytes).ok()
 }
 
 #[cfg(target_os = "linux")]
@@ -263,34 +251,11 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     #[test]
-    fn secret_store_envelopes_open_across_builds_and_migrate_legacy() {
-        // Phase `store_sealed_by_an_earlier_build_still_opens`.
-        // Store bytes sealed before a crypto-stack upgrade; the store file
-        // persists across builds, so its XChaCha20-Poly1305 framing is pinned.
+    fn secret_store_envelopes_open_only_under_the_store_binding() {
         {
-            let sealed = hex::decode(
-                "5150535631fe105a9d3cbaac1fff4a19f97c5828f2f06d7e76faf40fd49a44a4\
-                88a73129fd8ce138dfb14fce0f9c172b78c6e80ceba4e509460d98c901",
-            )
-            .unwrap();
-            let opened = open_store(&[0x61; SECRET_BYTES], &sealed).unwrap();
-            assert_eq!(opened.as_slice(), b"kat-portal-store");
-            assert!(open_store(&[0x62; SECRET_BYTES], &sealed).is_none());
-        }
-        // Phase `legacy_store_is_rewritten_as_a_bound_envelope`.
-        // A legacy store still opens, and the next seal writes the current
-        // envelope, which opens only under the portal store's binding.
-        {
-            let legacy = hex::decode(
-                "5150535631fe105a9d3cbaac1fff4a19f97c5828f2f06d7e76faf40fd49a44a4\
-                88a73129fd8ce138dfb14fce0f9c172b78c6e80ceba4e509460d98c901",
-            )
-            .unwrap();
             let key = [0x61; SECRET_BYTES];
-            let plaintext = open_store(&key, &legacy).unwrap();
-            let resealed = seal_store(&key, &plaintext).unwrap();
+            let resealed = seal_store(&key, b"kat-portal-store").unwrap();
             assert!(tilo_seal::envelope::is_envelope(&resealed));
-            assert!(!resealed.starts_with(LEGACY_STORE_MAGIC));
             assert_eq!(
                 open_store(&key, &resealed).unwrap().as_slice(),
                 b"kat-portal-store"

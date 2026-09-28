@@ -391,9 +391,8 @@ jobs:
           bash scripts/ci-run.sh "cargo nextest (scoped reader tests, shard ${{ matrix.shard }})" --
           python3 tools/ci/run_scoped_tests.py
 
-      # The ci profile retries a failed test once; a test that then passes
-      # is FLAKY and does not fail the shard. List those, and every retried
-      # failure, in the job summary and keep the JUnit report.
+      # The ci profile does not retry. List slow tests, and any retried
+      # case if a profile turns retries back on, and keep the JUnit report.
       - name: Report retried tests in shard ${{ matrix.shard }}
         if: always() && (matrix.test_packages != '' || matrix.scoped_tests != '')
         run: >-

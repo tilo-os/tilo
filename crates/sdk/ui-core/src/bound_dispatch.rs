@@ -1615,34 +1615,31 @@ fn execute_document(
     Ok(dispatched)
 }
 
+/// A resolved, encoded resource operation and the caller it runs for.
+pub(crate) struct ResourceOperation<'a> {
+    pub(crate) address: &'a tilo_actions::ActionAddress,
+    pub(crate) resource: &'a tilo_actions::Resource,
+    pub(crate) spec: &'a tilo_actions::ActionSpec,
+    pub(crate) encoded: tilo_actions::EncodedAction,
+    pub(crate) actor: &'a str,
+    pub(crate) local_author: &'a str,
+    pub(crate) broker_admitted: bool,
+    pub(crate) invocation: tilo_actions::InvocationId,
+    pub(crate) ambient: Option<&'a tilo_actions::ActionContext>,
+    pub(crate) scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
+}
+
 /// One execution body for bound components and legacy shell roots. Broker
 /// admission and semantic delivery are host concerns surrounding this body.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "explicit admitted execution inputs"
-)]
 pub(crate) fn execute_resource_operation(
     widget: &mut dyn Widget,
     doc: &mut AutoCommit,
     path: &ObjId,
     registry: &tilo_actions::ActionRegistry,
     transport: &mut dyn tilo_actions::ActionTransport,
-    address: &tilo_actions::ActionAddress,
-    resource: &tilo_actions::Resource,
-    spec: &tilo_actions::ActionSpec,
-    encoded: tilo_actions::EncodedAction,
-    actor: &str,
-    local_author: &str,
-    broker_admitted: bool,
-    invocation: tilo_actions::InvocationId,
-    ambient: Option<&tilo_actions::ActionContext>,
+    operation: ResourceOperation<'_>,
 ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-    execute_resource_operation_scoped(
-        widget,
-        doc,
-        path,
-        registry,
-        transport,
+    let ResourceOperation {
         address,
         resource,
         spec,
@@ -1652,27 +1649,8 @@ pub(crate) fn execute_resource_operation(
         broker_admitted,
         invocation,
         ambient,
-        None,
-    )
-}
-
-pub(crate) fn execute_resource_operation_scoped(
-    widget: &mut dyn Widget,
-    doc: &mut AutoCommit,
-    path: &ObjId,
-    registry: &tilo_actions::ActionRegistry,
-    transport: &mut dyn tilo_actions::ActionTransport,
-    address: &tilo_actions::ActionAddress,
-    resource: &tilo_actions::Resource,
-    spec: &tilo_actions::ActionSpec,
-    encoded: tilo_actions::EncodedAction,
-    actor: &str,
-    local_author: &str,
-    broker_admitted: bool,
-    invocation: tilo_actions::InvocationId,
-    ambient: Option<&tilo_actions::ActionContext>,
-    scope: Option<&crate::invocation_scope::ResourceInvocationScope>,
-) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        scope,
+    } = operation;
     if spec.kind == tilo_actions::OperationKind::View
         && !crate::invocation_scope::view_operation_permitted(actor, local_author, &spec.contract)
     {
@@ -1780,30 +1758,29 @@ pub(crate) fn execute_resource_operation_scoped(
     Ok(started)
 }
 
+/// One caller's request to a bound resource action, before resolution.
+#[derive(Clone, Copy)]
+pub(crate) struct ResourceActionRequest<'a> {
+    pub(crate) argument: Option<&'a str>,
+    pub(crate) arguments: Option<&'a serde_json::Map<String, serde_json::Value>>,
+    pub(crate) actor: &'a str,
+    pub(crate) confirmed: bool,
+    pub(crate) broker_admitted: bool,
+    pub(crate) invocation: tilo_actions::InvocationId,
+    pub(crate) ambient: Option<&'a tilo_actions::ActionContext>,
+    pub(crate) scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
+}
+
 /// Private checked front door. `document` carries the explicit active Doc when
 /// called reentrantly; the outer admission moves/restores record-owned history.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "authority and captured destination remain explicit"
-)]
 pub(crate) fn invoke_resource_action(
     root: &mut dyn Widget,
     document: &mut AutoCommit,
     target: &BoundActionTarget,
     transport: &mut dyn tilo_actions::ActionTransport,
-    argument: Option<&str>,
-    arguments: Option<&serde_json::Map<String, serde_json::Value>>,
-    actor: &str,
-    confirmed: bool,
-    broker_admitted: bool,
-    invocation: tilo_actions::InvocationId,
-    ambient: Option<&tilo_actions::ActionContext>,
+    request: ResourceActionRequest<'_>,
 ) -> Result<crate::widget::ResourceOperationStart, BoundActionError> {
-    invoke_resource_action_scoped(
-        root,
-        document,
-        target,
-        transport,
+    let ResourceActionRequest {
         argument,
         arguments,
         actor,
@@ -1811,24 +1788,8 @@ pub(crate) fn invoke_resource_action(
         broker_admitted,
         invocation,
         ambient,
-        None,
-    )
-}
-
-pub(crate) fn invoke_resource_action_scoped(
-    root: &mut dyn Widget,
-    document: &mut AutoCommit,
-    target: &BoundActionTarget,
-    transport: &mut dyn tilo_actions::ActionTransport,
-    argument: Option<&str>,
-    arguments: Option<&serde_json::Map<String, serde_json::Value>>,
-    actor: &str,
-    confirmed: bool,
-    broker_admitted: bool,
-    invocation: tilo_actions::InvocationId,
-    ambient: Option<&tilo_actions::ActionContext>,
-    scope: Option<&crate::invocation_scope::ResourceInvocationScope>,
-) -> Result<crate::widget::ResourceOperationStart, BoundActionError> {
+        scope,
+    } = request;
     let _entry = target.binding.enter()?;
     let mut result = None;
     let mut accepted = false;
@@ -1895,22 +1856,24 @@ pub(crate) fn invoke_resource_action_scoped(
                         argument,
                     )?;
                     let execute = |widget: &mut dyn Widget, doc: &mut AutoCommit, path: &ObjId| {
-                        execute_resource_operation_scoped(
+                        execute_resource_operation(
                             widget,
                             doc,
                             path,
                             registry,
                             transport,
-                            &target.address.address,
-                            resource,
-                            spec,
-                            encoded,
-                            actor,
-                            &binding.author.0,
-                            broker_admitted,
-                            invocation,
-                            ambient.or(Some(&binding.operation_context)),
-                            scope,
+                            ResourceOperation {
+                                address: &target.address.address,
+                                resource,
+                                spec,
+                                encoded,
+                                actor,
+                                local_author: &binding.author.0,
+                                broker_admitted,
+                                invocation,
+                                ambient: ambient.or(Some(&binding.operation_context)),
+                                scope,
+                            },
                         )
                     };
                     let run = |doc: &mut AutoCommit| {
@@ -2773,12 +2736,12 @@ impl CallbackBinding {
         widget: &mut dyn Widget,
         doc: &mut AutoCommit,
     ) -> Result<bool, BoundDispatchError> {
-        let bracket = widget.take_committed_action();
+        let bracket = crate::undo::take_committed_action(widget);
         let commit = widget.needs_commit();
         if bracket.is_none() && !commit {
             return Ok(false);
         }
-        let keep_open = widget.keeps_undo_step_open();
+        let keep_open = crate::undo::keeps_undo_step_open(widget);
         let context = widget.take_commit_context();
         let metadata = widget.get_state();
         let handle = ACTIVE
@@ -3610,22 +3573,17 @@ pub(crate) fn merge_remote_owned_document(
 /// at execution and finish exactly one addressed record action, never outer `State`.
 /// # Safety
 /// Same stable, exclusive tree contract as `invoke_bound_node`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Semantic dispatch requires tree bindings and node map, outer document/path, action authority and author, plus the admitted widget callback."
-)]
 pub(crate) unsafe fn invoke_bound_semantic_node<R>(
     bindings: &BoundNodeMap,
     nodes: &HashMap<NodeId, *mut dyn Widget>,
     node: NodeId,
-    outer: &mut AutoCommit,
-    outer_root: &ObjId,
     action: &crate::a11y::Action,
-    authority: &crate::permissions::PermissionContext,
-    author: &UserId,
+    outer: &mut crate::state::State,
+    caller: SemanticCaller<'_>,
     callback: impl FnOnce(&mut dyn Widget, &mut AutoCommit, &ObjId) -> R,
 ) -> Result<R, String> {
     use crate::a11y::Action;
+    let SemanticCaller { authority, author } = caller;
     let admitted = bindings
         .admitted(nodes, node)
         .map_err(|error| format!("{error:?}"))?;
@@ -3641,8 +3599,10 @@ pub(crate) unsafe fn invoke_bound_semantic_node<R>(
             | Action::SetValue(_)
     );
     let Some(owner) = admitted.legacy.as_ref().filter(|_| effect) else {
-        return unsafe { invoke_bound_node(bindings, nodes, node, outer, outer_root, callback) }
-            .map_err(|error| format!("{error:?}"));
+        return unsafe {
+            invoke_bound_node(bindings, nodes, node, &mut outer.doc, &outer.root, callback)
+        }
+        .map_err(|error| format!("{error:?}"));
     };
     let app = authorize_legacy_owner(owner, authority, author)?;
     let (store, checkout) = owner.store_checkout();
@@ -3669,7 +3629,7 @@ pub(crate) unsafe fn invoke_bound_semantic_node<R>(
             let before = (doc.base_heads(), doc.pending_ops());
             let widget = unsafe { &mut *pointer };
             let result = callback(widget, doc, &ROOT);
-            let _ = widget.take_committed_action();
+            let _ = crate::undo::take_committed_action(widget);
             let changed = (doc.base_heads(), doc.pending_ops()) != before
                 && history.commit_action_authored_with_message(
                     doc,
@@ -3690,6 +3650,14 @@ pub(crate) unsafe fn invoke_bound_semantic_node<R>(
         store.schedule_committed_history(&checkout.id);
     }
     Ok(result)
+}
+
+/// The local user a semantic action runs as, and the permissions that gate
+/// its effect on an owner-bound node.
+#[derive(Clone, Copy)]
+pub(crate) struct SemanticCaller<'a> {
+    pub(crate) authority: &'a crate::permissions::PermissionContext,
+    pub(crate) author: &'a UserId,
 }
 
 fn authorize_legacy_owner(
@@ -3794,7 +3762,7 @@ pub(crate) unsafe fn drain_legacy_node_action(
                 .and_then(|generation| generation.checked_add(1))
                 .ok_or("document generation exhausted")?;
             let widget = unsafe { &mut *pointer };
-            let bracket = widget.take_committed_action();
+            let bracket = crate::undo::take_committed_action(widget);
             let requested = widget.needs_commit();
             if bracket.is_none() && !requested {
                 return Ok(false);

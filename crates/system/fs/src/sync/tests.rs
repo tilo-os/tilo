@@ -1485,16 +1485,18 @@ async fn structure_content_and_transactions_propagate_between_peers() {
         let client_hydrator = Arc::new(Hydrator::new(client_ep.clone(), Arc::clone(&client_store)));
         let client_policy = Some(policy_read_write(&[server_identity.user_public_key()], &[]));
         let _client_workspace = Workspace::join_with_records(
-            client_ep,
-            client_lookup,
-            client_store,
-            client_hydrator,
-            Arc::new(Mutex::new(
-                Namespace::from_bytes("initial-record-client", &document).unwrap(),
-            )),
+            SyncNode {
+                endpoint: client_ep,
+                lookup: client_lookup,
+                store: client_store,
+                hydrator: client_hydrator,
+                namespace: Arc::new(Mutex::new(
+                    Namespace::from_bytes("initial-record-client", &document).unwrap(),
+                )),
+                identity: client_identity,
+                policy: client_policy,
+            },
             ticket,
-            client_identity,
-            client_policy,
             client_services,
         )
         .await
@@ -2161,25 +2163,20 @@ fn publish_record_metadata(
         .unwrap();
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "explicit fixture inputs expose every authority and durable-storage boundary under test"
-)]
 async fn publish_durable_test_revision(
-    repository: Arc<RecordRepository>,
+    publisher: &RecordPublisher,
+    repository: &RecordRepository,
     store: &ContentStore,
-    workspace_id: uuid::Uuid,
     record_id: FileRecordId,
     version_id: FileVersionId,
-    actor: FileActor,
-    device: ed25519_dalek::SigningKey,
     bytes: &[u8],
     metadata_byte: u8,
 ) -> ContentRevisionV1 {
     let manifest = store.write_content(bytes).await.unwrap().unwrap();
     let metadata_hash = ContentHash([metadata_byte; 32]);
-    RecordPublisher::new(Arc::clone(&repository), workspace_id, actor, device)
-        .unwrap()
+    let workspace_id = publisher.workspace_id();
+    let actor = publisher.actor();
+    publisher
         .publish(
             &FileMetadataV1 {
                 schema_version: collab_types::files::FILE_METADATA_VERSION,
@@ -2286,13 +2283,17 @@ async fn three_live_peers_require_a_fresh_exact_replica_before_eviction_and_rehy
         device: Ed25519PublicKey(stale_identity.device_public_key()),
     };
     let current_revision = publish_durable_test_revision(
-        Arc::clone(&durable_repository),
+        &RecordPublisher::new(
+            Arc::clone(&durable_repository),
+            workspace_id,
+            durable_actor,
+            durable_device,
+        )
+        .unwrap(),
+        &durable_repository,
         &durable_store,
-        workspace_id,
         record_id,
         current_version,
-        durable_actor,
-        durable_device,
         current_bytes,
         71,
     )
@@ -2300,13 +2301,17 @@ async fn three_live_peers_require_a_fresh_exact_replica_before_eviction_and_rehy
     assert!(durable_namespace.set_content_revision(durable_ino, &current_revision, 1,));
     let durable_namespace = Arc::new(Mutex::new(durable_namespace));
     let stale_revision = publish_durable_test_revision(
-        Arc::clone(&stale_repository),
+        &RecordPublisher::new(
+            Arc::clone(&stale_repository),
+            workspace_id,
+            stale_actor,
+            stale_device,
+        )
+        .unwrap(),
+        &stale_repository,
         &stale_store,
-        workspace_id,
         record_id,
         stale_version,
-        stale_actor,
-        stale_device,
         stale_bytes,
         72,
     )
@@ -3068,13 +3073,17 @@ async fn a_session_pulls_many_records_with_small_content_inline_and_then_settles
         let record_id = FileRecordId::new();
         let bytes = vec![n; 1000 + usize::from(n)];
         let revision = publish_durable_test_revision(
-            Arc::clone(&server_services.repository),
+            &RecordPublisher::new(
+                Arc::clone(&server_services.repository),
+                workspace_id,
+                server_actor,
+                server_device.clone(),
+            )
+            .unwrap(),
+            &server_services.repository,
             &server_store,
-            workspace_id,
             record_id,
             FileVersionId::new(),
-            server_actor,
-            server_device.clone(),
             &bytes,
             n,
         )
@@ -3085,13 +3094,17 @@ async fn a_session_pulls_many_records_with_small_content_inline_and_then_settles
     let large_record = FileRecordId::new();
     let large = vec![7_u8; 64 * 1024];
     let large_revision = publish_durable_test_revision(
-        Arc::clone(&server_services.repository),
+        &RecordPublisher::new(
+            Arc::clone(&server_services.repository),
+            workspace_id,
+            server_actor,
+            server_device,
+        )
+        .unwrap(),
+        &server_services.repository,
         &server_store,
-        workspace_id,
         large_record,
         FileVersionId::new(),
-        server_actor,
-        server_device,
         &large,
         99,
     )

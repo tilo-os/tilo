@@ -6,9 +6,7 @@
 //! root translates [`Outcome`] values into changes to that shared policy.
 
 use std::collections::HashSet;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use vello::Scene;
+use ui::paint::PaintCtx;
 
 use chrono::{Datelike, NaiveDate};
 use vello::kurbo::{Affine, Circle, Point, Rect};
@@ -48,10 +46,15 @@ struct Layout {
     grid_y: f64,
 }
 
-/// Sidebar mini-month renderer and semantic target builder.
-pub(crate) struct MiniMonth;
+/// Sidebar mini-month renderer and semantic target builder, over the month
+/// around `anchor` with `today` and the dates carrying events marked.
+pub(crate) struct MiniMonth<'a> {
+    pub(crate) anchor: NaiveDate,
+    pub(crate) today: NaiveDate,
+    pub(crate) event_dates: &'a HashSet<NaiveDate>,
+}
 
-impl MiniMonth {
+impl MiniMonth<'_> {
     /// Upper boundary reserved for this component. Sidebar content may use the
     /// space above it, while the mini-month decides whether the remaining room
     /// is sufficient to paint without overlap.
@@ -65,25 +68,24 @@ impl MiniMonth {
         clippy::too_many_lines,
         reason = "the component paints one compact header and one fixed 42-cell grid; keeping the shared geometry in one pass makes its targets and pixels visibly correspond"
     )]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the navigator needs the paint context, sidebar bounds, reserved limit, dates, event markers and pointer"
-    )]
     pub(crate) fn draw(
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        &self,
+        ctx: &mut PaintCtx<'_>,
         sidebar: Rect,
         occupied_until: f64,
-        anchor: NaiveDate,
-        today: NaiveDate,
-        event_dates: &HashSet<NaiveDate>,
         pointer: Point,
     ) -> Vec<(Rect, Outcome)> {
         let Some(layout) = Self::layout(sidebar, occupied_until) else {
             return Vec::new();
         };
+        let PaintCtx {
+            scene,
+            transform,
+            text,
+            theme,
+        } = ctx;
+        let (transform, theme) = (*transform, *theme);
+        let (anchor, today, event_dates) = (self.anchor, self.today, self.event_dates);
         let colors = &theme.tokens.colors;
 
         // The rule above the navigator is derived against the sidebar's own

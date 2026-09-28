@@ -144,17 +144,6 @@ fn read_bounded_lines(
     Ok(())
 }
 
-fn kill_process_group(child: &mut std::process::Child) {
-    if let Ok(pid) = i32::try_from(child.id())
-        && let Some(group) = pid.checked_neg()
-    {
-        // SAFETY: stream_command places the child in a fresh pid-named process
-        // group, so the negative pid cannot target the installer itself.
-        unsafe { libc::kill(group, libc::SIGKILL) };
-    }
-    let _ = child.kill();
-}
-
 use crate::disks::PartitionExtent;
 
 /// Path to the privileged install backend installed on the live medium.
@@ -552,7 +541,7 @@ pub fn stream_command<F: FnMut(String)>(
             if let Err(e) = feed()
                 && e.kind() != std::io::ErrorKind::BrokenPipe
             {
-                kill_process_group(&mut child);
+                bounded_command::kill_tree(&mut child);
                 let _ = child.wait();
                 return Err(e);
             }
@@ -583,12 +572,12 @@ pub fn stream_command<F: FnMut(String)>(
         Ok(())
     };
     if stdout_result.is_err() {
-        kill_process_group(&mut child);
+        bounded_command::kill_tree(&mut child);
     }
     let status = child.wait();
     // A backend must not daemonize children which retain the install pipes.
     // Close that escape before joining the concurrent stderr reader.
-    kill_process_group(&mut child);
+    bounded_command::kill_tree(&mut child);
     let stderr_lines = stderr_reader
         .map(|reader| {
             reader

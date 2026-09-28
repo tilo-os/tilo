@@ -310,159 +310,281 @@ fn consume_colortbl(tokens: &[Token], idx: usize) -> Option<(Vec<Option<String>>
     Some((colors, j))
 }
 
-/// Route one token to its content-producing handler, honoring `skip_depth`. `depth` still
-/// advances/retreats on group tokens even while skipping, so the skip-destination's own
-/// closing brace is still detected.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "threads the same parser state as this file's other per-token handlers (push_char/push_text/handle_control)"
-)]
-fn dispatch_token(
-    tok: &Token,
-    stack: &mut Vec<CharState>,
-    skip_depth: &mut Option<usize>,
-    depth: &mut usize,
-    doc: &mut DocMut,
-    prev_block: &mut Option<String>,
-    cur_block: &mut Option<String>,
-    cur_len: &mut usize,
-    need_new_block: &mut bool,
-    pending_bullet: &mut bool,
-    colors: &[Option<String>],
-    pending_marks: &mut Vec<PendingMark>,
-) {
-    match tok {
-        Token::GroupOpen => {
-            *depth = depth.saturating_add(1);
-            let top = stack.last().cloned().unwrap_or_default();
-            stack.push(top);
+/// The block being filled, its char length, and whether the *next* text should open a fresh
+/// paragraph (true initially and after every `\par`).
+struct BlockCursor {
+    prev: Option<String>,
+    cur: Option<String>,
+    cur_len: usize,
+    need_new_block: bool,
+    /// Whether the pending/just-started paragraph is a list item (saw a bullet).
+    pending_bullet: bool,
+}
+
+impl Default for BlockCursor {
+    fn default() -> Self {
+        Self {
+            prev: None,
+            cur: None,
+            cur_len: 0,
+            need_new_block: true,
+            pending_bullet: false,
         }
-        Token::GroupClose => {
-            if stack.len() > 1 {
-                stack.pop();
-            }
-            if let Some(sd) = *skip_depth
-                && *depth == sd
-            {
-                *skip_depth = None;
-            }
-            *depth = depth.saturating_sub(1);
-        }
-        Token::Symbol(sym) if skip_depth.is_none() => {
-            if *sym == '*' {
-                *skip_depth = Some(*depth);
-            } else {
-                handle_symbol(
-                    *sym,
-                    doc,
-                    prev_block,
-                    cur_block,
-                    cur_len,
-                    need_new_block,
-                    pending_bullet,
-                );
-            }
-        }
-        Token::Control(word, param) if skip_depth.is_none() => {
-            handle_control(
-                word,
-                *param,
-                stack,
-                skip_depth,
-                *depth,
-                doc,
-                prev_block,
-                cur_block,
-                cur_len,
-                need_new_block,
-                pending_bullet,
-                colors,
-                pending_marks,
-            );
-        }
-        Token::HexByte(b) if skip_depth.is_none() => {
-            // Decode the byte as Latin-1 (the common ANSI fallback): most documents using a
-            // different code page still escape ASCII as ASCII, so this is correct in the printable range.
-            push_char(
-                doc,
-                prev_block,
-                cur_block,
-                cur_len,
-                need_new_block,
-                pending_bullet,
-                *b as char,
-            );
-        }
-        Token::Unicode(cu) if skip_depth.is_none() => {
-            let u = u16::try_from(i64::from(*cu) & 0xffff).unwrap_or(0);
-            let ch = char::from_u32(u32::from(u)).unwrap_or('\u{fffd}');
-            push_char(
-                doc,
-                prev_block,
-                cur_block,
-                cur_len,
-                need_new_block,
-                pending_bullet,
-                ch,
-            );
-        }
-        Token::Text(s) if skip_depth.is_none() => {
-            push_text(
-                s,
-                &stack.last().cloned().unwrap_or_default(),
-                doc,
-                prev_block,
-                cur_block,
-                cur_len,
-                need_new_block,
-                pending_bullet,
-                colors,
-                pending_marks,
-            );
-        }
-        // Currently inside a skip-destination: drop the token's content.
-        Token::Symbol(_)
-        | Token::Control(..)
-        | Token::HexByte(_)
-        | Token::Unicode(_)
-        | Token::Text(_) => {}
     }
 }
 
-/// Handle a control symbol by emitting its literal char, if any (`\*` is handled by the caller,
-/// since it opens a skip-destination rather than producing content).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "mirrors this file's other char-emission helpers (push_char/handle_control) that thread the same parser state"
-)]
-fn handle_symbol(
-    sym: char,
-    doc: &mut DocMut,
-    prev: &mut Option<String>,
-    cur: &mut Option<String>,
-    cur_len: &mut usize,
-    need_new_block: &mut bool,
-    pending_bullet: &mut bool,
-) {
-    let literal = match sym {
-        '\\' => '\\',
-        '{' => '{',
-        '}' => '}',
-        '~' => '\u{a0}',
-        '_' => '\u{2011}',
-        // Optional hyphen (no visible glyph, so falls through here too) and
-        // anything else unrecognized.
-        _ => return,
-    };
-    push_char(
-        doc,
-        prev,
-        cur,
-        cur_len,
-        need_new_block,
-        pending_bullet,
-        literal,
-    );
+impl BlockCursor {
+    /// Open a fresh `paragraph` (or `list_item`) block and make it current.
+    fn open_block(&mut self, doc: &mut DocMut, is_list: bool) {
+        let kind = if is_list { "list_item" } else { "paragraph" };
+        let id = doc.insert_block(self.prev.as_deref(), kind);
+        if is_list {
+            doc.set_attr(&id, "ordered", false);
+        }
+        self.prev = Some(id.clone());
+        self.cur = Some(id);
+        self.cur_len = 0;
+    }
+
+    /// Ensures a current block exists (opening one if a paragraph break is pending), returning its id.
+    fn ensure_block(&mut self, doc: &mut DocMut) -> String {
+        if self.need_new_block || self.cur.is_none() {
+            self.open_block(doc, self.pending_bullet);
+            self.need_new_block = false;
+            self.pending_bullet = false;
+        }
+        // `cur` is always `Some` here — either it already was, or `open_block` just set it
+        // unconditionally above — so the empty-string fallback is never actually observed.
+        self.cur.clone().unwrap_or_default()
+    }
+
+    fn push_char(&mut self, doc: &mut DocMut, ch: char) {
+        let id = self.ensure_block(doc);
+        let mut buf = [0u8; 4];
+        doc.splice_text(&id, self.cur_len, 0, ch.encode_utf8(&mut buf));
+        self.cur_len = self.cur_len.saturating_add(1);
+    }
+
+    /// Handle a control symbol by emitting its literal char, if any (`\*` is handled by the
+    /// caller, since it opens a skip-destination rather than producing content).
+    fn push_symbol(&mut self, doc: &mut DocMut, sym: char) {
+        let literal = match sym {
+            '\\' => '\\',
+            '{' => '{',
+            '}' => '}',
+            '~' => '\u{a0}',
+            '_' => '\u{2011}',
+            // Optional hyphen (no visible glyph, so falls through here too) and
+            // anything else unrecognized.
+            _ => return,
+        };
+        self.push_char(doc, literal);
+    }
+}
+
+/// Everything [`import_rtf`]'s token loop carries from one token to the next.
+struct RtfImport {
+    /// Per-scope character formatting, pushed/popped on `{`/`}`.
+    stack: Vec<CharState>,
+    colors: Vec<Option<String>>,
+    cursor: BlockCursor,
+    pending_marks: Vec<PendingMark>,
+    /// Skip-destination depth: entering an ignorable destination (`\*`, or a known
+    /// non-content one) drops tokens until its closing brace (`None` = not skipping).
+    skip_depth: Option<usize>,
+    depth: usize,
+}
+
+impl RtfImport {
+    fn new() -> Self {
+        Self {
+            stack: vec![CharState::default()],
+            colors: Vec::new(),
+            cursor: BlockCursor::default(),
+            pending_marks: Vec::new(),
+            skip_depth: None,
+            depth: 0,
+        }
+    }
+
+    /// Route one token to its content-producing handler, honoring `skip_depth`. `depth` still
+    /// advances/retreats on group tokens even while skipping, so the skip-destination's own
+    /// closing brace is still detected.
+    fn dispatch_token(&mut self, tok: &Token, doc: &mut DocMut) {
+        let skipping = self.skip_depth.is_some();
+        match tok {
+            Token::GroupOpen => {
+                self.depth = self.depth.saturating_add(1);
+                let top = self.stack.last().cloned().unwrap_or_default();
+                self.stack.push(top);
+            }
+            Token::GroupClose => {
+                if self.stack.len() > 1 {
+                    self.stack.pop();
+                }
+                if let Some(sd) = self.skip_depth
+                    && self.depth == sd
+                {
+                    self.skip_depth = None;
+                }
+                self.depth = self.depth.saturating_sub(1);
+            }
+            Token::Symbol(sym) if !skipping => {
+                if *sym == '*' {
+                    self.skip_depth = Some(self.depth);
+                } else {
+                    self.cursor.push_symbol(doc, *sym);
+                }
+            }
+            Token::Control(word, param) if !skipping => self.handle_control(word, *param, doc),
+            Token::HexByte(b) if !skipping => {
+                // Decode the byte as Latin-1 (the common ANSI fallback): most documents using a
+                // different code page still escape ASCII as ASCII, so this is correct in the printable range.
+                self.cursor.push_char(doc, *b as char);
+            }
+            Token::Unicode(cu) if !skipping => {
+                let u = u16::try_from(i64::from(*cu) & 0xffff).unwrap_or(0);
+                let ch = char::from_u32(u32::from(u)).unwrap_or('\u{fffd}');
+                self.cursor.push_char(doc, ch);
+            }
+            Token::Text(s) if !skipping => self.push_text(s, doc),
+            // Currently inside a skip-destination: drop the token's content.
+            Token::Symbol(_)
+            | Token::Control(..)
+            | Token::HexByte(_)
+            | Token::Unicode(_)
+            | Token::Text(_) => {}
+        }
+    }
+
+    /// Pushes a run of literal text under the active char formatting, gathering the run marks it implies.
+    fn push_text(&mut self, s: &str, doc: &mut DocMut) {
+        let cs = self.stack.last().cloned().unwrap_or_default();
+        if s.is_empty() {
+            return;
+        }
+        let id = self.cursor.ensure_block(doc);
+        let start = self.cursor.cur_len;
+        doc.splice_text(&id, start, 0, s);
+        let len = s.chars().count();
+        let end = start.saturating_add(len);
+        self.cursor.cur_len = end;
+        let pending_marks = &mut self.pending_marks;
+
+        if cs.bold {
+            pending_marks.push(PendingMark {
+                block: id.clone(),
+                start,
+                end,
+                name: "strong",
+                value: None,
+            });
+        }
+        if cs.italic {
+            pending_marks.push(PendingMark {
+                block: id.clone(),
+                start,
+                end,
+                name: "em",
+                value: None,
+            });
+        }
+        if cs.underline {
+            pending_marks.push(PendingMark {
+                block: id.clone(),
+                start,
+                end,
+                name: "underline",
+                value: None,
+            });
+        }
+        if cs.strike {
+            pending_marks.push(PendingMark {
+                block: id.clone(),
+                start,
+                end,
+                name: "strike",
+                value: None,
+            });
+        }
+        if let Some(hex) = color_hex(&self.colors, cs.color) {
+            pending_marks.push(PendingMark {
+                block: id.clone(),
+                start,
+                end,
+                name: "color",
+                value: Some(MarkVal::Str(hex)),
+            });
+        }
+        if let Some(hp) = cs.fs_halfpt {
+            let pt = i64::from((hp / 2).max(0));
+            pending_marks.push(PendingMark {
+                block: id,
+                start,
+                end,
+                name: "fontSize",
+                value: Some(MarkVal::Int(pt)),
+            });
+        }
+    }
+
+    /// Handle a control word: toggle char state, break paragraphs, or note a bullet.
+    fn handle_control(&mut self, word: &str, param: Option<i32>, doc: &mut DocMut) {
+        // A param of 0 turns a boolean toggle OFF (`\b0`); absent or non-zero = ON.
+        let on = param != Some(0);
+        let cursor = &mut self.cursor;
+        // `stack` always holds at least one `CharState`: seeded with one in `RtfImport::new`, and
+        // `GroupClose` only pops while `len() > 1` — but a control word on an empty stack is a
+        // no-op rather than a panic if that invariant is ever broken.
+        let Some(cs) = self.stack.last_mut() else {
+            return;
+        };
+
+        match word {
+            "par" => {
+                cursor.need_new_block = true;
+                cursor.cur = None;
+            }
+            "pard" => {
+                // Reset paragraph-level state; also a soft break so `\pard` between paragraphs
+                // starts a new block (`export_rtf` emits one `\pard … \par` per paragraph); doesn't reset char state.
+                cursor.need_new_block = true;
+                cursor.cur = None;
+                cursor.pending_bullet = false;
+            }
+            "line" => {
+                let id = cursor.ensure_block(doc);
+                doc.splice_text(&id, cursor.cur_len, 0, " ");
+                cursor.cur_len = cursor.cur_len.saturating_add(1);
+            }
+            "tab" => {
+                let id = cursor.ensure_block(doc);
+                doc.splice_text(&id, cursor.cur_len, 0, "\t");
+                cursor.cur_len = cursor.cur_len.saturating_add(1);
+            }
+            "b" => cs.bold = on,
+            "i" => cs.italic = on,
+            "ul" => cs.underline = on,
+            "ulnone" => cs.underline = false,
+            "strike" => cs.strike = on,
+            "cf" => cs.color = usize::try_from(param.unwrap_or(0).max(0)).unwrap_or(0),
+            "fs" => cs.fs_halfpt = param,
+            "plain" => *cs = CharState::default(),
+            // A literal bullet glyph (`export_rtf` emits `\bullet\tab `) marks the paragraph as a
+            // list item; `\pntext`/`\pn` groups are list-marker destinations we skip but still flag it.
+            "bullet" => cursor.pending_bullet = true,
+            "pntext" | "pn" | "listtext" => {
+                cursor.pending_bullet = true;
+                self.skip_depth = Some(self.depth);
+            }
+            "fonttbl" | "stylesheet" | "info" | "colortbl" | "pict" | "header" | "footer"
+            | "footnote" | "field" | "object" | "themedata" | "datastore" | "generator" => {
+                self.skip_depth = Some(self.depth);
+            }
+            // Everything else (alignment, indents, font selection, doc-level flags, etc.) is intentionally ignored — it doesn't map onto a modeled mark.
+            _ => {}
+        }
+    }
 }
 
 fn apply_pending_marks(doc: &mut DocMut, pending_marks: Vec<PendingMark>) {
@@ -480,57 +602,27 @@ fn apply_pending_marks(doc: &mut DocMut, pending_marks: Vec<PendingMark>) {
 
 fn import_rtf(src: &str, doc: &mut DocMut) {
     let tokens = tokenize(src);
-
-    let mut stack: Vec<CharState> = vec![CharState::default()];
-    let mut colors: Vec<Option<String>> = Vec::new();
-
-    // Current block being filled, its char length, and whether the *next* text should open a fresh paragraph (true initially and after every `\par`).
-    let mut prev_block: Option<String> = None;
-    let mut cur_block: Option<String> = None;
-    let mut cur_len: usize = 0;
-    let mut need_new_block = true;
-    // Whether the pending/just-started paragraph is a list item (saw a bullet).
-    let mut pending_bullet = false;
-
-    let mut pending_marks: Vec<PendingMark> = Vec::new();
-
-    // Skip-destination depth: entering an ignorable destination (`\*`, or a known
-    // non-content one) drops tokens until its closing brace (`None` = not skipping).
-    let mut skip_depth: Option<usize> = None;
-    let mut depth: usize = 0;
+    let mut st = RtfImport::new();
 
     let mut idx = 0;
     while idx < tokens.len() {
         let Some(tok) = tokens.get(idx) else { break };
 
-        if skip_depth.is_none()
+        if st.skip_depth.is_none()
             && let Token::Control(w, _) = tok
             && w == "colortbl"
             && let Some((new_colors, next)) = consume_colortbl(&tokens, idx)
         {
-            colors = new_colors;
+            st.colors = new_colors;
             idx = next;
             continue;
         }
 
-        dispatch_token(
-            tok,
-            &mut stack,
-            &mut skip_depth,
-            &mut depth,
-            doc,
-            &mut prev_block,
-            &mut cur_block,
-            &mut cur_len,
-            &mut need_new_block,
-            &mut pending_bullet,
-            &colors,
-            &mut pending_marks,
-        );
+        st.dispatch_token(tok, doc);
         idx = idx.saturating_add(1);
     }
 
-    apply_pending_marks(doc, pending_marks);
+    apply_pending_marks(doc, st.pending_marks);
 }
 
 /// Resolve `\cfN` to a `#rrggbb` string, or `None` (auto / out of range).
@@ -539,225 +631,6 @@ fn color_hex(colors: &[Option<String>], idx: usize) -> Option<String> {
         return None;
     }
     colors.get(idx).cloned().flatten()
-}
-
-/// Open a fresh `paragraph` (or `list_item`) block and make it current.
-fn open_block(
-    doc: &mut DocMut,
-    prev: &mut Option<String>,
-    cur: &mut Option<String>,
-    cur_len: &mut usize,
-    is_list: bool,
-) {
-    let kind = if is_list { "list_item" } else { "paragraph" };
-    let id = doc.insert_block(prev.as_deref(), kind);
-    if is_list {
-        doc.set_attr(&id, "ordered", false);
-    }
-    *prev = Some(id.clone());
-    *cur = Some(id);
-    *cur_len = 0;
-}
-
-/// Ensures a current block exists (opening one if a paragraph break is pending), returning its id.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the RTF reader threads its whole parse state through these steps"
-)]
-fn ensure_block(
-    doc: &mut DocMut,
-    prev: &mut Option<String>,
-    cur: &mut Option<String>,
-    cur_len: &mut usize,
-    need_new_block: &mut bool,
-    pending_bullet: &mut bool,
-) -> String {
-    if *need_new_block || cur.is_none() {
-        open_block(doc, prev, cur, cur_len, *pending_bullet);
-        *need_new_block = false;
-        *pending_bullet = false;
-    }
-    // `cur` is always `Some` here — either it already was, or `open_block` just set it
-    // unconditionally above — so the empty-string fallback is never actually observed.
-    cur.clone().unwrap_or_default()
-}
-
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the RTF reader threads its whole parse state through these steps"
-)]
-fn push_char(
-    doc: &mut DocMut,
-    prev: &mut Option<String>,
-    cur: &mut Option<String>,
-    cur_len: &mut usize,
-    need_new_block: &mut bool,
-    pending_bullet: &mut bool,
-    ch: char,
-) {
-    let id = ensure_block(doc, prev, cur, cur_len, need_new_block, pending_bullet);
-    let mut buf = [0u8; 4];
-    doc.splice_text(&id, *cur_len, 0, ch.encode_utf8(&mut buf));
-    *cur_len = cur_len.saturating_add(1);
-}
-
-/// Pushes a run of literal text under the active char formatting, gathering the run marks it implies.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the RTF reader threads its whole parse state through these steps"
-)]
-fn push_text(
-    s: &str,
-    cs: &CharState,
-    doc: &mut DocMut,
-    prev: &mut Option<String>,
-    cur: &mut Option<String>,
-    cur_len: &mut usize,
-    need_new_block: &mut bool,
-    pending_bullet: &mut bool,
-    colors: &[Option<String>],
-    pending: &mut Vec<PendingMark>,
-) {
-    if s.is_empty() {
-        return;
-    }
-    let id = ensure_block(doc, prev, cur, cur_len, need_new_block, pending_bullet);
-    let start = *cur_len;
-    doc.splice_text(&id, start, 0, s);
-    let len = s.chars().count();
-    let end = start.saturating_add(len);
-    *cur_len = end;
-
-    if cs.bold {
-        pending.push(PendingMark {
-            block: id.clone(),
-            start,
-            end,
-            name: "strong",
-            value: None,
-        });
-    }
-    if cs.italic {
-        pending.push(PendingMark {
-            block: id.clone(),
-            start,
-            end,
-            name: "em",
-            value: None,
-        });
-    }
-    if cs.underline {
-        pending.push(PendingMark {
-            block: id.clone(),
-            start,
-            end,
-            name: "underline",
-            value: None,
-        });
-    }
-    if cs.strike {
-        pending.push(PendingMark {
-            block: id.clone(),
-            start,
-            end,
-            name: "strike",
-            value: None,
-        });
-    }
-    if let Some(hex) = color_hex(colors, cs.color) {
-        pending.push(PendingMark {
-            block: id.clone(),
-            start,
-            end,
-            name: "color",
-            value: Some(MarkVal::Str(hex)),
-        });
-    }
-    if let Some(hp) = cs.fs_halfpt {
-        let pt = i64::from((hp / 2).max(0));
-        pending.push(PendingMark {
-            block: id,
-            start,
-            end,
-            name: "fontSize",
-            value: Some(MarkVal::Int(pt)),
-        });
-    }
-}
-
-/// Handle a control word: toggle char state, break paragraphs, or note a bullet.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the RTF reader threads its whole parse state through these steps"
-)]
-fn handle_control(
-    word: &str,
-    param: Option<i32>,
-    stack: &mut [CharState],
-    skip_depth: &mut Option<usize>,
-    depth: usize,
-    doc: &mut DocMut,
-    prev: &mut Option<String>,
-    cur: &mut Option<String>,
-    cur_len: &mut usize,
-    need_new_block: &mut bool,
-    pending_bullet: &mut bool,
-    _colors: &[Option<String>],
-    _pending: &mut Vec<PendingMark>,
-) {
-    // A param of 0 turns a boolean toggle OFF (`\b0`); absent or non-zero = ON.
-    let on = param != Some(0);
-    // `stack` always holds at least one `CharState`: seeded with one in `import_rtf`, and
-    // `GroupClose` only pops while `len() > 1` — but a control word on an empty stack is a
-    // no-op rather than a panic if that invariant is ever broken.
-    let Some(cs) = stack.last_mut() else {
-        return;
-    };
-
-    match word {
-        "par" => {
-            *need_new_block = true;
-            *cur = None;
-        }
-        "pard" => {
-            // Reset paragraph-level state; also a soft break so `\pard` between paragraphs
-            // starts a new block (`export_rtf` emits one `\pard … \par` per paragraph); doesn't reset char state.
-            *need_new_block = true;
-            *cur = None;
-            *pending_bullet = false;
-        }
-        "line" => {
-            let id = ensure_block(doc, prev, cur, cur_len, need_new_block, pending_bullet);
-            doc.splice_text(&id, *cur_len, 0, " ");
-            *cur_len = cur_len.saturating_add(1);
-        }
-        "tab" => {
-            let id = ensure_block(doc, prev, cur, cur_len, need_new_block, pending_bullet);
-            doc.splice_text(&id, *cur_len, 0, "\t");
-            *cur_len = cur_len.saturating_add(1);
-        }
-        "b" => cs.bold = on,
-        "i" => cs.italic = on,
-        "ul" => cs.underline = on,
-        "ulnone" => cs.underline = false,
-        "strike" => cs.strike = on,
-        "cf" => cs.color = usize::try_from(param.unwrap_or(0).max(0)).unwrap_or(0),
-        "fs" => cs.fs_halfpt = param,
-        "plain" => *cs = CharState::default(),
-        // A literal bullet glyph (`export_rtf` emits `\bullet\tab `) marks the paragraph as a
-        // list item; `\pntext`/`\pn` groups are list-marker destinations we skip but still flag it.
-        "bullet" => *pending_bullet = true,
-        "pntext" | "pn" | "listtext" => {
-            *pending_bullet = true;
-            *skip_depth = Some(depth);
-        }
-        "fonttbl" | "stylesheet" | "info" | "colortbl" | "pict" | "header" | "footer"
-        | "footnote" | "field" | "object" | "themedata" | "datastore" | "generator" => {
-            *skip_depth = Some(depth);
-        }
-        // Everything else (alignment, indents, font selection, doc-level flags, etc.) is intentionally ignored — it doesn't map onto a modeled mark.
-        _ => {}
-    }
 }
 
 #[cfg(test)]

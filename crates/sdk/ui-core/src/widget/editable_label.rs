@@ -21,7 +21,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::text_render::{FontChoice, TextRenderer, TextWeight};
+use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, TextInputKind, Widget};
@@ -281,16 +281,13 @@ impl Widget for EditableLabel {
             reason = "label width in logical pixels is far below f32::MAX for any realistic UI element"
         )]
         let width = self.rect.width() as f32 + 1.0;
-        text_renderer.draw_text_font(
+        text_renderer.draw_style(
             scene,
             &self.value,
-            self.size,
             color,
             text_transform,
             Some(width),
-            TextWeight::Regular,
-            false,
-            &self.family,
+            &TextStyle::new(self.size).with_family(self.family.clone()),
         );
     }
 

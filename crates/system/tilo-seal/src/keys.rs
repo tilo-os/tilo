@@ -197,21 +197,6 @@ impl SecretKey {
             .map_err(|_| Error::InvalidKey)?;
         PublicKey::from_slice(&public)
     }
-
-    /// Raw X25519 Diffie-Hellman, available only to the readers of formats
-    /// sealed before this crate existed. Rejects low-order peers.
-    pub(crate) fn diffie_hellman(&self, peer: &PublicKey) -> Result<Zeroizing<[u8; KEY_LEN]>> {
-        let shared = Zeroizing::new(
-            HpkeRustCrypto::dh(KemAlgorithm::DhKem25519, peer.as_bytes(), self.0.as_ref())
-                .map_err(|_| Error::InvalidKey)?,
-        );
-        let mut out = Zeroizing::new([0_u8; KEY_LEN]);
-        if shared.len() != KEY_LEN {
-            return Err(Error::InvalidKey);
-        }
-        out.copy_from_slice(&shared);
-        Ok(out)
-    }
 }
 
 impl PartialEq for SecretKey {

@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 
-use ui::text_render::TextRenderer;
+use ui::text_render::{TextRenderer, TextStyle};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
@@ -180,16 +180,16 @@ impl TitleRaster {
                 TextAlign::Center => (f64::from(width) - f64::from(w)) * 0.5,
                 TextAlign::Right => f64::from(width) * 0.92 - f64::from(w),
             };
-            tr.draw_text_font(
+            tr.draw_style(
                 &mut scene,
                 line.as_str(),
-                size,
                 color,
                 Affine::translate((x, y)),
                 None,
-                weight,
-                text.italic,
-                &family,
+                &TextStyle::new(size)
+                    .with_weight(weight)
+                    .with_italic(text.italic)
+                    .with_family(family.clone()),
             );
             y += leading;
         }
@@ -212,10 +212,6 @@ impl TitleRaster {
 /// Measured through the same `measure_font` the drawing uses, so the wrap and
 /// the paint cannot disagree about what fits. Called only when a title's
 /// raster is rebuilt, never per frame.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the line and the full font description `measure_font` takes, plus both widths"
-)]
 fn wrap_to(
     tr: &mut ui::text_render::TextRenderer,
     line: &str,

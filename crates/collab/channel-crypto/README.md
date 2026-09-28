@@ -109,10 +109,8 @@ history.
   (MLS application message) keeps the exact bytes and signing bytes of every
   earlier op, so version-1 ciphertexts still decrypt for members at that
   epoch. Tag `2` is the content-key scheme.
-- Sealed member state is now a `tilo-seal` envelope that also carries the
-  keyring. State files from earlier builds (`QMLSG` v1) still load. Their
-  keyring starts at the loaded epoch, and the next save writes the current
-  format.
+- Sealed member state is a `tilo-seal` envelope that also carries the
+  keyring; any other state file is refused.
 - `AddWithKeyHistory` is a new trailing variant, so journals written before
   it still decode.
 

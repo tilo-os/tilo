@@ -1115,9 +1115,10 @@ takes a narrow `#[allow]` whose reason says why that is safe there.
 ### Running tests like CI
 
 CI runs tests with `cargo nextest run --profile ci`: every test in its own
-process, one retry, a JUnit report in `target/nextest/ci/junit.xml`. The job
-summary lists every test that only passed on retry (FLAKY) or was retried
-before failing; treat a FLAKY entry as a bug, not as noise. Each run goes
+process, no retry, a JUnit report in `target/nextest/ci/junit.xml`. A failure
+on the first run fails the job. The summary still lists slow tests, and any
+case that only passed on a retry if a profile turns retries back on; treat
+that as a bug, not as noise. Each run goes
 through `tools/with-test-environment.sh` (directly, or via `tools/test-env.sh`),
 which sets `LANG=C.UTF-8` and
 `TZ=UTC`, points `HOME` and every XDG base directory at a fresh temporary tree
@@ -1478,6 +1479,12 @@ on the staged Rust files, workspace membership
 lint `#[allow]` policy, `#[ignore]` reasons, integration-test module
 declarations, conflict markers, `dbg!` and secrets. Compilation and tests run in
 CI (`.forgejo/workflows/check.yml`).
+
+A vendored crate under `vendor/` is upstream's code, carried as it ships: the
+added-code checks (`#[ignore]` reasons, `#[allow]` placement, `dbg!`) and
+rustfmt skip it. rustfmt also skips a generated source, one with an
+`@generated` marker in its first five lines (capnpc-rust bindings, tilo-app
+registries); CI's `tools/ci/check-changed-rustfmt.sh` applies the same rule.
 
 The hook refuses a staged `Cargo.lock` change with no `Cargo.toml` beside it,
 except a declared single-crate update. Name the `cargo update` you ran (several

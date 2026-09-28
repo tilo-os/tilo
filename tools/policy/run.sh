@@ -58,5 +58,7 @@ run 'Desktop crates dependency boundary' \
 run 'Browser wasm32 builds stay off the workspace-hack' \
   python3 tools/policy/check_wasm_workspace_hack.py
 run 'GStreamer is the only media stack' python3 tools/policy/check_media_stack.py
+run 'At most eight parameters, no escape hatch' \
+  python3 tools/policy/check_too_many_arguments.py
 
 printf '\nRepository policy suite OK\n'

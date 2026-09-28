@@ -342,11 +342,6 @@ impl FirewallConfig {
         serde_json::to_string(self).unwrap_or_default()
     }
 
-    /// Decode from the CRDT text blob; `None` on parse failure.
-    pub fn from_json(s: &str) -> Option<Self> {
-        serde_json::from_str(s).ok()
-    }
-
     /// Verify that this is a configuration the app can safely represent and
     /// hand to firewalld. This is deliberately independent of the UI: remote
     /// collaborators and action replay are untrusted input too.
@@ -602,17 +597,9 @@ impl ServiceCatalog {
 mod tests {
     use super::*;
 
-    /// The config round-trips through JSON, toggles services idempotently, splits rule counts and lists every zone in order.
+    /// The config toggles services idempotently, splits rule counts and lists every zone in order.
     #[test]
-    fn config_model_round_trips_toggles_and_counts() {
-        // --- phase: config_json_round_trips ---
-        {
-            let cfg = crate::sample::sample_config();
-            let json = cfg.to_json();
-            let back = FirewallConfig::from_json(&json).unwrap();
-            assert_eq!(cfg, back);
-        }
-
+    fn config_model_toggles_and_counts() {
         // --- phase: toggle_service_is_idempotent_pair ---
         {
             let mut z = Zone::new(ZoneKind::Public, Target::Default);

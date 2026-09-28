@@ -670,7 +670,7 @@ impl UndoLog {
     ///
     /// The second half is what lets an author-scoped undo reach entries the
     /// toolkit records for an app's own affordances —
-    /// [`Widget::take_committed_action`](crate::widget::Widget::take_committed_action)
+    /// [`CommittedActions::take_committed_action`](crate::undo::CommittedActions::take_committed_action)
     /// (toolbar buttons, context-menu items, palette dispatch) has no author
     /// to give, so those entries land with `author: None`.
     ///
@@ -921,10 +921,6 @@ impl UndoLog {
         )
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "legacy and bound restore share explicit history attribution"
-    )]
     fn restore_to_heads_owned(
         &mut self,
         doc: &mut AutoCommit,

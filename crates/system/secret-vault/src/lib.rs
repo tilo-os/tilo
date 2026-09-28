@@ -4,10 +4,7 @@
 //! envelope (XChaCha20-Poly1305, versioned authenticated header, random
 //! 192-bit nonce) under a 256-bit key. The envelope is bound to the vault's
 //! [`VaultFormat`] identity, so a vault never opens as another kind of vault.
-//! Vaults written before that envelope existed —
-//! `magic(4) || 0x01 || nonce(24) || ciphertext+tag`, with no associated
-//! data — still open, and are rewritten in the current format on their next
-//! save. What the plaintext means is the caller's business; this crate only
+//! What the plaintext means is the caller's business; this crate only
 //! seals it and keeps the key.
 //!
 //! Each consumer describes its on-disk identity with a [`VaultFormat`]: the
@@ -23,8 +20,7 @@
 //! - [`Custody::LocalFile`]: an owner-only `vault.key` beside the vault, for
 //!   headless and test environments without Secret Service.
 //! - `Custody::WindowsDpapi`: current-user DPAPI with a private
-//!   `vault.key.dpapi`. Legacy private keys migrate only after a verified
-//!   restore; a DPAPI failure never falls back to plaintext.
+//!   `vault.key.dpapi`; a DPAPI failure never falls back to plaintext.
 //!
 //! Every custody refuses to replace a key it cannot read, and refuses to mint
 //! a key when `vault.enc` already exists without one: a fresh key would make
@@ -46,8 +42,8 @@ use std::io::Read as _;
 use std::path::Path;
 use std::time::Duration;
 
+use tilo_seal::Label;
 use tilo_seal::envelope::{self, Context};
-use tilo_seal::{Label, legacy};
 use zeroize::Zeroizing;
 
 #[cfg(windows)]
@@ -55,10 +51,6 @@ mod windows;
 
 /// Symmetric key width (256-bit).
 pub const KEY_LEN: usize = 32;
-/// Nonce width of the format written before `tilo-seal` envelopes.
-const LEGACY_NONCE_LEN: usize = legacy::XCHACHA_NONCE_LEN;
-/// Format byte following the magic in that earlier format.
-const LEGACY_SEAL_FORMAT: u8 = 1;
 
 /// Name of the sealed vault inside its directory.
 pub const VAULT_FILE: &str = "vault.enc";
@@ -149,29 +141,13 @@ impl VaultFormat {
         envelope::seal(key, Context::new(Label::SecretVault, &identity), plaintext).ok()
     }
 
-    /// Open a blob produced by [`Self::seal`] — or by the format that
-    /// preceded it — returning the zeroized plaintext. `None` on any framing
-    /// mismatch or authentication failure: a tampered or truncated file, or a
-    /// vault of another format, never yields bytes.
+    /// Open a blob produced by [`Self::seal`], returning the zeroized
+    /// plaintext. `None` on any framing mismatch or authentication failure: a
+    /// tampered or truncated file, or a vault of another format, never yields
+    /// bytes.
     pub fn open(&self, key: &VaultKey, blob: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
-        if envelope::is_envelope(blob) {
-            let identity = self.identity();
-            return envelope::open(key, Context::new(Label::SecretVault, &identity), blob).ok();
-        }
-        self.open_legacy(key, blob)
-    }
-
-    /// The pre-envelope layout: `magic || 0x01 || nonce(24) || ciphertext`,
-    /// authenticated without associated data. Read-only.
-    fn open_legacy(&self, key: &VaultKey, blob: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
-        let rest = blob.strip_prefix(self.magic.as_slice())?;
-        let (&format, rest) = rest.split_first()?;
-        if format != LEGACY_SEAL_FORMAT || rest.len() < LEGACY_NONCE_LEN {
-            return None;
-        }
-        let (nonce, ciphertext) = rest.split_at(LEGACY_NONCE_LEN);
-        let nonce = <&[u8; LEGACY_NONCE_LEN]>::try_from(nonce).ok()?;
-        legacy::open_xchacha20poly1305(key, nonce, b"", ciphertext).ok()
+        let identity = self.identity();
+        envelope::open(key, Context::new(Label::SecretVault, &identity), blob).ok()
     }
 
     /// Load the key for the vault in `dir`, creating one on first use.

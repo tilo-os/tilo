@@ -78,6 +78,8 @@ workspace-hack = { version = "0.1" }
 launcher-macos = { path = "../../packaging/launcher-macos" }
 
 [dev-dependencies]
+# The steward channel fixtures owner tests seal writes with.
+tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
 # A real durable host a runtime joins rooms of.
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 tilo-workspace-host = { path = "../../hosting/tilo-workspace-host", default-features = false, features = ["test-support"] }
@@ -86,6 +88,8 @@ ed25519-dalek.workspace = true
 tempfile.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-test-env = { path = "../../dev/test-env" }
+# Paused time drives the watch lease's expiry.
+tokio = { workspace = true, features = ["test-util"] }
 # An ordinary SDK app, to prove the standalone session admits and publishes it.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 

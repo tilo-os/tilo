@@ -27,16 +27,16 @@ use ui::chrome::{
 };
 use ui::control_custody::RawControlSlot;
 use ui::icons::Icon;
-use ui::paint::{fill_round, stroke_round};
+use ui::paint::{PaintCtx, fill_round, stroke_round};
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tilo_actions::{ActionAddress, ControlInvocation};
 use ui::tokens::Spacing;
 use ui::widget::{
-    Button, ButtonFace, EmptyState, ModalDialog, SegmentedFace, Toggle, ToggleFace, ToggleGroup,
-    Widget,
+    Button, ButtonFace, EmptyState, EmptyStateContent, ModalDialog, SegmentedFace, Toggle,
+    ToggleFace, ToggleGroup, Widget,
 };
 use zeroize::Zeroize;
 
@@ -299,16 +299,12 @@ impl Widget for ConfirmBody {
     ) {
         let x = self.rect.x0;
         let width = self.rect.width().max(1.0) as f32;
-        text_w(
-            tr,
-            scene,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             &self.summary,
-            13.0,
+            &TextStyle::new(13.0),
             theme.text_dim,
-            x,
-            self.rect.y0,
-            TextWeight::Regular,
+            Point::new(x, self.rect.y0),
+            None,
         );
         let _ = width;
         // Command preview box below the summary.
@@ -322,27 +318,20 @@ impl Widget for ConfirmBody {
             f64::from(theme.tokens.radii.md),
             theme.tokens.colors.surfaces.base,
         );
-        text_w(
-            tr,
-            scene,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             "Will run:",
-            10.0,
+            &TextStyle::new(10.0).with_weight(TextWeight::Bold),
             theme.text_dim,
-            cmd_box.x0 + 12.0,
-            cmd_box.y0 + 8.0,
-            TextWeight::Bold,
+            Point::new(cmd_box.x0 + 12.0, cmd_box.y0 + 8.0),
+            None,
         );
-        tr.draw_text_styled(
+        tr.draw_style(
             scene,
             &ellipsize(&self.cmd, 52),
-            13.0,
             theme.tokens.colors.semantic.success,
             t * Affine::translate((cmd_box.x0 + 12.0, cmd_box.y0 + 26.0)),
             None,
-            TextWeight::Regular,
-            false,
-            true,
+            &TextStyle::new(13.0).with_family(FontChoice::Monospace),
         );
     }
 
@@ -1577,76 +1566,22 @@ fn point_in(r: Rect, p: Point) -> bool {
 // Drawing primitives
 // ----------------------------------------------------------------------
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "weighted text painting passes render context alongside content, size, color, coordinates and weight"
-)]
-fn text_w(
-    tr: &mut TextRenderer,
-    scene: &mut Scene,
-    t: Affine,
-    s: &str,
-    size: f32,
-    color: Color,
-    x: f64,
-    top: f64,
-    weight: TextWeight,
-) {
-    tr.draw_text_weighted(
-        scene,
-        s,
-        size,
-        color,
-        t * Affine::translate((x, top)),
-        None,
-        weight,
-    );
-}
-
-/// Center text vertically within a box and left-align at `x`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "vertical text alignment shares render context and typography with the label position and containing box"
-)]
-fn text_vc(
-    tr: &mut TextRenderer,
-    scene: &mut Scene,
-    t: Affine,
-    s: &str,
-    size: f32,
-    color: Color,
-    x: f64,
-    box_y0: f64,
-    box_h: f64,
-    weight: TextWeight,
-) {
+/// Center text vertically within `band` and left-align at `x`.
+fn text_vc(ctx: &mut PaintCtx<'_>, s: &str, style: &TextStyle, color: Color, x: f64, band: Rect) {
     // Centre on the line the renderer will paint (weight and accessibility
     // scale included), not on the nominal size: the nominal box under-reads
     // by a few pixels at 1× and by half a line at 2×.
-    let (_, th) = tr.measure_weighted(s, size, None, weight);
-    let top = box_y0 + (box_h - f64::from(th)) / 2.0;
-    text_w(tr, scene, t, s, size, color, x, top, weight);
+    let (_, th) = ctx.text.measure_style(s, None, style);
+    let top = band.y0 + (band.height() - f64::from(th)) / 2.0;
+    ctx.text(s, style, color, Point::new(x, top), None);
 }
 
 /// Center text horizontally + vertically within a rect (button labels).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "thin positional wrapper over text_w's draw call; grouping into a struct would only move the fields, not reduce them"
-)]
-fn text_center(
-    tr: &mut TextRenderer,
-    scene: &mut Scene,
-    t: Affine,
-    s: &str,
-    size: f32,
-    color: Color,
-    r: Rect,
-    weight: TextWeight,
-) {
-    let (tw, th) = tr.measure_weighted(s, size, None, weight);
+fn text_center(ctx: &mut PaintCtx<'_>, s: &str, style: &TextStyle, color: Color, r: Rect) {
+    let (tw, th) = ctx.text.measure_style(s, None, style);
     let x = r.center().x - f64::from(tw) / 2.0;
     let top = r.y0 + (r.height() - f64::from(th)) / 2.0;
-    text_w(tr, scene, t, s, size, color, x, top, weight);
+    ctx.text(s, style, color, Point::new(x, top), None);
 }
 
 /// Truncate a string to a max display width by characters.
@@ -1659,6 +1594,15 @@ fn ellipsize(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// One tunnel's measured transfer rates for the status tab: the per-sample
+/// down/up series, whether they are a live reading, and the latest totals.
+struct RateReadings {
+    down: Vec<f64>,
+    up: Vec<f64>,
+    live: bool,
+    latest: Option<Transfer>,
+}
+
 impl VpnApp {
     fn status_color(theme: &Theme, status: ConnStatus) -> Color {
         match status {
@@ -1668,10 +1612,6 @@ impl VpnApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a badge is scene + renderer + transform + theme + position + protocol; grouping into a struct would only move the fields, not reduce them"
-    )]
     fn draw_badge(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -1696,7 +1636,13 @@ impl VpnApp {
         };
         // A tinted capsule: the tint is its contrast step against the row.
         ui::surface::pill(scene, t, r, bg, None, Some(9.0));
-        text_center(tr, scene, t, label, 11.0, fg, r, TextWeight::Bold);
+        text_center(
+            &mut PaintCtx::new(scene, t, tr, theme),
+            label,
+            &TextStyle::new(11.0).with_weight(TextWeight::Bold),
+            fg,
+            r,
+        );
         bw
     }
 
@@ -1743,16 +1689,12 @@ impl VpnApp {
             lay.add_btn
         };
         text_vc(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &sub,
-            14.0,
+            &TextStyle::new(14.0).with_weight(TextWeight::Semibold),
             theme.text_primary,
             h.x0 + 24.0,
-            tally_band.y0,
-            tally_band.height(),
-            TextWeight::Semibold,
+            tally_band,
         );
 
         // Tor global pill.
@@ -1810,16 +1752,12 @@ impl VpnApp {
             let message_w = (text_right - notice.x0 - 24.0).max(40.0) as f32;
             let message = tr.elide_to_width_weighted(&label, 12.0, message_w, TextWeight::Semibold);
             text_vc(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &message,
-                12.0,
+                &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                 color,
                 notice.x0 + 24.0,
-                notice.y0,
-                notice.height(),
-                TextWeight::Semibold,
+                notice,
             );
             if has_recovery {
                 if let (Some(retry), Some(_)) = (lay.notice_retry, self.retry_import_kind) {
@@ -1850,10 +1788,6 @@ impl VpnApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a pill toggle is scene + renderer + transform + theme + rect + label + state; grouping into a struct would only move the fields, not reduce them"
-    )]
     fn draw_pill_toggle(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -1897,16 +1831,12 @@ impl VpnApp {
         );
         let txt = format!("{label}  {}", if on { "On" } else { "Off" });
         text_vc(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &txt,
-            12.0,
+            &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
             theme.text_primary,
             r.x0 + 32.0,
-            r.y0,
-            r.height(),
-            TextWeight::Semibold,
+            r,
         );
     }
 
@@ -1929,39 +1859,19 @@ impl VpnApp {
             None,
             &Line::new(Point::new(l.x1 - 0.5, l.y0), Point::new(l.x1 - 0.5, l.y1)),
         );
-        text_w(
-            tr,
-            scene,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             "CONNECTIONS",
-            11.0,
+            &TextStyle::new(11.0).with_weight(TextWeight::Bold),
             theme.text_dim,
-            l.x0 + 16.0,
-            l.y0 + 18.0,
-            TextWeight::Bold,
+            Point::new(l.x0 + 16.0, l.y0 + 18.0),
+            None,
         );
 
         for (id, row, toggle) in &lay.rows {
             let Some(c) = self.vault.get(*id) else {
                 continue;
             };
-            let selected = self.vault.selected == Some(*id);
-            let hovered = self.hovered_row == Some(*id);
-            let details = self.local_details.get(id);
-            Self::draw_list_row(
-                scene,
-                tr,
-                t,
-                theme,
-                c,
-                details,
-                row,
-                toggle,
-                selected,
-                hovered,
-                self.row_name_cy,
-                self.row_line2_top,
-            );
+            self.draw_list_row(&mut PaintCtx::new(scene, t, tr, theme), c, *row, *toggle);
         }
     }
 
@@ -1969,24 +1879,12 @@ impl VpnApp {
     /// protocol badge, endpoint/last-used line, the per-tunnel Tor flag, and
     /// the connect toggle switch. Split out of [`Self::draw_list`] to keep
     /// that function's line count in check.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one list row is scene + renderer + transform + theme + the connection + its two laid-out rects + selection/hover state; grouping into a struct would only move the fields, not reduce them"
-    )]
-    fn draw_list_row(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        c: &Connection,
-        details: Option<&LocalProfileDetails>,
-        row: &Rect,
-        toggle: &Rect,
-        selected: bool,
-        hovered: bool,
-        name_cy_offset: f64,
-        line2_top: f64,
-    ) {
+    fn draw_list_row(&self, ctx: &mut PaintCtx<'_>, c: &Connection, row: Rect, toggle: Rect) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let selected = self.vault.selected == Some(c.id);
+        let hovered = self.hovered_row == Some(c.id);
+        let details = self.local_details.get(&c.id);
+        let (name_cy_offset, line2_top) = (self.row_name_cy, self.row_line2_top);
         let radius = f64::from(theme.tokens.radii.lg);
         // Selection is a lift with a derived edge, hover half a lift (HIG
         // §9.3); the accent stays for the *live* connected state. The rows
@@ -1994,7 +1892,7 @@ impl VpnApp {
         // preset; the ring is the panel-strength derived edge.
         if selected {
             let tier = selection_tier(theme, SelectionState::active(true));
-            fill_round(scene, t, *row, radius, tier.fill);
+            fill_round(scene, t, row, radius, tier.fill);
             stroke_round(
                 scene,
                 t,
@@ -2004,7 +1902,7 @@ impl VpnApp {
                 1.0,
             );
         } else if hovered {
-            fill_round(scene, t, *row, radius, theme.tokens.colors.lift(0.5));
+            fill_round(scene, t, row, radius, theme.tokens.colors.lift(0.5));
         }
 
         // The first line's centre is the name's measured centre (from the
@@ -2044,16 +1942,12 @@ impl VpnApp {
         };
         let name_max_w = ((toggle.x0 - 16.0 - badge_slot - tor_slot) - name_x).max(40.0) as f32;
         let name = tr.elide_to_width_weighted(&c.name, 15.0, name_max_w, TextWeight::Semibold);
-        text_w(
-            tr,
-            scene,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             &name,
-            15.0,
+            &TextStyle::new(15.0).with_weight(TextWeight::Semibold),
             theme.text_primary,
-            row.x0 + 38.0,
-            row.y0 + 14.0,
-            TextWeight::Semibold,
+            Point::new(row.x0 + 38.0, row.y0 + 14.0),
+            None,
         );
         let (nw, _) = tr.measure_weighted(&name, 15.0, None, TextWeight::Semibold);
         let badge_x = row.x0 + 38.0 + f64::from(nw) + 10.0;
@@ -2064,16 +1958,12 @@ impl VpnApp {
         // than floating at the row's top-right above the toggle.
         if c.tor {
             let (_, tor_h) = tr.measure_weighted("tor", 10.0, None, TextWeight::Bold);
-            text_w(
-                tr,
-                scene,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 "tor",
-                10.0,
+                &TextStyle::new(10.0).with_weight(TextWeight::Bold),
                 theme.tokens.colors.accent[6],
-                badge_x + badge_w + 8.0,
-                name_cy - f64::from(tor_h) / 2.0,
-                TextWeight::Bold,
+                Point::new(badge_x + badge_w + 8.0, name_cy - f64::from(tor_h) / 2.0),
+                None,
             );
         }
 
@@ -2082,20 +1972,16 @@ impl VpnApp {
         });
         let line2_max_w = ((toggle.x0 - 16.0) - name_x).max(40.0) as f32;
         let line2 = tr.elide_to_width(&format!("{endpoint} · {}", c.last_used), 12.0, line2_max_w);
-        text_w(
-            tr,
-            scene,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             &line2,
-            12.0,
+            &TextStyle::new(12.0),
             theme.text_dim,
-            row.x0 + 38.0,
-            row.y0 + line2_top,
-            TextWeight::Regular,
+            Point::new(row.x0 + 38.0, row.y0 + line2_top),
+            None,
         );
 
         // toggle switch
-        Self::draw_switch(scene, t, theme, *toggle, c.is_connected());
+        Self::draw_switch(scene, t, theme, toggle, c.is_connected());
     }
 
     fn draw_switch(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, on: bool) {
@@ -2193,15 +2079,14 @@ impl VpnApp {
             )
         };
         EmptyState::paint(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             d,
-            Some(Icon::Shield),
-            title,
-            Some(message),
-            None,
+            &EmptyStateContent {
+                icon: Some(Icon::Shield),
+                title,
+                message: Some(message),
+                action_label: None,
+            },
             Point::ZERO,
         );
     }
@@ -2217,16 +2102,12 @@ impl VpnApp {
         c: &Connection,
         details: Option<&LocalProfileDetails>,
     ) {
-        text_w(
-            tr,
-            scene,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             &c.name,
-            24.0,
+            &TextStyle::new(24.0).with_weight(TextWeight::Bold),
             theme.text_primary,
-            dinner.x0,
-            dinner.y0,
-            TextWeight::Bold,
+            Point::new(dinner.x0, dinner.y0),
+            None,
         );
         let (tw, _) = tr.measure_weighted(&c.name, 24.0, None, TextWeight::Bold);
         // status pill
@@ -2258,16 +2139,12 @@ impl VpnApp {
             &Circle::new(Point::new(pill.x0 + 12.0, pill.center().y), 4.0),
         );
         text_vc(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             plabel,
-            12.0,
+            &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
             sc,
             pill.x0 + 22.0,
-            pill.y0,
-            pill.height(),
-            TextWeight::Semibold,
+            pill,
         );
 
         let sub = format!(
@@ -2277,16 +2154,12 @@ impl VpnApp {
                 .endpoint
                 .as_str())
         );
-        text_w(
-            tr,
-            scene,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             &sub,
-            13.0,
+            &TextStyle::new(13.0),
             theme.text_dim,
-            dinner.x0,
-            dinner.y0 + 34.0,
-            TextWeight::Regular,
+            Point::new(dinner.x0, dinner.y0 + 34.0),
+            None,
         );
     }
 
@@ -2355,18 +2228,15 @@ impl VpnApp {
                 theme.text_dim
             };
             text_center(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 tab.label(),
-                13.0,
-                col,
-                *r,
-                if active {
+                &TextStyle::new(13.0).with_weight(if active {
                     TextWeight::Semibold
                 } else {
                     TextWeight::Regular
-                },
+                }),
+                col,
+                *r,
             );
         }
     }
@@ -2386,29 +2256,19 @@ impl VpnApp {
         // Throughput from the kernel (`wg show transfer` / sysfs) for this
         // tunnel. `None`/empty until at least two samples exist.
         let hist = self.throughput.get(&c.id);
-        let (down_series, up_series) = hist.map(TransferHistory::rate_series).unwrap_or_default();
-        let has_rate = hist.is_some_and(TransferHistory::has_rate) && c.is_connected();
-        let latest = hist.and_then(TransferHistory::latest);
-        let down_now = down_series.last().copied();
-        let up_now = up_series.last().copied();
+        let (down, up) = hist.map(TransferHistory::rate_series).unwrap_or_default();
+        let rates = RateReadings {
+            down,
+            up,
+            live: hist.is_some_and(TransferHistory::has_rate) && c.is_connected(),
+            latest: hist.and_then(TransferHistory::latest),
+        };
         // One geometry for the painter and the hit layout (`kv_tor_rect`).
         let (tiles_h, chart) = status_geometry(content);
 
-        Self::draw_status_tiles(
-            scene, tr, t, theme, content, c, details, has_rate, down_now, up_now, tiles_h,
-        );
-        Self::draw_status_throughput(
-            scene,
-            tr,
-            t,
-            theme,
-            chart,
-            &down_series,
-            &up_series,
-            has_rate,
-            latest,
-            c,
-        );
+        let ctx = &mut PaintCtx::new(scene, t, tr, theme);
+        Self::draw_status_tiles(ctx, content, c, details, &rates, tiles_h);
+        Self::draw_status_throughput(ctx, chart, &rates, c);
         Self::draw_status_kv_rows(scene, tr, t, theme, content, lay, c, details);
     }
 
@@ -2416,27 +2276,20 @@ impl VpnApp {
     /// down / measured up). Split out of [`Self::draw_status_tab`] to keep
     /// that function's line count in check.
     #[allow(
-        clippy::too_many_arguments,
-        reason = "a stat-tile row is scene + renderer + transform + theme + layout + the connection + the already-computed rate values; grouping into a struct would only move the fields, not reduce them"
-    )]
-    #[allow(
         clippy::many_single_char_names,
         clippy::similar_names,
         reason = "compact geometry uses conventional x/y/rect names beside the total tile height"
     )]
     fn draw_status_tiles(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         content: Rect,
         c: &Connection,
         details: Option<&LocalProfileDetails>,
-        has_rate: bool,
-        down_now: Option<f64>,
-        up_now: Option<f64>,
+        rates: &RateReadings,
         tiles_h: f64,
     ) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let has_rate = rates.live;
         // These values are local-only: they never enter the document, actions
         // or resource search index.
         let compact = content.width() < 500.0;
@@ -2460,8 +2313,8 @@ impl VpnApp {
                     _ => "—".to_string(),
                 },
             ),
-            ("DOWN", rate_or_dash(down_now)),
-            ("UP", rate_or_dash(up_now)),
+            ("DOWN", rate_or_dash(rates.down.last().copied())),
+            ("UP", rate_or_dash(rates.up.last().copied())),
         ];
         for (i, (label, val)) in tile_vals.iter().enumerate() {
             let column = if compact { i % 2 } else { i };
@@ -2477,27 +2330,19 @@ impl VpnApp {
                 f64::from(theme.tokens.radii.lg),
                 theme.tokens.colors.surfaces.raised,
             );
-            text_w(
-                tr,
-                scene,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 label,
-                10.0,
+                &TextStyle::new(10.0).with_weight(TextWeight::Bold),
                 theme.text_dim,
-                r.x0 + 14.0,
-                r.y0 + if compact { 8.0 } else { 14.0 },
-                TextWeight::Bold,
+                Point::new(r.x0 + 14.0, r.y0 + if compact { 8.0 } else { 14.0 }),
+                None,
             );
-            text_w(
-                tr,
-                scene,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 &ellipsize(val, 16),
-                17.0,
+                &TextStyle::new(17.0).with_weight(TextWeight::Semibold),
                 theme.text_primary,
-                r.x0 + 14.0,
-                r.y0 + if compact { 27.0 } else { 36.0 },
-                TextWeight::Semibold,
+                Point::new(r.x0 + 14.0, r.y0 + if compact { 27.0 } else { 36.0 }),
+                None,
             );
         }
     }
@@ -2505,37 +2350,25 @@ impl VpnApp {
     /// The real measured-rate sparkline chart plus its legend/empty note.
     /// Returns the chart's rect so the caller can position what follows it.
     /// Split out of [`Self::draw_status_tab`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the throughput panel is scene + renderer + transform + theme + layout + both rate series + the already-computed rate state; grouping into a struct would only move the fields, not reduce them"
-    )]
     fn draw_status_throughput(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         chart: Rect,
-        down_series: &[f64],
-        up_series: &[f64],
-        has_rate: bool,
-        latest: Option<Transfer>,
+        rates: &RateReadings,
         c: &Connection,
     ) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let (has_rate, latest) = (rates.live, rates.latest);
         // Throughput panel — plots the REAL measured rate series. When there
         // is no live data yet the plot stays empty with an honest note; the
         // app never draws a synthesized waveform. `chart` comes from
         // `status_geometry`, the rhythm the hit layout reads too.
-        Self::draw_throughput_plot(scene, tr, t, theme, chart, down_series, up_series, has_rate);
-        text_w(
-            tr,
-            scene,
-            t,
+        Self::draw_throughput_plot(scene, tr, t, theme, chart, &rates.down, &rates.up, has_rate);
+        PaintCtx::new(scene, t, tr, theme).text(
             "Throughput",
-            12.0,
+            &TextStyle::new(12.0).with_weight(TextWeight::Bold),
             theme.text_dim,
-            chart.x0 + 12.0,
-            chart.y0 + 10.0,
-            TextWeight::Bold,
+            Point::new(chart.x0 + 12.0, chart.y0 + 10.0),
+            None,
         );
         if let Some(x) = latest {
             let legend = format!(
@@ -2544,16 +2377,12 @@ impl VpnApp {
                 ui::format::bytes(x.tx)
             );
             let (lw, _) = tr.measure_weighted(&legend, 11.0, None, TextWeight::Regular);
-            text_w(
-                tr,
-                scene,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 &legend,
-                11.0,
+                &TextStyle::new(11.0),
                 theme.text_dim,
-                chart.x1 - 12.0 - f64::from(lw),
-                chart.y0 + 10.0,
-                TextWeight::Regular,
+                Point::new(chart.x1 - 12.0 - f64::from(lw), chart.y0 + 10.0),
+                None,
             );
         }
         if !has_rate {
@@ -2567,16 +2396,15 @@ impl VpnApp {
                 "No kernel counters for this interface"
             };
             let (nw, _) = tr.measure_weighted(note, 12.0, None, TextWeight::Regular);
-            text_w(
-                tr,
-                scene,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 note,
-                12.0,
+                &TextStyle::new(12.0),
                 theme.text_dim,
-                chart.center().x - f64::from(nw) / 2.0,
-                chart.center().y - 8.0,
-                TextWeight::Regular,
+                Point::new(
+                    chart.center().x - f64::from(nw) / 2.0,
+                    chart.center().y - 8.0,
+                ),
+                None,
             );
         }
     }
@@ -2585,10 +2413,6 @@ impl VpnApp {
     /// (success) share one scale with headroom, each leading with a dot at the
     /// newest reading. Only ever plots the measured series it is handed —
     /// without a live rate the card shows its grid and nothing else.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the plot is scene + renderer + transform + theme + bounds + both rate series + whether they are live"
-    )]
     fn draw_throughput_plot(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -2633,11 +2457,8 @@ impl VpnApp {
                     .with_leading_dot(3.0),
             );
         Chart::draw_styled(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             plot,
-            theme,
             &series,
             TrendRange::up_to(peak * 1.15),
             ChartLabels::default(),
@@ -2647,10 +2468,6 @@ impl VpnApp {
 
     /// The secret-free provisioning explanation plus the per-tunnel Tor
     /// toggle row. Split out of [`Self::draw_status_tab`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the kv table is scene + renderer + transform + theme + content + layout + the connection and its local details; grouping into a struct would only move the fields, not reduce them"
-    )]
     fn draw_status_kv_rows(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -2682,27 +2499,19 @@ impl VpnApp {
         ];
         for (i, (k, v)) in rows.iter().enumerate() {
             let ry = kv_top + i as f64 * row_h;
-            text_w(
-                tr,
-                scene,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 k,
-                12.0,
+                &TextStyle::new(12.0),
                 theme.text_dim,
-                content.x0,
-                ry + 6.0,
-                TextWeight::Regular,
+                Point::new(content.x0, ry + 6.0),
+                None,
             );
-            text_w(
-                tr,
-                scene,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 v,
-                12.0,
+                &TextStyle::new(12.0),
                 theme.text_primary,
-                content.x0 + 130.0,
-                ry + 6.0,
-                TextWeight::Regular,
+                Point::new(content.x0 + 130.0, ry + 6.0),
+                None,
             );
             // Row rules derived against the pane they lie on (HIG §9.5).
             ui::surface::separator(
@@ -2717,16 +2526,12 @@ impl VpnApp {
         }
         // Per-tunnel Tor row (with a small toggle).
         let ry = kv_top + 4.0 * row_h;
-        text_w(
-            tr,
-            scene,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             "Route over Tor",
-            12.0,
+            &TextStyle::new(12.0),
             theme.text_dim,
-            content.x0,
-            ry + 6.0,
-            TextWeight::Regular,
+            Point::new(content.x0, ry + 6.0),
+            None,
         );
         Self::draw_switch(scene, t, theme, lay.tor_row, c.tor);
     }
@@ -2765,16 +2570,13 @@ impl VpnApp {
             } else {
                 theme.text_dim
             };
-            tr.draw_text_styled(
+            tr.draw_style(
                 scene,
                 line,
-                12.5,
                 col,
                 t * Affine::translate((card.x0 + 16.0, y)),
                 None,
-                TextWeight::Regular,
-                false,
-                true,
+                &TextStyle::new(12.5).with_family(FontChoice::Monospace),
             );
             y += 19.0;
             if y > card.y1 - 16.0 {
@@ -2819,16 +2621,13 @@ impl VpnApp {
                 } else {
                     theme.text_dim
                 };
-            tr.draw_text_styled(
+            tr.draw_style(
                 scene,
                 &ellipsize(line, 78),
-                12.0,
                 col,
                 t * Affine::translate((card.x0 + 16.0, y)),
                 None,
-                TextWeight::Regular,
-                false,
-                true,
+                &TextStyle::new(12.0).with_family(FontChoice::Monospace),
             );
             y += 19.0;
             if y > card.y1 - 16.0 {
@@ -2884,31 +2683,23 @@ impl VpnApp {
         card: Rect,
     ) {
         let x = card.x0 + 28.0;
-        text_w(
-            tr,
-            scene,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             if self.provision_target.is_some() {
                 "Set up on this device"
             } else {
                 "Import VPN profile"
             },
-            18.0,
+            &TextStyle::new(18.0).with_weight(TextWeight::Bold),
             theme.text_primary,
-            x,
-            card.y0 + 24.0,
-            TextWeight::Bold,
+            Point::new(x, card.y0 + 24.0),
+            None,
         );
-        text_w(
-            tr,
-            scene,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             "Protocol",
-            11.0,
+            &TextStyle::new(11.0).with_weight(TextWeight::Bold),
             theme.text_dim,
-            x,
-            card.y0 + 60.0,
-            TextWeight::Bold,
+            Point::new(x, card.y0 + 60.0),
+            None,
         );
         self.draw_add_kind_selector(scene, tr, t, theme, card);
         Self::draw_add_fields(scene, tr, t, theme, presence, card);
@@ -2918,10 +2709,6 @@ impl VpnApp {
     /// The `WireGuard`/`OpenVPN` segmented protocol selector in the add
     /// modal. Split out of [`Self::draw_add_modal`] to keep that function's
     /// line count in check.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the selector is scene + renderer + transform + theme + the modal card + its left edge x; grouping into a struct would only move the fields, not reduce them"
-    )]
     fn draw_add_kind_selector(
         &self,
         scene: &mut Scene,
@@ -2987,16 +2774,14 @@ impl VpnApp {
             ),
             (credential_line, card.y0 + 216.0, TextWeight::Regular),
         ] {
-            text_w(
-                tr,
-                scene,
-                t,
+            let size = if weight == TextWeight::Semibold {
+                13.0
+            } else {
+                11.0
+            };
+            PaintCtx::new(scene, t, tr, theme).text(
                 line,
-                if weight == TextWeight::Semibold {
-                    13.0
-                } else {
-                    11.0
-                },
+                &TextStyle::new(size).with_weight(weight),
                 if weight == TextWeight::Semibold {
                     theme.text_primary
                 } else {
@@ -3004,9 +2789,8 @@ impl VpnApp {
                     // below the normal readable-on-raised-surface contrast.
                     theme.text_primary.multiply_alpha(0.78)
                 },
-                x,
-                y,
-                weight,
+                Point::new(x, y),
+                None,
             );
         }
     }
@@ -3044,16 +2828,12 @@ impl VpnApp {
                 .weight(TextWeight::Semibold)
                 .hovered(point_in(save, self.last_mouse)),
         );
-        text_w(
-            tr,
-            scene,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             "No profile is saved if validation or import fails.",
-            11.0,
+            &TextStyle::new(11.0),
             theme.text_dim,
-            card.x0 + 28.0,
-            cancel.y0 - 24.0,
-            TextWeight::Regular,
+            Point::new(card.x0 + 28.0, cancel.y0 - 24.0),
+            None,
         );
     }
 
@@ -3400,6 +3180,8 @@ fn synth_logs(
 }
 
 impl Widget for VpnApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "vpn.toggle-tunnel",
@@ -3820,13 +3602,6 @@ impl Widget for VpnApp {
         None
     }
 
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records exactly one undo boundary bracketing it — the
-    /// same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn install_control_custody(
         &mut self,
         domain: &ui::ControlDomain,
@@ -4090,6 +3865,15 @@ impl Widget for VpnApp {
         _permissions: &ui::permissions::PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::undo::CommittedActions for VpnApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records exactly one undo boundary bracketing it — the
+    /// same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 

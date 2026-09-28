@@ -38,16 +38,17 @@ use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role
 use ui::animation::{Animated, Curve, Transition};
 use ui::chrome::fill_scrim;
 use ui::icons::{Icon, draw_icon};
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::surface;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::Spacing;
 use ui::widget::{
     Button, ButtonFace, ButtonStyle, DateIndexIntent, DateIndexMarker, DateIndexMarkerKind,
-    DateIndexedScrollbar, EmptyState, ImageViewer, ModalAction, ModalFrame, ModalHit, ModalLayout,
-    ModalSpec, ProgressBar, ScrollMetrics, SearchField, SegmentedFace, TextInput, TextInputKind,
-    ToggleGroup, Widget,
+    DateIndexedScrollbar, EmptyState, EmptyStateContent, ImageViewer, ModalAction, ModalFrame,
+    ModalHit, ModalLayout, ModalSpec, ProgressBar, ScrollMetrics, SearchField, SegmentedFace,
+    TextInput, TextInputKind, ToggleGroup, Widget,
 };
 use winit::keyboard::{Key, NamedKey};
 
@@ -7801,15 +7802,14 @@ impl PhotosApp {
     ) {
         if theme.text_scale <= 1.25 || self.canvas_rect.width() >= 620.0 {
             EmptyState::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 self.canvas_rect,
-                Some(Icon::Image),
-                title,
-                Some(body),
-                None,
+                &EmptyStateContent {
+                    icon: Some(Icon::Image),
+                    title,
+                    message: Some(body),
+                    action_label: None,
+                },
                 Point::ZERO,
             );
             return;
@@ -7859,32 +7859,24 @@ impl PhotosApp {
         let mut y = top + icon_r * 2.0 + 26.0;
         for line in title_lines {
             draw_centered_text(
-                scene,
-                transform,
-                text_renderer,
-                theme.text_primary,
-                bounds.center().x,
-                y,
-                content_w,
-                title_size,
-                TextWeight::Medium,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 &line,
+                &TextStyle::new(title_size).with_weight(TextWeight::Medium),
+                theme.text_primary,
+                Point::new(bounds.center().x, y),
+                content_w,
             );
             y += title_step;
         }
         y += 12.0;
         for line in body_lines {
             draw_centered_text(
-                scene,
-                transform,
-                text_renderer,
-                theme.text_dim,
-                bounds.center().x,
-                y,
-                content_w,
-                body_size,
-                TextWeight::Regular,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 &line,
+                &TextStyle::new(body_size),
+                theme.text_dim,
+                Point::new(bounds.center().x, y),
+                content_w,
             );
             y += body_step;
         }
@@ -8379,22 +8371,16 @@ impl PhotosApp {
             .unwrap()
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "paint helper takes the shared scene/text/theme context plus the pager's own page state and hit routes"
-    )]
     fn draw_collection_pager(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         bounds: Rect,
         page: usize,
         total: usize,
         previous: CollectionPageHit,
         next: CollectionPageHit,
     ) {
+        let theme = ctx.theme;
         self.collection_page_hits.clear();
         let page_size = if matches!(previous, CollectionPageHit::AlbumsPrevious)
             && self.library_destination == LibraryDestination::Albums
@@ -8426,16 +8412,17 @@ impl PhotosApp {
             {
                 button.set_enabled(enabled);
                 button.apply_layout_external(rect);
-                button.draw(scene, transform, text_renderer, theme, &presence);
+                button.draw(ctx.scene, ctx.transform, ctx.text, theme, &presence);
             }
             self.collection_page_hits.push((hit, rect, enabled));
         }
-        text_renderer.draw_text_weighted(
-            scene,
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             &format!("Page {} of {pages}", page + 1),
             12.0,
             theme.text_dim,
-            transform * Affine::translate((bounds.center().x - label_w * 0.5, bounds.y0 + 12.0)),
+            ctx.transform
+                * Affine::translate((bounds.center().x - label_w * 0.5, bounds.y0 + 12.0)),
             Some(label_w as f32),
             TextWeight::Regular,
         );
@@ -9193,10 +9180,7 @@ impl PhotosApp {
             self.album_cards.push((Some(id.clone()), card));
         }
         self.draw_collection_pager(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             Rect::new(content.x1 - 292.0, actions_y, content.x1, actions_y + 44.0),
             self.albums_page,
             self.library_albums.len(),
@@ -9293,16 +9277,9 @@ impl PhotosApp {
         scene.pop_layer();
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "paint helper takes the shared scene/text/theme context plus the card's own content and presentation flags"
-    )]
     fn draw_people_card(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         card: Rect,
         title: &str,
         subtitle: &str,
@@ -9311,11 +9288,12 @@ impl PhotosApp {
         compact: bool,
     ) {
         use vello::peniko::Fill;
+        let theme = ctx.theme;
 
         let hovered = card.contains(self.pointer);
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
-            transform,
+            ctx.transform,
             if hovered {
                 theme.bg_hover
             } else {
@@ -9324,9 +9302,9 @@ impl PhotosApp {
             None,
             &RoundedRect::from_rect(card, 12.0),
         );
-        scene.stroke(
+        ctx.scene.stroke(
             &Stroke::new(1.0),
-            transform,
+            ctx.transform,
             theme.border_standard,
             None,
             &RoundedRect::from_rect(card, 12.0),
@@ -9353,22 +9331,22 @@ impl PhotosApp {
                 card.width() - 28.0,
             )
         };
-        self.draw_people_mosaic(scene, transform, theme, mosaic, photo_ids);
-        text_renderer.draw_text_weighted(
-            scene,
+        self.draw_people_mosaic(ctx.scene, ctx.transform, theme, mosaic, photo_ids);
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             title,
             if compact { 15.0 } else { 16.0 },
             theme.text_primary,
-            transform * Affine::translate((copy_x, title_y)),
+            ctx.transform * Affine::translate((copy_x, title_y)),
             Some(copy_w as f32),
             TextWeight::Semibold,
         );
-        text_renderer.draw_text_weighted(
-            scene,
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             subtitle,
             12.0,
             theme.text_dim,
-            transform * Affine::translate((copy_x, subtitle_y)),
+            ctx.transform * Affine::translate((copy_x, subtitle_y)),
             Some(copy_w as f32),
             TextWeight::Regular,
         );
@@ -9380,19 +9358,19 @@ impl PhotosApp {
                 card.y0 + 180.0
             };
             draw_icon(
-                scene,
-                transform,
+                ctx.scene,
+                ctx.transform,
                 Rect::new(private_x, private_y, private_x + 14.0, private_y + 14.0),
                 Icon::Shield,
                 theme.text_dim,
                 1.2,
             );
-            text_renderer.draw_text_weighted(
-                scene,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 "Private on this device",
                 11.0,
                 theme.text_dim,
-                transform * Affine::translate((private_x + 19.0, private_y - 1.0)),
+                ctx.transform * Affine::translate((private_x + 19.0, private_y - 1.0)),
                 Some((card.x1 - private_x - 28.0) as f32),
                 TextWeight::Medium,
             );
@@ -9805,10 +9783,7 @@ impl PhotosApp {
                 )
             };
             self.draw_people_card(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 card,
                 name,
                 &format!(
@@ -9880,10 +9855,7 @@ impl PhotosApp {
                 )
             };
             self.draw_people_card(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 card,
                 cluster
                     .display_name
@@ -10614,10 +10586,7 @@ impl PhotosApp {
                 x += width + LIB_CHIP_GAP;
             }
             self.draw_collection_pager(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 Rect::new(
                     bounds.x1 - f64::from(PAD) - 292.0,
                     y - 7.0,
@@ -10902,15 +10871,13 @@ impl PhotosApp {
             0.0
         };
         let selection_y = pager_y + pager_h;
+        let selection_band =
+            Rect::new(bounds.x0, selection_y, bounds.x1, selection_y + selection_h);
         self.draw_selection_controls(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             bounds,
             masthead,
-            selection_y,
-            selection_h,
+            selection_band,
             desktop_library,
             compact_header.controls,
             presence,
@@ -12006,10 +11973,7 @@ impl PhotosApp {
             .cloned()
             .collect();
         self.draw_collection_pager(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             Rect::new(map.x0 + 12.0, map.y0 + 8.0, map.x1 - 124.0, map.y0 + 48.0),
             self.places_page,
             items.len(),
@@ -12072,31 +12036,26 @@ impl PhotosApp {
     }
 
     #[allow(
-        clippy::too_many_arguments,
-        reason = "the selection shelf keeps its responsive geometry and semantic hit boxes in one audited renderer"
-    )]
-    #[allow(
         clippy::too_many_lines,
         reason = "the responsive selection task bar keeps its painted controls and exact pointer hit geometry in one audited component"
     )]
     fn draw_selection_controls(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         bounds: Rect,
         masthead: Rect,
-        selection_y: f64,
-        selection_h: f64,
+        selection_band: Rect,
         desktop_library: bool,
         compact_selection_rect: Rect,
         presence: &PresenceCtx,
     ) {
         use vello::peniko::Fill;
+        let theme = ctx.theme;
+        let (selection_y, selection_h) = (selection_band.y0, selection_band.height());
 
         self.selection_hits.clear();
         self.selection_destination_hits.clear();
+        let transform = ctx.transform;
         let draw_button = |scene: &mut Scene,
                            text_renderer: &mut TextRenderer,
                            hit: SelectionHit,
@@ -12157,7 +12116,7 @@ impl PhotosApp {
             };
             self.library_select_button.apply_layout_external(rect);
             self.library_select_button
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw(ctx.scene, ctx.transform, ctx.text, theme, presence);
             self.selection_hits.push((SelectionHit::Start, rect));
             return;
         }
@@ -12179,28 +12138,28 @@ impl PhotosApp {
         let wide = desktop_library && selection_h <= 52.0;
         let x = bounds.x0 + f64::from(PAD);
         let max_x = bounds.x1 - f64::from(PAD);
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
-            transform,
+            ctx.transform,
             theme.tokens.colors.surfaces.raised,
             None,
             &Rect::new(x, selection_y, max_x, selection_y + selection_h - 4.0),
         );
-        scene.stroke(
+        ctx.scene.stroke(
             &Stroke::new(1.0),
-            transform,
+            ctx.transform,
             theme.border_standard,
             None,
             &Rect::new(x, selection_y, max_x, selection_y + selection_h - 4.0),
         );
         let label = format!("{selected} selected");
         if wide {
-            text_renderer.draw_text_weighted(
-                scene,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 &label,
                 13.0,
                 theme.text_primary,
-                transform * Affine::translate((x + 12.0, selection_y + 15.0)),
+                ctx.transform * Affine::translate((x + 12.0, selection_y + 15.0)),
                 Some(112.0),
                 TextWeight::Medium,
             );
@@ -12248,8 +12207,8 @@ impl PhotosApp {
                     selection_y + 44.0,
                 );
                 draw_button(
-                    scene,
-                    text_renderer,
+                    ctx.scene,
+                    ctx.text,
                     hit,
                     rect,
                     label,
@@ -12259,12 +12218,12 @@ impl PhotosApp {
                 button_x += width + 6.0;
             }
         } else {
-            text_renderer.draw_text_weighted(
-                scene,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 &label,
                 12.0,
                 theme.text_primary,
-                transform * Affine::translate((x + 10.0, selection_y + 15.0)),
+                ctx.transform * Affine::translate((x + 10.0, selection_y + 15.0)),
                 Some(92.0),
                 TextWeight::Medium,
             );
@@ -12296,8 +12255,8 @@ impl PhotosApp {
                 ),
             ] {
                 draw_button(
-                    scene,
-                    text_renderer,
+                    ctx.scene,
+                    ctx.text,
                     hit,
                     rect,
                     label,
@@ -13559,33 +13518,18 @@ fn metadata_filter_id(folder: Option<&str>, person: Option<&str>, tag: Option<&s
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the helper keeps one centered text paint call explicit at each compact empty-state line"
-)]
 fn draw_centered_text(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    color: vello::peniko::Color,
-    center_x: f64,
-    y: f64,
-    max_width: f64,
-    size: f32,
-    weight: TextWeight,
+    ctx: &mut PaintCtx<'_>,
     text: &str,
+    style: &TextStyle,
+    color: vello::peniko::Color,
+    top_center: Point,
+    max_width: f64,
 ) {
-    let (measured, _) = text_renderer.measure_weighted(text, size, None, weight);
+    let (measured, _) = ctx.text.measure_style(text, None, style);
     let width = f64::from(measured).min(max_width);
-    text_renderer.draw_text_weighted(
-        scene,
-        text,
-        size,
-        color,
-        transform * Affine::translate((center_x - width * 0.5, y)),
-        Some(max_width as f32),
-        weight,
-    );
+    let origin = Point::new(top_center.x - width * 0.5, top_center.y);
+    ctx.text(text, style, color, origin, Some(max_width as f32));
 }
 
 /// The region of a `w`×`h` image `viewer` currently frames, in normalized
@@ -14362,6 +14306,8 @@ impl PhotosApp {
 }
 
 impl Widget for PhotosApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
     }
@@ -14387,10 +14333,6 @@ impl Widget for PhotosApp {
             crate::actions::PHOTOS_OPERATION_TYPE,
             RETAINED_CONTROL_OPERATION_TYPE,
         ]
-    }
-
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 
     fn start_operation(
@@ -16175,6 +16117,12 @@ impl Widget for PhotosApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::CommittedActions for PhotosApp {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 

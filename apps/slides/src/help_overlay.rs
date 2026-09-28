@@ -8,6 +8,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
@@ -138,34 +139,31 @@ impl HelpOverlay {
             TextWeight::Regular,
         );
 
-        Self::draw_rows(
-            scene,
-            transform,
-            text,
-            colors,
+        self.draw_rows(
+            &mut PaintCtx::new(scene, transform, text, theme),
             palette,
             card,
             content_x,
             large_text,
-            self.scroll_row,
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the shared draw context plus the help card geometry"
-    )]
     fn draw_rows(
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        colors: &ui::tokens::Colors,
+        &self,
+        ctx: &mut PaintCtx<'_>,
         palette: &Palette,
         card: Rect,
         content_x: f64,
         large_text: bool,
-        scroll_row: usize,
     ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text,
+            theme,
+        } = ctx;
+        let (transform, colors) = (*transform, &theme.tokens.colors);
+        let scroll_row = self.scroll_row;
         let scale = f64::from(text.text_scale());
         let top = card.y0 + 84.0 * scale;
         let column_width = card.width() - 64.0 * scale;

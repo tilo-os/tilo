@@ -14,8 +14,7 @@
 //!   dedicated endpoint failing, then the composed "popular"
 //!   feed (view-count-sorted search).
 //! - `--probe-engine [ID]`: resolve a stream and decode moving frames through
-//!   the same shared [`media::MediaEngine`] used by the watch page. The former
-//!   `--probe-play`, `--probe-stream`, and `--probe-gst` spellings remain aliases.
+//!   the same shared [`media::MediaEngine`] used by the watch page.
 //!
 //! Shots-only flags:
 //! - `--viewport WxH`: render at `WxH` logical px instead of the default
@@ -91,15 +90,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // frames, printing engine events and checksums.
     if let Some(id) = parse_flag_id(&args, "--probe-engine", "aqz-KE-bpKQ") {
         return run_probe_engine(&id);
-    }
-
-    // Compatibility aliases for the three retired diagnostic-only playback
-    // stacks. All now exercise the production engine instead of maintaining a
-    // separate demuxer/decoder implementation per flag.
-    for alias in ["--probe-play", "--probe-stream", "--probe-gst"] {
-        if let Some(id) = parse_flag_id(&args, alias, "aqz-KE-bpKQ") {
-            return run_probe_engine(&id);
-        }
     }
 
     // `--live-shots <dir> [query]` — render offscreen stills from live data:

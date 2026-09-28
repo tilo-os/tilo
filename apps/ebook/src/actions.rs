@@ -776,10 +776,6 @@ impl EbookAction {
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the serialized bookmark action is deliberately flat so every authored target and removal id is independently auditable"
-    )]
     fn apply_set_bookmark(
         doc: &mut Doc,
         book_id: &str,

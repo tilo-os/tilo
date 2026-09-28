@@ -15,9 +15,10 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey};
 
 use ui::Widget;
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tilo_resource::Resource;
 
@@ -335,7 +336,7 @@ impl CalculatorApp {
     /// actor + committed change, so it replays byte-identically on peers). The
     /// document heads captured just before the first action of the current event
     /// are stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]). The in-memory model is mutated by the
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)). The in-memory model is mutated by the
     /// caller for immediate feedback; `store` then reconciles it (a no-op for the
     /// list the action already wrote), and `sync` re-adopts the document on
     /// undo/redo or a merged peer patch.
@@ -440,10 +441,11 @@ impl CalculatorApp {
     }
 
     fn draw_topbar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
-        draw::fill_rect(scene, t, self.topbar, c.surfaces.raised);
+        ctx.fill_rect(self.topbar, c.surfaces.raised);
         draw::line(
-            scene,
+            ctx.scene,
             t,
             Point::new(self.topbar.x0, self.topbar.y1),
             Point::new(self.topbar.x1, self.topbar.y1),
@@ -461,12 +463,12 @@ impl CalculatorApp {
             self.seg_rects[2].x1 + 4.0,
             self.seg_rects[2].y1 + 4.0,
         );
-        ui::surface::card(scene, t, outer, 10.0, c.neutral[2]);
+        ui::surface::card(ctx.scene, t, outer, 10.0, c.neutral[2]);
         let sel = self.model.mode.index();
         let on_accent = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
         for (i, (m, &r)) in Mode::all().iter().zip(self.seg_rects.iter()).enumerate() {
             if i == sel {
-                draw::fill_round(scene, t, r, 8.0, c.accent[5]);
+                ctx.fill_round(r, 8.0, c.accent[5]);
             }
             let col = if i == sel { on_accent } else { c.text_dim };
             let label = if self.seg_short {
@@ -475,15 +477,12 @@ impl CalculatorApp {
                 m.label()
             };
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 r,
                 label,
-                TopbarLabels::SEG_FONT,
+                &TextStyle::new(TopbarLabels::SEG_FONT).with_weight(TextWeight::Semibold),
                 col,
                 Align::Center,
-                TextWeight::Semibold,
             );
         }
 
@@ -494,11 +493,11 @@ impl CalculatorApp {
             self.deg_rect.x1 + 4.0,
             self.deg_rect.y1 + 4.0,
         );
-        ui::surface::card(scene, t, outer2, 10.0, c.neutral[2]);
+        ui::surface::card(ctx.scene, t, outer2, 10.0, c.neutral[2]);
         if self.model.deg {
-            draw::fill_round(scene, t, self.deg_rect, 8.0, c.accent[5]);
+            ctx.fill_round(self.deg_rect, 8.0, c.accent[5]);
         } else {
-            draw::fill_round(scene, t, self.rad_rect, 8.0, c.accent[5]);
+            ctx.fill_round(self.rad_rect, 8.0, c.accent[5]);
         }
         let rad_col = if self.model.deg {
             c.text_dim
@@ -511,26 +510,20 @@ impl CalculatorApp {
             c.text_dim
         };
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             self.rad_rect,
             "RAD",
-            TopbarLabels::TOGGLE_FONT,
+            &TextStyle::new(TopbarLabels::TOGGLE_FONT).with_weight(TextWeight::Semibold),
             rad_col,
             Align::Center,
-            TextWeight::Semibold,
         );
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             self.deg_rect,
             "DEG",
-            TopbarLabels::TOGGLE_FONT,
+            &TextStyle::new(TopbarLabels::TOGGLE_FONT).with_weight(TextWeight::Semibold),
             deg_col,
             Align::Center,
-            TextWeight::Semibold,
         );
     }
 
@@ -1250,6 +1243,8 @@ impl CalculatorApp {
 }
 
 impl Widget for CalculatorApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn is_focusable(&self) -> bool {
         true
     }
@@ -1922,13 +1917,6 @@ impl Widget for CalculatorApp {
         )]
     }
 
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its history / graph action, so it records one undo boundary for the whole
-    /// gesture (see `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn test_id(&self) -> Option<&str> {
         Some("calculator_app")
     }
@@ -1941,6 +1929,15 @@ impl Widget for CalculatorApp {
     /// change.
     fn is_layout_dirty(&self) -> bool {
         self.area == Rect::ZERO
+    }
+}
+
+impl ui::undo::CommittedActions for CalculatorApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its history / graph action, so it records one undo boundary for the whole
+    /// gesture (see `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -3075,8 +3072,7 @@ mod tests {
                 app.on_key(&WKey::Character(ch.into()), none, &mut state.doc);
             }
             assert_eq!(app.model.funcs[0].expr, "2*x", "undo: typed formula");
-            let before = app
-                .take_committed_action()
+            let before = ui::undo::take_committed_action(&mut app)
                 .expect("formula actions expose one undo bracket");
             assert!(
                 state.record_committed_action(before, None, None),

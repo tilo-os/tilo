@@ -49,7 +49,7 @@ use ui::tokens::typography::TypeScale;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Avatar, Button, ButtonFace, ButtonStyle, Checkbox, CheckboxFace, Chip, ChipLead, ChipStyle,
-    EmptyState, Link, ModalDialog, Text, TextInput, Widget,
+    EmptyState, EmptyStateContent, Link, ModalDialog, Text, TextInput, Widget,
 };
 
 use crate::date;
@@ -60,6 +60,7 @@ use crate::model::{
     group_names_equal, normalize_text, sample_contacts,
 };
 use crate::vcard::{self, VCardVersion};
+use ui::paint::PaintCtx;
 use ui::widget::{PushNav, PushPane};
 
 /// Suggested file name for the export Save dialog.
@@ -1997,7 +1998,7 @@ impl ContactsApp {
             // sync reconcile both together rather than risking a one-sided
             // optimistic list update. Repairing legacy row ids is the same:
             // the next sync reads the repaired book.
-            ContactsAction::MergeContacts { .. } | ContactsAction::MigrateLegacyRows => {
+            ContactsAction::MergeContacts { .. } => {
                 return None;
             }
         };
@@ -3831,10 +3832,7 @@ impl ContactsApp {
         }
         if self.export_dialog.is_open() {
             self.export_dialog.draw(
-                scene,
-                transform,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, transform, tr, theme),
                 self.rect,
                 &self.store,
                 self.sort,
@@ -4267,10 +4265,7 @@ impl ContactsApp {
 
         let hov = |r: Rect| r.contains(self.last_mouse);
         toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             self.hit.import,
             if importing {
                 if compact { "…" } else { "Importing…" }
@@ -4288,10 +4283,7 @@ impl ContactsApp {
         // or offer an Export action that cannot succeed yet.
         if !self.store.is_empty() {
             toolbar_button(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 self.hit.export,
                 if exporting {
                     if compact { "…" } else { "Exporting…" }
@@ -4306,10 +4298,7 @@ impl ContactsApp {
             );
             if self.has_duplicate_candidate() {
                 toolbar_button(
-                    scene,
-                    t,
-                    tr,
-                    theme,
+                    &mut PaintCtx::new(scene, t, tr, theme),
                     self.hit.duplicates,
                     if compact {
                         "2×"
@@ -4322,10 +4311,7 @@ impl ContactsApp {
                 );
             }
             toolbar_button(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 self.hit.new,
                 if compact { "+" } else { TOOLBAR_NEW_LABEL },
                 true,
@@ -4351,15 +4337,14 @@ impl ContactsApp {
             self.rect.y1,
         );
         self.empty_action_rect = EmptyState::paint(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             area,
-            Some(Icon::FileText),
-            "No contacts yet",
-            Some("Create a contact, or import an existing vCard address book."),
-            Some("Create contact"),
+            &EmptyStateContent {
+                icon: Some(Icon::FileText),
+                title: "No contacts yet",
+                message: Some("Create a contact, or import an existing vCard address book."),
+                action_label: Some("Create contact"),
+            },
             self.last_mouse,
         )
         .unwrap_or(Rect::ZERO);
@@ -4432,10 +4417,7 @@ impl ContactsApp {
                 .get(index.saturating_add(1))
                 .is_some_and(|(next, _)| self.selected == Some(*next));
             Self::draw_list_row(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 contact,
                 *rr,
                 selected,
@@ -4453,21 +4435,15 @@ impl ContactsApp {
     /// Draw one contact row: selection highlight, avatar, name/subtitle
     /// (elided to fit), favourite star, and — when `separator_below` — the
     /// rule under it (the caller drops it on either side of a selected row).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle plus the row's two state flags"
-    )]
     fn draw_list_row(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         contact: &Contact,
         rr: Rect,
         selected: bool,
         separator_below: bool,
         m: &ContactRowMetrics,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let sp = &theme.tokens.spacing;
         if selected {
@@ -4478,26 +4454,26 @@ impl ContactsApp {
             let pill = selection_pill(rr, sp);
             let radius = f64::from(theme.tokens.radii.md);
             let tier = row_tier_on(c.surfaces.base, SelectionState::active(true));
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
-                t,
+                ctx.transform,
                 tier.fill,
                 None,
                 &RoundedRect::from_rect(pill, radius),
             );
             if let Some(border) = tier.border {
-                scene.stroke(
+                ctx.scene.stroke(
                     &Stroke::new(1.0),
-                    t,
+                    ctx.transform,
                     border,
                     None,
                     &edge_outline(pill, radius),
                 );
             }
             if let Some(glow) = tier.inner_glow {
-                scene.stroke(
+                ctx.scene.stroke(
                     &Stroke::new(1.0),
-                    t,
+                    ctx.transform,
                     glow,
                     None,
                     &edge_outline(pill.inset(-1.0), (radius - 1.0).max(0.0)),
@@ -4508,7 +4484,14 @@ impl ContactsApp {
         // above the list, vertically centred in the row.
         let av_y = rr.y0 + (rr.height() - m.avatar) / 2.0;
         let av = Rect::new(rr.x0 + PAD, av_y, rr.x0 + PAD + m.avatar, av_y + m.avatar);
-        draw_avatar(scene, t, tr, theme, av, &contact.initials());
+        draw_avatar(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            av,
+            &contact.initials(),
+        );
         let tx = av.x1 + f64::from(sp.s3);
         // Name and subtitle stack as one measured block centred in the row,
         // each elided to a single line so a narrow pane never wraps a row.
@@ -4516,30 +4499,30 @@ impl ContactsApp {
         let avail = (rr.x1 - tx - PAD - star_w).max(24.0) as f32;
         let block_h = m.name_h + m.sub_h;
         let name_y = rr.y0 + (rr.height() - block_h) / 2.0;
-        let name = tr.elide_to_width_weighted(
+        let name = ctx.text.elide_to_width_weighted(
             &contact.display_name(),
             ROW_NAME_TEXT,
             avail,
             TextWeight::Semibold,
         );
-        tr.draw_text_weighted(
-            scene,
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             &name,
             ROW_NAME_TEXT,
             c.text_primary,
-            t * Affine::translate((tx, name_y)),
+            ctx.transform * Affine::translate((tx, name_y)),
             None,
             TextWeight::Semibold,
         );
         let sub = contact.subtitle();
         if !sub.is_empty() {
-            let sub = tr.elide_to_width(&sub, text_sm(), avail);
-            tr.draw_text(
-                scene,
+            let sub = ctx.text.elide_to_width(&sub, text_sm(), avail);
+            ctx.text.draw_text(
+                ctx.scene,
                 &sub,
                 text_sm(),
                 c.text_dim,
-                t * Affine::translate((tx, name_y + m.name_h)),
+                ctx.transform * Affine::translate((tx, name_y + m.name_h)),
                 None,
             );
         }
@@ -4547,8 +4530,8 @@ impl ContactsApp {
             // A trailing indicator sits on the row's centre line (HIG §7),
             // like the avatar, inset like the avatar.
             draw_star(
-                scene,
-                t,
+                ctx.scene,
+                ctx.transform,
                 Point::new(rr.x1 - PAD - 6.0, rr.center().y),
                 6.0,
                 theme.accent_primary,
@@ -4559,7 +4542,15 @@ impl ContactsApp {
         // like a Panel separator (HIG §9.5); a selection pill's own edge
         // replaces it above and below that row.
         if separator_below {
-            separator(scene, t, rr.x0, rr.x1, rr.y1 - 0.5, PAD, c.surfaces.base);
+            separator(
+                ctx.scene,
+                ctx.transform,
+                rr.x0,
+                rr.x1,
+                rr.y1 - 0.5,
+                PAD,
+                c.surfaces.base,
+            );
         }
     }
 
@@ -4594,15 +4585,14 @@ impl ContactsApp {
             )
         };
         self.empty_action_rect = EmptyState::paint(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             self.list_body,
-            Some(Icon::FileText),
-            title,
-            Some(message),
-            action,
+            &EmptyStateContent {
+                icon: Some(Icon::FileText),
+                title,
+                message: Some(message),
+                action_label: action,
+            },
             self.last_mouse,
         )
         .unwrap_or(Rect::ZERO);
@@ -4677,13 +4667,20 @@ impl ContactsApp {
         // avatar. Keeping the name off the action band's row means even a long
         // name ("Katherine Johnson") uses the whole pane width and never
         // truncates at a moderate width.
-        let (name_top, y) = self.draw_detail_header(scene, t, tr, theme, &contact, x0, x1, y);
+        let (name_top, y) =
+            self.draw_detail_header(&mut PaintCtx::new(scene, t, tr, theme), &contact, x0, x1, y);
 
         // Record field value hit rects so a double-click can jump straight
         // into editing the clicked field (see `handle_detail_double_click`).
         self.detail_field_hits.clear();
-        let (mut hits, y) =
-            self.draw_detail_sections(scene, t, tr, theme, presence, &contact, x0, x1, y);
+        let (mut hits, y) = self.draw_detail_sections(
+            &mut PaintCtx::new(scene, t, tr, theme),
+            presence,
+            &contact,
+            x0,
+            x1,
+            y,
+        );
 
         // Header double-click: the name row edits the first/last name.
         hits.push((
@@ -4764,10 +4761,7 @@ impl ContactsApp {
             ),
         ] {
             toolbar_button(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 rect,
                 label,
                 primary,
@@ -4777,59 +4771,64 @@ impl ContactsApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a draw helper's scene/transform/text-renderer/theme plus the geometry it paints are each independently meaningful, matching detail_field/toolbar_button/menu_item elsewhere in this file"
-    )]
     fn draw_detail_header(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         contact: &Contact,
         x0: f64,
         x1: f64,
         y: f64,
     ) -> (f64, f64) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let sp = &theme.tokens.spacing;
         // Every header row is stacked from its measured line: name, subtitle
         // and chips can no longer land on each other when the type scales.
-        let name_h = f64::from(tr.measure("Ag", 26.0, None).1);
-        let sub_h = f64::from(tr.measure("Ag", 14.0, None).1);
-        let chip_text_h = f64::from(tr.measure("Ag", 11.0, None).1);
+        let name_h = f64::from(ctx.text.measure("Ag", 26.0, None).1);
+        let sub_h = f64::from(ctx.text.measure("Ag", 14.0, None).1);
+        let chip_text_h = f64::from(ctx.text.measure("Ag", 11.0, None).1);
         let av_size = (name_h + sub_h).max(72.0);
         let av = Rect::new(x0, y, x0 + av_size, y + av_size);
-        draw_avatar(scene, t, tr, theme, av, &contact.initials());
+        draw_avatar(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            av,
+            &contact.initials(),
+        );
 
         // Action buttons (favorite star, Edit, Delete) — top right.
-        self.draw_detail_actions(scene, t, tr, theme, contact);
+        self.draw_detail_actions(ctx.scene, ctx.transform, ctx.text, theme, contact);
 
         // Name + subtitle on their own full-width rows beneath the avatar.
         let head_w = (x1 - x0).max(40.0) as f32;
         let name_y = y + av_size + f64::from(sp.s4);
-        let name =
-            tr.elide_to_width_weighted(&contact.display_name(), 26.0, head_w, TextWeight::Bold);
-        tr.draw_text_weighted(
-            scene,
+        let name = ctx.text.elide_to_width_weighted(
+            &contact.display_name(),
+            26.0,
+            head_w,
+            TextWeight::Bold,
+        );
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             &name,
             26.0,
             c.text_primary,
-            t * Affine::translate((x0, name_y)),
+            ctx.transform * Affine::translate((x0, name_y)),
             None,
             TextWeight::Bold,
         );
         let mut hy = name_y + name_h + f64::from(sp.s1);
         let sub = contact.subtitle();
         if !sub.is_empty() {
-            let sub = tr.elide_to_width(&sub, 14.0, head_w);
-            tr.draw_text(
-                scene,
+            let sub = ctx.text.elide_to_width(&sub, 14.0, head_w);
+            ctx.text.draw_text(
+                ctx.scene,
                 &sub,
                 14.0,
                 c.text_dim,
-                t * Affine::translate((x0, hy)),
+                ctx.transform * Affine::translate((x0, hy)),
                 None,
             );
             hy += sub_h + f64::from(sp.s2);
@@ -4843,7 +4842,7 @@ impl ContactsApp {
             let mut bx = x0;
             let mut by = hy;
             for g in &contact.groups {
-                let tw = f64::from(tr.measure(&g.value, 11.0, None).0);
+                let tw = f64::from(ctx.text.measure(&g.value, 11.0, None).0);
                 let bw = tw + 2.0 * pad_x;
                 if bx > x0 && bx + bw > x1 {
                     bx = x0;
@@ -4851,20 +4850,23 @@ impl ContactsApp {
                 }
                 let br = Rect::new(bx, by, bx + bw, by + chip_h);
                 let shape = RoundedRect::from_rect(br, chip_h / 2.0);
-                scene.fill(
+                ctx.scene.fill(
                     Fill::NonZero,
-                    t,
+                    ctx.transform,
                     theme.accent_primary.with_alpha_factor(0.16),
                     None,
                     &shape,
                 );
-                let label = tr.elide_to_width(&g.value, 11.0, (bw - 2.0 * pad_x).max(12.0) as f32);
-                tr.draw_text(
-                    scene,
+                let label =
+                    ctx.text
+                        .elide_to_width(&g.value, 11.0, (bw - 2.0 * pad_x).max(12.0) as f32);
+                ctx.text.draw_text(
+                    ctx.scene,
                     &label,
                     11.0,
                     theme.accent_primary,
-                    t * Affine::translate((bx + pad_x, by + (chip_h - chip_text_h) / 2.0)),
+                    ctx.transform
+                        * Affine::translate((bx + pad_x, by + (chip_h - chip_text_h) / 2.0)),
                     None,
                 );
                 bx += bw + gap;
@@ -4879,71 +4881,65 @@ impl ContactsApp {
     /// Phone/email/address/birthday/website/notes sections, in order, each
     /// followed by its double-click hit rect. Returns the collected hits and
     /// the y cursor after the last section.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a draw helper's scene/transform/text-renderer/theme/presence plus the geometry it paints are each independently meaningful, matching detail_field/toolbar_button/menu_item elsewhere in this file"
-    )]
     fn draw_detail_sections(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         presence: &PresenceCtx,
         contact: &Contact,
         x0: f64,
         x1: f64,
         mut y: f64,
     ) -> (Vec<(Slot, Rect)>, f64) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
         let mut hits: Vec<(Slot, Rect)> = Vec::new();
 
         // Sections (free helpers avoid closures double-borrowing scene/tr).
         if !contact.phones.is_empty() {
-            detail_section(scene, t, tr, theme, x0, &mut y, "PHONE");
+            detail_section(ctx, x0, &mut y, "PHONE");
             for (i, p) in contact.phones.iter().enumerate() {
                 let y0 = y;
-                detail_field(scene, t, tr, theme, x0, x1, &mut y, &p.label, &p.value);
+                detail_field(ctx, x0, x1, &mut y, &p.label, &p.value);
                 hits.push((Slot::Phone(i), Rect::new(x0, y0 - 4.0, x1, y)));
             }
         }
         if !contact.emails.is_empty() {
-            detail_section(scene, t, tr, theme, x0, &mut y, "EMAIL");
+            detail_section(ctx, x0, &mut y, "EMAIL");
             for (i, e) in contact.emails.iter().enumerate() {
                 let y0 = y;
-                detail_field(scene, t, tr, theme, x0, x1, &mut y, &e.label, &e.value);
+                detail_field(ctx, x0, x1, &mut y, &e.label, &e.value);
                 hits.push((Slot::Email(i), Rect::new(x0, y0 - 4.0, x1, y)));
             }
         }
         if !contact.addresses.is_empty() {
-            detail_section(scene, t, tr, theme, x0, &mut y, "ADDRESS");
+            detail_section(ctx, x0, &mut y, "ADDRESS");
             for (i, a) in contact.addresses.iter().enumerate() {
                 let y0 = y;
-                detail_field(scene, t, tr, theme, x0, x1, &mut y, &a.label, &a.one_line());
+                detail_field(ctx, x0, x1, &mut y, &a.label, &a.one_line());
                 // The address is one logical block; double-clicking it edits
                 // its street line (the first address input).
                 hits.push((Slot::AddrStreet(i), Rect::new(x0, y0 - 4.0, x1, y)));
             }
         }
         if let Some(bday) = &contact.birthday {
-            detail_section(scene, t, tr, theme, x0, &mut y, "BIRTHDAY");
+            detail_section(ctx, x0, &mut y, "BIRTHDAY");
             let y0 = y;
             // Render the structured date, formatted; double-click still edits it.
-            detail_field(scene, t, tr, theme, x0, x1, &mut y, "date", &bday.pretty());
+            detail_field(ctx, x0, x1, &mut y, "date", &bday.pretty());
             hits.push((Slot::Birthday, Rect::new(x0, y0 - 4.0, x1, y)));
         }
         if contact.website.is_empty() {
             self.website_link = None;
         } else {
-            detail_section(scene, t, tr, theme, x0, &mut y, "WEBSITE");
+            detail_section(ctx, x0, &mut y, "WEBSITE");
             // "url" field label on the left, matching the other detail rows.
-            tr.draw_text(
-                scene,
+            ctx.text.draw_text(
+                ctx.scene,
                 "url",
                 12.0,
                 c.text_dim,
-                t * Affine::translate((x0, y + 2.0)),
+                ctx.transform * Affine::translate((x0, y + 2.0)),
                 Some(64.0),
             );
             // The website is a live hyperlink (ui `Link` widget), not plain
@@ -4962,26 +4958,30 @@ impl ContactsApp {
             if needs_new {
                 self.website_link = Some(Link::new(&contact.website).with_font_size(14.0));
             }
-            let (lw, lh) = tr.measure(&contact.website, 14.0, None);
+            let (lw, lh) = ctx.text.measure(&contact.website, 14.0, None);
             let lw = f64::from(lw).min(vw);
             let lh = f64::from(lh).max(20.0);
             let lrect = Rect::new(vx, y, vx + lw, y + lh);
             if let Some(link) = self.website_link.as_mut() {
                 link.apply_layout_external(lrect);
-                link.draw(scene, t, tr, theme, presence);
+                link.draw(ctx.scene, ctx.transform, ctx.text, theme, presence);
             }
             y += lh + 8.0 * scale;
         }
         if !contact.notes.is_empty() {
-            detail_section(scene, t, tr, theme, x0, &mut y, "NOTES");
+            detail_section(ctx, x0, &mut y, "NOTES");
             let y0 = y;
-            let h = f64::from(tr.measure(&contact.notes, 14.0, Some((x1 - x0) as f32)).1);
-            tr.draw_text(
-                scene,
+            let h = f64::from(
+                ctx.text
+                    .measure(&contact.notes, 14.0, Some((x1 - x0) as f32))
+                    .1,
+            );
+            ctx.text.draw_text(
+                ctx.scene,
                 &contact.notes,
                 14.0,
                 c.text_primary,
-                t * Affine::translate((x0, y)),
+                ctx.transform * Affine::translate((x0, y)),
                 Some((x1 - x0) as f32),
             );
             y += h + 8.0 * scale;
@@ -5140,10 +5140,7 @@ impl ContactsApp {
             );
         }
         toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             self.hit.save,
             "Save",
             true,
@@ -5151,10 +5148,7 @@ impl ContactsApp {
             false,
         );
         toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             self.hit.cancel,
             "Cancel",
             false,
@@ -5443,10 +5437,6 @@ impl ContactsApp {
     /// The birthday calendar popup: month/year header with prev/next
     /// chevrons, the weekday header row, and every day cell (hover +
     /// selected-day highlight).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the birthday popup combines paint context and anchor bounds with the displayed year and month"
-    )]
     fn draw_popup_calendar(
         &self,
         scene: &mut Scene,
@@ -5620,10 +5610,7 @@ impl ContactsApp {
         );
         let m = self.last_mouse;
         toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             g.cancel,
             "Cancel",
             false,
@@ -5631,10 +5618,7 @@ impl ContactsApp {
             false,
         );
         toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             g.discard,
             "Discard",
             false,
@@ -5642,10 +5626,7 @@ impl ContactsApp {
             false,
         );
         toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             g.save,
             "Save",
             true,
@@ -6056,71 +6037,58 @@ impl FieldInput {
 // Drawing helpers (free functions)
 // =====================================================================
 
-pub(crate) fn detail_section(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    x0: f64,
-    y: &mut f64,
-    title: &str,
-) {
+pub(crate) fn detail_section(ctx: &mut PaintCtx<'_>, x0: f64, y: &mut f64, title: &str) {
+    let theme = ctx.theme;
     let scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
     *y += 10.0 * scale;
-    tr.draw_text_weighted(
-        scene,
+    ctx.text.draw_text_weighted(
+        ctx.scene,
         title,
         11.0,
         theme.tokens.colors.text_dim,
-        t * Affine::translate((x0, *y)),
+        ctx.transform * Affine::translate((x0, *y)),
         None,
         TextWeight::Semibold,
     );
     *y += 22.0 * scale;
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "contact fields combine paint context, column bounds and a running vertical cursor with separate label and value text"
-)]
 pub(crate) fn detail_field(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     x0: f64,
     x1: f64,
     y: &mut f64,
     label: &str,
     value: &str,
 ) {
+    let theme = ctx.theme;
     let c = &theme.tokens.colors;
     let sp = &theme.tokens.spacing;
     // The label column is sized from the widest label the app can show, so
     // every value in a card starts on one edge and a scaled label never runs
     // under its value. At 1× the authored 78px column still wins.
-    let widest = f64::from(tr.measure(DETAIL_WIDEST_LABEL, text_sm(), None).0);
+    let widest = f64::from(ctx.text.measure(DETAIL_WIDEST_LABEL, text_sm(), None).0);
     let label_col = (widest + f64::from(sp.s4)).max(DETAIL_LABEL_COL);
-    let (_, label_h) = tr.measure(label, text_sm(), None);
-    let (_, value_line_h) = tr.measure("Ag", text_base(), None);
+    let (_, label_h) = ctx.text.measure(label, text_sm(), None);
+    let (_, value_line_h) = ctx.text.measure("Ag", text_base(), None);
     // Label and the value's first line share a centre.
     let label_y = *y + (f64::from(value_line_h) - f64::from(label_h)) / 2.0;
-    tr.draw_text(
-        scene,
+    ctx.text.draw_text(
+        ctx.scene,
         label,
         text_sm(),
         c.text_dim,
-        t * Affine::translate((x0, label_y)),
+        ctx.transform * Affine::translate((x0, label_y)),
         Some((label_col - f64::from(sp.s2)) as f32),
     );
     let vw = (x1 - x0 - label_col).max(40.0);
-    let h = f64::from(tr.measure(value, text_base(), Some(vw as f32)).1);
-    tr.draw_text(
-        scene,
+    let h = f64::from(ctx.text.measure(value, text_base(), Some(vw as f32)).1);
+    ctx.text.draw_text(
+        ctx.scene,
         value,
         text_base(),
         c.text_primary,
-        t * Affine::translate((x0 + label_col, *y)),
+        ctx.transform * Affine::translate((x0 + label_col, *y)),
         Some(vw as f32),
     );
     *y += h.max(20.0) + f64::from(sp.s2);
@@ -6151,21 +6119,15 @@ fn type_label(draft: &Contact, target: TypeTarget) -> &str {
 /// the caller's own hit-testing against the last pointer position; the rest
 /// look (radius, 13px medium label, accent-vs-raised fills) matches the chrome
 /// this app has always drawn.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a draw helper's scene/transform/text-renderer/theme plus the geometry and state it paints are each independently meaningful, matching detail_field/menu_item elsewhere in this file"
-)]
 pub(crate) fn toolbar_button(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     rect: Rect,
     label: &str,
     primary: bool,
     hovered: bool,
     pressed: bool,
 ) {
+    let theme = ctx.theme;
     if rect.width() <= 0.0 {
         return;
     }
@@ -6192,7 +6154,7 @@ pub(crate) fn toolbar_button(
     if let Some(icon) = icon {
         face = face.icon(icon);
     }
-    Button::paint(scene, t, tr, theme, &face);
+    Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
 }
 
 fn add_button(
@@ -6321,10 +6283,6 @@ fn selection_pill(row: Rect, sp: &Spacing) -> Rect {
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "menu items combine paint context and row bounds with their label, hover and selection state"
-)]
 fn menu_item(
     scene: &mut Scene,
     t: Affine,
@@ -6864,6 +6822,8 @@ impl ContactsApp {
 }
 
 impl Widget for ContactsApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
     }
@@ -6874,17 +6834,6 @@ impl Widget for ContactsApp {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
-        // Legacy rows receive deterministic read identities, then this small
-        // canonical migration persists them before UI edits/actions can target
-        // a row. It only touches missing row ids and is idempotent.
-        if self.actions.is_hosted() {
-            if !self.seeded {
-                let _ = self
-                    .try_perform_action(state, &crate::actions::ContactsAction::MigrateLegacyRows);
-            }
-        } else {
-            ContactsDoc::migrate_legacy_rows(state);
-        }
         if let Some((token, import_as_new)) = self.pending_conflict_resolution.take()
             && let Err(error) = self.resolve_import_conflict(state, &token, import_as_new)
         {
@@ -7088,13 +7037,6 @@ impl Widget for ContactsApp {
     /// contact has no resource for the broker to invoke.
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         Self::publish_resource(self, doc, id)
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its contacts action, so it records one undo boundary for it (see
-    /// [`Self::perform_action`]). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.take_committed()
     }
 
     fn start_operation(
@@ -8303,6 +8245,15 @@ impl Widget for ContactsApp {
     }
 }
 
+impl ui::undo::CommittedActions for ContactsApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its contacts action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
 impl ContactsApp {
     #[allow(
         clippy::too_many_lines,
@@ -8861,10 +8812,6 @@ impl ContactsApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "click routing keeps the CRDT location, modifiers, handled flag and layout context available to the selected affordance"
-    )]
     /// Route a click to whichever affordance is under the cursor. Split into
     /// per-region helpers purely for length; the guard order (and thus which
     /// affordance wins when rects overlap) is unchanged from one flat
@@ -9369,10 +9316,6 @@ impl ContactsApp {
         true
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "caret placement forwards the CRDT location, modifiers and layout context to the focused shared text input"
-    )]
     fn forward_press_to_focused_input(
         &mut self,
         state: &mut AutoCommit,

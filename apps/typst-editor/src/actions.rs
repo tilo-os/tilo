@@ -454,7 +454,7 @@ mod tests {
                     .all(|a| a.action.kind != tilo_actions::OperationKind::Document)
             );
             assert!(
-                app.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut app).is_none(),
                 "effects/views do not create document undo boundaries"
             );
         }

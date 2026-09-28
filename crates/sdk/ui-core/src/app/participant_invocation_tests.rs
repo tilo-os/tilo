@@ -71,6 +71,8 @@ fn tree(view: &str) -> Vec<Resource> {
 }
 
 impl Widget for TwoViews {
+    crate::provides!(dyn crate::collaboration::participants::Participants);
+
     crate::testing::inert_widget_methods!(
         leaf_layout,
         apply_layout,
@@ -106,6 +108,31 @@ impl Widget for TwoViews {
             Some(_) => Vec::new(),
         }
     }
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[VIEW_TYPE]
+    }
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        _: &mut automerge::AutoCommit,
+        _: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(crate::widget::OperationRequest { type_id, .. }) = op.unscoped() else {
+            return Ok(None);
+        };
+        let participant = crate::invocation_scope::current_participant();
+        let mut probe = self.0.borrow_mut();
+        if let Some(participant) = &participant {
+            *probe.carets.entry(participant.clone()).or_default() += 1;
+        }
+        probe.view_ops.push((type_id.to_owned(), participant));
+        Ok(Some(crate::widget::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        )))
+    }
+}
+
+impl crate::collaboration::participants::Participants for TwoViews {
     fn join_participant(&mut self, participant: &ParticipantId) -> bool {
         let mut probe = self.0.borrow_mut();
         if probe.joined.contains(participant) {
@@ -118,9 +145,6 @@ impl Widget for TwoViews {
         let mut probe = self.0.borrow_mut();
         probe.joined.retain(|joined| joined != participant);
         probe.left.push(participant.clone());
-    }
-    fn set_participant_host(&mut self, host: bool) {
-        self.0.borrow_mut().host = host;
     }
     fn set_participant_label(&mut self, participant: &ParticipantId, label: &str) {
         self.0
@@ -148,27 +172,8 @@ impl Widget for TwoViews {
             })
             .collect()
     }
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[VIEW_TYPE]
-    }
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::widget::OperationRequest { type_id, .. }) = op.unscoped() else {
-            return Ok(None);
-        };
-        let participant = crate::invocation_scope::current_participant();
-        let mut probe = self.0.borrow_mut();
-        if let Some(participant) = &participant {
-            *probe.carets.entry(participant.clone()).or_default() += 1;
-        }
-        probe.view_ops.push((type_id.to_owned(), participant));
-        Ok(Some(crate::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+    fn set_participant_host(&mut self, host: bool) {
+        self.0.borrow_mut().host = host;
     }
 }
 
@@ -448,15 +453,17 @@ fn a_bound_component_builds_participant_trees_against_its_own_record() {
     let target = crate::application::LaunchTarget::New;
     let context = crate::application::HostContext::prepare(
         &definition,
-        records.clone(),
-        views,
-        "D".into(),
-        1,
-        Rc::new(RefCell::new(
-            crate::permissions::PermissionContext::permissive(),
-        )),
-        crate::permissions::UserId("fixture-user".into()),
-        tilo_actions::ActionContext::default(),
+        crate::application::HostContextInputs {
+            records: records.clone(),
+            views,
+            device_id: "D".into(),
+            instance_id: 1,
+            permissions: Rc::new(RefCell::new(
+                crate::permissions::PermissionContext::permissive(),
+            )),
+            author: crate::permissions::UserId("fixture-user".into()),
+            action_context: tilo_actions::ActionContext::default(),
+        },
         &target,
     )
     .unwrap();

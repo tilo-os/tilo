@@ -34,7 +34,6 @@
     clippy::struct_excessive_bools,
     clippy::struct_field_names,
     clippy::suspicious_operation_groupings,
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::type_complexity,
     clippy::unnecessary_mut_passed,

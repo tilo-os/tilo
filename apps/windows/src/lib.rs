@@ -13,7 +13,6 @@
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
-    clippy::too_many_arguments,
     clippy::unnecessary_literal_bound,
     reason = "app-local rendering geometry and Widget trait signatures"
 )]

@@ -1675,7 +1675,10 @@ impl FloatingSurfaceProvider for WindowGroup {
 }
 
 impl Widget for WindowGroup {
-    crate::provides!(dyn crate::widget::FloatingSurfaceProvider);
+    crate::provides!(
+        dyn crate::widget::FloatingSurfaceProvider,
+        dyn crate::collaboration::participants::CollaborationTopology
+    );
 
     fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
         (!self.is_closing()).then(|| self.active_tab_id())
@@ -1871,12 +1874,6 @@ impl Widget for WindowGroup {
             reports.extend(child.take_component_close_reports());
         }
         reports
-    }
-    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.hosts
-            .iter_mut()
-            .map(|(_, host)| host as &mut dyn Widget)
-            .collect()
     }
 
     fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
@@ -2255,6 +2252,15 @@ impl Widget for WindowGroup {
             || group_close_in_flight
             || (!self.external_navigation && self.bar.needs_animation_frame())
             || host
+    }
+}
+
+impl crate::collaboration::participants::CollaborationTopology for WindowGroup {
+    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.hosts
+            .iter_mut()
+            .map(|(_, host)| host as &mut dyn Widget)
+            .collect()
     }
 }
 

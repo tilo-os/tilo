@@ -131,20 +131,18 @@ impl Store {
                     committed.get_change_by_hash(hash).is_some()
                 })?;
                 let now = crate::now_time(now_ns);
+                let contributors = ContributorCheck {
+                    store,
+                    candidate,
+                    route,
+                    record: &record,
+                    certificate,
+                    store_time: &store_time,
+                    now_ns,
+                    now,
+                };
                 authorization.validate_owner_contributors(|request, exact_route, token| {
-                    validate_contributor(
-                        store,
-                        candidate,
-                        route,
-                        &record,
-                        certificate,
-                        &store_time,
-                        now_ns,
-                        now,
-                        request,
-                        exact_route,
-                        token,
-                    )
+                    contributors.validate(request, exact_route, token)
                 })
             },
         )
@@ -306,74 +304,90 @@ pub(crate) fn apply_worker_document(
     })
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "explicit protocol inputs stay separate parameters"
-)]
-fn validate_contributor(
-    store: &Store,
-    candidate: &StatePeer,
-    route: &RouteSpec,
-    record: &str,
-    certificate: &DeviceCert,
-    store_time: &tilo_action_broker::peer_actions::PolicyTime,
+/// The held owner basis one scoped commit checks every contributor against:
+/// the locked Store and candidate peer, the committed route and record, the
+/// host signer's certificate, the Store owner's policy time and the commit's
+/// clock readings.
+struct ContributorCheck<'a> {
+    store: &'a Store,
+    candidate: &'a StatePeer,
+    route: &'a RouteSpec,
+    record: &'a str,
+    certificate: &'a DeviceCert,
+    store_time: &'a tilo_action_broker::peer_actions::PolicyTime,
     now_ns: u64,
     now: web_time::SystemTime,
-    request: &ui::invocation_scope::PublishedInvocationRequest,
-    exact_route: &RouteSpec,
-    token: &(dyn std::any::Any + Send + Sync),
-) -> Result<(), String> {
-    let original = token
-        .downcast_ref::<tilo_action_broker::collab_broker_capnp::OriginalInvocation>()
-        .ok_or("contributor custody was not minted by this Cloud host")?;
-    if original.request() != request
-        || exact_route != route
-        || original.route().app_id != route.app_id
-        || original.route().cluster_id != route.cluster_id.to_string()
-        || original.route().record_id != record
-    {
-        return Err("contributor custody differs from its original invocation".into());
+}
+
+impl ContributorCheck<'_> {
+    fn validate(
+        &self,
+        request: &ui::invocation_scope::PublishedInvocationRequest,
+        exact_route: &RouteSpec,
+        token: &(dyn std::any::Any + Send + Sync),
+    ) -> Result<(), String> {
+        let ContributorCheck {
+            store,
+            candidate,
+            route,
+            record,
+            certificate,
+            store_time,
+            now_ns,
+            now,
+        } = *self;
+        let original = token
+            .downcast_ref::<tilo_action_broker::collab_broker_capnp::OriginalInvocation>()
+            .ok_or("contributor custody was not minted by this Cloud host")?;
+        if original.request() != request
+            || exact_route != route
+            || original.route().app_id != route.app_id
+            || original.route().cluster_id != route.cluster_id.to_string()
+            || original.route().record_id != record
+        {
+            return Err("contributor custody differs from its original invocation".into());
+        }
+        if !original.policy_time().same_origin(store_time) {
+            return Err("contributor policy origin differs from the Store owner".into());
+        }
+        if original.worker_certificate() != certificate {
+            return Err("contributor worker certificate differs from host signer".into());
+        }
+        // Pure custody: broker accepting, same private worker registration,
+        // certificate valid at the original clock, enrolled connection current.
+        original.check_custody()?;
+        let caller = original.certificate()?;
+        tilo_user_identity::verify_device_cert_at(caller, now_ns)
+            .map_err(|_| "contributor certificate expired")?;
+        if let Some(dispatch) = original.enrolled_dispatch() {
+            // The task ledger in this held Store is the enrolled authority.
+            return store
+                .authorize_agent_task_action(
+                    dispatch,
+                    &route.app_id,
+                    record,
+                    &request.address.resource,
+                    &request.address.action,
+                )
+                .map_err(|error| error.to_string());
+        }
+        if !candidate.certificates().contains(caller) {
+            return Err("contributor certificate is no longer admitted".into());
+        }
+        let (role, _, _) = candidate.permissions(caller.device_public_key, now)?;
+        use collab_types::Role;
+        use tilo_actions::PermissionRequirement as P;
+        let allowed = match original.contract().permission {
+            P::None | P::Read => !matches!(role, Role::Denied),
+            P::Comment => matches!(role, Role::Owner | Role::Editor | Role::Commenter),
+            P::Write => matches!(role, Role::Owner | Role::Editor),
+            P::Invite | P::Admin => matches!(role, Role::Owner),
+        };
+        if !allowed {
+            return Err("contributor role no longer permits this invocation".into());
+        }
+        Ok(())
     }
-    if !original.policy_time().same_origin(store_time) {
-        return Err("contributor policy origin differs from the Store owner".into());
-    }
-    if original.worker_certificate() != certificate {
-        return Err("contributor worker certificate differs from host signer".into());
-    }
-    // Pure custody: broker accepting, same private worker registration,
-    // certificate valid at the original clock, enrolled connection current.
-    original.check_custody()?;
-    let caller = original.certificate()?;
-    tilo_user_identity::verify_device_cert_at(caller, now_ns)
-        .map_err(|_| "contributor certificate expired")?;
-    if let Some(dispatch) = original.enrolled_dispatch() {
-        // The task ledger in this held Store is the enrolled authority.
-        return store
-            .authorize_agent_task_action(
-                dispatch,
-                &route.app_id,
-                record,
-                &request.address.resource,
-                &request.address.action,
-            )
-            .map_err(|error| error.to_string());
-    }
-    if !candidate.certificates().contains(caller) {
-        return Err("contributor certificate is no longer admitted".into());
-    }
-    let (role, _, _) = candidate.permissions(caller.device_public_key, now)?;
-    use collab_types::Role;
-    use tilo_actions::PermissionRequirement as P;
-    let allowed = match original.contract().permission {
-        P::None | P::Read => !matches!(role, Role::Denied),
-        P::Comment => matches!(role, Role::Owner | Role::Editor | Role::Commenter),
-        P::Write => matches!(role, Role::Owner | Role::Editor),
-        P::Invite | P::Admin => matches!(role, Role::Owner),
-    };
-    if !allowed {
-        return Err("contributor role no longer permits this invocation".into());
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -38,7 +38,7 @@ use ui::Widget;
 use ui::format::bytes as format_bytes;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{TextInput, TextInputKind};
 
@@ -806,10 +806,6 @@ impl HexView {
     }
 
     /// Draw a small rounded pill ending at `right_x`; returns its left x.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Pill painting combines render context, right alignment and bar bounds, label measurement, and the fill color."
-    )]
     fn draw_pill(
         scene: &mut Scene,
         t: Affine,
@@ -882,16 +878,13 @@ impl HexView {
 
             // Offset gutter.
             let gutter = format!("{row_off:08X}");
-            tr.draw_text_styled(
+            tr.draw_style(
                 scene,
                 &gutter,
-                m.cell_font,
                 theme.tokens.colors.accent[6],
                 t * Affine::translate((m.gutter_x0, text_y)),
                 None,
-                TextWeight::Regular,
-                false,
-                true,
+                &TextStyle::new(m.cell_font).with_family(FontChoice::Monospace),
             );
 
             let ctx = GridCellCtx {
@@ -923,42 +916,39 @@ impl HexView {
     ) {
         let tokens = &theme.tokens;
         let head_y = m.col_header_y;
-        tr.draw_text_styled(
+        tr.draw_style(
             scene,
             "Offset",
-            m.header_font,
             tokens.colors.text_dim,
             t * Affine::translate((m.gutter_x0, head_y)),
             None,
-            TextWeight::Medium,
-            false,
-            true,
+            &TextStyle::new(m.header_font)
+                .with_weight(TextWeight::Medium)
+                .with_family(FontChoice::Monospace),
         );
         for c in 0..bpr {
             let label = format!("{c:02X}");
             let x = m.hex_x0 + c as f64 * m.hex_col_w;
-            tr.draw_text_styled(
+            tr.draw_style(
                 scene,
                 &label,
-                m.header_font,
                 tokens.colors.text_dim,
                 t * Affine::translate((x, head_y)),
                 None,
-                TextWeight::Medium,
-                false,
-                true,
+                &TextStyle::new(m.header_font)
+                    .with_weight(TextWeight::Medium)
+                    .with_family(FontChoice::Monospace),
             );
         }
-        tr.draw_text_styled(
+        tr.draw_style(
             scene,
             "ASCII",
-            m.header_font,
             tokens.colors.text_dim,
             t * Affine::translate((m.ascii_x0, head_y)),
             None,
-            TextWeight::Medium,
-            false,
-            true,
+            &TextStyle::new(m.header_font)
+                .with_weight(TextWeight::Medium)
+                .with_family(FontChoice::Monospace),
         );
         // Rules on the grid derive from the surface they cross (HIG §9.5):
         // the declared border is three shades from the dark base and vanishes.
@@ -1135,20 +1125,19 @@ impl HexView {
         } else {
             tokens.colors.text_primary
         };
-        tr.draw_text_styled(
+        tr.draw_style(
             scene,
             &format!("{:02X}", geom.byte),
-            size,
             hex_color,
             t * Affine::translate((geom.hex_x, ctx.text_y)),
             None,
-            if is_dirty {
-                TextWeight::Bold
-            } else {
-                TextWeight::Regular
-            },
-            false,
-            true,
+            &TextStyle::new(size)
+                .with_weight(if is_dirty {
+                    TextWeight::Bold
+                } else {
+                    TextWeight::Regular
+                })
+                .with_family(FontChoice::Monospace),
         );
 
         // ASCII glyph.
@@ -1164,16 +1153,13 @@ impl HexView {
         } else {
             tokens.colors.neutral[5]
         };
-        tr.draw_text_styled(
+        tr.draw_style(
             scene,
             &ch,
-            size,
             ascii_color,
             t * Affine::translate((geom.ascii_x, ctx.text_y)),
             None,
-            TextWeight::Regular,
-            false,
-            true,
+            &TextStyle::new(size).with_family(FontChoice::Monospace),
         );
     }
 
@@ -1190,10 +1176,6 @@ impl HexView {
         Some((cur, cur + width - 1))
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Inspector painting receives render context and the measured grid geometry used to align decoded byte values."
-    )]
     fn draw_inspector(
         &self,
         scene: &mut Scene,
@@ -1238,16 +1220,13 @@ impl HexView {
             self.model.endian().label()
         );
         let value_size = ts(tr, tokens.typography.scale.sm);
-        tr.draw_text_styled(
+        tr.draw_style(
             scene,
             &sub,
-            value_size,
             tokens.colors.accent[6],
             t * Affine::translate((x, y)),
             None,
-            TextWeight::Regular,
-            false,
-            true,
+            &TextStyle::new(value_size).with_family(FontChoice::Monospace),
         );
         let value_line = line_box(tr, value_size);
         y += value_line + 9.0;
@@ -1290,32 +1269,28 @@ impl HexView {
                 None,
                 &band,
             );
-            tr.draw_text_styled(
+            tr.draw_style(
                 scene,
                 r.label,
-                value_size,
                 tokens.colors.text_dim,
                 t * Affine::translate((x, y)),
                 None,
-                TextWeight::Medium,
-                false,
-                true,
+                &TextStyle::new(value_size)
+                    .with_weight(TextWeight::Medium)
+                    .with_family(FontChoice::Monospace),
             );
             let val_color = if r.value == "—" {
                 tokens.colors.neutral[4]
             } else {
                 tokens.colors.text_primary
             };
-            tr.draw_text_styled(
+            tr.draw_style(
                 scene,
                 &r.value,
-                value_size,
                 val_color,
                 t * Affine::translate((x + label_w, y)),
                 Some((panel.width() - pad * 2.0 - label_w) as f32),
-                TextWeight::Regular,
-                false,
-                true,
+                &TextStyle::new(value_size).with_family(FontChoice::Monospace),
             );
             y += row_h;
         }

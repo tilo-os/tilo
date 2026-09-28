@@ -17,14 +17,6 @@
 //! the same [`crate::portal::CallerMap`] the portal backend uses, riding
 //! along on [`IncomingNotification::caller`].
 
-#![allow(
-    clippy::used_underscore_binding,
-    reason = "the D-Bus `Notify` signature requires app_icon; the zbus `#[interface]` macro \
-              deserialises it into this named parameter and forwards it by identifier into its \
-              generated dispatcher even though this handler has no use for the value, so the \
-              lint fires on macro-generated code a per-function #[allow] cannot reach"
-)]
-
 #[cfg(target_os = "linux")]
 use crate::priority_contacts::ContactProjection;
 #[cfg(target_os = "linux")]
@@ -32,11 +24,11 @@ use crate::priority_contacts::PriorityContactRegistry;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tilo_desktop::notifications::ContinuityNotificationId;
 #[cfg(target_os = "linux")]
-use zbus::interface;
+use zbus::names::{InterfaceName, MemberName, OwnedUniqueName};
 #[cfg(target_os = "linux")]
-use zbus::names::OwnedUniqueName;
+use zbus::object_server::{DispatchResult2, Interface, SignalEmitter};
 #[cfg(target_os = "linux")]
-use zbus::object_server::SignalEmitter;
+use zbus::{Connection, ObjectServer, fdo, message::Header, message::Message};
 
 #[cfg(any(test, target_os = "linux"))]
 use std::path::Path;
@@ -53,6 +45,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(target_os = "linux")]
 use crate::portal::CallerMap;
 use crate::portal::PortalCaller;
+#[cfg(target_os = "linux")]
+use crate::portal::interface_dispatch;
 
 /// Bus name the freedesktop notification spec reserves for the
 /// notification daemon; owning it makes the compositor the system notification server.
@@ -1111,29 +1105,237 @@ fn systemd_escape(value: &str) -> String {
     })
 }
 
-#[interface(name = "org.freedesktop.Notifications")]
+/// One `Notify` call's spec arguments; `app_icon` is accepted on the wire
+/// and ignored.
+#[cfg(target_os = "linux")]
+struct NotifyRequest {
+    app_name: String,
+    replaces_id: u32,
+    summary: String,
+    body: String,
+    actions: Vec<String>,
+    hints: HashMap<String, OwnedValue>,
+    expire_timeout: i32,
+}
+
+/// `Notify`'s wire arguments (freedesktop spec): `app_name s`,
+/// `replaces_id u`, `app_icon s`, `summary s`, `body s`, `actions as`,
+/// `hints a{sv}`, `expire_timeout i`.
+#[cfg(target_os = "linux")]
+type NotifyArgs = (
+    String,
+    u32,
+    String,
+    String,
+    String,
+    Vec<String>,
+    HashMap<String, OwnedValue>,
+    i32,
+);
+
+#[cfg(target_os = "linux")]
+impl From<NotifyArgs> for NotifyRequest {
+    fn from(
+        (app_name, replaces_id, _app_icon, summary, body, actions, hints, expire_timeout): NotifyArgs,
+    ) -> Self {
+        Self {
+            app_name,
+            replaces_id,
+            summary,
+            body,
+            actions,
+            hints,
+            expire_timeout,
+        }
+    }
+}
+
+/// The interface's introspection, byte-identical to what zbus's
+/// `#[interface]` macro wrote for the former macro-dispatched service.
+#[cfg(target_os = "linux")]
+const NOTIFICATIONS_INTROSPECTION: &str = r#"<interface name="org.freedesktop.Notifications">
+  <!--
+   `Notify` — the core method. Queues a toast and returns its id.
+
+   Args (freedesktop spec): `app_name s`, `replaces_id u`, `app_icon s`,
+   `summary s`, `body s`, `actions as`, `hints a{sv}`, `expire_timeout i`. Returns the assigned id `u`.
+   -->
+  <method name="Notify">
+    <arg name="app_name" type="s" direction="in"/>
+    <arg name="replaces_id" type="u" direction="in"/>
+    <arg name="_app_icon" type="s" direction="in"/>
+    <arg name="summary" type="s" direction="in"/>
+    <arg name="body" type="s" direction="in"/>
+    <arg name="actions" type="as" direction="in"/>
+    <arg name="hints" type="a{sv}" direction="in"/>
+    <arg name="expire_timeout" type="i" direction="in"/>
+    <arg type="u" direction="out"/>
+  </method>
+  <!--
+   Tilo extension used by Contacts. The complete favourite projection is
+   replaced atomically; only a launcher-verified Contacts process can call
+   it. Other apps cannot mutate the host registry even on the same UID.
+   -->
+  <method name="XTiloReplacePriorityContacts">
+    <arg name="contacts" type="a(ssas)" direction="in"/>
+    <arg type="u" direction="out"/>
+  </method>
+  <!--
+   `CloseNotification` — ask the server to close a notification by id.
+   The compositor pump removes the toast and the emitter fires `NotificationClosed(id, 3)`.
+   -->
+  <method name="CloseNotification">
+    <arg name="id" type="u" direction="in"/>
+  </method>
+  <!--
+   `GetCapabilities` — advertise the optional features we honour:
+   `body` (multi-line text), `actions` (default-action activate), `persistence` (critical toasts stay until closed).
+   -->
+  <method name="GetCapabilities">
+    <arg type="as" direction="out"/>
+  </method>
+  <!--
+   `GetServerInformation` — `(name, vendor, version, spec_version)`.
+   -->
+  <method name="GetServerInformation">
+    <arg type="s" direction="out"/>
+    <arg type="s" direction="out"/>
+    <arg type="s" direction="out"/>
+    <arg type="s" direction="out"/>
+  </method>
+  <!--
+   `NotificationClosed(id, reason)` — emitted when a toast goes away.
+   -->
+  <signal name="NotificationClosed">
+    <arg name="id" type="u"/>
+    <arg name="reason" type="u"/>
+  </signal>
+  <!--
+   `ActionInvoked(id, action_key)` — emitted when the user activates an action on a toast.
+   -->
+  <signal name="ActionInvoked">
+    <arg name="id" type="u"/>
+    <arg name="action_key" type="s"/>
+  </signal>
+</interface>
+"#;
+
+#[cfg(target_os = "linux")]
+#[zbus::export::async_trait::async_trait]
+impl Interface for NotificationService {
+    fn name() -> InterfaceName<'static> {
+        InterfaceName::from_static_str_unchecked("org.freedesktop.Notifications")
+    }
+
+    async fn get(
+        &self,
+        _property: &str,
+        _server: &ObjectServer,
+        _connection: &Connection,
+        _header: Option<&Header<'_>>,
+        _emitter: &SignalEmitter<'_>,
+    ) -> Option<fdo::Result<OwnedValue>> {
+        None
+    }
+
+    async fn get_all(
+        &self,
+        _server: &ObjectServer,
+        _connection: &Connection,
+        _header: Option<&Header<'_>>,
+        _emitter: &SignalEmitter<'_>,
+    ) -> fdo::Result<HashMap<String, OwnedValue>> {
+        Ok(HashMap::new())
+    }
+
+    fn set<'call>(
+        &'call self,
+        _property: &'call str,
+        _value: &'call zbus::zvariant::Value<'_>,
+        _server: &'call ObjectServer,
+        _connection: &'call Connection,
+        _header: Option<&'call Header<'_>>,
+        _emitter: &'call SignalEmitter<'_>,
+    ) -> DispatchResult2<'call> {
+        DispatchResult2::NotFound
+    }
+
+    async fn set_mut(
+        &mut self,
+        _property: &str,
+        _value: &zbus::zvariant::Value<'_>,
+        _server: &ObjectServer,
+        _connection: &Connection,
+        _header: Option<&Header<'_>>,
+        _emitter: &SignalEmitter<'_>,
+    ) -> Option<fdo::Result<()>> {
+        None
+    }
+
+    fn call<'call>(
+        &'call self,
+        _server: &'call ObjectServer,
+        connection: &'call Connection,
+        message: &'call Message,
+        name: MemberName<'call>,
+    ) -> DispatchResult2<'call> {
+        match name.as_str() {
+            "Notify" => interface_dispatch::dispatch(
+                connection,
+                message,
+                move |hdr, args: NotifyArgs| async move { Ok(self.notify(&hdr, args.into()).await) },
+            ),
+            "XTiloReplacePriorityContacts" => interface_dispatch::dispatch(
+                connection,
+                message,
+                move |hdr, contacts: Vec<(String, String, Vec<String>)>| async move {
+                    self.x_tilo_replace_priority_contacts(&hdr, contacts).await
+                },
+            ),
+            "CloseNotification" => {
+                interface_dispatch::dispatch(connection, message, move |_hdr, id: u32| async move {
+                    self.close_notification(id);
+                    Ok(())
+                })
+            }
+            "GetCapabilities" => interface_dispatch::answer(connection, message, async move {
+                Ok(self.get_capabilities())
+            }),
+            "GetServerInformation" => interface_dispatch::answer(connection, message, async move {
+                Ok(self.get_server_information())
+            }),
+            _ => DispatchResult2::NotFound,
+        }
+    }
+
+    fn call_mut<'call>(
+        &'call mut self,
+        _server: &'call ObjectServer,
+        _connection: &'call Connection,
+        _message: &'call Message,
+        _name: MemberName<'call>,
+    ) -> DispatchResult2<'call> {
+        DispatchResult2::NotFound
+    }
+
+    fn introspect_to_writer(&self, writer: &mut dyn std::fmt::Write, level: usize) {
+        interface_dispatch::write_introspection(writer, level, NOTIFICATIONS_INTROSPECTION);
+    }
+}
+
 #[cfg(target_os = "linux")]
 impl NotificationService {
     /// `Notify` — the core method. Queues a toast and returns its id.
-    ///
-    /// Args (freedesktop spec): `app_name s`, `replaces_id u`, `app_icon s`,
-    /// `summary s`, `body s`, `actions as`, `hints a{sv}`, `expire_timeout i`. Returns the assigned id `u`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The D-Bus Notify method preserves the freedesktop argument signature and receives the message header to authenticate its sender."
-    )]
-    async fn notify(
-        &self,
-        #[zbus(header)] hdr: zbus::message::Header<'_>,
-        app_name: String,
-        replaces_id: u32,
-        _app_icon: String,
-        summary: String,
-        body: String,
-        actions: Vec<String>,
-        hints: HashMap<String, OwnedValue>,
-        expire_timeout: i32,
-    ) -> u32 {
+    async fn notify(&self, hdr: &Header<'_>, request: NotifyRequest) -> u32 {
+        let NotifyRequest {
+            app_name,
+            replaces_id,
+            summary,
+            body,
+            actions,
+            hints,
+            expire_timeout,
+        } = request;
         let id = if replaces_id != 0 {
             replaces_id
         } else {
@@ -1177,7 +1379,7 @@ impl NotificationService {
     /// it. Other apps cannot mutate the host registry even on the same UID.
     async fn x_tilo_replace_priority_contacts(
         &self,
-        #[zbus(header)] hdr: zbus::message::Header<'_>,
+        hdr: &Header<'_>,
         contacts: Vec<(String, String, Vec<String>)>,
     ) -> zbus::fdo::Result<u32> {
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
@@ -1211,7 +1413,7 @@ impl NotificationService {
     /// `body` (multi-line text), `actions` (default-action activate), `persistence` (critical toasts stay until closed).
     #[allow(
         clippy::unused_self,
-        reason = "zbus's #[interface] macro dispatches D-Bus methods as instance methods, even though this fixed capability list doesn't depend on self"
+        reason = "D-Bus methods dispatch on the service instance, even though this fixed capability list doesn't depend on self"
     )]
     fn get_capabilities(&self) -> Vec<String> {
         vec![
@@ -1224,7 +1426,7 @@ impl NotificationService {
     /// `GetServerInformation` — `(name, vendor, version, spec_version)`.
     #[allow(
         clippy::unused_self,
-        reason = "zbus's #[interface] macro dispatches D-Bus methods as instance methods, even though this fixed server info doesn't depend on self"
+        reason = "D-Bus methods dispatch on the service instance, even though this fixed server info doesn't depend on self"
     )]
     fn get_server_information(&self) -> (String, String, String, String) {
         (
@@ -1236,20 +1438,24 @@ impl NotificationService {
     }
 
     /// `NotificationClosed(id, reason)` — emitted when a toast goes away.
-    #[zbus(signal)]
     async fn notification_closed(
         ctxt: &SignalEmitter<'_>,
         id: u32,
         reason: u32,
-    ) -> zbus::Result<()>;
+    ) -> zbus::Result<()> {
+        ctxt.emit(Self::name(), "NotificationClosed", &(id, reason))
+            .await
+    }
 
     /// `ActionInvoked(id, action_key)` — emitted when the user activates an action on a toast.
-    #[zbus(signal)]
     async fn action_invoked(
         ctxt: &SignalEmitter<'_>,
         id: u32,
         action_key: String,
-    ) -> zbus::Result<()>;
+    ) -> zbus::Result<()> {
+        ctxt.emit(Self::name(), "ActionInvoked", &(id, action_key))
+            .await
+    }
 }
 
 /// RAII handle keeping the notification D-Bus connection alive; dropping it releases the bus name and tears down the object server.
@@ -1804,6 +2010,30 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn notify_decodes_exactly_the_advertised_arguments() {
+        use zbus::zvariant::Type;
+        let advertised = |method| {
+            format!(
+                "({})",
+                interface_dispatch::advertised_in_signature(NOTIFICATIONS_INTROSPECTION, method)
+            )
+        };
+        assert_eq!(
+            advertised("Notify"),
+            <NotifyArgs as Type>::SIGNATURE.to_string()
+        );
+        assert_eq!(
+            advertised("XTiloReplacePriorityContacts"),
+            <(Vec<(String, String, Vec<String>)>,) as Type>::SIGNATURE.to_string()
+        );
+        assert_eq!(
+            advertised("CloseNotification"),
+            <(u32,) as Type>::SIGNATURE.to_string()
+        );
+    }
 
     #[cfg(target_os = "linux")]
     async fn bring_up_pair(

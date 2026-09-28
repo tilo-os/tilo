@@ -1,14 +1,13 @@
 //! Native Automerge persistence for the Themes catalog.
 //!
-//! `catalog` is the legacy JSON text. New records live in a map keyed
-//! by stable id, so unrelated themes and fields merge without whole-list writes.
+//! Custom themes live in a map keyed by stable id, so unrelated themes and
+//! fields merge without whole-list writes.
 
 use crate::model::{FONTS, ThemeSpec, TokenId, hex, parse_hex, presets};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
-use ui::doc::{read_bool, read_number, read_str, read_text};
+use ui::doc::{read_bool, read_number, read_str};
 
-pub const KEY_CATALOG: &str = "catalog";
 pub const KEY_THEMES: &str = "themes";
 pub const KEY_THEME_TOMBSTONES: &str = "theme_tombstones";
 pub const KEY_ACTIVE: &str = "active";
@@ -25,16 +24,6 @@ pub fn put_f64(doc: &mut AutoCommit, root: &ObjId, key: &str, val: f64) {
     if val.is_finite() {
         let _ = ui::doc::put_if_changed(doc, root, key, val);
     }
-}
-pub fn put_text(doc: &mut AutoCommit, root: &ObjId, key: &str, val: &str) {
-    let id = match doc.get(root, key) {
-        Ok(Some((Value::Object(ObjType::Text), id))) => id,
-        _ => match doc.put_object(root, key, ObjType::Text) {
-            Ok(id) => id,
-            Err(_) => return,
-        },
-    };
-    ui::doc::splice_text_diffed(doc, &id, val);
 }
 fn map(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<ObjId> {
     match doc.get(root, key).ok().flatten() {
@@ -79,28 +68,6 @@ fn record(doc: &AutoCommit, root: &ObjId, id: &str) -> Option<ObjId> {
         Some((Value::Object(ObjType::Map), r)) => Some(r),
         _ => None,
     }
-}
-/// Materialize only the addressed valid legacy record for an explicit edit.
-/// Validation of the requested field happens before this function is called.
-fn editable_record(doc: &mut AutoCommit, root: &ObjId, id: &str) -> Option<ObjId> {
-    if let Some(row) = record(doc, root, id) {
-        return Some(row);
-    }
-    if !valid_id(id) || is_tombstoned(doc, root, id) || presets().iter().any(|s| s.id == id) {
-        return None;
-    }
-    // A malformed or competing native entry is never replaced by legacy data.
-    if map(doc, root, KEY_THEMES).is_some_and(|m| doc.get(&m, id).ok().flatten().is_some()) {
-        return None;
-    }
-    let spec = legacy_customs(doc, root).into_iter().find(|s| s.id == id)?;
-    if !spec.radius_norm.is_finite() || !spec.spacing_norm.is_finite() {
-        return None;
-    }
-    if !create_custom_theme(doc, root, &spec) {
-        return None;
-    }
-    record(doc, root, id)
 }
 fn read_record(doc: &AutoCommit, id: &str, r: &ObjId) -> Option<ThemeSpec> {
     let name = read_str(doc, r, "name")?;
@@ -191,7 +158,7 @@ pub fn set_name(doc: &mut AutoCommit, root: &ObjId, id: &str, value: &str) -> bo
     if !valid_name(value) {
         return false;
     }
-    editable_record(doc, root, id).is_some_and(|r| ui::doc::put_if_changed(doc, &r, "name", value))
+    record(doc, root, id).is_some_and(|r| ui::doc::put_if_changed(doc, &r, "name", value))
 }
 pub fn set_token(
     doc: &mut AutoCommit,
@@ -200,49 +167,32 @@ pub fn set_token(
     token: TokenId,
     value: [u8; 3],
 ) -> bool {
-    editable_record(doc, root, id)
-        .is_some_and(|r| ui::doc::put_if_changed(doc, &r, token.key(), hex(value)))
+    record(doc, root, id).is_some_and(|r| ui::doc::put_if_changed(doc, &r, token.key(), hex(value)))
 }
 pub fn set_radius(doc: &mut AutoCommit, root: &ObjId, id: &str, value: f32) -> bool {
     value.is_finite()
-        && editable_record(doc, root, id).is_some_and(|r| {
+        && record(doc, root, id).is_some_and(|r| {
             ui::doc::put_if_changed(doc, &r, "radius_norm", f64::from(value.clamp(0.0, 1.0)))
         })
 }
 pub fn set_spacing(doc: &mut AutoCommit, root: &ObjId, id: &str, value: f32) -> bool {
     value.is_finite()
-        && editable_record(doc, root, id).is_some_and(|r| {
+        && record(doc, root, id).is_some_and(|r| {
             ui::doc::put_if_changed(doc, &r, "spacing_norm", f64::from(value.clamp(0.0, 1.0)))
         })
 }
 pub fn set_font(doc: &mut AutoCommit, root: &ObjId, id: &str, value: &str) -> bool {
     valid_font(value)
-        && editable_record(doc, root, id)
-            .is_some_and(|r| ui::doc::put_if_changed(doc, &r, "font", value))
+        && record(doc, root, id).is_some_and(|r| ui::doc::put_if_changed(doc, &r, "font", value))
 }
 pub fn delete_custom_theme(doc: &mut AutoCommit, root: &ObjId, id: &str) -> bool {
-    if editable_record(doc, root, id).is_none() {
+    if record(doc, root, id).is_none() {
         return false;
     }
     ensure_map(doc, root, KEY_THEME_TOMBSTONES)
         .is_some_and(|m| ui::doc::put_if_changed(doc, &m, id, true))
 }
 
-fn legacy_customs(doc: &AutoCommit, root: &ObjId) -> Vec<ThemeSpec> {
-    read_text(doc, root, KEY_CATALOG)
-        .and_then(|x| serde_json::from_str::<Vec<ThemeSpec>>(&x).ok())
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|s| !s.builtin)
-        .take(MAX_CUSTOM_THEMES)
-        .collect()
-}
-/// Imports only missing legacy ids. Native edits win; legacy-only themes remain.
-pub fn migrate_legacy_catalog(doc: &mut AutoCommit, root: &ObjId) {
-    for s in legacy_customs(doc, root) {
-        let _ = create_custom_theme(doc, root, &s);
-    }
-}
 pub fn load_catalog(doc: &AutoCommit, root: &ObjId) -> Option<Vec<ThemeSpec>> {
     let mut customs = Vec::new();
     if let Some(themes) = map(doc, root, KEY_THEMES) {
@@ -256,24 +206,13 @@ pub fn load_catalog(doc: &AutoCommit, root: &ObjId) -> Option<Vec<ThemeSpec>> {
             }
         }
     }
-    for s in legacy_customs(doc, root) {
-        if !presets().iter().any(|preset| preset.id == s.id)
-            && !is_tombstoned(doc, root, &s.id)
-            && !customs.iter().any(|x: &ThemeSpec| x.id == s.id)
-            && valid_id(&s.id)
-            && valid_name(&s.name)
-            && valid_font(&s.font)
-        {
-            customs.push(s);
-        }
-    }
     customs.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.id.cmp(&b.id)));
     customs.truncate(MAX_CUSTOM_THEMES);
     let mut all = presets();
     all.extend(customs);
     Some(all)
 }
-/// Compatibility importer, not an authoritative whole-catalog replacement.
+/// Additive importer, not an authoritative whole-catalog replacement.
 pub fn save_catalog(doc: &mut AutoCommit, root: &ObjId, catalog: &[ThemeSpec]) {
     initialize_catalog(doc, root);
     for s in catalog
@@ -287,7 +226,6 @@ pub fn save_catalog(doc: &mut AutoCommit, root: &ObjId, catalog: &[ThemeSpec]) {
 /// Validate the authored catalog without migration, seeding, or OS-store access.
 pub(crate) fn validate_history_catalog(doc: &AutoCommit) -> Result<(), String> {
     use ui::history_mode::adapter::map_collection;
-    let root = &automerge::ROOT;
     if let Some(map) = map_collection(doc, KEY_THEMES)? {
         for id in doc.keys(&map) {
             let Some((Value::Object(ObjType::Map), row)) =
@@ -332,26 +270,6 @@ pub(crate) fn validate_history_catalog(doc: &AutoCommit) -> Result<(), String> {
             }
         }
     }
-    if let Some((value, obj)) = doc.get(root, KEY_CATALOG).map_err(|e| e.to_string())? {
-        if value != Value::Object(ObjType::Text) {
-            return Err("Legacy catalog must be Text".into());
-        }
-        let specs: Vec<ThemeSpec> =
-            serde_json::from_str(&doc.text(&obj).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
-        let mut ids = std::collections::HashSet::new();
-        for s in specs {
-            if !valid_id(&s.id)
-                || !valid_name(&s.name)
-                || !valid_font(&s.font)
-                || !s.radius_norm.is_finite()
-                || !s.spacing_norm.is_finite()
-                || !ids.insert(s.id)
-            {
-                return Err("Invalid legacy theme".into());
-            }
-        }
-    }
     Ok(())
 }
 
@@ -361,9 +279,9 @@ mod tests {
     use crate::model::seed_custom;
     use automerge::ROOT;
     use tilo_automerge::ApplyIncoming;
-    /// Theme documents merge fields and records, let deletes win, consolidate legacy records, and reject oversized ones.
+    /// Theme documents merge fields and records, let deletes win, and reject oversized ones.
     #[test]
-    fn theme_records_merge_delete_consolidate_and_reject_oversize() {
+    fn theme_records_merge_delete_and_reject_oversize() {
         // Case `fields_merge`.
         {
             let mut a = AutoCommit::new();
@@ -423,33 +341,6 @@ mod tests {
                     .iter()
                     .any(|x| x.id == "sunset")
             );
-        }
-
-        // Case `legacy_and_native_consolidate_idempotently`.
-        {
-            let mut a = AutoCommit::new();
-            put_text(
-                &mut a,
-                &ROOT,
-                KEY_CATALOG,
-                &serde_json::to_string(&[seed_custom()]).unwrap(),
-            );
-            let mut b = AutoCommit::load(&a.save()).unwrap();
-            let mut other = seed_custom();
-            other.id = "other".into();
-            assert!(create_custom_theme(&mut b, &ROOT, &other));
-            migrate_legacy_catalog(&mut b, &ROOT);
-            b.merge_incoming(&mut a).unwrap();
-            migrate_legacy_catalog(&mut b, &ROOT);
-            let n = b.save().len();
-            migrate_legacy_catalog(&mut b, &ROOT);
-            assert_eq!(b.save().len(), n);
-            let ids: Vec<_> = load_catalog(&b, &ROOT)
-                .unwrap()
-                .into_iter()
-                .map(|x| x.id)
-                .collect();
-            assert!(ids.contains(&"sunset".into()) && ids.contains(&"other".into()));
         }
 
         // Case `rejects_untrusted_oversized_records_without_growing_the_catalog`.

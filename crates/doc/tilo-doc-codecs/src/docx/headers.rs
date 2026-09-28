@@ -203,41 +203,44 @@ fn splice_one_char(
     }
 }
 
-/// Advance the complex-field (`w:fldChar` begin/separate/end) state machine for one element.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "threads the same per-region parser state as this file's other helpers"
-)]
-fn handle_fld_char(
-    e: &quick_xml::events::BytesStart,
-    region: Region,
-    doc: &mut DocMut,
-    cur: Option<&str>,
-    cur_len: &mut usize,
-    field_pending: &mut bool,
-    field_in_progress: &mut bool,
-    field_skip_text: &mut bool,
-    field_marks: &mut Vec<(String, usize)>,
-) {
-    match attr_w_val(e, b"w:fldCharType").as_deref() {
-        Some("begin") => {
-            *field_in_progress = true;
-            *field_pending = false;
-            *field_skip_text = false;
-        }
-        // Instruction collected; if it was PAGE, emit the field now and skip result-run text until "end".
-        Some("separate") => {
-            if *field_pending {
-                splice_page_placeholder(region, doc, cur, cur_len, field_marks);
-                *field_skip_text = true;
+/// The complex-field (`w:fldChar` begin/separate/end) state machine. A complex field whose
+/// instruction text contains PAGE emits a single placeholder at its start and skips its
+/// result runs.
+#[derive(Default)]
+struct ComplexField {
+    /// The instruction collected so far is PAGE.
+    pending: bool,
+    /// Between fldChar begin/separate and end.
+    in_progress: bool,
+    /// Skip the field's result-run text.
+    skip_text: bool,
+}
+
+impl ComplexField {
+    /// Advance for one `w:fldChar` element; `true` when a PAGE field's placeholder should be
+    /// spliced now.
+    fn advance(&mut self, e: &quick_xml::events::BytesStart) -> bool {
+        match attr_w_val(e, b"w:fldCharType").as_deref() {
+            Some("begin") => {
+                self.in_progress = true;
+                self.pending = false;
+                self.skip_text = false;
             }
+            // Instruction collected; if it was PAGE, emit the field now and skip result-run text until "end".
+            Some("separate") => {
+                if self.pending {
+                    self.skip_text = true;
+                    return true;
+                }
+            }
+            Some("end") => {
+                self.in_progress = false;
+                self.pending = false;
+                self.skip_text = false;
+            }
+            _ => {}
         }
-        Some("end") => {
-            *field_in_progress = false;
-            *field_pending = false;
-            *field_skip_text = false;
-        }
-        _ => {}
+        false
     }
 }
 
@@ -267,11 +270,7 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
     let mut cur_len: usize = 0;
     let mut in_t = false;
     let mut in_instr = false; // inside a complex-field <w:instrText>
-    // A complex field whose instruction text contains PAGE emits a single placeholder at
-    // its start and skips its result runs.
-    let mut field_pending = false;
-    let mut field_in_progress = false; // between fldChar begin/separate and end
-    let mut field_skip_text = false; // skip the field's result-run text
+    let mut field = ComplexField::default();
     // Depth inside a non-self-closing `w:fldSimple`; its cached result-run text is skipped.
     let mut fldsimple_depth = 0usize;
     let mut field_marks: Vec<(String, usize)> = Vec::new();
@@ -281,17 +280,15 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
         if let Event::Start(e) | Event::Empty(e) = &ev
             && e.name().as_ref() == b"w:fldChar"
         {
-            handle_fld_char(
-                e,
-                region,
-                doc,
-                cur.as_deref(),
-                &mut cur_len,
-                &mut field_pending,
-                &mut field_in_progress,
-                &mut field_skip_text,
-                &mut field_marks,
-            );
+            if field.advance(e) {
+                splice_page_placeholder(
+                    region,
+                    doc,
+                    cur.as_deref(),
+                    &mut cur_len,
+                    &mut field_marks,
+                );
+            }
             continue;
         }
         match ev {
@@ -323,11 +320,11 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
             ev @ (Event::Text(_) | Event::GeneralRef(_)) => {
                 let txt = character_data(&ev);
                 if in_instr {
-                    if field_in_progress && is_page_instr(&txt) {
-                        field_pending = true;
+                    if field.in_progress && is_page_instr(&txt) {
+                        field.pending = true;
                     }
                 } else if in_t
-                    && !field_skip_text
+                    && !field.skip_text
                     && fldsimple_depth == 0
                     && let Some(b) = cur.clone()
                     && !txt.is_empty()

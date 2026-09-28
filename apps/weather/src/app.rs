@@ -446,6 +446,8 @@ impl Default for WeatherApp {
 }
 
 impl Widget for WeatherApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
     }
@@ -873,10 +875,6 @@ impl Widget for WeatherApp {
         core_busy || self.nav.needs_animation_frame()
     }
 
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn needs_idle_sync(&self) -> bool {
         let core_busy = {
             let core = self.core.borrow();
@@ -904,6 +902,12 @@ impl Widget for WeatherApp {
 
     fn modal_capture(&self) -> Option<Rect> {
         self.nav.modal_capture()
+    }
+}
+
+impl ui::undo::CommittedActions for WeatherApp {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -1385,7 +1389,7 @@ mod interaction_tests {
             h.redraw();
             assert_eq!(h.app.core.borrow().model.selected, 0);
             h.app.core.borrow_mut().take_outbox(); // drain startup
-            let _ = h.app.take_committed_action(); // drain first-run bootstrap
+            let _ = ui::undo::take_committed_action(&mut *h.app); // drain first-run bootstrap
 
             h.key(Key::Named(NamedKey::ArrowDown), None);
             assert_eq!(
@@ -1407,7 +1411,7 @@ mod interaction_tests {
                 "navigating this window does not move a collaborator's durable default"
             );
             assert!(
-                h.app.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut *h.app).is_none(),
                 "transient keyboard navigation does not create shared history noise"
             );
 
@@ -2420,31 +2424,25 @@ mod history_regressions {
         {
             assert!(WeatherApp::new().document_history_definition().is_some());
         }
-        // Case `history_legacy_sync_and_blank_reopen_preserve_graph`.
+        // Case `history_blank_sync_preserves_graph`.
         {
-            for legacy in [false, true] {
-                let mut app = WeatherApp::assemble(
-                    Rc::new(RefCell::new(Core::new(
-                        crate::model::WeatherModel::default(),
-                        crate::units::Units::METRIC,
-                    ))),
-                    false,
-                );
-                let mut doc = AutoCommit::new();
-                doc.put(automerge::ROOT, "runtime_metadata", "keep")
-                    .unwrap();
-                if legacy {
-                    doc.put_object(automerge::ROOT, "locations", automerge::ObjType::List)
-                        .unwrap();
-                }
-                let heads = doc.get_heads();
-                app.sync(&mut doc, &automerge::ROOT);
-                assert_eq!(
-                    doc.get_heads(),
-                    heads,
-                    "ordinary sync preserves blank and legacy graphs"
-                );
-            }
+            let mut app = WeatherApp::assemble(
+                Rc::new(RefCell::new(Core::new(
+                    crate::model::WeatherModel::default(),
+                    crate::units::Units::METRIC,
+                ))),
+                false,
+            );
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "runtime_metadata", "keep")
+                .unwrap();
+            let heads = doc.get_heads();
+            app.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(
+                doc.get_heads(),
+                heads,
+                "ordinary sync preserves a blank graph"
+            );
         }
     }
 }

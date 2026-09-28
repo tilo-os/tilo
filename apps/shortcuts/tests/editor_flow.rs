@@ -31,7 +31,6 @@ use ui::{RemoteActions, RemoteActionsGuard};
 const NOTES: &str = "so.tilo.notes";
 const INBOX: &str = "notes.folder:inbox";
 
-#[allow(clippy::too_many_arguments, reason = "one catalogue row, spelled out")]
 fn row(
     provider: &str,
     app: &str,

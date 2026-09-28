@@ -41,10 +41,6 @@ pub enum OwnerHistoryAction {
         cleared_at_ms: u64,
         clear_id: String,
     },
-    /// Records an explicit one-way import from an old shared document. This
-    /// marker prevents future shared-document reads; it does not and cannot
-    /// recall bytes that old collaborators already replicated.
-    LegacyMigrationComplete,
 }
 
 impl Action for OwnerHistoryAction {
@@ -77,13 +73,6 @@ impl Action for OwnerHistoryAction {
                     &clears,
                     clear_id,
                     ScalarValue::Str(cleared_at_ms.to_string().into()),
-                )?;
-            }
-            Self::LegacyMigrationComplete => {
-                doc.put(
-                    &history,
-                    "legacy_shared_migration_v1",
-                    ScalarValue::Boolean(true),
                 )?;
             }
         }
@@ -176,25 +165,6 @@ impl OwnerHistoryStore {
     }
 
     #[must_use]
-    pub fn has_legacy_migration_marker(&self) -> bool {
-        self.doc
-            .get(&ROOT, HISTORY_ROOT)
-            .ok()
-            .flatten()
-            .and_then(|(value, history)| {
-                matches!(value, Value::Object(ObjType::Map)).then_some(history)
-            })
-            .and_then(|history| {
-                self.doc
-                    .get(&history, "legacy_shared_migration_v1")
-                    .ok()
-                    .flatten()
-                    .and_then(|(value, _)| value.as_bool())
-            })
-            .unwrap_or(false)
-    }
-
-    #[must_use]
     pub fn recovery_disabled(&self) -> bool {
         self.recovery_disabled
     }
@@ -281,7 +251,6 @@ impl OwnerHistoryStore {
         else {
             return Ok(());
         };
-        let migration_marker = self.has_legacy_migration_marker();
         let cleared_at_ms = self
             .doc
             .get(&history, "clears")
@@ -361,11 +330,6 @@ impl OwnerHistoryStore {
             }
             .apply(&mut snapshot)
             .map_err(std::io::Error::other)?;
-        }
-        if migration_marker {
-            OwnerHistoryAction::LegacyMigrationComplete
-                .apply(&mut snapshot)
-                .map_err(std::io::Error::other)?;
         }
         snapshot.commit();
         self.doc = snapshot;
@@ -530,13 +494,12 @@ mod tests {
             assert_ne!(owner_file_id("AaAaAaAa"), owner_file_id("BBBBBBBB"));
             assert_eq!(owner_file_id("user:alice").len(), 64);
         }
-        // Case `compaction_keeps_bounded_visible_history_and_migration_on_restart`.
+        // Case `compaction_keeps_bounded_visible_history_on_restart`.
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("compact.automerge");
             let mut store = OwnerHistoryStore::open_path(path.clone());
             let mut host = ui::ActionHost::new();
-            assert!(store.dispatch(&mut host, &OwnerHistoryAction::LegacyMigrationComplete));
             for watched_at_ms in 0..55_u64 {
                 assert!(store.dispatch(
                     &mut host,
@@ -551,7 +514,6 @@ mod tests {
             store.force_compact_for_test().unwrap();
             store.persist().unwrap();
             let reopened = OwnerHistoryStore::open_path(path);
-            assert!(reopened.has_legacy_migration_marker());
             let (_, history) = reopened
                 .document()
                 .get(&ROOT, HISTORY_ROOT)

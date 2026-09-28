@@ -49,7 +49,10 @@ impl StatePeer {
         let mut routes = BTreeMap::new();
         for original in originals {
             let local = self.retained_document(original, selected)?;
-            if self.retained_local_document_retired(original, selected)? {
+            // A sealed write has no history anyone without its key could project.
+            if local.mutation.is_none()
+                || self.retained_local_document_retired(original, selected)?
+            {
                 continue;
             }
             add_history(
@@ -216,7 +219,7 @@ impl StatePeer {
             return Err("recovery projection is not an app document".into());
         };
         if envelope.op_class != OpClass::Splice
-            || !matches!(local.mutation, DocumentMutation::Incremental(_))
+            || !matches!(local.mutation, Some(DocumentMutation::Incremental(_)))
             || local.admission.sequence() == 0
             || self
                 .core

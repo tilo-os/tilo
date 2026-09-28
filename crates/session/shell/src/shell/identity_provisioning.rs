@@ -1042,23 +1042,29 @@ mod tests {
     fn invite_urls_are_signature_checked() {
         fn parse_invite_url_validates_signature() {
             use collab_types::{ChannelId, Role, generate_keypair};
-            use ui::widget::identity_flow::mint_invite_for_broker;
+            use ui::widget::identity_flow::{
+                InviteBrokerLocator, InviteTerms, mint_invite_for_broker,
+            };
             let tmp = tempfile::tempdir().expect("tempdir");
             let authority = pairing_channel_at(tmp.path().join("pairing")).unwrap();
             let invite_root = tmp.path().join("invite-authority");
             let server = PairingBrokerServer::start_invites(authority, &invite_root).unwrap();
             let (sk, pk) = generate_keypair();
             let env = mint_invite_for_broker(
-                ChannelId::new(),
-                "engineering",
-                pk,
+                InviteTerms {
+                    channel: ChannelId::new(),
+                    channel_name: "engineering".into(),
+                    owner_pubkey: pk,
+                    inviter_label: "Alice".into(),
+                    role: Role::Editor,
+                    expires_at: SystemTime::now() + std::time::Duration::from_secs(3600),
+                },
                 &sk,
-                "Alice",
-                Role::Editor,
-                SystemTime::now() + std::time::Duration::from_secs(3600),
-                server.endpoint().to_string(),
-                server.certificate_der().to_vec(),
-                invite_root,
+                InviteBrokerLocator {
+                    endpoint: server.endpoint().to_string(),
+                    certificate: server.certificate_der().to_vec(),
+                    authority_root: invite_root,
+                },
             )
             .unwrap();
             let url = env.to_url().unwrap();
@@ -1190,16 +1196,20 @@ mod tests {
             let server = PairingBrokerServer::start_invites(authority, &invite_root).unwrap();
             let (owner_secret, owner_public) = collab_types::generate_keypair();
             let invite = ui::widget::identity_flow::mint_invite_for_broker(
-                collab_types::ChannelId::new(),
-                "remote",
-                owner_public,
+                ui::widget::identity_flow::InviteTerms {
+                    channel: collab_types::ChannelId::new(),
+                    channel_name: "remote".into(),
+                    owner_pubkey: owner_public,
+                    inviter_label: "Alice".into(),
+                    role: collab_types::Role::Editor,
+                    expires_at: SystemTime::now() + Duration::from_secs(60),
+                },
                 &owner_secret,
-                "Alice",
-                collab_types::Role::Editor,
-                SystemTime::now() + Duration::from_secs(60),
-                server.endpoint().to_string(),
-                server.certificate_der().to_vec(),
-                invite_root,
+                ui::widget::identity_flow::InviteBrokerLocator {
+                    endpoint: server.endpoint().to_string(),
+                    certificate: server.certificate_der().to_vec(),
+                    authority_root: invite_root,
+                },
             )
             .unwrap();
             let (_, invitee) = collab_types::generate_keypair();
@@ -1305,16 +1315,20 @@ mod tests {
             let certificate = first.certificate_der().to_vec();
             let (owner_secret, owner_public) = collab_types::generate_keypair();
             let invite = ui::widget::identity_flow::mint_invite_for_broker(
-                collab_types::ChannelId::new(),
-                "restart-safe",
-                owner_public,
+                ui::widget::identity_flow::InviteTerms {
+                    channel: collab_types::ChannelId::new(),
+                    channel_name: "restart-safe".into(),
+                    owner_pubkey: owner_public,
+                    inviter_label: "Alice".into(),
+                    role: collab_types::Role::Editor,
+                    expires_at: SystemTime::now() + Duration::from_secs(60),
+                },
                 &owner_secret,
-                "Alice",
-                collab_types::Role::Editor,
-                SystemTime::now() + Duration::from_secs(60),
-                endpoint.to_string(),
-                certificate.clone(),
-                tmp.path().join("invite-redemption-authority"),
+                ui::widget::identity_flow::InviteBrokerLocator {
+                    endpoint: endpoint.to_string(),
+                    certificate: certificate.clone(),
+                    authority_root: tmp.path().join("invite-redemption-authority"),
+                },
             )
             .unwrap();
             drop(first);

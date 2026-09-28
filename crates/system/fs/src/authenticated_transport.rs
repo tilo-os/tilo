@@ -150,10 +150,6 @@ where
 /// [`authenticate_fs_peer_at`].
 // The split-stream entry point keeps the two I/O halves and the six
 // independently authenticated handshake inputs explicit at this trust boundary.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each argument is an independent input of the protocol step; bundling them would only rename them"
-)]
 pub async fn authenticate_fs_peer_parts_at<R, W>(
     reader: &mut R,
     writer: &mut W,

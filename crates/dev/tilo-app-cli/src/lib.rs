@@ -29,6 +29,7 @@ pub mod portability;
 mod resource_kinds;
 pub mod size;
 pub mod standalone;
+pub mod web;
 
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
 const DATA_APP_TEMPLATE: &str = include_str!("../templates/data.rs");
@@ -502,6 +503,8 @@ pub enum PackagePlatform {
     Windows,
     /// One self-contained macOS executable with the toolkit linked in.
     Macos,
+    /// A WebAssembly side module of the browser's toolkit core.
+    Web,
 }
 
 impl PackagePlatform {
@@ -512,6 +515,7 @@ impl PackagePlatform {
             Self::Tilo => registry_types::TILO_OS_PLATFORM,
             Self::Windows => registry_types::WINDOWS_PLATFORM,
             Self::Macos => registry_types::MACOS_PLATFORM,
+            Self::Web => registry_types::WEB_PLATFORM,
         }
     }
 
@@ -523,13 +527,14 @@ impl PackagePlatform {
             Self::Tilo => format!("{arch}-unknown-linux-gnu"),
             Self::Windows => format!("{arch}-pc-windows-msvc"),
             Self::Macos => format!("{arch}-apple-darwin"),
+            Self::Web => "wasm32-unknown-unknown".to_owned(),
         }
     }
 
     const fn executable_suffix(self) -> &'static str {
         match self {
             Self::Windows => ".exe",
-            Self::Tilo | Self::Macos => "",
+            Self::Tilo | Self::Macos | Self::Web => "",
         }
     }
 }
@@ -4073,9 +4078,7 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
         || code.contains("ActionForm::new(")
         || code.contains("ui::widget::resource_actions::ActionForm::new(");
     let custom_catalogue = code.contains("fn resources(") && code.contains("ActionSpec::");
-    let custom_invocation = code.contains("fn start_operation(")
-        || code.contains("invoke_resource_operation")
-        || code.contains("start_resource_operation");
+    let custom_invocation = code.contains("fn start_operation(");
     let custom_operation =
         code.contains("OperationKind::Effect") || code.contains("OperationKind::View");
     let toolkit_surface = toolkit_host && toolkit_descriptor;
@@ -4598,6 +4601,9 @@ struct AppPackageSpec {
 /// Returns an error when preflight, compilation, staging, packing, or
 /// verification fails, or when the destination exists without `force`.
 pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutcome> {
+    if request.platform == PackagePlatform::Web {
+        return web::package_web(start, request);
+    }
     let app_dir = resolve_app_dir(start)?;
     let report = doctor_resolved_app(app_dir.clone());
     if !report.is_ready() {
@@ -5308,10 +5314,6 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
 
 /// Rebuild until the candidate matches the newest source, or the user stops.
 /// Returns whether the watcher itself should stop.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the rebuild shares the watch loop's child, events, roots, watcher, revision and source stamps"
-)]
 fn rebuild_running_dev_app(
     plan: &CargoPlan,
     request: &DevRequest,

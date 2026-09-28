@@ -486,3 +486,32 @@ fn private_event_decoder_is_one_bounded_inert_correlated_response_family() {
         other.request_id
     );
 }
+/// A native host builds its catalogue with keys in insertion order
+/// (`version` before `surfaces`); every reader must re-encode it unchanged.
+#[test]
+fn catalogue_response_keeps_insertion_ordered_keys_through_decode() {
+    let request = request(ActionMessage::CatalogueRefresh { scope: None });
+    let catalogue: serde_json::Value = serde_json::from_str(
+        r#"{"version":1,"surfaces":[{"peer_id":1,"app_id":"so.tilo.desktop","cluster_id":"c","record_id":"","live":true,"actions":[]}]}"#,
+    )
+    .unwrap();
+    let response = DirectedAction {
+        room: request.room,
+        request_id: request.request_id,
+        source: request.target,
+        target: request.source,
+        message: ActionMessage::BrokerCatalogue {
+            host: Uuid::from_u128(7),
+            catalogue,
+        },
+    };
+    let reply = encode_response(PrivateOperation::Catalogue, &request, &response).unwrap();
+    let decoded = decode_response(PrivateOperation::Catalogue, &request, &reply).unwrap();
+    let ActionMessage::BrokerCatalogue { catalogue, .. } = &decoded.message else {
+        panic!("catalogue expected");
+    };
+    assert_eq!(
+        catalogue.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["version", "surfaces"]
+    );
+}
