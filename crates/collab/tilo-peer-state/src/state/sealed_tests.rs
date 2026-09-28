@@ -433,3 +433,42 @@ fn the_key_holder_admits_nothing_its_opener_refuses_or_cannot_parse() {
         assert_eq!(peer.durable().unwrap(), before, "{why} changed the record");
     }
 }
+
+#[test]
+fn a_keyless_owner_keeps_custody_of_its_own_sealed_write_without_renewing_it() {
+    let (mut member, _, b, now) = host();
+    let author = b.verifying_key().to_bytes();
+    let write = sealed(&member, &b, 1, b"sealed by this member's app");
+    member
+        .admit_new_local_document(APP, RECORD, envelope_of(write.clone()), now)
+        .unwrap();
+    assert!(
+        member
+            .lookup_retained_local_document(&write, author)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        !member
+            .retained_local_document_retired(&write, author)
+            .unwrap(),
+        "only the governor's signed watermark retires it"
+    );
+    let later = now.checked_add(Duration::from_secs(600)).unwrap();
+    let queue = member
+        .reconcile_local_outbox(std::slice::from_ref(&write), &b, later)
+        .unwrap();
+    assert_eq!(
+        queue.len(),
+        1,
+        "a sealed write is never re-signed by a replica without its key"
+    );
+    assert!(
+        member
+            .reserve_local_recovery(std::slice::from_ref(&write), None, author)
+            .unwrap()
+            .entries()
+            == 0,
+        "no recovery is reserved for history nobody here can read"
+    );
+}

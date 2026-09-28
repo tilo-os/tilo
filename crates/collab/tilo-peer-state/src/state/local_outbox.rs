@@ -12,7 +12,10 @@ const MAX_PUBLICATION_BYTES: usize = 4 * 1024 * 1024;
 struct LocalDocument {
     admission: DocumentAdmission,
     route: Route,
-    mutation: DocumentMutation,
+    /// `None` for a sealed write: this replica holds only its ciphertext, so
+    /// it has no history to check or renew, and is retired by the
+    /// governor's signed sequence watermark alone.
+    mutation: Option<DocumentMutation>,
 }
 
 impl StatePeer {
@@ -41,21 +44,30 @@ impl StatePeer {
             return Err("retained local publication selected author or room mismatch".into());
         }
         collab_types::verify_op(envelope).map_err(err)?;
-        let collab_types::WholeDocumentPayload::Cleartext(mutation) =
-            collab_types::validate_whole_document_payload_route(
-                app_id, cluster_id, record_id, envelope,
-            )
-            .map_err(err)?
-        else {
-            return Err("retained local publication has no admitted cleartext history".into());
-        };
         let route = Route {
             app: app_id.clone(),
             record: record_id.clone(),
         };
-        if !self.core.documents.contains_key(&route) {
+        let Some(document) = self.core.documents.get(&route) else {
             return Err("retained local publication route is not admitted".into());
-        }
+        };
+        let mutation = match collab_types::validate_whole_document_payload_route(
+            app_id, cluster_id, record_id, envelope,
+        )
+        .map_err(err)?
+        {
+            collab_types::WholeDocumentPayload::Cleartext(mutation) => Some(mutation),
+            collab_types::WholeDocumentPayload::Encrypted { .. }
+                if document.encryption_required =>
+            {
+                None
+            }
+            collab_types::WholeDocumentPayload::Encrypted { .. } => {
+                return Err(
+                    "retained sealed publication for a record that is not encrypted".into(),
+                );
+            }
+        };
         Ok(LocalDocument {
             admission: DocumentAdmission::from_op(cluster_id, app_id, record_id, envelope)?,
             route,
@@ -122,6 +134,9 @@ impl StatePeer {
         {
             return Ok(false);
         }
+        if local.mutation.is_none() {
+            return Ok(true);
+        }
         let history = self.publication_history(&local)?;
         Ok(history
             .get_heads()
@@ -138,7 +153,11 @@ impl StatePeer {
             .documents
             .get(&local.route)
             .ok_or("retained publication record missing")?;
-        let mut history = match &local.mutation {
+        let mut history = match local
+            .mutation
+            .as_ref()
+            .ok_or("a sealed publication has no cleartext history")?
+        {
             DocumentMutation::Snapshot(bytes) => automerge::Automerge::load(bytes).map_err(err)?,
             DocumentMutation::Incremental(bytes) => {
                 let mut history = automerge::Automerge::new();
@@ -232,7 +251,7 @@ impl StatePeer {
             let candidate = self.retained_document(message, selected)?;
             if candidate.route != original.route
                 || candidate.admission.sequence() <= original.admission.sequence()
-                || !matches!(candidate.mutation, DocumentMutation::Incremental(_))
+                || !matches!(candidate.mutation, Some(DocumentMutation::Incremental(_)))
                 || self.checkpoint_sequence_covers(message)
             {
                 continue;
@@ -258,7 +277,7 @@ impl StatePeer {
         &self,
         local: &LocalDocument,
     ) -> Result<Option<automerge::Automerge>, String> {
-        let DocumentMutation::Incremental(bytes) = &local.mutation else {
+        let Some(DocumentMutation::Incremental(bytes)) = &local.mutation else {
             return Ok(None);
         };
         let mut history = automerge::Automerge::new();
@@ -314,10 +333,14 @@ impl StatePeer {
         let mut retained = outbox.to_vec();
         for original in outbox {
             let local = candidate.retained_document(original, selected)?;
-            if candidate.retained_local_document_retired(original, selected)? {
+            // Only a key holder could renew a sealed write; it stays in
+            // custody until the governor's watermark covers it.
+            if local.mutation.is_none()
+                || candidate.retained_local_document_retired(original, selected)?
+            {
                 continue;
             }
-            if matches!(local.mutation, DocumentMutation::Incremental(_))
+            if matches!(local.mutation, Some(DocumentMutation::Incremental(_)))
                 && crate::outbox::fresh(original, now)
                 && !candidate.checkpoint_sequence_covers(original)
             {
@@ -331,8 +354,10 @@ impl StatePeer {
             // Validate real history before signing. A Snapshot remains immutable;
             // its complete native history is independently signed as an Incremental.
             candidate.publication_history(&local)?;
-            let bytes = match local.mutation {
-                DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
+            let Some(DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes)) =
+                local.mutation
+            else {
+                continue;
             };
             if retained.len() == MAX_PUBLICATIONS {
                 return Err("local publication count limit".into());

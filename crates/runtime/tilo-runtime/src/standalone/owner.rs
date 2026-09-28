@@ -123,6 +123,37 @@ impl RoomOwner {
         })
     }
 
+    /// `app`'s `record` as this owner committed it.
+    #[cfg(test)]
+    pub(super) fn document(&self, app: &str, record: &str) -> Option<Vec<u8>> {
+        self.committed.lock().ok()?.peer.document(app, record)
+    }
+
+    /// Whether `app`'s `record` is encrypted: its writes arrived sealed.
+    #[cfg(test)]
+    pub(super) fn encrypted(&self, app: &str, record: &str) -> bool {
+        let Ok(committed) = self.committed.lock() else {
+            return false;
+        };
+        let now = SystemTime::now();
+        tilo_peer_state::BoundedStatePeer::restore(
+            &committed.durable,
+            &self.room,
+            &self.governor,
+            std::slice::from_ref(&self.governor),
+            &RevocationList::new(),
+            now,
+            &tilo_peer_state::PeerLimits::default(),
+        )
+        .is_ok_and(|peer| {
+            matches!(
+                peer.read()
+                    .document_read(self.governor.device_public_key, app, record, now),
+                Err(tilo_peer_state::PeerDocumentReadError::Encrypted)
+            )
+        })
+    }
+
     fn commit_now(
         &self,
         request: OwnerCommitRequest,
