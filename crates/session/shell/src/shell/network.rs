@@ -1872,6 +1872,21 @@ impl ShellNetwork {
     }
 
     /// Workspace topic for session traffic associated with the active room.
+    /// Peer handles of the workspace hosts this session reaches `workspace`
+    /// through (the relays that answered ready for it).
+    pub fn workspace_hosts(&self, workspace: u64) -> std::collections::HashSet<u64> {
+        self.workspace_control_relays
+            .lock()
+            .map(|relays| {
+                relays
+                    .iter()
+                    .filter(|(relay_ws, _)| *relay_ws == workspace)
+                    .map(|(_, relay)| crate::network::behaviour::peer_liveness_handle(relay))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn active_ws_for_publish(&self) -> u64 {
         let Ok(replica) = self.replica.lock() else {
             return DEFAULT_WS_TOPIC;

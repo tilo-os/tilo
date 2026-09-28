@@ -77,6 +77,8 @@ pub(crate) struct InstalledIngress {
     )>,
     /// LIVE_V1 grant authority and its admitted-change forwarder task.
     live: Option<crate::live_service::InstalledLive<crate::owner_turn::NativeOwner>>,
+    /// The session's legacy windows, re-published on the live relay.
+    legacy: crate::legacy_windows::LegacyWindows,
 }
 /// When the owner loop next evaluates delivery retention: after every owner
 /// commit, otherwise at a bounded cadence, and after a failure only after a
@@ -278,6 +280,7 @@ impl InstalledIngress {
             retention: RetentionSchedule::default(),
             onboarding: None,
             live,
+            legacy: crate::legacy_windows::LegacyWindows::new(owner.peer().room()),
         };
         installed.refresh_current(owner)?;
         Ok(installed)
@@ -541,9 +544,36 @@ impl InstalledIngress {
     pub(crate) fn sync_actions(&mut self, actions: Option<&crate::action_host::ActionHost>) {
         self.data.sync_private(actions);
     }
+    /// Legacy-window video the session device `author` published as presence.
+    pub(crate) fn legacy_window(
+        &mut self,
+        author: [u8; 32],
+        message: &tilo_peer_state::NeighbourMsg,
+    ) {
+        if let Some(live) = &self.live {
+            self.legacy.observe(&live.relay, author, message);
+        }
+    }
+
+    /// The session devices whose legacy windows are streamed.
+    pub(crate) fn legacy_publishers(&self) -> std::collections::BTreeSet<[u8; 32]> {
+        self.legacy.publishers()
+    }
+
+    /// Whether the session device `author` is subscribed to the room's relay.
+    pub(crate) fn legacy_subscribed(&mut self, author: [u8; 32], subscribed: bool) {
+        if let Some(live) = &self.live {
+            self.legacy
+                .subscribed(&live.relay, author, subscribed, std::time::Instant::now());
+        }
+    }
+
     /// Resume held polls after any owner commit, or when one nears its deadline.
     /// Called by the host after every owner-affecting turn; cheap otherwise.
     pub(crate) fn maintain(&mut self, owner: &mut SessionOwner) {
+        if let Some(live) = &self.live {
+            self.legacy.maintain(&live.relay, std::time::Instant::now());
+        }
         self.data.observe_turn(tokio::time::Instant::now());
         if self.data.has_pending_work() {
             let budget = self.transport.host_bytes();
