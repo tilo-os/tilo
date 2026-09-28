@@ -1676,6 +1676,29 @@ impl DiffMergeApp {
     }
 }
 
+/// What the chooser answered.
+enum Pick {
+    /// A file's label and text, or why it could not be read.
+    Opened(Result<(String, String), String>),
+    Cancelled,
+    Failed(String),
+}
+
+fn label_and_text(path: &Path) -> Result<(String, String), String> {
+    let label = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().to_string(),
+    );
+    Ok((label, read_text(path)?))
+}
+
+fn read_text(path: &Path) -> Result<String, String> {
+    let failed = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
+    let (dir, name) = tilo_files::file_at(path).map_err(|e| failed(&e))?;
+    let bytes = tilo_files::blocking::read(&dir, &name).map_err(|e| failed(&e))?;
+    String::from_utf8(bytes).map_err(|e| failed(&e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

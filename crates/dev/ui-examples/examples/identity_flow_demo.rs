@@ -93,7 +93,7 @@ impl IdentityStore for DemoFileStore {
         let bytes = record.to_json_bytes()?;
         // 0600 lands on the temp file, so the record is never readable by
         // anyone else at its final path.
-        tilo_files::native::atomic::write_with_mode(&self.path, &bytes, 0o600)
+        atomic_file::write_with_mode(&self.path, &bytes, 0o600)
             .map_err(IdentityFlowError::Io)?;
         {
             let mut cached = self
