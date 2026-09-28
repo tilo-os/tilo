@@ -2577,6 +2577,10 @@ impl RecordStore {
             });
         Ok((storage, set.package_id.clone(), set.home.clone()))
     }
+    /// Whether the store can be read now: no caller holds it mutably.
+    pub(crate) fn readable(&self) -> bool {
+        self.0.try_borrow().is_ok()
+    }
     /// Explicit immutable identity only: the store namespace, package and
     /// workspace. Legacy and memory sets have no canonical namespace.
     pub(crate) fn canonical_namespace(&self) -> Option<(String, String, String)> {
