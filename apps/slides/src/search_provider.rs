@@ -331,7 +331,7 @@ mod tests {
                 .0
                 .clone();
             let slide_id = target.strip_prefix("slides.slide:").unwrap();
-            let hit = app.search_providers()[0]
+            let hit = ui::search::capability::search_providers(&app)[0]
                 .search("")
                 .into_iter()
                 .find(|hit| hit.action_address() == Some(actions::open_slide_address(slide_id)))

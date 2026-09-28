@@ -190,8 +190,7 @@ fn peer_carets_and_selections_paint_into_scenes() {
 
         let mut input = TextInput::new(vec![PathSegment::Field("body".into())]);
         let mut presence = PresenceCtx::empty();
-        let key = input
-            .presence_key()
+        let key = tilo_ui::presence::capability::presence_key(&input)
             .expect("text_input exposes presence_key");
         presence.set_caret(&key, UserId("alice".into()), 3);
 

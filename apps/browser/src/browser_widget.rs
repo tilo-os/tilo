@@ -4665,15 +4665,12 @@ impl Widget for BrowserWidget {
         dyn ui::widget::Continuable,
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[BROWSER_OPERATION_TYPE]
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
     }
 
     fn start_operation(
@@ -5643,6 +5640,12 @@ impl Widget for BrowserWidget {
             && (self.pip_float_page_rect.contains(point)
                 || self.pip_select_area_rect.contains(point)))
         .then_some(winit::window::CursorIcon::Pointer)
+    }
+}
+
+impl ui::search::capability::SearchSource for BrowserWidget {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_index.provider())]
     }
 }
 

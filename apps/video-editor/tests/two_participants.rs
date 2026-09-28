@@ -13,7 +13,7 @@
 //! Every assertion here crosses between two independent editors. One drives —
 //! through real keyboard events, so its playhead and selection move the way a
 //! person's would — and hands over only what
-//! [`Widget::presence_payload`](ui::widget::Widget::presence_payload) offers
+//! [`Widget::presence_payload`](ui::presence::capability::presence_payload) offers
 //! the host. Those frames go into the other editor through
 //! [`PresenceCtx::apply_remote_presence`], the one decoder every inbound frame
 //! passes through, and the second editor then *draws*.
@@ -149,7 +149,7 @@ impl Participant {
         let mut sent: usize = 0;
         let mut last = None;
         for _ in 0..8 {
-            let Some(frame) = self.app.presence_payload() else {
+            let Some(frame) = ui::presence::capability::presence_payload(&*self.app) else {
                 break;
             };
             if Some(&frame) == last.as_ref() {

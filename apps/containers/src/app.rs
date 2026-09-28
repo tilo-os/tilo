@@ -2182,7 +2182,8 @@ impl Widget for ContainersApp {
     ui::provides!(
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -2194,10 +2195,6 @@ impl Widget for ContainersApp {
             "containers.volume",
             "containers.distrobox",
         ]
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
     }
 
     fn start_operation(
@@ -2937,6 +2934,12 @@ impl Widget for ContainersApp {
 
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
+    }
+}
+
+impl ui::search::capability::SearchSource for ContainersApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_index.provider())]
     }
 }
 

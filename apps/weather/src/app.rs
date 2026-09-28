@@ -435,7 +435,8 @@ impl Widget for WeatherApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
         dyn ui::history_mode::capability::DocumentHistory,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -638,16 +639,6 @@ impl Widget for WeatherApp {
         vec![&mut self.nav]
     }
 
-    /// Fold the complete saved-location catalogue into the unified Ctrl+K
-    /// palette. [`CitySearchProvider`](crate::search_provider::CitySearchProvider)
-    /// keeps every city findable by name, region, or country through bounded
-    /// pages, without touching the geocoder.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::CitySearchProvider::new(
-            &self.core.borrow().model.locations,
-        ))]
-    }
-
     fn name(&self) -> &'static str {
         "WeatherApp"
     }
@@ -707,6 +698,18 @@ impl Widget for WeatherApp {
 
     fn modal_capture(&self) -> Option<Rect> {
         self.nav.modal_capture()
+    }
+}
+
+impl ui::search::capability::SearchSource for WeatherApp {
+    /// Fold the complete saved-location catalogue into the unified Ctrl+K
+    /// palette. [`CitySearchProvider`](crate::search_provider::CitySearchProvider)
+    /// keeps every city findable by name, region, or country through bounded
+    /// pages, without touching the geocoder.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::CitySearchProvider::new(
+            &self.core.borrow().model.locations,
+        ))]
     }
 }
 

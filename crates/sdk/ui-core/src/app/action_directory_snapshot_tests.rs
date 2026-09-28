@@ -7,14 +7,11 @@ struct DeclaredDirectory {
     sync_change: Option<std::rc::Rc<Cell<Option<&'static str>>>>,
 }
 impl Widget for DeclaredDirectory {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::search::capability::SearchSource
+    );
 
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        self.domain_provider
-            .clone()
-            .map(|provider| vec![Box::new(provider) as Box<dyn crate::search::SearchProvider>])
-            .unwrap_or_default()
-    }
     fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         let (doc, _) = crate::doc::document(doc, path);
         if let Some(change) = self.sync_change.as_ref().and_then(|change| change.take()) {
@@ -44,6 +41,15 @@ impl Widget for DeclaredDirectory {
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]
+    }
+}
+
+impl crate::search::capability::SearchSource for DeclaredDirectory {
+    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        self.domain_provider
+            .clone()
+            .map(|provider| vec![Box::new(provider) as Box<dyn crate::search::SearchProvider>])
+            .unwrap_or_default()
     }
 }
 

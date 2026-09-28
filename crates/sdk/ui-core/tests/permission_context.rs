@@ -197,8 +197,8 @@ fn widget_defaults_carry_no_presence_or_permission_and_delegate_draw() {
     // Case `widget_default_presence_and_permission_are_none`.
     {
         let w = NoOpWidget;
-        assert!(w.presence_key().is_none());
-        assert!(w.permission_scope().is_none());
+        assert!(tilo_ui::presence::capability::presence_key(&w).is_none());
+        assert!(tilo_ui::permissions::capability::permission_scope(&w).is_none());
     }
 
     // Case `draw_with_presence_default_delegates_to_draw`.
@@ -230,6 +230,8 @@ struct GatedButton {
 }
 
 impl tilo_ui::widget::Widget for GatedButton {
+    tilo_ui::provides!(dyn tilo_ui::permissions::capability::PermissionGated);
+
     #[allow(
         clippy::unimplemented,
         reason = "test-only Widget stub; build_layout is never invoked by these tests (they \
@@ -272,6 +274,9 @@ impl tilo_ui::widget::Widget for GatedButton {
     fn get_rect(&self) -> vello::kurbo::Rect {
         vello::kurbo::Rect::ZERO
     }
+}
+
+impl tilo_ui::permissions::capability::PermissionGated for GatedButton {
     fn permission_scope(&self) -> Option<PS> {
         Some(self.scope.clone())
     }

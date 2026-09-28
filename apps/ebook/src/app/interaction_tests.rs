@@ -105,8 +105,7 @@ fn library_controls_and_actions_are_discoverable_and_accessible() {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
-        let actions = app
-            .search_providers()
+        let actions = ui::search::capability::search_providers(&app)
             .pop()
             .expect("the action-label provider is published");
 

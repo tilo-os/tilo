@@ -2552,15 +2552,12 @@ impl Widget for CameraApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::CAMERA_OPERATION_TYPE]
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
     }
 
     fn start_operation(
@@ -3398,6 +3395,12 @@ impl Widget for CameraApp {
         _permissions: &ui::permissions::PermissionContext,
     ) {
         self.draw(scene, t, tr, theme, presence);
+    }
+}
+
+impl ui::search::capability::SearchSource for CameraApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
     }
 }
 
@@ -8201,7 +8204,7 @@ mod tests {
         // Phase `synchronized_app_searches_and_resolves_canonical_scanner_actions`.
         {
             let (app, doc, _root) = sample_app();
-            let providers = Widget::search_providers(&app);
+            let providers = ui::search::capability::search_providers(&app);
             assert_eq!(providers.len(), 1);
             let hits = providers[0].search_limited("scan existing image", 4);
             assert_eq!(hits.len(), 1);
