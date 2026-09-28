@@ -1,6 +1,5 @@
 //! Catalogue artwork leaf with a useful monogram fallback.
 
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::style_helpers::length;
 use taffy::{NodeId, Size, Style, TaffyTree};

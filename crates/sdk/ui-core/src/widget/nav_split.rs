@@ -15,7 +15,6 @@
 
 use crate::time::Instant;
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -1088,6 +1087,7 @@ impl Widget for NavSplit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     #[test]
     fn push_navigation_defaults_to_master_and_pushes_detail() {

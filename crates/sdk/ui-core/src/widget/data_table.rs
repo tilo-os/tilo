@@ -12,7 +12,6 @@
 
 use crate::time::Instant;
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ops::Range;
@@ -2631,6 +2630,7 @@ mod tests {
     use super::*;
     use crate::time::Duration;
     use crate::widget::Button;
+    use automerge::AutoCommit;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 

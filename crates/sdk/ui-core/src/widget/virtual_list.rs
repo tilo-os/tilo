@@ -11,7 +11,6 @@ use std::fmt;
 use std::hash::Hash;
 use std::ops::Range;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -1600,6 +1599,7 @@ fn first_descendant_accessible_name(widget: &dyn Widget) -> Option<String> {
 mod tests {
     use super::*;
     use crate::time::Duration;
+    use automerge::AutoCommit;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use winit::event::MouseScrollDelta;

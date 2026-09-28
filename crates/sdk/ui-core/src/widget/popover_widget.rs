@@ -13,7 +13,6 @@
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
@@ -462,6 +461,7 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
 mod tests {
     use super::*;
     use crate::widget::Text;
+    use automerge::AutoCommit;
     use taffy::prelude::TaffyMaxContent;
     use winit::event::DeviceId;
 

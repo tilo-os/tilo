@@ -6,7 +6,6 @@
 
 use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{
     Dimension, Display, FlexDirection, LengthPercentageAuto, NodeId, Position, Size, Style,
@@ -3869,6 +3868,7 @@ fn collect_named_rects(w: &dyn Widget, out: &mut Vec<(String, Rect)>) {
 mod tests {
     use super::*;
     use crate::widget::{TabDescriptor, TileContent, WindowWidth, min_group_px};
+    use automerge::{AutoCommit, ObjId};
     use winit::event::Modifiers;
 
     /// Narrows a fixture viewport width to the `f32` taffy layout expects.

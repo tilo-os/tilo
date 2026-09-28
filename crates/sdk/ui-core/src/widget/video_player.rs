@@ -16,7 +16,6 @@ use std::sync::Arc;
 
 use crate::text_metrics::renderer_type_size;
 use crate::widget::TaffyTreeExt;
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -3274,6 +3273,7 @@ mod tests {
     use crate::presence::PresenceCtx;
     use crate::text_render::TextRenderer;
     use crate::theme::Theme;
+    use automerge::AutoCommit;
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {

@@ -32,7 +32,7 @@
 use std::collections::HashMap;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -2259,6 +2259,7 @@ impl Widget for MainPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::ObjId;
     use ui::widget::BlockKind;
     use uuid::Uuid;
 

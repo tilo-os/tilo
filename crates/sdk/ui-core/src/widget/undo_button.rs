@@ -16,7 +16,6 @@
 //! sweeping its `node_map`, so the control works at any depth.
 
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -427,6 +426,7 @@ impl Widget for UndoButton {
 mod tests {
     use super::*;
     use crate::a11y::Action;
+    use automerge::AutoCommit;
     use automerge::ROOT;
 
     fn button_at(kind: UndoRequest, rect: Rect) -> UndoButton {

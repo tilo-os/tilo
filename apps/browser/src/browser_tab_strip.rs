@@ -1,6 +1,5 @@
 //! Browser-owned tab strip with a minimum-width scrolling window.
 //! Generic `TabBar` users retain their existing fit-to-width behavior.
-use automerge::{AutoCommit, ObjId};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -802,6 +801,7 @@ impl Widget for BrowserTabStrip {
 #[cfg(test)]
 mod interaction_tests {
     use super::*;
+    use automerge::AutoCommit;
 
     fn layout(strip: &mut BrowserTabStrip) -> (TaffyTree<()>, NodeId) {
         let mut tree = TaffyTree::new();

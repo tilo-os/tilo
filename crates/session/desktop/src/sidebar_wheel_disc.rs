@@ -14,7 +14,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{AlignItems, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, Stroke};
@@ -2306,6 +2305,7 @@ impl SidebarWheelDisc {
 )]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::cell::Cell;
     use winit::dpi::PhysicalPosition;
     use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};

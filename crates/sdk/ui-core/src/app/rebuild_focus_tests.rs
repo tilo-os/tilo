@@ -1,7 +1,7 @@
 use super::*;
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Text, TextInput};
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use vello::kurbo::Rect;
 
 /// Recreates its children on every `build_layout`: the focused

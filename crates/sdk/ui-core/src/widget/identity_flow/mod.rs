@@ -22,7 +22,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::widget::TaffyTreeExt;
-use automerge::{AutoCommit, ObjId};
 use collab_types::{
     Attestation, AttestationId, ChannelEvent, ChannelId, Claim, Clearance, Ed25519PublicKey, Role,
     RoleAttestation, Signature, generate_keypair, sign_event, verify_event,
