@@ -601,13 +601,15 @@ impl ApplicationHost {
             let target = definition.unsaved_target(&records);
             let context = HostContext::prepare(
                 definition,
-                records,
-                self.views.clone(),
-                self.device_id.clone(),
-                instance_id,
-                self.permissions.clone(),
-                self.author.clone(),
-                self.action_context.clone(),
+                HostContextInputs {
+                    records,
+                    views: self.views.clone(),
+                    device_id: self.device_id.clone(),
+                    instance_id,
+                    permissions: self.permissions.clone(),
+                    author: self.author.clone(),
+                    action_context: self.action_context.clone(),
+                },
                 &target,
             )?;
             let restore = initial_view.map_or(RestoreInput::None, |application| {
