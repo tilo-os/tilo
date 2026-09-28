@@ -1,5 +1,5 @@
 #!/bin/bash
-# Outside a git checkout (the copy of a worktree rcargo builds in),
+# Outside a git checkout (such as a worktree copied to a build machine),
 # os/dev/build-dev-image.sh fingerprints the base's inputs from the files
 # themselves: a change to a production input changes the fingerprint, a change
 # to a dev-image-only source or build output does not.

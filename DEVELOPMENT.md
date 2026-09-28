@@ -380,7 +380,7 @@ pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
 ### Android app host
 
 [`build-apk.sh`](docs/android.md) needs two toolchains. The Rust library is
-cross-compiled with Android NDK r29. `rcargo`'s builder and the Fedora 44
+cross-compiled with Android NDK r29. The Fedora 44
 development image (`dist/dev/Containerfile.fedora44`) carry it, with the
 `CARGO_TARGET_*_LINUX_ANDROID_LINKER`, `CC_*`, `CXX_*` and `AR_*` variables
 that point Cargo at its clang. Elsewhere, install the same release and set
@@ -1143,7 +1143,7 @@ scripts/test-local.sh                            # the workspace, visual goldens
 scripts/test-local.sh -p fs -p tilo-ui           # selected packages
 scripts/test-local.sh -p fs -- checked_restore   # arguments after -- go to nextest run
 scripts/test-local.sh --goldens                  # only the visual goldens
-CARGO=rcargo scripts/test-local.sh -p fs         # compile remotely, run here
+CARGO=my-cargo scripts/test-local.sh -p fs       # any cargo drop-in compiles, run here
 ```
 
 It compiles in your environment, then runs the compiled tests (through
@@ -1210,19 +1210,19 @@ next changed.
 **The native data plane (Tier 1).** `fs --test native_tier1` and
 `fs-native --test it` need root, two dedicated Btrfs volumes and a kernel with
 pre-content fanotify events (6.14 or later, `CONFIG_FANOTIFY_ACCESS_PERMISSIONS`).
-`tools/native-tier1.sh` builds both as you (remotely with `TILO_CARGO=rcargo`),
+`tools/native-tier1.sh` builds both as you (with `$TILO_CARGO`, default `cargo`),
 makes two loop-mounted Btrfs stores, runs every test once as root through
 `sudo -n` with `TILO_REQUIRE_FANOTIFY=1`, and removes the stores and mounts
 again:
 
 ```bash
-TILO_CARGO=rcargo tools/native-tier1.sh                      # both suites
-TILO_CARGO=rcargo TILO_NATIVE_TIER1_TARGETS=fs:native_tier1 \
+tools/native-tier1.sh                                        # both suites
+TILO_NATIVE_TIER1_TARGETS=fs:native_tier1 \
     tools/native-tier1.sh sqlite --nocapture                 # one scenario
 ```
 
-`rcargo test --local` cannot run them: its distrobox is a rootless user
-namespace, which gets neither a filesystem mark on a Btrfs store nor a
+A rootless container (a distrobox, a build container) cannot run them: a
+rootless user namespace gets neither a filesystem mark on a Btrfs store nor a
 pre-content group. `sqlite3` and `git` must be on your `PATH`, which the root
 run inherits.
 
