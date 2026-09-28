@@ -32,6 +32,7 @@ mod action_timing;
 mod committed_authority;
 mod desktop_commands;
 mod desktop_delivery;
+mod document_imports;
 mod host_signing;
 
 mod publication;
