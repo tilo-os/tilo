@@ -1,4 +1,5 @@
 """Execute the real check workflow's aggregate, including intentional skips."""
+import importlib.util
 import os
 from pathlib import Path
 import re
@@ -318,6 +319,19 @@ class CheckAggregateTests(unittest.TestCase):
             self.assertIn("rustup target add wasm32-unknown-unknown", wasm)
             self.assertIn("--target wasm32-unknown-unknown", wasm)
             self.assertIn("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings", wasm)
+            self.assertIn("run: bash tools/ci/check-wasm.sh", wasm)
+            # The script checks every wasm32 build the workspace-hack policy
+            # resolves, with the features its build script uses.
+            spec = importlib.util.spec_from_file_location(
+                "wasm_hack", ROOT / "tools/policy/check_wasm_workspace_hack.py")
+            hack = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(hack)
+            script = (ROOT / "tools/ci/check-wasm.sh").read_text()
+            for package, _ in hack.ROOTS:
+                self.assertIn(f"-p {package}", script)
+            self.assertIn("--features tilo-browser-runtime/dylink", script)
+            self.assertIn("--features cloud,static-apps", script)
+            self.assertIn('--target "$target"', script)
             self.assertIn("BUILDER_RESULT: ${{ needs.builder.result }}", checks)
             self.assertIn('test "$BUILDER_RESULT" = success', checks)
             security = section(self.workflow, "security", 2)
