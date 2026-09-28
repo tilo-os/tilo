@@ -75,6 +75,7 @@ pub const BLOB_SOCKET_ENV: &str = "TILO_FS_BLOB_SOCKET";
 /// holds the descriptor; the daemon reads it before any Cap'n Proto.
 pub const BLOB_HANDOFF_MAGIC: [u8; 4] = *b"QBL1";
 const BLOB_HANDOFF_PROTOCOL: u16 = 1;
+const BLOB_HANDOFF_FRAMING: Framing = Framing::little_endian(4096).reject_empty();
 /// In-sandbox descriptor slot of the automatic document-media service.
 const BLOB_CHILD_FD: i32 = 30;
 /// Slot of the automatic identity service.
@@ -391,11 +392,8 @@ fn write_blob_handoff(stream: &mut UnixStream, app_id: &str, room: &str) -> std:
         "app_id": app_id,
     }))
     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let length = u32::try_from(bytes.len())
-        .map_err(|_| std::io::Error::other("document media handoff is too large"))?;
     stream.write_all(&BLOB_HANDOFF_MAGIC)?;
-    stream.write_all(&length.to_le_bytes())?;
-    stream.write_all(&bytes)?;
+    BLOB_HANDOFF_FRAMING.write(stream, &bytes)?;
     stream.flush()
 }
 
