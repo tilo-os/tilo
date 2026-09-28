@@ -1,0 +1,4 @@
+#pragma once
+namespace tilo {
+inline constexpr char kPageAutomation[] = R"TILO_PAGE(@TILO_PAGE_AUTOMATION@)TILO_PAGE";
+}

@@ -9,7 +9,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::{Frame, FrameSlot, MediaElementInfo, WebViewCommand, WebViewEngine, WebViewEvent};
+use super::{
+    Frame, FrameSlot, MediaElementInfo, PageFailure, PageReply, PageRequest, WebViewCommand,
+    WebViewEngine, WebViewEvent,
+};
 
 /// Height of the darker "chrome" band painted at the top of every test
 /// page, in physical pixels.
@@ -27,6 +30,7 @@ struct Inner {
     events: Vec<WebViewEvent>,
     commands: Vec<WebViewCommand>,
     media_element: Option<MediaElementInfo>,
+    page_replies: std::collections::VecDeque<Result<PageReply, PageFailure>>,
     next_download: u64,
     downloads: std::collections::HashMap<String, String>,
 }
@@ -62,6 +66,30 @@ impl TestEngine {
     /// Configure the deterministic response to a media-element probe.
     pub fn set_media_element(&self, media: Option<MediaElementInfo>) {
         self.lock_inner().media_element = media;
+    }
+
+    /// Queue the answer to the next page request. Without one, an outline
+    /// is a single document line and every other request succeeds.
+    pub fn push_page_reply(&self, reply: Result<PageReply, PageFailure>) {
+        self.lock_inner().page_replies.push_back(reply);
+    }
+
+    fn page_reply_locked(
+        inner: &mut Inner,
+        request: &PageRequest,
+    ) -> Result<PageReply, PageFailure> {
+        if let Some(reply) = inner.page_replies.pop_front() {
+            return reply;
+        }
+        let url = inner.history.get(inner.index).cloned().unwrap_or_default();
+        Ok(PageReply {
+            outline: matches!(request, PageRequest::Outline)
+                .then(|| format!("- document \"{url} — test page\"")),
+            message: "Done".into(),
+            url,
+            navigated: false,
+            loading: false,
+        })
     }
 
     /// Stable page colour for a URL — exposed so tests can compute the
@@ -293,6 +321,15 @@ impl WebViewEngine for TestEngine {
                 element_id,
             } => {
                 Self::emit_media_locked(&mut inner, request_id, Some(element_id));
+            }
+            WebViewCommand::Page {
+                request_id,
+                request,
+            } => {
+                let result = Self::page_reply_locked(&mut inner, &request);
+                inner
+                    .events
+                    .push(WebViewEvent::PageResult { request_id, result });
             }
             WebViewCommand::StartDownload { uri } => {
                 if !(uri.starts_with("http://") || uri.starts_with("https://")) {
