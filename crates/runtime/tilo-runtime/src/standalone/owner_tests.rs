@@ -57,12 +57,17 @@ fn creation(installed: bool, dev: bool) -> RecordCreation {
 }
 
 fn open(profile: &Profile, creation: RecordCreation) -> RoomOwner {
+    open_with(profile, creation, ChannelKeyProvider::default())
+}
+
+fn open_with(profile: &Profile, creation: RecordCreation, keys: ChannelKeyProvider) -> RoomOwner {
     RoomOwner::open(
         profile.dir.path(),
         &profile.room,
         (profile.key.clone(), profile.device.clone()),
         creation,
         Arc::clone(&profile.workspace),
+        keys,
     )
     .unwrap()
 }
@@ -252,6 +257,7 @@ fn another_device_key_cannot_open_the_room() {
         (SigningKey::from_bytes(&[9; 32]), profile.device.clone()),
         creation(true, false),
         Arc::clone(&profile.workspace),
+        ChannelKeyProvider::default(),
     )
     .err()
     .unwrap();
@@ -320,7 +326,15 @@ fn a_provisioned_profile_governs_its_room_with_its_trusted_device() {
     let (key, _) = tilo_identity_host::broker::trusted_current_device(&room).unwrap();
     let request = signed_write(&room, &key, &mut automerge::AutoCommit::new(), "first");
     let committed = |dev: bool| {
-        let owner = super::super::room_owner(&profile, &room, &workspace, &apps, dev).unwrap();
+        let owner = super::super::room_owner(
+            &profile,
+            &room,
+            &workspace,
+            &apps,
+            dev,
+            ChannelKeyProvider::default(),
+        )
+        .unwrap();
         tilo_rt::try_app()
             .unwrap()
             .block_on(owner.commit_with_record_kind(request.clone(), Some("test.memo".into())))
@@ -359,8 +373,158 @@ fn a_profile_adopted_from_the_desktop_session_refuses_every_commit() {
         PathBuf::new(),
         Vec::new(),
     ));
-    let owner = super::super::room_owner(dir.path(), &room, &workspace, &apps, true).unwrap();
+    let owner = super::super::room_owner(
+        dir.path(),
+        &room,
+        &workspace,
+        &apps,
+        true,
+        ChannelKeyProvider::default(),
+    )
+    .unwrap();
     assert!(owner.requires_room(&room));
     assert!(owner.health().is_err());
     assert!(!dir.path().join(ROOM_OWNER).exists(), "no owner is created");
+}
+
+/// Channel keys as this device holds them stewarding the room, with
+/// `readers` allowed to read its channels, kept under `state`.
+fn steward_keys(profile: &Profile, state: &str, readers: &[SigningKey]) -> ChannelKeyProvider {
+    use tilo_action_broker::channel_encryption::{
+        ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
+        testing::{Directory, Policy},
+    };
+    let readers = readers
+        .iter()
+        .map(|key| Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()))
+        .collect();
+    let service = ChannelEncryption::open(
+        ChannelEncryptionConfig {
+            root: profile.dir.path().join(state),
+            vault: channel_crypto::VaultKey::new([7; 32]),
+            device_key: profile.key.clone(),
+        },
+        Box::new(Directory {
+            governs: true,
+            steward: Ed25519PublicKey::from_bytes(profile.key.verifying_key().to_bytes()),
+            policy: Policy {
+                allowed: Arc::new(Mutex::new(readers)),
+            },
+        }),
+        Arc::new(Mutex::new(
+            tilo_action_broker::collab_core::BrokerChannels::default(),
+        )),
+    )
+    .unwrap();
+    let keys = ChannelKeyProvider::default();
+    keys.set(Some(ChannelKeyAccess::new(service)));
+    keys
+}
+
+/// `write` as an SDK app seals it: the payload sealed under the channel's
+/// current content key, then signed.
+fn seal(
+    profile: &Profile,
+    keys: &ChannelKeyProvider,
+    mut request: OwnerCommitRequest,
+) -> OwnerCommitRequest {
+    use tilo_action_broker::channel_encryption::ChannelAccess;
+    let CommitOperation::Document { envelope, .. } = &mut request.operation else {
+        panic!("a document write")
+    };
+    let channel = collab_types::document_channel_id(APP, &profile.room, RECORD);
+    let room = RoomId::parse(&profile.room).unwrap();
+    let (ChannelAccess::Ready(content), _) = keys.get().unwrap().access(room, channel) else {
+        panic!("the steward holds the room's channel keys")
+    };
+    let (metadata, sealed) = content
+        .seal_content(
+            envelope.artifact,
+            collab_types::ContentRetention::Checkpoint,
+            &envelope.payload,
+        )
+        .unwrap();
+    envelope.payload = sealed;
+    envelope.encryption = Some(metadata);
+    collab_types::sign_op(envelope, &profile.key).unwrap();
+    request
+}
+
+#[test]
+fn a_sealed_write_is_opened_after_its_checks_and_reads_back_after_reopen() {
+    let profile = profile();
+    let keys = steward_keys(&profile, "channels", std::slice::from_ref(&profile.key));
+    let owner = open_with(&profile, creation(true, false), keys.clone());
+    let mut doc = automerge::AutoCommit::new();
+    let request = seal(
+        &profile,
+        &keys,
+        write(&profile, &mut doc, "sealed by the app"),
+    );
+    commit(&owner, &request, Some(KIND)).unwrap();
+    assert_eq!(text(&owner).as_deref(), Some("sealed by the app"));
+    drop(owner);
+    let reopened = open_with(&profile, creation(true, false), keys);
+    assert_eq!(text(&reopened).as_deref(), Some("sealed by the app"));
+    let plain = write(&profile, &mut doc, "a plaintext downgrade");
+    assert!(
+        commit(&reopened, &plain, Some(KIND)).is_err(),
+        "the encrypted record refuses plaintext"
+    );
+}
+
+#[test]
+fn a_sealed_write_the_owner_cannot_open_under_the_current_epoch_is_refused() {
+    let profile = profile();
+    let keys = steward_keys(&profile, "channels", std::slice::from_ref(&profile.key));
+    let owner = open_with(&profile, creation(true, false), keys.clone());
+    let mut doc = automerge::AutoCommit::new();
+    let mut stale = seal(&profile, &keys, write(&profile, &mut doc, "stale"));
+    if let CommitOperation::Document { envelope, .. } = &mut stale.operation {
+        let metadata = envelope.encryption.as_mut().unwrap();
+        metadata.epoch = metadata.epoch.wrapping_add(1);
+        collab_types::sign_op(envelope, &profile.key).unwrap();
+    }
+    assert!(
+        commit(&owner, &stale, Some(KIND)).is_err(),
+        "another epoch is refused"
+    );
+    let mut tampered = seal(&profile, &keys, write(&profile, &mut doc, "tampered"));
+    if let CommitOperation::Document { envelope, .. } = &mut tampered.operation {
+        envelope.payload[0] ^= 1;
+    }
+    assert!(
+        commit(&owner, &tampered, Some(KIND)).is_err(),
+        "a tampered write is refused"
+    );
+    assert_eq!(
+        text(&owner),
+        None,
+        "nothing was admitted, not even the record"
+    );
+}
+
+#[test]
+fn without_a_current_key_the_owner_admits_no_sealed_write() {
+    let profile = profile();
+    let keys = steward_keys(&profile, "channels", std::slice::from_ref(&profile.key));
+    let mut doc = automerge::AutoCommit::new();
+    let request = seal(&profile, &keys, write(&profile, &mut doc, "sealed"));
+    let unkeyed = open_with(
+        &profile,
+        creation(true, false),
+        ChannelKeyProvider::default(),
+    );
+    assert!(
+        commit(&unkeyed, &request, Some(KIND)).is_err(),
+        "no channel service"
+    );
+    drop(unkeyed);
+    let revoked = steward_keys(&profile, "unread-channels", &[]);
+    let owner = open_with(&profile, creation(true, false), revoked);
+    assert!(
+        commit(&owner, &request, Some(KIND)).is_err(),
+        "a device that no longer reads the channel opens nothing"
+    );
+    assert_eq!(text(&owner), None);
 }

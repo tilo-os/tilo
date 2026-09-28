@@ -272,3 +272,164 @@ fn a_tampered_stored_sealed_history_refuses_to_restore() {
         "sealed history cannot carry plaintext"
     );
 }
+
+/// The seeded governor, which holds the channel keys, and its key.
+fn holder() -> (StatePeer, SigningKey, SystemTime) {
+    let (mut native, a, _, _, now) = seeded();
+    native.select_admission_v5().unwrap();
+    (native, a, now)
+}
+
+fn envelope_of(message: NeighbourMsg) -> SignedOp {
+    let NeighbourMsg::AppDocument { envelope, .. } = message else {
+        panic!("a document write")
+    };
+    *envelope
+}
+
+/// An edit of the seeded record, encoded as the plaintext a sealed write opens to.
+fn edit(peer: &StatePeer, value: &str) -> Vec<u8> {
+    let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+    let heads = doc.get_heads();
+    doc.put(ROOT, "value", value).unwrap();
+    doc.commit();
+    DocumentMutation::Incremental(doc.save_after(&heads))
+        .encode()
+        .unwrap()
+}
+
+fn value(peer: &StatePeer) -> String {
+    let doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+    doc.get(ROOT, "value")
+        .unwrap()
+        .map(|(value, _)| value.to_string())
+        .unwrap()
+}
+
+#[test]
+fn the_key_holder_admits_the_opened_plaintext_and_keeps_the_record_encrypted() {
+    let (mut holder, a, now) = holder();
+    let plaintext = edit(&holder, "opened by its key holder");
+    let envelope = envelope_of(sealed(&holder, &a, 2, b"ciphertext"));
+    holder
+        .admit_new_opened_local_document(APP, RECORD, envelope, &mut |_| Ok(plaintext.clone()), now)
+        .unwrap();
+    assert_eq!(value(&holder), "\"opened by its key holder\"");
+    assert_eq!(holder.incomplete_reason(), None);
+    let mut restored = restore(&holder, now).unwrap();
+    assert_eq!(value(&restored), "\"opened by its key holder\"");
+    assert!(
+        restored
+            .publish_incremental(APP, RECORD, Vec::new(), &a, now)
+            .is_err(),
+        "a plaintext write to the encrypted record is a downgrade"
+    );
+}
+
+#[test]
+fn the_key_holder_never_opens_a_write_that_fails_its_checks() {
+    use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
+    let (holder, a, now) = holder();
+    let plaintext = edit(&holder, "never");
+    let refused = |mut peer: StatePeer, envelope: SignedOp, why: &str| {
+        let before = peer.durable().unwrap();
+        let mut opened = 0;
+        let result = peer.admit_new_opened_local_document(
+            APP,
+            RECORD,
+            envelope,
+            &mut |_| {
+                opened += 1;
+                Ok(plaintext.clone())
+            },
+            now,
+        );
+        assert!(result.is_err(), "{why} is admitted");
+        assert_eq!(opened, 0, "{why} was opened before it was verified");
+        assert_eq!(peer.durable().unwrap(), before, "{why} changed the record");
+    };
+    let mut tampered = envelope_of(sealed(&holder, &a, 2, b"ciphertext"));
+    tampered.payload[0] ^= 1;
+    refused(holder.clone(), tampered, "tampered ciphertext");
+    let stranger = SigningKey::from_bytes(&[77; 32]);
+    refused(
+        holder.clone(),
+        envelope_of(sealed(&holder, &stranger, 2, b"ciphertext")),
+        "a stranger's write",
+    );
+    let mut forged = envelope_of(sealed(&holder, &stranger, 2, b"ciphertext"));
+    forged.author = Ed25519PublicKey::from_bytes(a.verifying_key().to_bytes());
+    refused(holder.clone(), forged, "a write signed by another key");
+    let mut once = holder.clone();
+    let write = envelope_of(sealed(&holder, &a, 2, b"ciphertext"));
+    once.admit_new_opened_local_document(
+        APP,
+        RECORD,
+        write.clone(),
+        &mut |_| Ok(plaintext.clone()),
+        now,
+    )
+    .unwrap();
+    refused(once, write, "a replayed write");
+    let mut plain = envelope_of(sealed(&holder, &a, 2, b"ciphertext"));
+    plain.encryption = None;
+    plain.payload = plaintext.clone();
+    collab_types::sign_op(&mut plain, &a).unwrap();
+    refused(holder.clone(), plain, "a cleartext write");
+    let (member_key, member) = {
+        let (_, _, b, bc, _) = seeded();
+        (b, bc)
+    };
+    let mut revoked = holder;
+    let mut revocation = RevocationEntry {
+        user_public_key: member.user_public_key,
+        revoked_device_public_key: member.device_public_key,
+        revoked_at_ns: 1,
+        reason: RevocationReason::Compromised,
+        signature: [0; 64],
+    };
+    sign_revocation_entry(&mut revocation, &SigningKey::from_bytes(&[1; 32])).unwrap();
+    revoked
+        .receive_from(
+            TransportOrigin::UntrustedPresence(a.verifying_key().to_bytes()),
+            NeighbourMsg::IdentityHello {
+                cert: Box::new(revoked.authority().clone()),
+                revocations: vec![revocation],
+            },
+            now,
+        )
+        .unwrap();
+    refused(
+        revoked.clone(),
+        envelope_of(sealed(&revoked, &member_key, 1, b"ciphertext")),
+        "a revoked author's write",
+    );
+}
+
+#[test]
+fn the_key_holder_admits_nothing_its_opener_refuses_or_cannot_parse() {
+    let (holder, a, now) = holder();
+    for (answer, why) in [
+        (Err("stale key epoch".to_owned()), "an opener refusal"),
+        (
+            Ok(b"not a document mutation".to_vec()),
+            "unparseable plaintext",
+        ),
+    ] {
+        let mut peer = holder.clone();
+        let before = peer.durable().unwrap();
+        let envelope = envelope_of(sealed(&holder, &a, 2, b"ciphertext"));
+        assert!(
+            peer.admit_new_opened_local_document(
+                APP,
+                RECORD,
+                envelope,
+                &mut |_| answer.clone(),
+                now
+            )
+            .is_err(),
+            "{why} is admitted"
+        );
+        assert_eq!(peer.durable().unwrap(), before, "{why} changed the record");
+    }
+}
