@@ -2519,8 +2519,7 @@ impl AppWidget for SettingsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use taffy::{NodeId, TaffyTree};
+    use ui::headless::Framed;
 
     #[test]
     #[allow(
@@ -2711,45 +2710,22 @@ mod tests {
         }
     }
 
-    fn layout_at(app: &mut SettingsApp, w: f32, h: f32) {
-        layout_at_with_theme(app, w, h, &ui::Theme::dark());
+    fn layout_at(app: SettingsApp, w: f32, h: f32) -> Framed<SettingsApp> {
+        layout_at_with_theme(app, w, h, &ui::Theme::dark())
     }
 
-    fn layout_at_with_theme(app: &mut SettingsApp, w: f32, h: f32, theme: &ui::Theme) {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = app.build_layout(&mut taffy, theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::length(w),
-                        height: taffy::Dimension::length(h),
-                    },
-                    ..Default::default()
-                },
-                &[node],
-            )
-            .unwrap();
-        let measure_map = node_map.clone();
-        let mut tr = ui::text_render::TextRenderer::new();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(w),
-                    height: taffy::AvailableSpace::Definite(h),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .unwrap();
-        app.apply_layout(&taffy, node, vello::kurbo::Point::ORIGIN);
+    fn layout_at_with_theme(
+        app: SettingsApp,
+        w: f32,
+        h: f32,
+        theme: &ui::Theme,
+    ) -> Framed<SettingsApp> {
+        Framed::new(
+            ui::State::new(),
+            app,
+            ui::headless::viewport((w, h)),
+            theme.clone(),
+        )
     }
 
     /// The app opens on the default category unless told otherwise; a real
@@ -2766,8 +2742,8 @@ mod tests {
         );
 
         let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut app = config.app();
-        layout_at(&mut app, 1200.0, 760.0);
+        let app = config.app();
+        let mut app = layout_at(app, 1200.0, 760.0);
         app.select(Category::Users);
         assert_eq!(app.selected(), Category::Users);
         assert!(
@@ -3362,8 +3338,8 @@ mod tests {
     fn assert_responsive_layouts(cases: Vec<ResponsiveCase<'_>>) {
         for (case, build, (w, h), narrow, sidebar_open, back) in cases {
             let config = crate::prefs::test_env::ScratchConfig::new();
-            let mut app = build(&config);
-            layout_at(&mut app, w, h);
+            let app = build(&config);
+            let app = layout_at(app, w, h);
             assert!(app.get_rect().width() > 0.0, "case {case}: lays out");
             if let Some(narrow) = narrow {
                 assert_eq!(app.is_narrow(), narrow, "case {case}: narrow");
@@ -3484,15 +3460,15 @@ mod tests {
             let config = crate::prefs::test_env::ScratchConfig::new();
 
             let selected = Category::RegionFormats;
-            let mut app = config
+            let app = config
                 .app()
                 .with_category(selected)
                 .with_width_hint(440.0)
                 .with_narrow_content_shot();
-            layout_at(&mut app, 440.0, 820.0);
+            let app = layout_at(app, 440.0, 820.0);
 
             let mut heading = None;
-            named_rect(&app, selected.label(), &mut heading);
+            named_rect(&*app, selected.label(), &mut heading);
             let heading = heading.expect("the content page names the selected destination");
             let back = app.back_button_rect();
             assert!(
@@ -3516,20 +3492,16 @@ mod tests {
             let config = crate::prefs::test_env::ScratchConfig::new();
 
             let selected = Category::RegionFormats;
-            let mut app = config
+            let app = config
                 .app()
                 .with_category(selected)
                 .with_width_hint(390.0)
                 .with_narrow_content_shot();
-            layout_at_with_theme(
-                &mut app,
-                390.0,
-                844.0,
-                &ui::Theme::dark().with_text_scale(1.5),
-            );
+            let app =
+                layout_at_with_theme(app, 390.0, 844.0, &ui::Theme::dark().with_text_scale(1.5));
 
             let mut heading = None;
-            named_rect(&app, selected.label(), &mut heading);
+            named_rect(&*app, selected.label(), &mut heading);
             let heading = heading.expect("the content page names the selected destination");
             assert!(
                 heading.y0 < 844.0,
@@ -3541,16 +3513,12 @@ mod tests {
         // Case `wide_large_text_reserves_a_readable_sidebar_before_layout`.
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
-            let mut app = config
+            let app = config
                 .app()
                 .with_width_hint(1440.0)
                 .with_narrow_content_shot();
-            layout_at_with_theme(
-                &mut app,
-                1440.0,
-                900.0,
-                &ui::Theme::dark().with_text_scale(2.0),
-            );
+            let app =
+                layout_at_with_theme(app, 1440.0, 900.0, &ui::Theme::dark().with_text_scale(2.0));
             assert!(
                 !app.is_narrow(),
                 "1440px still admits a readable split at 200% text"
@@ -3564,9 +3532,9 @@ mod tests {
                 (sidebar.width() - sidebar::width_for_text_scale(2.0)).abs() < 0.5,
                 "sidebar tracks the same scale as its custom-painted rows: {sidebar:?}"
             );
-            let mut compact = config.app().with_width_hint(900.0);
-            layout_at_with_theme(
-                &mut compact,
+            let compact = config.app().with_width_hint(900.0);
+            let compact = layout_at_with_theme(
+                compact,
                 900.0,
                 844.0,
                 &ui::Theme::dark().with_text_scale(2.0),
@@ -3581,13 +3549,15 @@ mod tests {
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
             // Start on the list screen — the reachable back-tap state.
-            let mut app = config.app().with_width_hint(440.0).with_narrow_list_shot();
-            layout_at(&mut app, 440.0, 820.0);
+            let app = config.app().with_width_hint(440.0).with_narrow_list_shot();
+            let mut app = layout_at(app, 440.0, 820.0);
             assert!(app.sidebar_open(), "starts on the list screen");
             // Picking a category drills into its content screen.
             app.select(Category::Users);
             assert!(app.take_structure_dirty(), "the pick requests a rebuild");
-            layout_at(&mut app, 440.0, 820.0);
+            Framed::harness_mut(&mut app)
+                .relayout_at((440, 820))
+                .expect("layout settles");
             assert!(
                 !app.sidebar_open(),
                 "the pick navigated to the content screen"
@@ -3607,8 +3577,8 @@ mod tests {
             use automerge::ReadDoc;
             let config = crate::prefs::test_env::ScratchConfig::new();
 
-            let mut app = config.app();
-            layout_at(&mut app, 1200.0, 760.0);
+            let app = config.app();
+            let mut app = layout_at(app, 1200.0, 760.0);
             assert_eq!(app.search_query(), "", "starts with no query");
 
             let mut doc = automerge::AutoCommit::new();
@@ -3647,7 +3617,7 @@ mod tests {
             );
             assert_eq!(app.search_state.with(Clone::clone), "light");
             assert!(doc.get_heads().is_empty());
-            layout_at(&mut app, 1200.0, 760.0);
+            let _app = layout_at(app, 1200.0, 760.0);
         }
     }
 
@@ -3661,8 +3631,8 @@ mod tests {
         // real composed tree: the shell's children are those three, in order.
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
-            let mut app = config.app();
-            layout_at(&mut app, 1200.0, 760.0);
+            let app = config.app();
+            let app = layout_at(app, 1200.0, 760.0);
             let shell = app.shell.as_ref().expect("shell built");
             let names: Vec<&str> = shell.children().iter().map(|c| c.name()).collect();
             assert_eq!(
@@ -3677,14 +3647,14 @@ mod tests {
         // Case `root_landmark_is_retained_across_responsive_shell_rebuilds`.
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
-            let mut app = config.app().with_category(Category::Appearance);
+            let app = config.app().with_category(Category::Appearance);
             let wide = Widget::accessibility(&app).expect("Settings landmark");
             assert_eq!(wide.name.as_deref(), Some("Settings"));
             assert_eq!(wide.semantic_key.as_deref(), Some("settings.app"));
 
-            layout_at(&mut app, 440.0, 820.0);
+            let app = layout_at(app, 440.0, 820.0);
             let narrow =
-                Widget::accessibility(&app).expect("Settings landmark survives narrow shell");
+                Widget::accessibility(&*app).expect("Settings landmark survives narrow shell");
             assert_eq!(narrow.semantic_key, wide.semantic_key);
         }
     }
