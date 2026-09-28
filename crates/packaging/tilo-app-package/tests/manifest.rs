@@ -100,7 +100,7 @@ fn manifest_round_trips_with_cli_and_entrypoint_blocks() {
 }
 
 #[test]
-fn provider_claims_normalise_migrate_and_reject_active_content() {
+fn provider_claims_normalise_and_reject_active_content() {
     // phase: provider_claims_normalize_and_roundtrip_canonically
     {
         let src = render_with_dummy_key().replace(
@@ -120,23 +120,11 @@ fn provider_claims_normalise_migrate_and_reject_active_content() {
             manifest.providers
         );
     }
-    // phase: legacy_extension_only_provider_remains_valid
+    // phase: extension_only_provider_is_valid
     {
         let manifest = Manifest::from_toml_str(&render_with_dummy_key()).unwrap();
         assert!(manifest.providers.schemes.is_empty());
-        validate_manifest(&manifest).expect("legacy manifest remains valid");
-    }
-    // phase: transitional_uri_scheme_key_migrates_to_canonical_schemes
-    {
-        let src = render_with_dummy_key().replace(
-            "ext  = [\"odt\"]",
-            "ext = [\"odt\"]\nuri-schemes = [\"WEBCAL:\"]",
-        );
-        let manifest = Manifest::from_toml_str(&src).unwrap();
-        assert_eq!(manifest.providers.schemes, vec!["webcal"]);
-        let encoded = manifest.to_toml_string().unwrap();
-        assert!(encoded.contains("schemes = ["));
-        assert!(!encoded.contains("uri-schemes"));
+        validate_manifest(&manifest).expect("extension-only manifest is valid");
     }
     // phase: malformed_and_active_content_claims_are_rejected
     {
