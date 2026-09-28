@@ -143,7 +143,9 @@ async fn scoped_writer_save_as_expired_accepted_caller_cannot_write_selected_fil
     writer_save_as(true).await;
 }
 
-fn assert_read_remains_unavailable(resources: &[tilo_actions::Resource]) {
+fn read_text(
+    resources: &[tilo_actions::Resource],
+) -> Result<tilo_actions::EncodedAction, tilo_actions::DoorError> {
     let descriptors = tilo_actions::door::survey(resources);
     let reads: Vec<_> = descriptors
         .iter()
@@ -157,16 +159,31 @@ fn assert_read_remains_unavailable(resources: &[tilo_actions::Resource]) {
         1,
         "actual Writer surface must contain one exact read descriptor"
     );
+    tilo_actions::door::encode_json(
+        resources,
+        &reads[0].address,
+        serde_json::json!({"pageSize": 2}).as_object().unwrap(),
+    )
+}
+
+fn assert_read_encodes(resources: &[tilo_actions::Resource]) {
+    let encoded =
+        read_text(resources).expect("the registered read encodes through the ordinary action door");
+    assert_eq!(
+        encoded.type_id,
+        word_processor::semantic_read::action::OPERATION_TYPE
+    );
+}
+
+/// A host worker publishes Writer's declaration-only catalogue schema: it
+/// declares the read, and the door refuses to encode it from that tree.
+fn assert_read_declared_only(resources: &[tilo_actions::Resource]) {
     assert!(
         matches!(
-            tilo_actions::door::encode_json(
-                resources,
-                &reads[0].address,
-                serde_json::json!({"pageSize": 2}).as_object().unwrap(),
-            ),
-            Err(tilo_actions::DoorError::Unavailable { .. })
+            read_text(resources),
+            Err(tilo_actions::DoorError::InvalidArguments(_))
         ),
-        "registered read must remain unavailable through the ordinary action door"
+        "the worker's catalogue schema must not encode the read"
     );
 }
 
@@ -181,7 +198,7 @@ async fn scoped_writer_catalogue_matches_actual_admitted_document() {
     let document = ui::automerge::AutoCommit::load(&document).unwrap();
     let widget = word_processor::WordProcessorWidget::from_document(&document).unwrap();
     let resources = tilo_actions::ResourceProvider::resources(&widget, &document);
-    assert_read_remains_unavailable(&resources);
+    assert_read_encodes(&resources);
     let mut registry = tilo_actions::ActionRegistry::new();
     word_processor::actions::register(&mut registry);
     let handlers = ui::widget::Widget::resource_operation_handlers(&widget);
@@ -205,7 +222,7 @@ async fn scoped_writer_catalogue_matches_actual_admitted_document() {
     for worker in &mut fixture.host.workers {
         if worker.app_id == fixture.app && worker.record_id == fixture.record {
             let app = worker.runner.app_mut();
-            assert_read_remains_unavailable(&app.collect_resources());
+            assert_read_declared_only(&app.collect_resources());
             eprintln!(
                 "mounted Writer resources: {:?}",
                 tilo_actions::door::survey(&app.collect_resources())
