@@ -2424,30 +2424,6 @@ impl WordProcessor {
         })
     }
 
-    fn region_set_attr(
-        &mut self,
-        state: &mut AutoCommit,
-        block: &str,
-        key: &str,
-        value: impl Into<automerge::ScalarValue>,
-    ) {
-        let Some(containers) = self.containers.clone() else {
-            return;
-        };
-        let region = self.region;
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            match region {
-                Region::Body => dm.set_attr(block, key, value),
-                r => dm.set_attr_in(r, block, key, value),
-            }
-        }
-    }
-
     fn region_set_kind(&mut self, state: &mut AutoCommit, block: &str, kind: &str) {
         if self.containers.is_none() || self.ids.is_none() {
             return;
@@ -2463,6 +2439,16 @@ impl WordProcessor {
     }
 
     fn region_remove_block(&mut self, state: &mut AutoCommit, block: &str) {
+        if self.region == Region::Body {
+            if self.containers.is_none() || self.ids.is_none() {
+                return;
+            }
+            let action = crate::actions::RichTextAction::RemoveBlocks {
+                blocks: vec![block.to_string()],
+            };
+            let _ = action.apply_under(state, &automerge::ROOT);
+            return;
+        }
         let region = self.region;
         let Some(containers) = self.containers.clone() else {
             return;
@@ -2922,7 +2908,12 @@ impl WordProcessor {
             return;
         };
         if new_kind == "list_item" {
-            self.region_set_attr(state, &id, "ordered", ordered);
+            self.set_block_attr(
+                state,
+                vec![id.clone()],
+                "ordered",
+                crate::actions::AttrVal::Bool(ordered),
+            );
         }
         if !tail.is_empty() {
             self.region_splice(state, &id, 0, 0, &tail);
