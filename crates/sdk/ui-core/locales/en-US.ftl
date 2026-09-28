@@ -29,6 +29,14 @@ history-removed-field = { $more ->
     [0] Removed { $path }
    *[other] Removed { $path } and { $more } more
 }
+history-edited-fields = { $count ->
+    [one] Edited 1 field
+   *[other] Edited { $count } fields
+}
+history-removed-fields = { $count ->
+    [one] Removed 1 field
+   *[other] Removed { $count } fields
+}
 history-review-title = Restore { $resource }
 history-review-confirm = Restore version
 history-review-refresh = Refresh review

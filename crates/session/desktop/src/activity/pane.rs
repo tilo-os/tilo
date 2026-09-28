@@ -808,7 +808,9 @@ impl RoomActivityPane {
                 t
             },
             // A workspace is a cluster of windows saved/reopened collaboratively.
-            source: HistorySource::new().with_artifact_kind(ArtifactKind::Cluster),
+            source: HistorySource::new()
+                .with_artifact_kind(ArtifactKind::Cluster)
+                .without_field_paths(),
             revert_intent,
             name_intent,
             undo_intent,
@@ -1960,7 +1962,17 @@ impl RoomActivityPane {
                 tags.push(Some(workspace.id.raw()));
             }
         }
-        self.derived = entries.into_iter().zip(tags).collect();
+        // Housekeeping stays in the room document's history, out of the feed.
+        self.derived = entries
+            .into_iter()
+            .zip(tags)
+            .filter(|(entry, _)| {
+                !entry
+                    .context
+                    .as_ref()
+                    .is_some_and(ui::tilo_actions::ActionContext::is_housekeeping)
+            })
+            .collect();
         self.derived.sort_by_key(|(entry, _)| entry.timestamp);
         // Names come out of the same document as the changes, so a peer's name
         // arrives with their edits.
@@ -7729,16 +7741,65 @@ fn describe_room_changes(
         if let Some(tag) = tags.get_mut(i) {
             *tag = workspace_touched(doc, &patches, hash);
         }
-        if let Some((summary, op_class)) = describe_patches(&patches)
-            && let Some(entry) = entries.get_mut(i)
-        {
+        let Some(entry) = entries.get_mut(i) else {
+            continue;
+        };
+        if let Some((summary, op_class)) = describe_patches(&patches) {
             if entry.context.is_none() {
                 entry.summary = summary;
             }
             entry.op_class = op_class;
+        } else if is_room_bookkeeping(&patches) {
+            entry.context = Some(
+                entry
+                    .context
+                    .take()
+                    .unwrap_or_default()
+                    .with_change(ui::tilo_actions::ChangeKind::Housekeeping),
+            );
+        } else if entry.context.is_none() {
+            // The room's own storage keys are not words anyone should read.
+            entry.summary = t("activity-event-updated");
         }
     }
     tags
+}
+
+/// The room keys a desktop writes to keep its projection consistent (the id
+/// counter, who owns each id namespace, the record index, schedule claims, a
+/// retained strip's marker): state about the room, not something anyone did
+/// in it.
+const ROOM_BOOKKEEPING_KEYS: &[&str] = &[
+    tilo_desktop_model::projection::ROOM_DESKTOP_COUNTER_KEY,
+    tilo_desktop_model::projection::ROOM_CONTENTS_OWNERS_KEY,
+    tilo_desktop_model::projection::ROOM_RECORDS_KEY,
+    tilo_desktop_model::projection::ROOM_SCHEDULE_CLAIMS_KEY,
+    tilo_desktop_model::projection::STRIP_RETAINED_EMPTY_KEY,
+];
+
+/// Whether a change only wrote the room's bookkeeping.
+fn is_room_bookkeeping(patches: &[automerge::Patch]) -> bool {
+    !patches.is_empty()
+        && patches.iter().all(|patch| {
+            let leaf = match &patch.action {
+                automerge::PatchAction::PutMap { key, .. }
+                | automerge::PatchAction::DeleteMap { key }
+                | automerge::PatchAction::Increment {
+                    prop: Prop::Map(key),
+                    ..
+                } => Some(key.as_str()),
+                _ => None,
+            };
+            patch
+                .path
+                .iter()
+                .filter_map(|(_, prop)| match prop {
+                    Prop::Map(key) => Some(key.as_str()),
+                    Prop::Seq(_) => None,
+                })
+                .chain(leaf)
+                .any(|key| ROOM_BOOKKEEPING_KEYS.contains(&key))
+        })
 }
 
 /// The workspace a change belongs to, or `None` for more than one or
@@ -7833,7 +7894,23 @@ impl PatchCounts {
             (automerge::PatchAction::DeleteMap { .. }, "capabilities") => {
                 self.revokes = self.revokes.saturating_add(1);
             }
-            (automerge::PatchAction::PutMap { key, value, .. }, _) if key == "name" => {
+            // A room's `contents` map: a window is an entry of a group's
+            // `tabs`, and a group closes with its last window.
+            (automerge::PatchAction::PutMap { value, .. }, "tabs")
+                if matches!(value.0, Value::Object(_)) =>
+            {
+                self.tabs_added = self.tabs_added.saturating_add(1);
+            }
+            (automerge::PatchAction::DeleteMap { .. }, "tabs" | "groups") => {
+                self.tabs_removed = self.tabs_removed.saturating_add(1);
+            }
+            (automerge::PatchAction::PutMap { key, .. }, _) if key == "order" => {
+                self.groups_moved = self.groups_moved.saturating_add(1);
+            }
+            // The workspace's own name, not a strip's.
+            (automerge::PatchAction::PutMap { key, value, .. }, "" | "workspaces")
+                if key == "name" =>
+            {
                 if let Some(n) = scalar_string(&value.0) {
                     self.names.push(n);
                 }
@@ -7908,6 +7985,15 @@ impl PatchCounts {
                 ),
             };
             return Some((s, OpClass::Splice));
+        }
+        // A room document's first change names the room, its owner and its
+        // name at once: that is the workspace being made.
+        if self.room_set && self.owner_set {
+            let s = match self.names.first().filter(|name| !name.is_empty()) {
+                Some(name) => t_args("activity-event-created-named", &[("name", name.into())]),
+                None => t("activity-event-created"),
+            };
+            return Some((s, OpClass::Govern));
         }
 
         if !self.grants.is_empty() {

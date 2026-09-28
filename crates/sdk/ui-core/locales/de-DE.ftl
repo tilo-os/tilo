@@ -22,6 +22,14 @@ history-removed-field = { $more ->
     [0] { $path } entfernt
    *[other] { $path } und { $more } weitere entfernt
 }
+history-edited-fields = { $count ->
+    [one] 1 Feld bearbeitet
+   *[other] { $count } Felder bearbeitet
+}
+history-removed-fields = { $count ->
+    [one] 1 Feld entfernt
+   *[other] { $count } Felder entfernt
+}
 history-review-title = { $resource } wiederherstellen
 history-review-confirm = Version wiederherstellen
 history-review-refresh = Prüfung aktualisieren
