@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 ACTION_PATH = ".forgejo/actions/restore-cargo-downloads"
 PREPARE_ACTION_PATH = ".forgejo/actions/prepare-rust-build"
+COMPILER_CACHE_ACTION_PATH = ".forgejo/actions/compiler-cache"
 DIRECT_CONSUMERS = {
     "build-builder-image.yml": 2,
     "lint.yml": 1,
@@ -42,7 +43,10 @@ class CargoDownloadCacheActionTests(unittest.TestCase):
         with self.subTest(phase='rust build action composes download and compiler caches'):
             action = (ROOT / PREPARE_ACTION_PATH / "action.yml").read_text(encoding="utf-8")
             self.assertEqual(action.count(f"uses: ./{ACTION_PATH}"), 1)
-            self.assertEqual(action.count("bash tools/ci/sccache.sh prepare"), 1)
+            self.assertEqual(action.count(f"uses: ./{COMPILER_CACHE_ACTION_PATH}"), 1)
+            compiler_cache = (ROOT / COMPILER_CACHE_ACTION_PATH / "action.yml").read_text(encoding="utf-8")
+            self.assertEqual(compiler_cache.count("bash tools/ci/compiler_cache_env.sh"), 1)
+            self.assertEqual(compiler_cache.count("bash tools/ci/sccache.sh prepare"), 1)
             self.assertIn(
                 "value: ${{ steps.cargo-downloads.outputs.cache-hit }}",
                 action,

@@ -73,6 +73,12 @@ jobs:
       - name: Repository policy suite
         run: bash tools/policy/run.sh
 
+      - name: Use the compiler cache
+        uses: ./.forgejo/actions/compiler-cache
+        env:
+          FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+          FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+
       # The lint app developers run locally: an app that adds platform code
       # without moving it into a platform crate or declaring itself native
       # fails here. ci-fast already provides /usr/bin/cc (pinned digest).
