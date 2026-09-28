@@ -770,7 +770,6 @@ pub struct ChatApp {
     /// The latest call/media problem to show in the call chrome (a refused
     /// control, a native voice issue, or no connected media transport).
     pub(crate) media_error: Option<String>,
-    legacy_migration_attempted: bool,
     pub(crate) canonical: bool,
     canonical_dirty: bool,
     /// Document heads and pending-operation count at the last canonical reload,
@@ -979,7 +978,6 @@ impl ChatApp {
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
             media_error: None,
-            legacy_migration_attempted: false,
             canonical: false,
             canonical_dirty: true,
             synced: None,
@@ -1966,12 +1964,9 @@ impl ChatApp {
         self.set_composer_focus();
     }
 
-    /// Bring both composers up to date with their drafts, moving drafts out
-    /// of the first format once. `--shots` stages its mid-compose draft here.
+    /// Bring both composers up to date with their drafts. `--shots` stages
+    /// its mid-compose draft here.
     pub(crate) fn sync_composers(&mut self, doc: &mut AutoCommit) {
-        if ChatDoc::needs_draft_upgrade(doc) && self.can_participate() {
-            ChatDoc::upgrade_drafts(doc);
-        }
         if let Some(draft) = self.shot_composer_draft.take() {
             ChatDoc::set_draft(doc, &self.active_channel, &draft);
         }
@@ -3240,10 +3235,6 @@ impl Widget for ChatApp {
         } else if !self.canonical {
             // Ephemeral `--shots`/test instance: the rich demo workspace.
             ChatDoc::seed_if_empty(doc);
-        }
-        if !self.canonical && !self.legacy_migration_attempted {
-            ChatDoc::migrate_legacy_attachment_paths(doc);
-            self.legacy_migration_attempted = true;
         }
         self.settle_attachment_picker();
         self.settle_attachment_import(doc);

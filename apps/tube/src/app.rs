@@ -2291,98 +2291,9 @@ impl TubeApp {
         changed
     }
 
-    /// One-way compatibility import for versions that incorrectly wrote watch
-    /// history into the collaborative document. This is explicitly marked in
-    /// the local store and never deletes/rewrites the shared document: a
-    /// tombstone would not recall its historic Automerge changes or old export
-    /// bytes. New history writes never target this legacy subtree.
-    fn migrate_legacy_shared_history_once(&mut self, state: &AutoCommit) -> bool {
-        if self.history_store.has_legacy_migration_marker() {
-            return false;
-        }
-        let Some((Value::Object(ObjType::Map), tube)) =
-            state.get(&automerge::ROOT, "tube").ok().flatten()
-        else {
-            return false;
-        };
-        let Some((Value::Object(ObjType::Map), private_history)) =
-            state.get(&tube, "private_history").ok().flatten()
-        else {
-            return false;
-        };
-        let Some((Value::Object(ObjType::Map), owner)) = state
-            .get(&private_history, self.model.history_owner.as_str())
-            .ok()
-            .flatten()
-        else {
-            return false;
-        };
-        let cleared_at_ms = state
-            .get(&owner, "clears")
-            .ok()
-            .flatten()
-            .and_then(|(value, clears)| {
-                matches!(value, Value::Object(ObjType::Map)).then_some(clears)
-            })
-            .map_or(0, |clears| {
-                state
-                    .keys(&clears)
-                    .filter_map(|id| {
-                        state.get_all(&clears, id.as_str()).ok().and_then(|values| {
-                            values
-                                .into_iter()
-                                .filter_map(|(value, _)| {
-                                    value.as_str().and_then(|value| value.parse::<u64>().ok())
-                                })
-                                .max()
-                        })
-                    })
-                    .max()
-                    .unwrap_or(0)
-            });
-        let records = state
-            .get(&owner, "entries")
-            .ok()
-            .flatten()
-            .and_then(|(value, entries)| {
-                matches!(value, Value::Object(ObjType::Map)).then_some(entries)
-            })
-            .map_or_else(Vec::new, |entries| {
-                state
-                    .keys(&entries)
-                    .filter_map(|video_id| {
-                        let values = state.get_all(&entries, video_id.as_str()).ok()?;
-                        let record = newest_history_record(
-                            values
-                                .into_iter()
-                                .filter_map(|(value, _)| value.as_str().map(str::to_owned))
-                                .filter_map(|value| {
-                                    serde_json::from_str::<HistoryEntryRecord>(&value).ok()
-                                }),
-                        )?;
-                        (record.watched_at_ms > cleared_at_ms).then_some((video_id, record))
-                    })
-                    .collect()
-            });
-        for (video_id, record) in records {
-            if !self.dispatch_history_action(OwnerHistoryAction::SetEntry {
-                video_id,
-                watched_at_ms: record.watched_at_ms,
-                present: record.present,
-                mutation_id: format!("legacy:{}", record.mutation_id),
-            }) {
-                return false;
-            }
-        }
-        tracing::warn!(
-            "migrated legacy shared Tube history locally; existing shared replicas and exports cannot be recalled"
-        );
-        self.dispatch_history_action(OwnerHistoryAction::LegacyMigrationComplete)
-    }
-
     /// Project only the separate owner-local document. This deliberately has
     /// no path through `reconcile_collaborative_actions`: a shared replica is
-    /// never examined for watch history, including legacy `private_history`.
+    /// never examined for watch history.
     fn reconcile_owner_history(&mut self) -> bool {
         let state = self.history_store.document();
         let Some((Value::Object(ObjType::Map), history)) =
@@ -2595,9 +2506,6 @@ impl Widget for TubeApp {
             }
         }
         if self.reconcile_collaborative_actions(state) {
-            self.structure_dirty = true;
-        }
-        if self.migrate_legacy_shared_history_once(state) {
             self.structure_dirty = true;
         }
         if self.reconcile_owner_history() {
@@ -3311,7 +3219,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
-    fn owner_history_stays_local_and_migrates_canonically() {
+    fn owner_history_stays_local_and_imports_canonically() {
         // Case `open_video_navigates_and_records_history`.
         {
             let (mut app, doc) = fresh();
@@ -3424,54 +3332,6 @@ mod tests {
             assert!(
                 app.model.history.is_empty(),
                 "failed local writes do not claim history changed"
-            );
-        }
-        // Case `legacy_shared_history_is_migrated_once_without_new_shared_writes`.
-        {
-            use automerge::{ScalarValue, transaction::Transactable};
-
-            let (mut app, mut shared) = fresh();
-            app.history_store = OwnerHistoryStore::memory();
-            let tube = shared
-                .put_object(&automerge::ROOT, "tube", ObjType::Map)
-                .expect("tube map");
-            let private = shared
-                .put_object(&tube, "private_history", ObjType::Map)
-                .expect("legacy map");
-            let owner = shared
-                .put_object(&private, app.model.history_owner.as_str(), ObjType::Map)
-                .expect("owner map");
-            let entries = shared
-                .put_object(&owner, "entries", ObjType::Map)
-                .expect("entries map");
-            let legacy_id = "legacy-history-video";
-            let record = HistoryEntryRecord {
-                present: true,
-                watched_at_ms: 7,
-                mutation_id: "old-device:7".into(),
-            };
-            shared
-                .put(
-                    &entries,
-                    legacy_id,
-                    ScalarValue::Str(serde_json::to_string(&record).expect("serializable").into()),
-                )
-                .expect("legacy entry");
-            let before = shared.save();
-            assert!(
-                before
-                    .windows(legacy_id.len())
-                    .any(|window| window == legacy_id.as_bytes())
-            );
-            assert!(app.migrate_legacy_shared_history_once(&shared));
-            assert!(app.reconcile_owner_history());
-            assert_eq!(app.model.history, vec![legacy_id]);
-            assert!(app.history_store.has_legacy_migration_marker());
-            assert!(!app.migrate_legacy_shared_history_once(&shared));
-            assert_eq!(
-                shared.save(),
-                before,
-                "migration never mutates shared history"
             );
         }
         // Case `subscription_and_queue_entities_survive_without_cached_metadata`.
