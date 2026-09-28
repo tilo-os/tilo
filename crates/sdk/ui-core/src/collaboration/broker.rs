@@ -5539,6 +5539,68 @@ mod tests {
 
     use super::*;
 
+    /// The byte budget an app pages its directory by is checked against the
+    /// encoded page, so the per-row estimate must never fall below a row's
+    /// Cap'n Proto size, however its fields are sized.
+    #[test]
+    fn directory_row_estimates_bound_their_encoded_size() {
+        let text = |length: usize| "x".repeat(length);
+        for length in [0, 1, 7, 8, 9, 63, 64, 1000] {
+            let row = runtime_collab::ActionDirectoryRow {
+                parent_resource: text(length),
+                resource: text(length),
+                resource_kind: text(length),
+                resource_label: text(length),
+                resource_presentation_json: text(length),
+                action: Some(text(length)),
+                descriptor: Some(runtime_collab::ExportedAction {
+                    resource: text(length),
+                    action: text(length),
+                    resource_kind: text(length),
+                    resource_label: text(length),
+                    action_label: text(length),
+                    description: Some(text(length)),
+                    operation_kind: text(length),
+                    params_json: text(length),
+                    contract_json: text(length),
+                    view: None,
+                    input: runtime_collab::ExportedInput::Text {
+                        prompt: text(length),
+                        placeholder: text(length),
+                        wants_content: false,
+                    },
+                }),
+                has_children: false,
+                visibility_action: Some(text(length)),
+                visibility_contract_json: text(length),
+            };
+            let rows = 40u32;
+            let mut message = capnp::message::Builder::new_default();
+            {
+                let mut page = message
+                    .init_root::<runtime_collab::collab_capnp::action_directory_page::Builder<'_>>(
+                    );
+                page.set_revision("v5:00000000-0000-0000-0000-000000000000");
+                let mut list = page.reborrow().init_rows(rows);
+                for index in 0..rows {
+                    write_directory_row(list.reborrow().get(index), &row);
+                }
+            }
+            let encoded = message
+                .get_root_as_reader::<runtime_collab::collab_capnp::action_directory_page::Reader<'_>>()
+                .unwrap()
+                .total_size()
+                .unwrap()
+                .word_count
+                * 8;
+            let estimated = crate::app::directory_row_wire_bytes(&row) * rows as usize;
+            assert!(
+                u64::try_from(estimated).unwrap() >= encoded,
+                "field length {length}: estimated {estimated} < encoded {encoded}"
+            );
+        }
+    }
+
     /// The concrete broker transport's bridge state behind a test manager.
     fn broker_state(manager: &CollaborationManager) -> BridgeState {
         match &manager.backend {
