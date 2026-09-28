@@ -5,16 +5,19 @@
 //! desktop. The desktop session hosts the same brokers with its native
 //! adapters (launcher, governance, durable owner, peer network). Here the
 //! profile launches its installed apps through the platform launcher
-//! ([`crate::apps`]) and records the grants people give apps for other
-//! apps' actions in its own workspace; every other host service is absent,
+//! ([`crate::apps`]), records the grants people give apps for other apps'
+//! actions in its own workspace, and owns its room's documents durably
+//! ([`owner`]), local to this machine; every other host service is absent,
 //! and the broker answers as it does for any host that does not provide one.
-//! What this host keeps durably is in the profile: grants, effect and task
-//! records in its own workspace file, the invocation journal and
+//! What this host keeps durably is in the profile: the room, grants, effect
+//! and task records in its own workspace file, the invocation journal and
 //! collaboration history.
 
+mod owner;
 mod workspace;
 
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, profile, unix};
+use owner::{AdoptedRoom, RecordCreation, RoomOwner};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -36,6 +39,7 @@ use tilo_identity_host::{
     broker::{IdentityBrokerHandle, WorkspaceMembership},
     provisioning::IdentityStorage,
 };
+use tilo_peer_state::owner_commit::OwnerCommitService;
 use workspace::{ProfileGrants, ProfileWorkspace};
 
 /// Durable collaboration history, where the desktop session keeps it under
@@ -54,10 +58,8 @@ pub struct Standalone {
     _lock: advisory_lock::FileLock,
 }
 
-impl RuntimeServices for Standalone {
-    type ActionHost = RuntimeActionHost;
-
-    fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
+impl Standalone {
+    fn start(root: &Path, stage: &mut dyn FnMut(&str), dev: bool) -> io::Result<Self> {
         stage("locking the profile");
         let lock = profile::lock(root)?;
         stage("provisioning the collaboration identity");
@@ -82,6 +84,8 @@ impl RuntimeServices for Standalone {
         workspace.adopt(&actor)?;
         let workspace = Arc::new(workspace);
         let apps = Arc::new(apps::Apps::from_env(root, &room_id));
+        stage("opening the room owner");
+        let owner = room_owner(root, &room_id, &workspace, &apps, dev)?;
         let identity_socket = root.join(IDENTITY_SOCKET);
         stage("starting the identity service");
         let identity = tilo_identity_host::broker::spawn(
@@ -93,7 +97,7 @@ impl RuntimeServices for Standalone {
         let broker = tilo_action_broker::collab_broker::spawn_with_services(
             root.join(COLLAB_SOCKET),
             Some(Arc::clone(&workspace) as Arc<dyn WorkspaceAuthority>),
-            PeerPublisher::disabled(),
+            PeerPublisher::with_optional_owner_commit(None, owner),
             None,
             HostServices {
                 native_certificates: Some(Arc::new(Certificates {
@@ -126,6 +130,18 @@ impl RuntimeServices for Standalone {
             _media: media,
             _lock: lock,
         })
+    }
+}
+
+impl RuntimeServices for Standalone {
+    type ActionHost = RuntimeActionHost;
+
+    fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
+        Self::start(root, stage, false)
+    }
+
+    fn start_in_dev_mode(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
+        Self::start(root, stage, true)
     }
 
     fn room(&self) -> &str {
@@ -233,6 +249,31 @@ fn channels(root: &Path) -> BrokerChannels {
         ),
     }
     channels
+}
+
+/// The durable owner of the profile's room: this host's own, governed with
+/// the device key, or for a profile adopted from the desktop session one
+/// that refuses every commit.
+fn room_owner(
+    profile: &Path,
+    room: &str,
+    workspace: &Arc<ProfileWorkspace>,
+    apps: &Arc<apps::Apps>,
+    dev: bool,
+) -> io::Result<Arc<dyn OwnerCommitService>> {
+    if !workspace.governs() {
+        return Ok(Arc::new(AdoptedRoom {
+            room: room.to_owned(),
+        }));
+    }
+    let apps = Arc::clone(apps);
+    let creation = RecordCreation {
+        declared_kinds: Box::new(move |app| apps.declared_resource_kinds(app)),
+        dev,
+    };
+    let device = tilo_identity_host::broker::trusted_current_device(room)?;
+    let owner = RoomOwner::open(profile, room, device, creation, Arc::clone(workspace))?;
+    Ok(Arc::new(owner))
 }
 
 #[cfg(test)]

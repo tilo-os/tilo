@@ -1,8 +1,9 @@
 use super::{
-    DaemonStart, Observation, STAGES_FILE, StartingProcess, StartupLimits, current_stage,
-    wait_until_ready,
+    DaemonStart, Mode, Observation, STAGES_FILE, StartingProcess, StartupLimits, current_stage,
+    parse_args, wait_until_ready,
 };
 use std::{
+    ffi::OsString,
     io,
     process::{Command, Stdio},
     time::{Duration, Instant},
@@ -283,4 +284,18 @@ fn parent_pids_find_a_spawned_child() {
     let _ = child.kill();
     let _ = child.wait();
     assert!(found);
+}
+
+#[test]
+fn dev_mode_is_an_explicit_daemon_flag() {
+    let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
+    let dev = args(&["--profile", "/tmp/profile", "--daemon", "--dev"]).unwrap();
+    assert_eq!((dev.mode, dev.dev), (Mode::Daemon, true));
+    assert!(
+        !args(&["--profile", "/tmp/profile", "--daemon"])
+            .unwrap()
+            .dev
+    );
+    assert!(args(&["--profile", "/tmp/profile", "--connect", "--dev"]).is_err());
+    assert!(args(&["--profile", "/tmp/profile", "--daemon", "--dev", "--dev"]).is_err());
 }
