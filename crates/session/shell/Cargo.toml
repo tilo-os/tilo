@@ -76,7 +76,7 @@ tilo-xdg-paths = { path = "../../system/xdg-paths" }
 emoji = { path = "../../text/emoji" }
 # Remembered network secrets (802.1X, VPN, SIM PIN) are sealed here, never
 # written to settings.
-secret-vault = { path = "../../system/secret-vault" }
+tilo-secret-vault = { path = "../../system/secret-vault" }
 # The speech backend the toolkit screen reader uses, for narrating chrome.
 tilo-tts = { path = "../../system/tts" }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
