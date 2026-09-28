@@ -1180,9 +1180,7 @@ pub struct RichInputConfig {
     /// historic key so a current compositor and older Settings builds agree
     /// on the user's primary layout.
     pub keyboard_layout: String,
-    /// Ordered source ids. `layouts` is accepted as an alias for the brief
-    /// development version that used that spelling.
-    #[serde(alias = "layouts")]
+    /// Ordered source ids.
     pub keyboard_layouts: Vec<String>,
     pub compose_key: Option<String>,
     /// What Caps Lock does: `None` keeps it Caps Lock; `ctrl`, `escape` or
@@ -1405,7 +1403,6 @@ impl RichInputConfig {
             .to_string();
         config.keyboard_layouts = section
             .get("keyboard_layouts")
-            .or_else(|| section.get("layouts"))
             .and_then(serde_json::Value::as_array)
             .map(|values| {
                 values

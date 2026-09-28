@@ -388,7 +388,7 @@ impl ImagerDoc {
         if let Some(timezone) = read_str(doc, map, "timezone") {
             profile.timezone = timezone;
         }
-        let filesystem = read_str(doc, map, "filesystem").or_else(|| read_str(doc, map, "layout"));
+        let filesystem = read_str(doc, map, "filesystem");
         if let Some(filesystem) =
             filesystem.and_then(|value| crate::model::Filesystem::from_key(&value))
         {
