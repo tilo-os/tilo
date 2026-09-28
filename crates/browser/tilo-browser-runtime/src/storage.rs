@@ -36,6 +36,8 @@ enum DiskKey {
         package: String,
         workspace: String,
     },
+    /// Rows of the removed package-global record key. Main dropped the key
+    /// without a migration; a page skips these rows instead of failing to load.
     PackageRecord {
         package: String,
         record: String,
@@ -61,9 +63,6 @@ impl From<&StorageKey> for DiskKey {
             },
             StorageKey::Package { package } => Self::Package { package },
             StorageKey::RoomIndex { package, workspace } => Self::RoomIndex { package, workspace },
-            StorageKey::PackageRecord { package, record } => {
-                Self::PackageRecord { package, record }
-            }
             StorageKey::View {
                 device,
                 workspace,
@@ -77,31 +76,32 @@ impl From<&StorageKey> for DiskKey {
     }
 }
 
-impl From<DiskKey> for StorageKey {
-    fn from(key: DiskKey) -> Self {
-        match key {
-            DiskKey::Record {
+impl DiskKey {
+    /// The store key this row holds, or `None` for a row of a removed key.
+    fn into_key(self) -> Option<StorageKey> {
+        Some(match self {
+            Self::Record {
                 package,
                 workspace,
                 record,
-            } => Self::Record {
+            } => StorageKey::Record {
                 package,
                 workspace,
                 record,
             },
-            DiskKey::Package { package } => Self::Package { package },
-            DiskKey::RoomIndex { package, workspace } => Self::RoomIndex { package, workspace },
-            DiskKey::PackageRecord { package, record } => Self::PackageRecord { package, record },
-            DiskKey::View {
+            Self::Package { package } => StorageKey::Package { package },
+            Self::RoomIndex { package, workspace } => StorageKey::RoomIndex { package, workspace },
+            Self::PackageRecord { .. } => return None,
+            Self::View {
                 device,
                 workspace,
                 instance,
-            } => Self::View {
+            } => StorageKey::View {
                 device,
                 workspace,
                 instance,
             },
-        }
+        })
     }
 }
 
@@ -134,12 +134,15 @@ pub(crate) fn load(
             .as_string()
             .ok_or_else(|| error("stored row has no key"))?;
         let disk: DiskKey = serde_json::from_str(&disk).map_err(error)?;
+        let Some(key) = disk.into_key() else {
+            continue;
+        };
         let bytes = Uint8Array::new(&Reflect::get(&entry, &"bytes".into())?).to_vec();
         let actor = Reflect::get(&entry, &"actor".into())?;
         let writer =
             (!actor.is_null() && !actor.is_undefined()).then(|| Uint8Array::new(&actor).to_vec());
         store
-            .hydrate(disk.into(), Stored { bytes, writer })
+            .hydrate(key, Stored { bytes, writer })
             .map_err(error)?;
     }
     CACHES.with_borrow_mut(|caches| caches.insert(key, Rc::clone(&store)));
@@ -214,6 +217,9 @@ pub fn storage_write_hook(
 /// Where page-side values (`profile_value`) live. Changing it orphans them.
 const PAGE_VALUES_PACKAGE: &str = "so.tilo.browser-page";
 
+/// The workspace under which a profile keeps state that belongs to no room.
+pub(crate) const PROFILE_WORKSPACE: &str = "profile";
+
 /// A small page-side value kept in the profile (for example a peer's public
 /// certificates), or `None` when absent. Empty bytes mean deleted.
 ///
@@ -223,7 +229,7 @@ const PAGE_VALUES_PACKAGE: &str = "so.tilo.browser-page";
 #[wasm_bindgen]
 pub fn profile_value(profile: &str, device: &str, name: &str) -> Result<Option<Vec<u8>>, JsValue> {
     let stored = cached(profile, device)?
-        .read(&StorageKey::package_record(PAGE_VALUES_PACKAGE, name))
+        .read(&StorageKey::record(PAGE_VALUES_PACKAGE, PROFILE_WORKSPACE, name))
         .map_err(error)?;
     Ok(stored
         .map(|stored| stored.bytes)
@@ -249,7 +255,7 @@ pub fn set_profile_value(
 ) -> Result<(), JsValue> {
     cached(profile, device)?
         .write(
-            &StorageKey::package_record(PAGE_VALUES_PACKAGE, name),
+            &StorageKey::record(PAGE_VALUES_PACKAGE, PROFILE_WORKSPACE, name),
             durable_store::WriteOp::Replace(bytes.unwrap_or_default()),
             None,
         )

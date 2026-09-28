@@ -154,8 +154,9 @@ impl DurablePeerStore {
             .map_err(|_| js_error("open the profile's storage before starting its peer"))?;
         Ok(Self {
             store: Rc::clone(&store),
-            key: durable_store::StorageKey::package_record(
+            key: durable_store::StorageKey::record(
                 PEER_PACKAGE,
+                crate::storage::PROFILE_WORKSPACE,
                 hex::encode(user_public_key),
             ),
         })
