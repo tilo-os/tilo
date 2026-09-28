@@ -6,10 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, anyhow, bail};
 use clap::Subcommand;
 use registry_client::{RegistryClient, key};
-use registry_types::application::{
-    NamespaceClaim, dns_txt_name, forge_proof_url, proof_token, well_known_url,
-};
-use registry_types::namespace::Forge;
+use registry_types::application::{NamespaceClaim, proof_token};
 use serde_json::{Value, json};
 
 #[derive(clap::Args)]
@@ -108,7 +105,7 @@ pub fn run_apply(args: ApplyArgs) -> Result<Value> {
         let status = client
             .application(&public)?
             .ok_or_else(|| anyhow!("{} has no application from this key", client.base()))?;
-        println!("{}", status_line(&status));
+        println!("{}", registry_client::status_summary(&status));
         return Ok(status);
     }
     let mut claims: Vec<NamespaceClaim> = args
@@ -117,7 +114,7 @@ pub fn run_apply(args: ApplyArgs) -> Result<Value> {
         .map(|domain| NamespaceClaim::Domain { domain })
         .collect();
     for forge in &args.forges {
-        claims.push(forge_claim(forge)?);
+        claims.push(registry_client::forge_claim(forge).context("--forge")?);
     }
     if claims.is_empty() {
         bail!("name a namespace to prove with --domain or --forge");
@@ -125,13 +122,13 @@ pub fn run_apply(args: ApplyArgs) -> Result<Value> {
     let token = proof_token(&public);
     eprintln!("[tilo-app] the registry looks for `{token}` at:");
     for claim in &claims {
-        for place in proof_places(claim) {
+        for place in registry_client::proof_places(claim) {
             eprintln!("  {place}");
         }
     }
     let contact = args.contact.unwrap_or_default();
     let status = registry_client::apply(&client, &key, claims, contact, args.note)?;
-    println!("{}", status_line(&status));
+    println!("{}", registry_client::status_summary(&status));
     eprintln!(
         "[tilo-app] the registry's owner reviews it; `tilo-app apply --status` reports the decision"
     );
@@ -210,54 +207,4 @@ fn dist_packages(dist: &Path) -> Result<Vec<PathBuf>> {
         );
     }
     Ok(packages)
-}
-
-fn forge_claim(text: &str) -> Result<NamespaceClaim> {
-    let (forge, account) = text
-        .rsplit_once(':')
-        .ok_or_else(|| anyhow!("--forge {text:?}: expected FORGE:ACCOUNT, such as github:ada"))?;
-    let parsed = Forge::parse(forge).ok_or_else(|| anyhow!("--forge {text:?}: unknown forge"))?;
-    if parsed.namespace(account).is_none() {
-        bail!("--forge {text:?}: {account:?} is not an account name");
-    }
-    Ok(NamespaceClaim::Forge {
-        forge: forge.to_owned(),
-        account: account.to_owned(),
-    })
-}
-
-fn proof_places(claim: &NamespaceClaim) -> Vec<String> {
-    match claim {
-        NamespaceClaim::Domain { domain } => vec![
-            format!("DNS TXT {}", dns_txt_name(domain)),
-            format!("or {}", well_known_url(domain)),
-        ],
-        NamespaceClaim::Forge { forge, account } => Forge::parse(forge)
-            .map(|forge| vec![forge_proof_url(&forge, account)])
-            .unwrap_or_default(),
-    }
-}
-
-fn status_line(status: &Value) -> String {
-    let namespaces = status
-        .get("namespaces")
-        .and_then(Value::as_array)
-        .map(|namespaces| {
-            namespaces
-                .iter()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_default();
-    let state = status
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let reason = status
-        .get("reason")
-        .and_then(Value::as_str)
-        .map(|reason| format!(": {reason}"))
-        .unwrap_or_default();
-    format!("{state} ({namespaces}){reason}")
 }

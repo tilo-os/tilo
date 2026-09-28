@@ -10913,6 +10913,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "publisher"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "registry-client",
+ "registry-types",
+ "runtime-dylib",
+ "tilo-app",
+ "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
 name = "pulldown-cmark"
 version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
