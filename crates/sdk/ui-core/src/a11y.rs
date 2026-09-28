@@ -314,6 +314,12 @@ pub struct AccessNode {
     /// virtual rows and cells use this field because they have no widget of
     /// their own. The AccessKit bridge applies the window scale factor.
     pub bounds: Option<AccessBounds>,
+    /// The node paints feedback this device produces on its own clock and
+    /// from its own local state — a status pill that appears after a save
+    /// and fades — rather than anything the session carries. A recording's
+    /// replay cannot reproduce those pixels, so its frame comparison leaves
+    /// the node's bounds out instead of reporting them as a rendering fault.
+    pub transient: bool,
     /// Accessible children with no backing [`Widget`](crate::widget::Widget)
     /// of their own — a table's rows and cells, a virtualized list's items.
     /// The export layer emits them as this node's subtree, nested as deeply
@@ -340,6 +346,7 @@ impl AccessNode {
             level: None,
             key: None,
             bounds: None,
+            transient: false,
             children: Vec::new(),
         }
     }
@@ -513,6 +520,12 @@ impl AccessNode {
     /// Attach absolute logical-pixel geometry to a synthetic semantic node.
     pub fn with_bounds(mut self, bounds: Rect) -> Self {
         self.bounds = Some(bounds.into());
+        self
+    }
+
+    /// Mark the node's pixels [`transient`](Self::transient).
+    pub fn transient_pixels(mut self) -> Self {
+        self.transient = true;
         self
     }
 

@@ -217,6 +217,9 @@ pub struct SemanticNode {
     /// resource node, the declared [`resource`](crate::a11y::AccessNode::resource)
     /// resolved against the app's resource forest for a widget.
     pub reference: Option<tilo_reference::ResourceRef>,
+    /// The node paints feedback of this device's own clock and state; see
+    /// [`AccessNode::transient`](crate::a11y::AccessNode::transient).
+    pub transient: bool,
 }
 
 impl SemanticNode {
@@ -243,6 +246,7 @@ impl SemanticNode {
             && self.semantic_target == other.semantic_target
             && self.control_key == other.control_key
             && self.reference == other.reference
+            && self.transient == other.transient
     }
 
     /// The part of [`bounds`](Self::bounds) that is on screen, or `None` when
@@ -282,6 +286,7 @@ impl SemanticNode {
             semantic_target: None,
             control_key: None,
             reference: None,
+            transient: false,
         }
     }
 }
@@ -1035,6 +1040,7 @@ impl<const BOUND: bool> Build<'_, BOUND> {
                                 .and_then(|referent| referent.selection_reference(doc))
                         })
                     },
+                    transient: access.transient,
                 };
                 self.declare_resource(&id, &access);
                 self.order.push(id.clone());
@@ -1124,6 +1130,7 @@ impl<const BOUND: bool> Build<'_, BOUND> {
             semantic_target: semantic_target.map(str::to_owned),
             control_key: None,
             reference: None,
+            transient: access.transient,
         };
         self.declare_resource(&id, access);
         self.order.push(id.clone());
@@ -1191,6 +1198,7 @@ impl<const BOUND: bool> Build<'_, BOUND> {
             semantic_target: None,
             control_key: None,
             reference: Some(reference),
+            transient: false,
         };
         self.order.push(id.clone());
         self.insert_node(node);
@@ -1324,6 +1332,7 @@ mod tests {
                 widget_taffy_id: None,
                 semantic_target: None,
                 reference: None,
+                transient: false,
             };
             tree.nodes
                 .insert(group.clone(), node(group.clone(), vec![deep.clone()]));

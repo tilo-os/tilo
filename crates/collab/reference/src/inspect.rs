@@ -113,6 +113,11 @@ pub enum Pixels {
     /// A canvas or an unknown role: no node describes these pixels, so a
     /// frame comparison cannot explain them.
     Undescribed,
+    /// The node paints feedback this device produces on its own clock and
+    /// from its own local state (a status pill that fades after a save), not
+    /// anything a session carries. A replay cannot reproduce these pixels,
+    /// so a frame comparison leaves them out rather than blame them.
+    Transient,
 }
 
 /// The node's interactive state, as a screen reader would announce it.

@@ -1127,6 +1127,7 @@ impl NotesApp {
         );
         // Reveal zone: the bottom-right corner band (plus the pill), so nudging
         // the pointer there re-surfaces the status on demand.
+        self.status_bubble.place(rect.inflate(12.0, 14.0));
         let zone = Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
         let over = self.shots_status
             || self.status.state().save_status == SaveStatus::Failed
@@ -5035,11 +5036,13 @@ impl Widget for NotesApp {
             );
         }
         children.push(
-            AccessNode::new(Role::StaticText)
-                .with_name(self.status.save_text())
-                .with_description(self.status.right_text())
-                .with_live(ui::a11y::Politeness::Polite)
-                .with_hashed_key("notes.save-status"),
+            self.status_bubble.describe(
+                AccessNode::new(Role::StaticText)
+                    .with_name(self.status.save_text())
+                    .with_description(self.status.right_text())
+                    .with_live(ui::a11y::Politeness::Polite)
+                    .with_hashed_key("notes.save-status"),
+            ),
         );
         Some(
             AccessNode::new(Role::Group)

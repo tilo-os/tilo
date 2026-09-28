@@ -161,6 +161,7 @@ mod tests {
             bounds,
             masked,
             described: true,
+            transient: false,
         }
     }
 
@@ -225,6 +226,7 @@ mod tests {
                 bounds: edges(40.0, 10.0, 90.0, 40.0),
                 masked: false,
                 described: false,
+                transient: false,
             },
         ];
         let before = captured.clone();
