@@ -30,6 +30,13 @@ model-crates = "apps/*-model"
 model-rules = ["R1", "R2", "R3", "D1", "D2"]
 exempt-dirs = ["tests", "benches", "examples"]
 
+# Apps that declare every one of these platforms may contain none of these
+# findings: the gate fails on the first one, with no baseline allowance. Other
+# apps count them against the shrink-only baseline.
+[strict]
+platforms = ["linux", "macos", "web"]
+rules = ["R1", "R2", "R3", "R4", "W1", "W2", "W3"]
+
 # The only places where code may select a target. Everything else compiles
 # unchanged for every target.
 [target-cfg]
@@ -105,6 +112,8 @@ severity = "error"
 # String literals that name a platform location.
 literal-prefixes = ["/proc/", "/sys/", "/dev/", "/run/", "/etc/", "/var/"]
 literal-contains = ["/usr/share/", "Library/", ".local/", ".config/"]
+# Web addresses are not local paths (`https://demo.local/clip.mp4`).
+exempt-literal-prefixes = ["http://", "https://"]
 # `env::var("NAME")` / `env::var_os("NAME")` for these names.
 env-functions = ["env::var", "env::var_os"]
 env-names = [

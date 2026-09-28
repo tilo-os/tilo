@@ -37,6 +37,29 @@ const RULES_TABLE: &str = include_str!("../../../../tools/policy/app_portability
 #[derive(Debug, Deserialize)]
 pub(crate) struct RulesTable {
     pub(crate) rules: BTreeMap<String, RuleSpec>,
+    #[serde(default)]
+    strict: Strict,
+}
+
+/// Rules that are errors, whatever their severity, in an app that declares
+/// every one of `platforms`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Strict {
+    platforms: Vec<String>,
+    rules: Vec<String>,
+}
+
+impl Strict {
+    fn covers(&self, package: &Package, rule: &str) -> bool {
+        self.rules.iter().any(|name| name == rule)
+            && self.platforms.iter().all(|name| {
+                package
+                    .platforms()
+                    .iter()
+                    .any(|platform| platform.as_str() == name)
+            })
+    }
 }
 
 /// One rule of the table. Each rule uses the keys that describe it.
@@ -56,6 +79,7 @@ pub(crate) struct RuleSpec {
     native_crates: Vec<String>,
     literal_prefixes: Vec<String>,
     literal_contains: Vec<String>,
+    exempt_literal_prefixes: Vec<String>,
     env_functions: Vec<String>,
     env_names: Vec<String>,
     env_prefixes: Vec<String>,
@@ -428,7 +452,11 @@ pub fn lint_app(app_dir: &Path) -> Result<PortabilityReport> {
     let mut exempt: usize = 0;
     findings.retain_mut(|finding| match table.rule(finding.kind.rule()) {
         Some(rule) if rule.applies_to(package) => {
-            finding.severity = rule.severity;
+            finding.severity = if table.strict.covers(package, finding.kind.rule()) {
+                Severity::Error
+            } else {
+                rule.severity
+            };
             true
         }
         _ => {
@@ -1283,6 +1311,7 @@ impl<'a> Scanner<'a> {
         let mut std_modules = Vec::new();
         let mut paths = Vec::new();
         for (id, rule) in &table.rules {
+    exempt_literal_prefixes: Vec<&'a str>,
             let Some(kind) = FindingKind::for_pattern_rule(id) else {
                 continue;
             };
@@ -1321,6 +1350,7 @@ impl<'a> Scanner<'a> {
         let tokens: Vec<TokenTree> = stream.into_iter().collect();
         for (index, token) in tokens.iter().enumerate() {
             let ident = match token {
+            exempt_literal_prefixes: table.list("R3", |rule| &rule.exempt_literal_prefixes),
                 TokenTree::Group(group) => {
                     if !is_doc_attribute(&tokens, index) {
                         self.scan(group.stream(), hits);
@@ -1497,6 +1527,13 @@ impl<'a> Scanner<'a> {
         if platform {
             let shown: String = value.chars().take(60).collect();
             hits.push((
+        if self
+            .exempt_literal_prefixes
+            .iter()
+            .any(|prefix| value.starts_with(prefix))
+        {
+            return;
+        }
                 literal.span().start().line,
                 FindingKind::PlatformPath,
                 format!("\"{shown}\" names a platform path"),

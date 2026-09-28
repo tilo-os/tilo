@@ -118,9 +118,13 @@ class AppPortabilityTests(unittest.TestCase):
             pub fn cfg() -> &'static str { "~/.config/chat" }
             pub fn quote() -> char { '"' }
             pub fn raw() -> &'static str { r#"/usr/share/"quoted""# }
+            pub fn clip() -> &'static str { "https://demo.local/clip.mp4" }
+            pub fn file() -> &'static str { "file:///home/u/.local/x" }
             """,
         )
-        self.assertEqual([f.line for f in self.findings() if f.rule == "R3"], [2, 3, 4, 6, 8])
+        self.assertEqual(
+            [f.line for f in self.findings() if f.rule == "R3"], [2, 3, 4, 6, 8, 10]
+        )
 
     def test_os_tools_are_r4_only_when_named_by_a_literal(self):
         self.app(
@@ -271,6 +275,11 @@ class AppPortabilityTests(unittest.TestCase):
         self.assertEqual(set(self.rules("portable")), {"R1", "R3", "R4", "W1"})
         self.assertEqual(set(self.rules("desktop")), {"R1", "R3", "R4"})
         self.assertEqual(set(self.rules("disks")), {"R1"})
+        # Platform code in an app on every platform has no baseline allowance.
+        strict = {(f.package, f.rule) for f in self.findings() if f.strict}
+        self.assertEqual(
+            strict, {("portable", "R1"), ("portable", "R3"), ("portable", "R4"), ("portable", "W1")}
+        )
 
     def test_model_crates_get_only_the_model_rules(self):
         self.app(
