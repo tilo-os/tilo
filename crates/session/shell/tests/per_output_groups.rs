@@ -1302,3 +1302,48 @@ fn overlays_open_on_the_focused_display() {
         );
     }
 }
+
+/// Super+Shift+arrow reorders within a display until the group is its
+/// outermost one; one more press carries it across the seam, where it
+/// lands beside the seam rather than at its old place in the strip order.
+#[test]
+fn reordering_past_a_displays_edge_carries_the_group_across() {
+    let mut desk = Desk::fixture("docked-laptop");
+    let on = |desk: &Desk, display: u32| -> Vec<GroupId> {
+        desk.fb
+            .host()
+            .display_partition_summary()
+            .into_iter()
+            .find(|(d, _)| *d == display)
+            .map(|(_, groups)| groups)
+            .expect("display")
+    };
+    // Give the second display a group that comes first in the strip, so
+    // the strip order and the seam disagree.
+    desk.focus(ON_PRIMARY[0]);
+    let across = ModifiersState::SUPER | ModifiersState::CONTROL | ModifiersState::SHIFT;
+    desk.press(NamedKey::ArrowRight, across);
+    assert_eq!(on(&desk, 1)[0], ON_PRIMARY[0]);
+
+    let moving = ON_SECOND[2];
+    desk.focus(moving);
+    let reorder = ModifiersState::SUPER | ModifiersState::SHIFT;
+    for _ in 0..3 {
+        desk.press(NamedKey::ArrowLeft, reorder);
+    }
+    assert_eq!(desk.display_of(moving), Some(1), "still reordering within");
+    assert_eq!(on(&desk, 1)[0], moving, "outermost on the second display");
+
+    desk.press(NamedKey::ArrowLeft, reorder);
+    assert_eq!(desk.display_of(moving), Some(0), "carried across the seam");
+    assert_eq!(desk.focused_display(), Some(0), "focus went along");
+    assert_eq!(
+        on(&desk, 0),
+        vec![ON_PRIMARY[1], ON_PRIMARY[2], moving],
+        "it lands beside the seam it crossed"
+    );
+
+    desk.press(NamedKey::ArrowRight, reorder);
+    assert_eq!(desk.display_of(moving), Some(1), "and back");
+    assert_eq!(on(&desk, 1)[0], moving, "first again beside the seam");
+}

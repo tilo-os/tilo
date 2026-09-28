@@ -6147,6 +6147,9 @@ impl ShellOverlayHost {
                 drop(tree);
                 (strip_id, group_id, current, destination)
             };
+        if destination == current && self.is_partitioned() {
+            return self.carry_focused_group_across_seam(direction);
+        }
         let reorder = tilo_desktop::intents::SessionIntent::ReorderGroup {
             strip: strip_id,
             group: group_id,
