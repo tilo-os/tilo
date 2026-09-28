@@ -1597,7 +1597,7 @@ impl RecordSet {
             .as_ref()
             .map(|bridge| {
                 bridge
-                    .record(&self.package_id, &self.home, &want.id)
+                    .record(&self.package_id, &self.home, want)
                     .map_err(|error| {
                         crate::collaboration::native_initial::fail(&error);
                         RecordOpenError::Initialization(error)
@@ -1936,7 +1936,7 @@ impl RecordSet {
         }
         if let Some(bridge) = &self.native_initial {
             let read = bridge
-                .record(&self.package_id, &self.home, &want.id)
+                .record(&self.package_id, &self.home, want)
                 .map_err(RecordOpenError::Initialization)?;
             let store = app_state::DocStore::exclusive(backend, key)?;
             let (mut doc, autosave) =
@@ -3505,20 +3505,16 @@ impl std::fmt::Debug for RecordStore {
 /// live one, park it and check the named one out. `tilo_ui::App` calls this
 /// once per frame, before `sync`, so a widget that opened a file last
 /// frame is editing that file's document by the time it next reads state.
-/// The return value is the caller's cue to re-announce its collaboration
-/// channel — a checkout is a change of address.
+/// The checkout it returns is the caller's cue to re-announce its
+/// collaboration channel — a checkout is a change of address.
 pub fn tick(
     set: &mut RecordSet,
     state: &mut crate::state::State,
     room: Option<&mut AutoCommit>,
     widget: &dyn crate::widget::Widget,
-) -> Option<RecordId> {
+) -> Option<RecordCheckout> {
     let want = widget.record_intent()?;
-    if set.checkout(state, room, &want) {
-        Some(want.id)
-    } else {
-        None
-    }
+    set.checkout(state, room, &want).then_some(want)
 }
 
 #[cfg(all(test, target_os = "linux"))]

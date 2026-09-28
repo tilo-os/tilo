@@ -2744,6 +2744,7 @@ impl CapnpBrokerState {
     async fn commit_owner_request(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        record_kind: Option<String>,
     ) -> Result<(), capnp::Error> {
         // Dropping the waiting RPC cannot convert an admitted effect into a
         // refusal or leave the standalone capability apparently healthy.
@@ -2767,7 +2768,7 @@ impl CapnpBrokerState {
             complete: false,
         };
         self.publisher
-            .commit_owner(request)
+            .commit_owner(request, record_kind)
             .await
             .map_err(capnp::Error::failed)?;
         waiting.complete = true;
@@ -2798,14 +2799,17 @@ impl CapnpBrokerState {
             pending.context.clone(),
             status,
         );
-        self.commit_owner_request(tilo_peer_state::owner_commit::OwnerCommitRequest {
-            room: pending.cluster_id.clone(),
-            operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-                invocation: update.invocation().0,
-                redacted: serde_json::to_vec(&receipt)
-                    .map_err(|e| capnp::Error::failed(e.to_string()))?,
+        self.commit_owner_request(
+            tilo_peer_state::owner_commit::OwnerCommitRequest {
+                room: pending.cluster_id.clone(),
+                operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                    invocation: update.invocation().0,
+                    redacted: serde_json::to_vec(&receipt)
+                        .map_err(|e| capnp::Error::failed(e.to_string()))?,
+                },
             },
-        })
+            None,
+        )
         .await
     }
 
@@ -5713,6 +5717,7 @@ impl collab_service::Server for CapnpCollabService {
             let participant_kind = reader.get_participant_kind()?.to_str().map_err(|error| {
                 capnp::Error::failed(format!("participant kind not utf8: {error}"))
             })?;
+            let record_kind = joined_record_kind(reader.get_record_kind()?)?;
             if (verified_identity.host_scope.is_some()
                 || verified_identity.worker_registration.is_some())
                 && !matches!(participant_kind, "" | "person")
@@ -5804,12 +5809,30 @@ impl collab_service::Server for CapnpCollabService {
                 channel_id,
                 peer_id,
                 verified_identity,
+                record_kind,
                 lease: Some(Rc::clone(&self.lease)),
             });
             results.get().set_handle(client);
             Ok(())
         })
     }
+}
+
+/// The resource kind a join names for its record: none when empty, and
+/// refused unless it is a record kind the toolkit accepts.
+fn joined_record_kind(kind: capnp::text::Reader<'_>) -> Result<Option<String>, capnp::Error> {
+    let kind = kind
+        .to_str()
+        .map_err(|error| capnp::Error::failed(format!("record kind not utf8: {error}")))?;
+    if kind.is_empty() {
+        return Ok(None);
+    }
+    if !ui::record::RecordKind::new(kind).is_valid() {
+        return Err(capnp::Error::failed(format!(
+            "invalid record kind `{kind}`"
+        )));
+    }
+    Ok(Some(kind.to_owned()))
 }
 
 /// Per-channel handle established by `join_channel`; every subsequent
@@ -5821,6 +5844,8 @@ struct CapnpChannelHandle {
     channel_id: String,
     peer_id: u64,
     verified_identity: AdmittedJoinIdentity,
+    /// The resource kind the app named for this channel's record, if any.
+    record_kind: Option<String>,
     /// Production handles share the root RPC connection lease. Direct unit
     /// fixtures use `None` and retain the legacy one-handle cleanup behavior.
     lease: Option<Rc<ConnectionLease>>,
@@ -6557,14 +6582,18 @@ impl channel_handle::Server for CapnpChannelHandle {
                 let _order = state.owner_commit_order.lock().await;
                 state.revalidate_admission(&route, &identity)?;
                 state
-                    .commit_owner_request(tilo_peer_state::owner_commit::OwnerCommitRequest {
-                        room: surface.route.cluster_id,
-                        operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-                            invocation: update.invocation().0,
-                            redacted: serde_json::to_vec(&receipt)
-                                .map_err(|e| capnp::Error::failed(e.to_string()))?,
+                    .commit_owner_request(
+                        tilo_peer_state::owner_commit::OwnerCommitRequest {
+                            room: surface.route.cluster_id,
+                            operation:
+                                tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                                    invocation: update.invocation().0,
+                                    redacted: serde_json::to_vec(&receipt)
+                                        .map_err(|e| capnp::Error::failed(e.to_string()))?,
+                                },
                         },
-                    })
+                        None,
+                    )
                     .await?;
                 state.revalidate_admission(&route, &identity)?;
                 Ok(())
@@ -6645,6 +6674,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         let peer_id = self.peer_id;
         let route = self.route();
         let verified_identity = self.verified_identity.clone();
+        let record_kind = self.record_kind.clone();
         Promise::from_future(async move {
             let op_bytes = params.get()?.get_op()?.to_vec();
             let envelope: SignedOp = postcard::from_bytes(&op_bytes).map_err(|e| {
@@ -6667,14 +6697,17 @@ impl channel_handle::Server for CapnpChannelHandle {
             {
                 state.revalidate_admission(&route, &verified_identity)?;
                 state
-                    .commit_owner_request(tilo_peer_state::owner_commit::OwnerCommitRequest {
-                        room: route.cluster_id.clone(),
-                        operation: tilo_peer_state::owner_commit::CommitOperation::Document {
-                            app: route.app_id.clone(),
-                            record: route.record_id.clone(),
-                            envelope: Box::new(envelope.clone()),
+                    .commit_owner_request(
+                        tilo_peer_state::owner_commit::OwnerCommitRequest {
+                            room: route.cluster_id.clone(),
+                            operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                                app: route.app_id.clone(),
+                                record: route.record_id.clone(),
+                                envelope: Box::new(envelope.clone()),
+                            },
                         },
-                    })
+                        record_kind,
+                    )
                     .await?;
             }
             let current_identity = state.revalidate_admission(&route, &verified_identity)?;
@@ -10602,6 +10635,19 @@ pub mod tests {
     }
 
     #[test]
+    fn a_join_names_a_valid_record_kind_or_none() {
+        let joined = |kind: &str| super::joined_record_kind(kind.into());
+        assert_eq!(joined("").unwrap(), None);
+        assert_eq!(
+            joined("notes.notebook").unwrap().as_deref(),
+            Some("notes.notebook")
+        );
+        for invalid in ["1note", "note book", "note/page"] {
+            assert!(joined(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
     fn stopped_state_releases_journal_and_makes_surviving_facade_inert() {
         let directory = tempfile::tempdir().expect("temporary journal directory");
         let fanout = Arc::new(FanoutState::new());
@@ -11344,6 +11390,7 @@ pub mod tests {
                     role: CapRole::Editor,
                     agent_id: None,
                 },
+                record_kind: None,
                 lease: None,
             })
         }
@@ -14405,6 +14452,7 @@ pub mod tests {
                             channel_id: fixture.route.channel_key(),
                             peer_id: fixture.peer_id,
                             verified_identity: caller.admitted.clone(),
+                            record_kind: None,
                             lease: None,
                         });
                     let legacy = client
@@ -14452,6 +14500,7 @@ pub mod tests {
                     state: fixture.state.clone(), directories: fixture.directories.clone(),
                     channel_id: fixture.route.channel_key(), peer_id: 999,
                     verified_identity: caller.admitted.clone(),
+                    record_kind: None,
                     lease: None,
                 });
                 assert!(update_app(&foreign, admitted.wire_id, &tilo_actions::InvocationUpdate::Succeeded {

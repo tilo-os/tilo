@@ -57,6 +57,7 @@ mod owner_commit_tests {
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state, directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
                 channel_id: route.channel_key(), peer_id: 1, verified_identity: admitted,
+                record_kind: None,
                 lease: None,
             });
             let mut document = automerge::AutoCommit::new();
@@ -163,6 +164,7 @@ mod owner_commit_tests {
                             channel_id: route.channel_key(),
                             peer_id: 1,
                             verified_identity: admitted,
+                            record_kind: None,
                             lease: None,
                         });
                     let mut request = client.committed_document_request();
@@ -289,6 +291,7 @@ mod owner_commit_tests {
             app_id: definition.app_id.into(),
             cluster_id: room,
             record: Some(record.id.as_str().into()),
+            record_kind: None,
             handle: None,
         });
         manager.poll();
@@ -503,6 +506,7 @@ mod owner_commit_tests {
             channel_id: route.channel_key(),
             peer_id: 72,
             verified_identity: admitted,
+            record_kind: None,
             lease: None,
         });
         OwnerFixture {
@@ -1422,7 +1426,7 @@ mod owner_commit_tests {
                 assert!(state.connect_local_worker(wrong, &cert).is_err());
             }
             assert!(
-                rpc.join_channel_as_kind(&route.channel_key(), &bytes, "agent-a", "agent")
+                rpc.join_channel_as_kind(&route.channel_key(), &bytes, "agent-a", "agent", "")
                     .await
                     .is_err()
             );
@@ -1603,7 +1607,7 @@ mod owner_commit_tests {
                 },
             };
             let expected = request.clone();
-            let result = tokio::spawn(async move { publisher.commit_owner(request).await });
+            let result = tokio::spawn(async move { publisher.commit_owner(request, None).await });
             let pending = tilo_test_env::within("offline commit bypassed owner", mailbox.recv())
                 .await
                 .unwrap();
