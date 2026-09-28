@@ -28,6 +28,8 @@ impl ExternalRawWidget {
 }
 
 impl Widget for ExternalRawWidget {
+    ui_core::provides!(dyn ui_core::widget::controls::ActionControls);
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.content.sync(state, path);
     }
@@ -68,14 +70,16 @@ impl Widget for ExternalRawWidget {
     fn get_rect(&self) -> ui::kurbo::Rect {
         self.content.get_rect()
     }
+}
 
+impl ui_core::widget::controls::ActionControls for ExternalRawWidget {
     fn install_control_custody(
         &mut self,
         domain: &ui::ControlDomain,
         attachment: CustodyAttachment,
     ) {
         let _ = self.slot.install_custody(domain, attachment);
-        self.content.install_control_custody(domain, attachment);
+        ui_core::widget::controls::install_control_custody(&mut self.content, domain, attachment);
     }
 }
 

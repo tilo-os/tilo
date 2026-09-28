@@ -3350,6 +3350,8 @@ pub(crate) mod ordinary_confirmation_tests {
         output: Rc<RefCell<Option<crate::ControlOutbox>>>,
     }
     impl Widget for Fixture {
+        crate::provides!(dyn crate::widget::controls::ActionControls);
+
         crate::testing::delegate_widget_methods!(
             child: sync,
             build_layout,
@@ -3358,17 +3360,6 @@ pub(crate) mod ordinary_confirmation_tests {
             handle_event,
             get_rect
         );
-        fn install_control_custody(
-            &mut self,
-            domain: &crate::ControlDomain,
-            attachment: crate::control_custody::CustodyAttachment,
-        ) {
-            self.child.install_control_custody(domain, attachment);
-            if self.output.borrow().is_none() {
-                *self.output.borrow_mut() =
-                    Some(domain.producer(crate::ControlProducerDiscipline::Fifo { limit: 64 }));
-            }
-        }
         fn name(&self) -> &str {
             "Ordinary confirmation fixture"
         }
@@ -3404,6 +3395,24 @@ pub(crate) mod ordinary_confirmation_tests {
             Ok(Some(crate::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             )))
+        }
+    }
+
+    impl crate::widget::controls::ActionControls for Fixture {
+        fn install_control_custody(
+            &mut self,
+            domain: &crate::ControlDomain,
+            attachment: crate::control_custody::CustodyAttachment,
+        ) {
+            crate::widget::controls::install_control_custody(
+                self.child.as_mut(),
+                domain,
+                attachment,
+            );
+            if self.output.borrow().is_none() {
+                *self.output.borrow_mut() =
+                    Some(domain.producer(crate::ControlProducerDiscipline::Fifo { limit: 64 }));
+            }
         }
     }
     static HISTORY: HistoryDefinition = HistoryDefinition {

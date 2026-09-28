@@ -1272,7 +1272,8 @@ impl FrameHarness {
         }
         let control_domain = crate::control_custody::ControlDomain::outer();
         let mut root = root;
-        root.install_control_custody(
+        crate::widget::controls::install_control_custody(
+            root.as_mut(),
             &control_domain,
             crate::control_custody::CustodyAttachment::Initial,
         );
@@ -4293,7 +4294,7 @@ impl FrameHarness {
         self.drain_component_wakes();
 
         let resources = self.resources();
-        let bindings = self.root.control_action_bindings();
+        let bindings = crate::widget::controls::control_action_bindings(self.root.as_ref());
         let inventoried_controls = bindings
             .iter()
             .map(|binding| binding.control_id.clone())
@@ -5640,7 +5641,7 @@ impl FrameHarness {
         while let Some(intent) = registered
             .outer
             .pop_front()
-            .or_else(|| self.root.take_control_invocation())
+            .or_else(|| crate::widget::controls::take_control_invocation(self.root.as_mut()))
         {
             // The remaining controls originated in the outer document. Never
             // reselect a matching component or legacy owner from their address.
@@ -5713,8 +5714,11 @@ impl FrameHarness {
                 }
                 Ok::<_, tilo_actions::DoorError>(started)
             })();
-            self.root
-                .on_control_invocation_result(&intent.address, &result);
+            crate::widget::controls::on_control_invocation_result(
+                self.root.as_mut(),
+                &intent.address,
+                &result,
+            );
             match result {
                 Ok(crate::widget::ResourceOperationStart::Accepted) => {
                     self.pending_control_invocations.insert(invocation);
@@ -7249,7 +7253,7 @@ fn drive_spec_actions(
     // Native idle frames admit queued local controls even without input. Use
     // the same host tick here, including fresh permissions and undo recording.
     if !driver.wait_until(crate::time::Duration::from_secs(10), |driver| {
-        !driver.root.has_pending_control_invocation()
+        !crate::widget::controls::has_pending_control_invocation(driver.root.as_ref())
             && driver.pending_control_invocations.is_empty()
             && driver.bound_invocations.is_empty()
     }) {
@@ -11773,6 +11777,8 @@ pub(crate) mod legacy_control_feedback_tests {
         descendants: Column,
     }
     impl Widget for ImportProbe {
+        crate::provides!(dyn crate::widget::controls::ActionControls);
+
         crate::testing::delegate_widget_methods!(
             descendants: sync,
             build_layout,
@@ -11827,12 +11833,6 @@ pub(crate) mod legacy_control_feedback_tests {
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &["feedback.begin"]
         }
-        fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-            self.observed.pending.borrow_mut().pop_front()
-        }
-        fn has_pending_control_invocation(&self) -> bool {
-            !self.observed.pending.borrow().is_empty()
-        }
         fn start_operation(
             &mut self,
             op: &crate::widget::ResourceOperation<'_>,
@@ -11854,22 +11854,6 @@ pub(crate) mod legacy_control_feedback_tests {
                     arguments: serde_json::Map::new(),
                 });
             Ok(Some(crate::widget::ResourceOperationStart::Accepted))
-        }
-        fn on_control_invocation_result(
-            &mut self,
-            address: &tilo_actions::ActionAddress,
-            result: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
-        ) {
-            self.observed
-                .results
-                .borrow_mut()
-                .push((address.action.clone(), result.is_ok()));
-            if address.action == "finalize" {
-                self.observed.terminal.set(Some(result.is_ok()));
-            }
-            // Exercise ordinary container forwarding after the owning callback.
-            self.descendants
-                .on_control_invocation_result(address, result);
         }
         fn poll_resource_operation(
             &mut self,
@@ -11900,6 +11884,31 @@ pub(crate) mod legacy_control_feedback_tests {
                     },
                 }
             })
+        }
+    }
+
+    impl crate::widget::controls::ActionControls for ImportProbe {
+        fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+            self.observed.pending.borrow_mut().pop_front()
+        }
+        fn on_control_invocation_result(
+            &mut self,
+            address: &tilo_actions::ActionAddress,
+            result: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
+        ) {
+            self.observed
+                .results
+                .borrow_mut()
+                .push((address.action.clone(), result.is_ok()));
+            if address.action == "finalize" {
+                self.observed.terminal.set(Some(result.is_ok()));
+            }
+            // Exercise ordinary container forwarding after the owning callback.
+            self.descendants
+                .on_control_invocation_result(address, result);
+        }
+        fn has_pending_control_invocation(&self) -> bool {
+            !self.observed.pending.borrow().is_empty()
         }
     }
     crate::testing::test_app_widget!(

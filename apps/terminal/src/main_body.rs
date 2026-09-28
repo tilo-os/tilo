@@ -2430,40 +2430,10 @@ impl TerminalWidget {
 }
 
 impl Widget for TerminalWidget {
-    ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
-
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.gesture_effects.pop_front().or_else(|| {
-            self.menu_effects
-                .values_mut()
-                .find_map(ui::widget::ActionEmitter::take)
-        })
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        for (index, emitter) in &self.menu_effects {
-            let id = format!("terminal.menu:{}:{index}", self.pane_id);
-            bindings.retain(|binding| binding.control_id != id);
-            bindings.push(emitter.metadata(id));
-        }
-        bindings
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<ui::tilo_actions::ActionAddress>,
-    ) {
-        self.allowed_menu_actions = Some(allowed.clone());
-        let mut availability = Vec::with_capacity(self.menu_effects.len());
-        for (index, emitter) in &mut self.menu_effects {
-            emitter.refresh_availability(allowed);
-            availability.push((*index, emitter.is_available()));
-        }
-        for (index, available) in availability {
-            self.context_menu.set_item_enabled(index, available);
-        }
-    }
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls
+    );
 
     fn test_id(&self) -> Option<&str> {
         Some("terminal")
@@ -3286,6 +3256,39 @@ impl Widget for TerminalWidget {
                     }
                 }
             }
+        }
+    }
+}
+
+impl ui::widget::controls::ActionControls for TerminalWidget {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.gesture_effects.pop_front().or_else(|| {
+            self.menu_effects
+                .values_mut()
+                .find_map(ui::widget::ActionEmitter::take)
+        })
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        for (index, emitter) in &self.menu_effects {
+            let id = format!("terminal.menu:{}:{index}", self.pane_id);
+            bindings.retain(|binding| binding.control_id != id);
+            bindings.push(emitter.metadata(id));
+        }
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<ui::tilo_actions::ActionAddress>,
+    ) {
+        self.allowed_menu_actions = Some(allowed.clone());
+        let mut availability = Vec::with_capacity(self.menu_effects.len());
+        for (index, emitter) in &mut self.menu_effects {
+            emitter.refresh_availability(allowed);
+            availability.push((*index, emitter.is_available()));
+        }
+        for (index, available) in availability {
+            self.context_menu.set_item_enabled(index, available);
         }
     }
 }

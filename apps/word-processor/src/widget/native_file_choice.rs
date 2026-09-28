@@ -456,8 +456,7 @@ mod tests {
             &mut document,
             &automerge::ROOT
         ));
-        let invocation = widget
-            .take_control_invocation()
+        let invocation = ui::widget::controls::take_control_invocation(&mut widget)
             .expect("ordinary action invocation");
         assert_eq!(
             invocation.address.resource,

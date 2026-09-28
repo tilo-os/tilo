@@ -4086,7 +4086,7 @@ mod responsive_body_tests {
         h.cursor(retry.center().x, retry.center().y);
         h.left_press();
         h.left_release();
-        let intent = Widget::take_control_invocation(&mut h.w)
+        let intent = ui::widget::controls::take_control_invocation(&mut h.w)
             .expect("the shared button emits a resource action");
         assert_eq!(intent.address.resource, "tilo.control:files.retry");
         assert_eq!(intent.address.action, "invoke");

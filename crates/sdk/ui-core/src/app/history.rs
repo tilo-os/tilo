@@ -50,7 +50,9 @@ impl App {
             crate::bound_dispatch::legacy_document::discard_legacy_controls(
                 self.root_widget.as_mut(),
             );
-            while self.root_widget.take_control_invocation().is_some() {}
+            while crate::widget::controls::take_control_invocation(self.root_widget.as_mut())
+                .is_some()
+            {}
         }
     }
     fn capture_history_entry(&mut self) {

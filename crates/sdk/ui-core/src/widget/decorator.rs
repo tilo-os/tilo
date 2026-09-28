@@ -79,8 +79,8 @@ use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 
 use super::{
-    ActionDirectoryInvocationDomain, ActionDirectoryResourcePage, ControlBindingMetadata, EventCtx,
-    LayoutInfo, ManualPolicy, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult,
+    ActionDirectoryInvocationDomain, ActionDirectoryResourcePage, EventCtx, LayoutInfo,
+    ManualPolicy, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult,
     ResourceOperationStart, Widget, WindowCloseAdmission,
 };
 use crate::dnd::DragPayload;
@@ -165,10 +165,6 @@ pub trait Decorator {
 
     fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
         self.inner_mut().try_flush_owned_persistence()
-    }
-
-    fn has_pending_control_invocation(&self) -> bool {
-        self.inner().has_pending_control_invocation()
     }
 
     fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
@@ -465,35 +461,6 @@ pub trait Decorator {
         self.inner_mut().take_commit_context()
     }
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.inner_mut().take_control_invocation()
-    }
-
-    fn on_control_invocation_result(
-        &mut self,
-        address: &tilo_actions::ActionAddress,
-        result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        self.inner_mut()
-            .on_control_invocation_result(address, result);
-    }
-
-    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        self.inner().control_action_bindings()
-    }
-
-    fn has_action_control_bindings(&self) -> bool {
-        self.inner().has_action_control_bindings()
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
-    ) {
-        self.inner_mut()
-            .refresh_control_action_availability(allowed);
-    }
-
     fn on_commit(&mut self) {
         self.inner_mut().on_commit();
     }
@@ -751,14 +718,6 @@ pub trait Decorator {
         self.inner_mut().focus_requested(target, tree)
     }
 
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        self.inner_mut().install_control_custody(domain, attachment)
-    }
-
     fn is_default_keyboard_focus(&self) -> bool {
         self.inner().is_default_keyboard_focus()
     }
@@ -899,10 +858,6 @@ impl<T: Decorator> Widget for T {
 
     fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
         Decorator::try_flush_owned_persistence(self)
-    }
-
-    fn has_pending_control_invocation(&self) -> bool {
-        Decorator::has_pending_control_invocation(self)
     }
 
     fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
@@ -1195,33 +1150,6 @@ impl<T: Decorator> Widget for T {
         Decorator::take_commit_context(self)
     }
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        Decorator::take_control_invocation(self)
-    }
-
-    fn on_control_invocation_result(
-        &mut self,
-        address: &tilo_actions::ActionAddress,
-        result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        Decorator::on_control_invocation_result(self, address, result);
-    }
-
-    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        Decorator::control_action_bindings(self)
-    }
-
-    fn has_action_control_bindings(&self) -> bool {
-        Decorator::has_action_control_bindings(self)
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
-    ) {
-        Decorator::refresh_control_action_availability(self, allowed);
-    }
-
     fn on_commit(&mut self) {
         Decorator::on_commit(self);
     }
@@ -1474,14 +1402,6 @@ impl<T: Decorator> Widget for T {
 
     fn focus_requested(&mut self, target: Option<NodeId>, tree: &TaffyTree<()>) {
         Decorator::focus_requested(self, target, tree)
-    }
-
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        Decorator::install_control_custody(self, domain, attachment)
     }
 
     fn is_default_keyboard_focus(&self) -> bool {

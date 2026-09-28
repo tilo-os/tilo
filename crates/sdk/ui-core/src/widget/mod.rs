@@ -807,13 +807,6 @@ pub trait Widget {
         None
     }
 
-    /// Local control intent queued behind asynchronous startup preparation.
-    /// This is a scheduling hint only; the host still checks live authority.
-    fn has_pending_control_invocation(&self) -> bool {
-        self.children()
-            .iter()
-            .any(|child| child.has_pending_control_invocation())
-    }
     /// Owning lifecycle path: capture and close nested components before removing
     /// their live trees, transferring all recovery reports to the caller.
     fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
@@ -1435,69 +1428,6 @@ pub trait Widget {
         self.children_mut()
             .into_iter()
             .find_map(Widget::take_commit_context)
-    }
-    /// Bind retained producers before their first callback. Private holders must
-    /// override this hook; child traversal alone never certifies full coverage.
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        for child in self.children_mut() {
-            child.install_control_custody(domain, attachment);
-        }
-    }
-    /// Drain one queued action-bound control intent from this subtree.
-    /// Custom-painted widgets can own an [`ActionEmitter`] and override this
-    /// method; they do not need to use the toolkit's [`Button`].
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.children_mut()
-            .into_iter()
-            .find_map(Widget::take_control_invocation)
-    }
-    /// Report the admission result of one queued local control invocation.
-    /// `Accepted` means queued, not completed; confirmation remains an error
-    /// while the host offers its normal confirmation UI. This notification
-    /// grants no document authority and must not retry the invocation itself.
-    fn on_control_invocation_result(
-        &mut self,
-        address: &tilo_actions::ActionAddress,
-        result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        for child in self.children_mut() {
-            if !child.has_separate_document_owner() {
-                child.on_control_invocation_result(address, result);
-            }
-        }
-    }
-    /// Recursively inventory action-native and explicitly legacy controls.
-    /// Custom widgets that own an [`ActionEmitter`] should prepend its
-    /// [`metadata`](ActionEmitter::metadata) to their descendants' inventory.
-    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let mut bindings = semantic_action_bindings(self.accessibility());
-        self.for_each_child(&mut |child| bindings.extend(child.control_action_bindings()));
-        bindings
-    }
-    /// Whether this exposed subtree contains controls consuming action availability.
-    /// The inventory fallback preserves custom widgets that publish their own emitters.
-    /// Overrides must match whether `control_action_bindings` contains an `Action`,
-    /// including the same modal child exposure, regardless of current availability.
-    /// Transparent containers may query their children without building semantics.
-    fn has_action_control_bindings(&self) -> bool {
-        self.control_action_bindings()
-            .iter()
-            .any(|binding| matches!(binding.kind, ControlBindingKind::Action(_)))
-    }
-    /// Push the fresh local permission-filtered action surface into every
-    /// retained control. Custom widgets should refresh their own emitter and
-    /// then recurse into children.
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
-    ) {
-        for child in self.children_mut() {
-            child.refresh_control_action_availability(allowed);
-        }
     }
     fn on_commit(&mut self) {
         for child in self.children_mut() {
@@ -2361,6 +2291,7 @@ pub type Element = Box<dyn Widget>;
 
 pub mod binding;
 pub mod capability;
+pub mod controls;
 pub mod decorator;
 pub use decorator::Decorator;
 
@@ -3081,6 +3012,8 @@ pub(crate) mod control_result_probe {
         }
     }
     impl Widget for Probe {
+        crate::provides!(dyn crate::widget::controls::ActionControls);
+
         fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
             self.observed
                 .flushes
@@ -3199,16 +3132,6 @@ pub(crate) mod control_result_probe {
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &["test.control-result.run"]
         }
-        fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-            self.observed.pending.borrow_mut().pop_front()
-        }
-        fn on_control_invocation_result(
-            &mut self,
-            _: &tilo_actions::ActionAddress,
-            result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
-        ) {
-            self.observed.results.borrow_mut().push(result.clone());
-        }
         fn start_operation(
             &mut self,
             op: &ResourceOperation<'_>,
@@ -3229,6 +3152,19 @@ pub(crate) mod control_result_probe {
             } else {
                 ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
             }))
+        }
+    }
+
+    impl crate::widget::controls::ActionControls for Probe {
+        fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+            self.observed.pending.borrow_mut().pop_front()
+        }
+        fn on_control_invocation_result(
+            &mut self,
+            _: &tilo_actions::ActionAddress,
+            result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
+        ) {
+            self.observed.results.borrow_mut().push(result.clone());
         }
     }
     thread_local! { static NEXT: RefCell<Option<Probe>> = const { RefCell::new(None) }; }

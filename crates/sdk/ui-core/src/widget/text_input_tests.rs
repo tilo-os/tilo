@@ -2225,9 +2225,12 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
             .on_change(|_| panic!("legacy callback must be suppressed"))
             .on_action(crate::widget::test_string_action_binding());
         let mut doc = AutoCommit::new();
-        Widget::refresh_control_action_availability(&mut input, &std::collections::HashSet::new());
+        crate::widget::controls::refresh_control_action_availability(
+            &mut input,
+            &std::collections::HashSet::new(),
+        );
         assert!(input.is_disabled());
-        Widget::refresh_control_action_availability(
+        crate::widget::controls::refresh_control_action_availability(
             &mut input,
             &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                 "test:control",
@@ -2243,7 +2246,7 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         ));
         assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
         assert_eq!(
-            Widget::take_control_invocation(&mut input)
+            crate::widget::controls::take_control_invocation(&mut input)
                 .unwrap()
                 .arguments["value"],
             "Project Atlas"

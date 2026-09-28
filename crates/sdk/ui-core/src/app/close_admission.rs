@@ -266,17 +266,20 @@ impl App {
     }
 
     pub(super) fn service_close_admission(&mut self) {
-        while let Some(intent) = self
-            .close_admission
-            .dialog
-            .as_mut()
-            .and_then(|dialog| dialog.take_control_invocation())
+        while let Some(intent) =
+            self.close_admission.dialog.as_mut().and_then(|dialog| {
+                crate::widget::controls::take_control_invocation(dialog.as_mut())
+            })
         {
             let result = self
                 .invoke_history_address_local(&intent.address, None)
                 .unwrap_or_else(|| Err(tilo_actions::DoorError::Unknown(intent.address.clone())));
             if let Some(dialog) = self.close_admission.dialog.as_mut() {
-                dialog.on_control_invocation_result(&intent.address, &result);
+                crate::widget::controls::on_control_invocation_result(
+                    dialog.as_mut(),
+                    &intent.address,
+                    &result,
+                );
             }
         }
         while let Some(command) = self.close_admission.take_command() {

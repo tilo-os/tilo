@@ -488,11 +488,17 @@ impl ResourceRequest<'_> {
                             .map_err(|error| refused("record_unavailable", error))?;
                         // Exact current owner only. The callback receives no document
                         // loan; default forwarding stops at nested owner boundaries.
-                        live.on_control_invocation_result(&target.address, outcome);
+                        crate::widget::controls::on_control_invocation_result(
+                            live,
+                            &target.address,
+                            outcome,
+                        );
                         *delivered = true;
                         return Ok(());
                     }
-                    Self::Discard => while live.take_control_invocation().is_some() {},
+                    Self::Discard => {
+                        while crate::widget::controls::take_control_invocation(live).is_some() {}
+                    }
                     Self::Drain(output) if interactive => {
                         let owner = owner.ok_or_else(|| {
                             refused(
@@ -503,7 +509,9 @@ impl ResourceRequest<'_> {
                         owner
                             .validate()
                             .map_err(|e| refused("record_unavailable", e))?;
-                        while let Some(intent) = live.take_control_invocation() {
+                        while let Some(intent) =
+                            crate::widget::controls::take_control_invocation(live)
+                        {
                             output.controls.push((
                                 LegacyResourceTarget {
                                     owner: owner.clone(),
@@ -540,7 +548,9 @@ impl ResourceRequest<'_> {
                                 .filter(|d| d.contract.availability.is_available())
                                 .map(|d| d.address)
                                 .collect();
-                            live.refresh_control_action_availability(&allowed);
+                            crate::widget::controls::refresh_control_action_availability(
+                                live, &allowed,
+                            );
                         }
                     }
                     Self::Document {

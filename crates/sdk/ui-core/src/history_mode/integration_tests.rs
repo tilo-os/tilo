@@ -2078,6 +2078,8 @@ crate::testing::test_app_widget!(
 );
 
 impl Widget for RetainedLifecycleProbe {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     crate::testing::delegate_widget_methods!(text: apply_layout, draw, get_rect);
     fn name(&self) -> &'static str {
         "RetainedLifecycleProbe"
@@ -2160,9 +2162,6 @@ impl Widget for RetainedLifecycleProbe {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
         vec![retained_lifecycle_resource(self.id)]
     }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.handles.emitter.borrow_mut().take()
-    }
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -2223,6 +2222,12 @@ impl Widget for RetainedLifecycleProbe {
     }
     fn on_commit(&mut self) {
         self.dirty = false;
+    }
+}
+
+impl crate::widget::controls::ActionControls for RetainedLifecycleProbe {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.handles.emitter.borrow_mut().take()
     }
 }
 

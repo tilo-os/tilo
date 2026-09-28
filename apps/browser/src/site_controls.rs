@@ -770,8 +770,7 @@ mod tests {
                     },
                 );
             }
-            let intent = panel
-                .take_control_invocation()
+            let intent = ui::widget::controls::take_control_invocation(panel.as_mut())
                 .expect("pointer emits the Done operation");
             assert_eq!(intent.address.resource, "tilo.control:browser.site.close");
             let result = panel
