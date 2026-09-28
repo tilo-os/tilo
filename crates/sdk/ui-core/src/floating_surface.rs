@@ -118,7 +118,7 @@ pub struct FloatingSurfaceProtocolRequest {
     pub preferred_size: [f64; 2],
     pub aspect_ratio: Option<f64>,
     /// Desktop-space transfer rectangle for an app-owned native surface.
-    /// Optional so ordinary media `PiP` and version-1 peers remain compatible.
+    /// Absent for ordinary media `PiP`.
     #[serde(default)]
     pub initial_rect: Option<[f64; 4]>,
     /// Full transparent native-window bounds, including app-drawn shadows.

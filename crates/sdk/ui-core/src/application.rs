@@ -8,7 +8,7 @@ use crate::permissions::{PermissionContext, PermissionScope, UserId};
 use crate::record::{
     RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordReservation, RecordStore,
 };
-use crate::view::{FrozenApp, ThawError, View};
+use crate::view::{ThawError, View};
 use crate::wake::{WakeEvent, WakeHandle, WakeScope};
 use crate::widget::{AppWidget, IconDescriptor};
 use automerge::AutoCommit;
@@ -50,7 +50,6 @@ pub enum LaunchTarget {
 pub enum RestoreInput {
     None,
     Local(SavedInstanceView),
-    LegacyRecovery(FrozenApp),
 }
 
 /// Explicit identity, authority and storage. Apps receive no ambient profile resolver.
@@ -419,18 +418,6 @@ impl HostContext {
                     return Err(LaunchError::BindingMismatch);
                 }
                 Ok(())
-            }
-            RestoreInput::LegacyRecovery(frozen) => {
-                if frozen.version != crate::view::FROZEN_VERSION {
-                    return Err(LaunchError::Restore(ThawError::UnsupportedVersion {
-                        found: frozen.version,
-                        supported: crate::view::FROZEN_VERSION,
-                    }));
-                }
-                AutoCommit::load(&frozen.state)
-                    .map_err(|e| LaunchError::Restore(ThawError::State(e.to_string())))?;
-                frozen.view.validate().map_err(LaunchError::Restore)?;
-                Err(LaunchError::RecoveryRequired)
             }
         }
     }
