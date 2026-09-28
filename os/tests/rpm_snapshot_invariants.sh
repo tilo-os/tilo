@@ -4,7 +4,7 @@
 set -uo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-workflow="$repo/.forgejo/workflows/snapshot-rpms.yml"
+workflow="$repo/.forgejo/workflows/build-rpms.yml"
 development_workflow="$repo/.forgejo/workflows/development-rpms-arm64.yml"
 snapshot="$repo/os/Containerfile.rpms"
 image_workflow="$repo/.forgejo/workflows/build-image.yml"
@@ -225,7 +225,7 @@ for consumer in "$image_workflow" "$relay_workflow"; do
   if printf '%s\n' "$resolver_job" | grep -Fq 'Resolve the exact signed RPM snapshot fingerprint' \
     && printf '%s\n' "$resolver_job" | grep -Fq './os/dev/resolve-rpm-snapshot.sh' \
     && printf '%s\n' "$resolver_job" | grep -Fq 'rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}' \
-    && ! printf '%s\n' "$resolver_job" | grep -Fq 'uses: ./.forgejo/workflows/snapshot-rpms.yml' \
+    && ! printf '%s\n' "$resolver_job" | grep -Fq 'uses: ./.forgejo/workflows/build-rpms.yml' \
     && ! printf '%s\n' "$resolver_job" | grep -Fq 'enable-openid-connect: true'; then
     ok "$(basename "$consumer") resolves the signed RPM fingerprint without reusable OIDC"
   else

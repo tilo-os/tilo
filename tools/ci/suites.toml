@@ -738,7 +738,7 @@ by = "tools/tests/test_focused_test.py"
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"
 reason = "needs the built registry-server image"
-workflow = "registry-server-image.yml"
+workflow = "release-registry-server.yml"
 
 [[unrequired]]
 suite = "crates/session/tilo-ntfs-helper/tests/test_stage_install.py"
@@ -751,7 +751,7 @@ reason = "needs a built Arch package"
 [[unrequired]]
 suite = "dist/ci/run-dev-session-test.sh"
 reason = "needs docker and a built distribution package container"
-workflow = "package-desktop.yml"
+workflow = "release-desktop.yml"
 
 [[unrequired]]
 suite = "dist/ci/test-installed-host-startup.sh"
@@ -768,7 +768,7 @@ reason = "needs built RPM packages"
 [[unrequired]]
 suite = "dist/rpm/test-signing-contract.sh"
 reason = "needs a gpg-agent the ci-fast image cannot provide reliably; runs in the package container"
-workflow = "package-desktop.yml"
+workflow = "release-desktop.yml"
 
 [[unrequired]]
 suite = "os/dev/test-encrypted-install.sh"
@@ -848,47 +848,47 @@ reason = "needs rootless Podman"
 [[unrequired]]
 suite = "os/tests/development_layer_audit_native.py"
 reason = "needs the disposable root native container with Podman"
-workflow = "development-source.yml"
+workflow = "ci-development-signing.yml"
 
 [[unrequired]]
 suite = "os/tests/development_prediction_native.py"
 reason = "needs the disposable root native container with Cosign"
-workflow = "development-source.yml"
+workflow = "ci-development-signing.yml"
 
 [[unrequired]]
 suite = "os/tests/development_retention_native.py"
 reason = "needs the disposable root native container with Cosign and Podman"
-workflow = "development-source.yml"
+workflow = "ci-development-signing.yml"
 
 [[unrequired]]
 suite = "os/tests/development_rebind_native.py"
 reason = "needs the disposable root native container with Cosign, Podman and packaged-kernel dracut"
-workflow = "development-source.yml"
+workflow = "ci-development-signing.yml"
 
 [[unrequired]]
 suite = "os/tests/development_rootfs.py"
 reason = "needs the disposable root native container with Podman"
-workflow = "development-source.yml"
+workflow = "ci-development-signing.yml"
 
 [[unrequired]]
 suite = "os/tests/development_signer.py"
 reason = "needs the disposable root native container"
-workflow = "development-source.yml"
+workflow = "ci-development-signing.yml"
 
 [[unrequired]]
 suite = "os/tests/development_source_registry.py"
 reason = "needs Podman, Cosign and a TLS registry"
-workflow = "development-source.yml"
+workflow = "ci-development-signing.yml"
 
 [[unrequired]]
 suite = "os/tests/development_stage_reuse.py"
 reason = "needs the disposable root native container with Podman"
-workflow = "development-source.yml"
+workflow = "ci-development-signing.yml"
 
 [[unrequired]]
 suite = "os/tests/development_wpe_artifact_native.py"
 reason = "needs the disposable root native container with Podman and Skopeo"
-workflow = "development-source.yml"
+workflow = "ci-development-signing.yml"
 
 [[unrequired]]
 suite = "os/tests/fex-assembler.sh"
@@ -909,7 +909,7 @@ reason = "driver for a running FluxCast server"
 [[unrequired]]
 suite = "os/tests/initramfs_trust_native.py"
 reason = "needs the disposable root native container"
-workflow = "development-source.yml"
+workflow = "ci-development-signing.yml"
 
 [[unrequired]]
 suite = "os/tests/installed_atspi_apps.sh"
@@ -972,7 +972,7 @@ reason = "runs inside a booted guest, as root"
 [[unrequired]]
 suite = "os/tests/release_tools_image.sh"
 reason = "needs the built release-tools image"
-workflow = "build-release-tools-image.yml"
+workflow = "build-release-tools.yml"
 
 [[unrequired]]
 suite = "os/tests/rollback-boot-check.sh"
@@ -994,12 +994,12 @@ workflow = "build-kernel.yml"
 [[unrequired]]
 suite = "os/tests/staging_helper_loop.sh"
 reason = "destructive, root: loop devices"
-workflow = "staging-loop.yml"
+workflow = "ci-staging-loop.yml"
 
 [[unrequired]]
 suite = "os/tests/staging_reclaim_loop.sh"
 reason = "destructive, root: loop devices"
-workflow = "staging-loop.yml"
+workflow = "ci-staging-loop.yml"
 
 [[unrequired]]
 suite = "os/tests/system_extension_boot_pack_stage.sh"
@@ -1012,7 +1012,7 @@ reason = "asserts preserved sparse holes, which the container overlay root of th
 [[unrequired]]
 suite = "os/tests/test_import_development_rootfs.py"
 reason = "needs a root-owned /usr/local/bin/tilo-crypto"
-workflow = "development-source.yml"
+workflow = "ci-development-signing.yml"
 
 [[unrequired]]
 suite = "os/tests/test_kernel_checkpoint_make.py"
@@ -1029,7 +1029,7 @@ reason = "exercises a Windows-only helper (msvcrt, os.O_BINARY); needs a Windows
 [[unrequired]]
 suite = "os/tests/tilo-session-lifecycle.sh"
 reason = "drives a VM over SSH"
-workflow = "fs-fuse.yml"
+workflow = "ci-filesystem.yml"
 
 [[unrequired]]
 suite = "os/tests/trust_input_copy_equivalence.py"
@@ -1054,7 +1054,7 @@ reason = "needs a built WPE browser"
 [[unrequired]]
 suite = "os/tests/wpe_stage_cache.py"
 reason = "needs the disposable root native container with Podman"
-workflow = "development-source.yml"
+workflow = "ci-development-signing.yml"
 
 [[unrequired]]
 suite = "os/usr/bin/fs-test.sh"

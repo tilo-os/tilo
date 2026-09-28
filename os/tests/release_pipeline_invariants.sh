@@ -16,7 +16,7 @@ else
   ok 'workflows use Forgejo authorization/OIDC controls without ignored permissions keys'
 fi
 
-desktop="$workflows/package-desktop.yml"
+desktop="$workflows/release-desktop.yml"
 apps="$workflows/release-apps.yml"
 os="$workflows/build-image.yml"
 imager="$workflows/release-imager.yml"
@@ -29,7 +29,7 @@ else
 fi
 
 cache_driver_ok=1
-for workflow in build-builder-image.yml build-image.yml build-kernel.yml release-relay.yml snapshot-rpms.yml; do
+for workflow in build-ci-builder.yml build-image.yml build-kernel.yml release-relay.yml build-rpms.yml; do
   file="$workflows/$workflow"
   if grep -Fq 'cache-to: type=registry' "$file" \
      && ! grep -Fq 'uses: ./.forgejo/actions/setup-buildx' "$file"; then
@@ -54,7 +54,7 @@ fi
 persistent_ok=1
 for file in "$workflows"/*.yml "$workflows"/*.yaml; do
   case "$(basename "$file")" in
-    release-relay.yml|registry-server-image.yml) continue ;;
+    release-relay.yml|release-registry-server.yml) continue ;;
   esac
   if grep -Eq '^ +persistent:' "$file"; then
     printf 'persistent BuildKit builder outside its allowed workflows: %s\n' "$(basename "$file")" >&2
@@ -139,11 +139,11 @@ else
   bad 'native kernel builds can bypass resource bounds or diverge on their compilation cache key'
 fi
 
-if grep -Fq 'needs: [plan, build, images, cache-cold, cache-warm]' "$workflows/build-builder-image.yml" \
-  && grep -Fq 'needs: [plan, build, images, accept-builder]' "$workflows/build-builder-image.yml" \
-  && grep -Fq "needs.accept-builder.result == 'success'" "$workflows/build-builder-image.yml" \
-  && grep -Fq 'runner: runner-arm64' "$workflows/build-builder-image.yml" \
-  && grep -Fq 'python3 os/dev/promote-native-index.py' "$workflows/build-builder-image.yml" \
+if grep -Fq 'needs: [plan, build, images, cache-cold, cache-warm]' "$workflows/build-ci-builder.yml" \
+  && grep -Fq 'needs: [plan, build, images, accept-builder]' "$workflows/build-ci-builder.yml" \
+  && grep -Fq "needs.accept-builder.result == 'success'" "$workflows/build-ci-builder.yml" \
+  && grep -Fq 'runner: runner-arm64' "$workflows/build-ci-builder.yml" \
+  && grep -Fq 'python3 os/dev/promote-native-index.py' "$workflows/build-ci-builder.yml" \
   && grep -Fq 'runs-on: ${{ matrix.runner }}' "$workflows/check.yml"; then
   ok 'native CI builder publication waits for cache acceptance on both architectures'
 else
@@ -262,8 +262,8 @@ kernel_triggers="$(sed -n '/^on:/,/^concurrency:/p' "$kernel_workflow")"
 if grep -Fq '"os/kernel-buildroot-snapshot.env"' <<<"$kernel_triggers" \
    && grep -Fq '"os/kernel/**"' <<<"$kernel_triggers" \
    && ! grep -Eq 'rpms-snapshot\.env|base-snapshot\.env|derive-rpm-package-set|kernel-snapshot\.env"|workflow_call' <<<"$kernel_triggers" \
-   && ! grep -Fq 'build-kernel.yml' "$workflows/snapshot-rpms.yml" \
-   && ! grep -Fq 'os/kernel/Containerfile' "$workflows/snapshot-rpms.yml" \
+   && ! grep -Fq 'build-kernel.yml' "$workflows/build-rpms.yml" \
+   && ! grep -Fq 'os/kernel/Containerfile' "$workflows/build-rpms.yml" \
    && ! grep -Fq 'os/kernel/Containerfile' "$repo/os/dev/derive-rpm-package-set.py" \
    && grep -Fq 'os/kernel-buildroot-snapshot.env' <<<"$(sed -n '/KERNEL_SNAPSHOT_INPUTS: |/,/^    steps:/p' "$kernel_workflow")"; then
   ok 'only kernel inputs rebuild the kernel; OS package changes do not'

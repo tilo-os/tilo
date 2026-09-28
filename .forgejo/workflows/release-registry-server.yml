@@ -22,7 +22,7 @@ on:
       - "vendor/genawaiter-proc-macro/**"
       - "tools/ci/workflow_applicability.py"
       - "tools/ci/prepare_pr_history.py"
-      - ".forgejo/workflows/registry-server-image.yml"
+      - ".forgejo/workflows/release-registry-server.yml"
   pull_request:
     branches: ["main"]
     paths:
@@ -41,7 +41,7 @@ on:
       - "vendor/genawaiter-proc-macro/**"
       - "tools/ci/workflow_applicability.py"
       - "tools/ci/prepare_pr_history.py"
-      - ".forgejo/workflows/registry-server-image.yml"
+      - ".forgejo/workflows/release-registry-server.yml"
 
 concurrency:
   group: registry-server-image-${{ github.event_name }}-${{ github.sha }}
@@ -51,7 +51,7 @@ jobs:
   applicability:
     uses: ./.forgejo/workflows/applicability.yml
     with:
-      workflow: .forgejo/workflows/registry-server-image.yml
+      workflow: .forgejo/workflows/release-registry-server.yml
       event: ${{ github.event_name }}
 
   build-test-publish:

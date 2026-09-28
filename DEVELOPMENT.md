@@ -93,7 +93,7 @@ disabled during alpha; tags do not enable those lanes.
 ## Fast checks before assembly
 
 For a native integration test without a full workspace dispatch, use
-**Dev / focused test** (`focused-test.yml`). Select a full source
+**Dev / focused test** (`dev-focused-test.yml`). Select a full source
 commit SHA, one Cargo package, integration target and exact Rust test path. For
 example: package `shell`, target `it`, test
 `concept_parity_spec::overview_add_workspace::overview_add_workspace_button_renders_and_click_appends_workspace`.
@@ -116,7 +116,7 @@ and submit directly through the scheduler (replace the example package and SHA):
 ```sh
 jq -n --rawfile tests cases.json --arg source FULL_SOURCE_SHA \
   '{ref:"main",inputs:{source_sha:$source,package:"shell",operation:"test",target_kind:"lib",test_names:$tests}}' \
-  | fgj api -X POST repos/tilo/tilo/actions/workflows/focused-test.yml/dispatches --hostname code.tilo.so
+  | fgj api -X POST repos/tilo/tilo/actions/workflows/dev-focused-test.yml/dispatches --hostname code.tilo.so
 ```
 
 Use this structured request for lists: the installed `fgj workflow run` does not
