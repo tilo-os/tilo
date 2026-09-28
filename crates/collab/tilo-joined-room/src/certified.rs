@@ -174,7 +174,7 @@ impl VerifiedNativeEnrollmentIntent {
     /// # Errors
     /// `hint` was not appointed by the invitation, or the proof does not
     /// verify for it.
-    pub fn from_proof(
+    pub(crate) fn from_proof(
         join: VerifiedJoin,
         complete: JoinCompleteRequest,
         local_device: DeviceCert,
@@ -310,7 +310,7 @@ impl VerifiedNativeEnrollment {
     ///
     /// # Errors
     /// `bootstrap` does not match the persisted proof and its exact scope.
-    pub fn finalize(
+    pub(crate) fn finalize(
         intent: VerifiedNativeEnrollmentIntent,
         pending_id: PendingEnrollmentId,
         bootstrap: JoinBootstrap,

@@ -200,6 +200,38 @@ impl NativeWorkspaceOwner {
         }
         Ok(self.0.authority.read().pending.get(&room).cloned())
     }
+    /// The in-flight enrollment redeeming `invitation`, where the host has
+    /// no slots to find it by.
+    ///
+    /// # Errors
+    /// The store is fenced or a retained proof no longer decodes.
+    pub fn pending_enrollment_for_invitation(
+        &self,
+        invitation: &str,
+    ) -> Result<Option<StoredPendingEnrollment>, String> {
+        if !self.0.store.healthy() {
+            return Err("native state writer is fenced".into());
+        }
+        let slotless: Vec<_> = self
+            .0
+            .authority
+            .read()
+            .pending
+            .values()
+            .filter(|pending| pending.target.is_none())
+            .cloned()
+            .collect();
+        for pending in slotless {
+            let intent = VerifiedNativeEnrollmentIntent::restore(&pending.intent)?;
+            if tilo_peer_state::join::encode_invitation_text(
+                intent.verified_join().signed_invitation(),
+            ) == invitation
+            {
+                return Ok(Some(pending));
+            }
+        }
+        Ok(None)
+    }
     /// # Errors
     /// The store is fenced or the slot is ambiguous.
     pub fn pending_enrollment_for_slot(

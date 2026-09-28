@@ -175,7 +175,7 @@ fn native_enrollment_retains_actual_verified_redemption_and_governance() {
     .unwrap();
     let (_directory, owner) = pending_owner();
     let id = owner.prepare_enrollment_into(&intent, None, now).unwrap();
-    let enrolled = VerifiedNativeEnrollment::finalize(intent, id, bootstrap.clone()).unwrap();
+    let enrolled = crate::testing::finalize(intent, id, bootstrap.clone()).unwrap();
     assert_eq!(enrolled.verified_join(), &join);
     assert_eq!(enrolled.bootstrap(), &bootstrap);
     assert_eq!(enrolled.local_device(), &device);
@@ -202,7 +202,7 @@ fn native_enrollment_refuses_bootstrap_scope_and_identity_substitution() {
             VerifiedNativeEnrollmentIntent::from_proof(join, complete, device, hint, now).unwrap();
         let (_directory, owner) = pending_owner();
         let id = owner.prepare_enrollment_into(&intent, None, now).unwrap();
-        assert!(VerifiedNativeEnrollment::finalize(intent, id, bootstrap).is_err());
+        assert!(crate::testing::finalize(intent, id, bootstrap).is_err());
     }
 }
 
