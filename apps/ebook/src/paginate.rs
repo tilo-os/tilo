@@ -299,6 +299,17 @@ fn weight(bold: bool) -> TextWeight {
     }
 }
 
+/// Reader font scale from which layout keeps natural glyph metrics inside
+/// the measured page box: no glyph expansion and no hanging punctuation.
+const ACCESSIBLE_FONT_SCALE: f32 = 1.35;
+
+/// Whether punctuation may hang into the margins: book composition at
+/// ordinary sizes. At accessibility sizes a hanging mark is a whole glyph
+/// width outside the measure on a narrow page.
+fn hangs_punctuation(settings: &Settings) -> bool {
+    settings.composition.justified() && settings.font_scale < ACCESSIBLE_FONT_SCALE
+}
+
 fn punctuation_protrusion(character: char) -> f32 {
     match character {
         '.' | ',' | '、' | '。' => 0.7,
@@ -647,7 +658,7 @@ fn push_one_fragment(
         .0;
     let end_protrusion = if slice.byte_end == source.text.len() {
         fragment.chars().last().map_or(0.0, |character| {
-            let fraction = if ctx.settings.composition.justified() {
+            let fraction = if hangs_punctuation(ctx.settings) {
                 punctuation_protrusion(character)
             } else {
                 0.0
@@ -665,24 +676,22 @@ fn push_one_fragment(
     } else {
         0.0
     };
-    let start_protrusion = if ctx.settings.composition.justified()
-        && slice.index == 0
-        && breaks.opening_fraction > 0.0
-    {
-        fragment.chars().next().map_or(0.0, |character| {
-            protrusion_width(
-                character,
-                breaks.opening_fraction,
-                ctx.style,
-                bold,
-                italic,
-                ctx.text,
-                source.family,
-            )
-        })
-    } else {
-        0.0
-    };
+    let start_protrusion =
+        if hangs_punctuation(ctx.settings) && slice.index == 0 && breaks.opening_fraction > 0.0 {
+            fragment.chars().next().map_or(0.0, |character| {
+                protrusion_width(
+                    character,
+                    breaks.opening_fraction,
+                    ctx.style,
+                    bold,
+                    italic,
+                    ctx.text,
+                    source.family,
+                )
+            })
+        } else {
+            0.0
+        };
     ctx.words.push(Word {
         text: fragment.to_string(),
         bold,
@@ -1012,7 +1021,7 @@ fn compose_block_lines(
     // phone one expanded line can otherwise exceed its measured paint box,
     // leaving the final word visibly clipped instead of reflowing.
     if !composition.settings.composition.justified()
-        || composition.settings.font_scale >= 1.35
+        || composition.settings.font_scale >= ACCESSIBLE_FONT_SCALE
         || verse
     {
         options.max_glyph_expansion = 0.0;
