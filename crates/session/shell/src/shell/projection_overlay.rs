@@ -1957,6 +1957,7 @@ mod tests {
                     monitor: None,
                 },
                 current_mode: mode,
+                scale: 1.0,
                 builtin: connector == "eDP-1",
                 sink_hdr: false,
                 hdr_unavailable_reason: None,

@@ -182,7 +182,7 @@ fn best_mirror_modes(
 }
 
 /// One real display output, derived from a DRM connector.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool mirrors an independent DRM/compositor capability flag (connected, \
@@ -204,6 +204,9 @@ pub struct DisplayOutput {
     /// mode selection is unavailable, not that a made-up default is valid.
     pub modes: Vec<OutputMode>,
     pub current_mode: Option<OutputMode>,
+    /// The scale the compositor shows it at; an output with no saved entry
+    /// runs at the compositor's own choice.
+    pub scale: f64,
     pub hdr: bool,
     pub sink_hdr: bool,
     pub hdr_unavailable_reason: Option<settings_store::hardware::HdrUnavailable>,
@@ -291,6 +294,7 @@ pub fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
         connector_label: name.to_string(),
         modes: Vec::new(),
         current_mode: None,
+        scale: 1.0,
         hdr: false,
         sink_hdr: false,
         hdr_unavailable_reason: None,
@@ -300,6 +304,13 @@ pub fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
         color_profiles: Vec::new(),
         color_profile_labels: BTreeMap::new(),
         monitor: None,
+    }
+}
+
+impl DisplayOutput {
+    /// The entry that describes this output as it runs with none saved.
+    fn unconfigured(&self) -> OutputConfig {
+        OutputConfig::at_scale(self.scale)
     }
 }
 
@@ -370,6 +381,7 @@ fn read_outputs() -> Vec<DisplayOutput> {
                 connector_label,
                 modes: snapshot.descriptor.modes,
                 current_mode: Some(snapshot.current_mode),
+                scale: snapshot.scale,
                 hdr: snapshot.descriptor.hdr,
                 sink_hdr: snapshot.sink_hdr,
                 hdr_unavailable_reason: snapshot.hdr_unavailable_reason,
@@ -546,6 +558,7 @@ impl DisplayPane {
                     height: 1080,
                     refresh_mhz: 60_000,
                 }),
+                scale: 1.0,
                 hdr: false,
                 sink_hdr: false,
                 hdr_unavailable_reason: None,
@@ -917,7 +930,7 @@ impl DisplayPane {
         let mut placed: Vec<ArrangedDisplay> = Vec::new();
         for (index, output) in connected.iter().enumerate() {
             let entry = config.outputs.get(&output.connector);
-            let resolved = entry.cloned().unwrap_or_default();
+            let resolved = entry.cloned().unwrap_or_else(|| output.unconfigured());
             if !resolved.enabled {
                 continue;
             }
@@ -1064,7 +1077,7 @@ impl DisplayPane {
             .unwrap_or_else(|| OutputConfig {
                 primary: index == 0,
                 x: index as i32 * 1920,
-                ..Default::default()
+                ..output.unconfigured()
             });
         let mut output_rows = Vec::new();
         if self.output_brightness.contains_key(&output.connector) {
@@ -1555,7 +1568,7 @@ impl DisplayPane {
                 .unwrap_or_else(|| OutputConfig {
                     primary: index == 0,
                     x: index as i32 * 1920,
-                    ..Default::default()
+                    ..output.unconfigured()
                 });
             let _ = state.put(root, output_key(&output.connector, "enabled"), cfg.enabled);
             let _ = state.put(root, output_key(&output.connector, "primary"), cfg.primary);
@@ -2173,7 +2186,7 @@ impl DisplayPane {
                 .outputs
                 .get(&output.connector)
                 .cloned()
-                .unwrap_or_default();
+                .unwrap_or_else(|| output.unconfigured());
             if Self::apply_output_field_overrides(state, root, output, &mut next, &mut cfg) {
                 changed = true;
             }
@@ -2347,7 +2360,7 @@ impl DisplayPane {
                     .outputs
                     .get(&reference.connector)
                     .cloned()
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| reference.unconfigured());
                 // Positions are logical, so neighbours are placed by their
                 // logical extent (mode over scale, rotated), not their mode:
                 // a 2x panel's right-hand neighbour starts 1280 in, not 2560.
@@ -3173,6 +3186,7 @@ mod tests {
             connector_label: connector.into(),
             current_mode: modes.first().copied(),
             modes,
+            scale: 1.0,
             hdr: false,
             sink_hdr: false,
             hdr_unavailable_reason: None,
@@ -3401,6 +3415,39 @@ mod tests {
         // that logical edge, never onto the panel's mode width.
         let dropped = settle(monitor.placement.at(1300, 12), &[panel.placement], 24);
         assert_eq!((dropped.x, dropped.y), (1280, 0));
+    }
+
+    #[test]
+    fn an_unconfigured_display_is_drawn_and_staged_at_the_compositors_scale() {
+        // Nothing saved: the compositor runs the HiDPI panel at the 2x it
+        // chose itself, so the canvas draws it 1280 wide and staging a
+        // change keeps that scale rather than writing 1x.
+        let mut panel = display_with_modes(
+            "eDP-1",
+            "Built-in display",
+            true,
+            vec![OutputMode {
+                width: 2560,
+                height: 1600,
+                refresh_mhz: 60_000,
+            }],
+        );
+        panel.scale = 2.0;
+        let rec = Arc::new(RecordingDispatcher::default());
+        let pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+            .with_outputs(vec![panel]);
+        let connected = pane.connected_outputs();
+        let displays = pane.arranged_displays(&connected);
+        assert_eq!(displays[0].placement.width, 1280);
+        assert_eq!(displays[0].placement.height, 800);
+
+        let mut doc = AutoCommit::new();
+        pane.write_output_controls(&mut doc, &automerge::ROOT, &pane.output_config);
+        assert_eq!(
+            read_str_or_text(&doc, &automerge::ROOT, output_key("eDP-1", "scale")).as_deref(),
+            Some("200%"),
+            "the scale control shows the scale the display runs at"
+        );
     }
 
     #[test]

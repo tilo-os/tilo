@@ -674,6 +674,7 @@ mod tests {
                 monitor: None,
             },
             current_mode: mode(1920, 1080, 60_000),
+            scale: 1.0,
             builtin: connector == "eDP-1",
             sink_hdr: false,
             hdr_unavailable_reason: None,
