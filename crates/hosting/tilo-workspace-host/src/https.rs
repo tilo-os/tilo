@@ -138,6 +138,13 @@ struct Origin {
     exact: String,
     authority: String,
     port: u16,
+    /// `localhost`, `127.0.0.1` or `[::1]`; otherwise a public DNS origin that
+    /// an edge forwards to an explicitly configured listener.
+    loopback: bool,
+    /// `Content-Security-Policy: frame-ancestors …` for the page, when a
+    /// partner dashboard may embed this origin; only then may a cross-site
+    /// iframe navigation load the page (never a peer route).
+    frame_ancestors: Option<hyper::header::HeaderValue>,
     /// `Alt-Svc` advertised on HTTP/1.1 and HTTP/2 responses once the same
     /// port also serves these routes over HTTP/3 (UDP). Clients that cannot
     /// reach UDP keep using HTTP/2.
@@ -151,19 +158,83 @@ impl Origin {
         let authority = uri
             .authority()
             .ok_or_else(|| io::Error::other("missing HTTPS authority"))?;
+        let loopback = matches!(authority.host(), "localhost" | "127.0.0.1" | "[::1]");
         if uri.scheme_str() != Some("https")
             || value != format!("https://{authority}")
-            || !matches!(authority.host(), "localhost" | "127.0.0.1" | "[::1]")
+            || authority.as_str().contains('@')
+            || authority.port_u16() == Some(0)
+            || !(loopback || is_dns_name(authority.host()))
         {
-            return Err(io::Error::other("local HTTPS origin required"));
+            return Err(io::Error::other(
+                "exact HTTPS origin with a loopback or DNS host required",
+            ));
         }
         Ok(Self {
             exact: value.into(),
             authority: authority.to_string(),
             port: authority.port_u16().unwrap_or(443),
+            loopback,
+            frame_ancestors: None,
             alt_svc: None,
         })
     }
+}
+
+/// A partner dashboard loading the page into its iframe: the only cross-site
+/// request an embeddable origin accepts. Peer routes stay same-origin.
+fn framed_page_navigation(parts: &Parts, origin: &Origin) -> bool {
+    let path = parts.uri.path();
+    origin.frame_ancestors.is_some()
+        && parts.method == Method::GET
+        && !path.starts_with("/peer")
+        && !path.starts_with("/tilo-peer")
+        && parts
+            .headers
+            .get("sec-fetch-mode")
+            .is_some_and(|v| v == "navigate")
+        && parts
+            .headers
+            .get("sec-fetch-dest")
+            .is_some_and(|v| v == "iframe")
+}
+
+/// `frame-ancestors` for exact dashboard origins: `https://` with a loopback or
+/// DNS host, or `http://` on loopback for local development.
+#[cfg(any(test, feature = "media"))]
+fn frame_ancestors_policy(ancestors: &[String]) -> io::Result<hyper::header::HeaderValue> {
+    if ancestors.is_empty() || ancestors.len() > 16 {
+        return Err(io::Error::other("1-16 frame ancestors required"));
+    }
+    for ancestor in ancestors {
+        let valid = match ancestor.strip_prefix("http://") {
+            Some(authority) => {
+                Origin::parse(&format!("https://{authority}")).is_ok_and(|origin| origin.loopback)
+            }
+            None => Origin::parse(ancestor).is_ok(),
+        };
+        if !valid {
+            return Err(io::Error::other("frame ancestor must be an exact origin"));
+        }
+    }
+    hyper::header::HeaderValue::from_str(&format!("frame-ancestors {}", ancestors.join(" ")))
+        .map_err(io::Error::other)
+}
+
+/// A lowercase DNS name of LDH labels. IP literals are not public origins:
+/// their certificates and `Host` spellings are not canonical.
+pub(crate) fn is_dns_name(host: &str) -> bool {
+    host.len() <= 253
+        && !host
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+        && host.split('.').all(|label| {
+            (1..=63).contains(&label.len())
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
 }
 
 #[derive(Debug)]
@@ -261,9 +332,10 @@ fn check_origin_base(parts: &Parts, origin: &Origin) -> Result<(), Rejection> {
     if headers
         .get("origin")
         .is_some_and(|v| v.as_bytes() != origin.exact.as_bytes())
-        || headers
-            .get("sec-fetch-site")
-            .is_some_and(|v| !matches!(v.as_bytes(), b"same-origin" | b"none"))
+        || headers.get("sec-fetch-site").is_some_and(|v| {
+            !matches!(v.as_bytes(), b"same-origin" | b"none")
+                && !framed_page_navigation(parts, origin)
+        })
     {
         return Err(Rejection::denied());
     }
@@ -767,13 +839,14 @@ impl HttpsAdapter {
     ) -> io::Result<Self> {
         let origin = Origin::parse(origin)?;
         let address = listener.local_addr()?;
-        if !address.ip().is_loopback()
-            || address.port() != origin.port
+        // A loopback origin is reached directly, so it names the listener's
+        // port. A public origin is reached through an edge that may map ports.
+        if (origin.loopback && address.port() != origin.port)
             || certificates.is_empty()
             || certificates.iter().map(|cert| cert.len()).sum::<usize>() > 64 * 1024
             || key.secret_der().len() > 64 * 1024
         {
-            return Err(io::Error::other("invalid local TLS listener configuration"));
+            return Err(io::Error::other("invalid TLS listener configuration"));
         }
         let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),
@@ -794,6 +867,23 @@ impl HttpsAdapter {
             local_enrollment: None,
         })
     }
+    /// Let the listed dashboard origins embed the page (`frame-ancestors`).
+    #[cfg(feature = "media")]
+    pub(crate) fn with_frame_ancestors(mut self, ancestors: &[String]) -> io::Result<Self> {
+        if ancestors.is_empty() {
+            return Ok(self);
+        }
+        let policy = frame_ancestors_policy(ancestors)?;
+        self.origin = Arc::new(Origin {
+            exact: self.origin.exact.clone(),
+            authority: self.origin.authority.clone(),
+            port: self.origin.port,
+            loopback: self.origin.loopback,
+            frame_ancestors: Some(policy),
+            alt_svc: self.origin.alt_svc.clone(),
+        });
+        Ok(self)
+    }
     /// Advertise HTTP/3 on this port (`Alt-Svc`), after the caller installed
     /// the HTTP/3 service on the same port's QUIC endpoint.
     #[cfg(feature = "media")]
@@ -804,6 +894,8 @@ impl HttpsAdapter {
                 exact: self.origin.exact.clone(),
                 authority: self.origin.authority.clone(),
                 port: self.origin.port,
+                loopback: self.origin.loopback,
+                frame_ancestors: self.origin.frame_ancestors.clone(),
                 alt_svc: Some(value),
             });
         }
@@ -1030,7 +1122,13 @@ where
                 .insert("content-length", length.into());
             return Ok(response);
         }
-        return Ok(asset_response(&parts, asset, lease));
+        let mut response = asset_response(&parts, asset, lease);
+        if navigation && let Some(policy) = &origin.frame_ancestors {
+            response
+                .headers_mut()
+                .insert("content-security-policy", policy.clone());
+        }
+        return Ok(response);
     }
     let parsed = parse_head_checked(&parts)?;
     let limit = parsed.route.body_limit();

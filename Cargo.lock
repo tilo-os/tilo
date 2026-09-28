@@ -1578,7 +1578,6 @@ dependencies = [
  "vello",
  "winit",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
@@ -2541,7 +2540,6 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 name = "contacts"
 version = "0.1.0"
 dependencies = [
- "atomic-file",
  "automerge",
  "pim-lines",
  "runtime-dylib",
@@ -2561,7 +2559,6 @@ dependencies = [
  "vello",
  "winit",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
@@ -4468,7 +4465,6 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "fastcdc",
- "postcard",
  "serde",
  "workspace-hack",
 ]
@@ -15677,6 +15673,7 @@ dependencies = [
  "base64",
  "blake3",
  "channel-crypto",
+ "chrono",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "fs",

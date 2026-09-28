@@ -570,19 +570,6 @@ pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
     signing_key_from_file(path, 0o007, SecretOwner::RootOrReader)
 }
 
-/// Read the former group-owned key during its one-time privileged migration.
-/// Historical versions allowed the session account to create that inode, so
-/// ownership can be tightened only after adoption into the protected store.
-/// New callers must use [`read_device_key`].
-///
-/// # Errors
-///
-/// Applies the same bounded no-follow, regular-file, mode, link-count, and
-/// length checks as [`read_device_key`], except for the historical owner rule.
-pub fn read_legacy_device_key(path: &Path) -> Result<SigningKey, PersistError> {
-    signing_key_from_file(path, 0o007, SecretOwner::Any)
-}
-
 /// Write the device key with [`DEVICE_KEY_MODE`], atomically.
 ///
 /// # Errors

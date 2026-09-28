@@ -17,7 +17,7 @@
 )]
 
 use collab_types::caps::{
-    Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope, Subject, Verb,
+    Actor, CapDecision, CapOverride, Effect, Principal, ResourceRef, Scope, Subject, Verb,
     decide_capability, role_base_applies,
 };
 use collab_types::channel::ArtifactId;
@@ -656,11 +656,10 @@ fn sharing_is_classified_apart_from_membership_and_role_bundles() {
 }
 
 // Serialisation: capabilities persist and replicate, so their wire form has
-// to round-trip and tolerate records written before expiry existed.
+// to round-trip.
 
 #[test]
-fn a_capability_round_trips_through_json_and_legacy_records_load() {
-    // Case: a capability round-trips through JSON.
+fn a_capability_round_trips_through_json() {
     let cap = CapOverride::grant(
         Subject::person("bob"),
         Scope::FsPath("/var/workspace/design".into()),
@@ -672,13 +671,4 @@ fn a_capability_round_trips_through_json_and_legacy_records_load() {
     let json = serde_json::to_string(&cap).expect("serialise");
     let back: CapOverride = serde_json::from_str(&json).expect("deserialise");
     assert_eq!(cap, back);
-
-    // Case: a capability written before expiry existed still loads.
-    let legacy =
-        r#"{"subject":{"Role":"Editor"},"scope":"Workspace","effect":"Grant","verb":"Write"}"#;
-    let cap: CapOverride = serde_json::from_str(legacy).expect("legacy record must still load");
-    assert_eq!(cap.expiry, Expiry::Never, "no expiry means never expires");
-    assert_eq!(cap.id, "");
-    assert_eq!(cap.granted_by, None);
-    assert!(cap.is_live_at(Some(u64::MAX)));
 }

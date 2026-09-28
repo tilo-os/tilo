@@ -4891,8 +4891,13 @@ impl FrameHarness {
         .filter(|snapshot| instance.is_none_or(|instance| snapshot.binding.instance_id == instance))
         .flat_map(|snapshot| snapshot.resources)
         .collect::<Vec<_>>();
+        // The app's own resolution of `id` is a top-level entry and wins over
+        // the summary its eager tree may hold (a channel without its messages).
         Ok(match id {
-            Some(id) => crate::bound_dispatch::find_action_resource(&resources, id)
+            Some(id) => resources
+                .iter()
+                .find(|resource| resource.id.as_str() == id)
+                .or_else(|| crate::bound_dispatch::find_action_resource(&resources, id))
                 .cloned()
                 .into_iter()
                 .collect(),
@@ -6462,6 +6467,15 @@ impl FrameHarness {
         self.root
             .callback_binding()
             .map(|binding| binding.instance_id)
+    }
+
+    /// Admit an agent task participant into the hosted component under
+    /// `label`, its display name, as a host worker does before the task's
+    /// first invocation (`HostWorker::join_participant`). A host whose own author
+    /// is that participant makes the component act as the agent. Idempotent.
+    pub fn join_participant(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
+        self.root.join_participant(participant);
+        self.root.set_participant_label(participant, label);
     }
 
     /// The scene the last laid-out frame encoded: what [`Self::render_rgba`]

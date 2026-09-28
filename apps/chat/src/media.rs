@@ -249,7 +249,7 @@ pub struct MediaEngine {
     live_start_pending: bool,
     /// The live endpoint while it binds on the app runtime. It stands in for
     /// `transport` until the bound endpoint replaces it.
-    #[cfg(feature = "live-media")]
+    #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
     binding: Option<live::PendingBind>,
     /// Set when the bound live transport replaced the stand-in, until
     /// [`Self::take_bound`] observes it.
@@ -273,7 +273,7 @@ impl MediaEngine {
         Self {
             transport: Box::new(SimulatedTransport::default()),
             live_start_pending: false,
-            #[cfg(feature = "live-media")]
+            #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
             binding: None,
             bound: false,
         }
@@ -291,14 +291,14 @@ impl MediaEngine {
             return;
         }
         self.live_start_pending = false;
-        #[cfg(feature = "live-media")]
+        #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
         {
             self.binding = Some(live::PendingBind::start());
         }
     }
 
     fn active(&self) -> &dyn MediaTransport {
-        #[cfg(feature = "live-media")]
+        #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
         if let Some(binding) = &self.binding {
             return binding;
         }
@@ -320,7 +320,7 @@ impl MediaEngine {
     /// Adopt the live endpoint if it finished binding. Returns whether a
     /// newly bound transport is waiting for [`Self::take_bound`].
     pub fn poll_binding(&mut self) -> bool {
-        #[cfg(feature = "live-media")]
+        #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
         if let Some(outcome) = self.binding.as_mut().and_then(live::PendingBind::try_take) {
             self.binding = None;
             match outcome {
@@ -344,7 +344,7 @@ impl MediaEngine {
 
     pub fn transport_mut(&mut self) -> &mut (dyn MediaTransport + Send) {
         self.poll_binding();
-        #[cfg(feature = "live-media")]
+        #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
         if let Some(binding) = self.binding.as_mut() {
             return binding;
         }
@@ -363,11 +363,11 @@ impl MediaEngine {
 }
 
 fn environment_supports_media() -> bool {
-    #[cfg(feature = "live-media")]
+    #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
     {
         live::environment_supports_media()
     }
-    #[cfg(not(feature = "live-media"))]
+    #[cfg(not(all(feature = "live-media", not(target_arch = "wasm32"))))]
     {
         false
     }
@@ -380,9 +380,10 @@ impl Default for MediaEngine {
 }
 
 // ---------------------------------------------------------------------------
-// Live engine — compiled only under `live-media`.
+// Live engine — compiled only under `live-media`, and only natively: the
+// browser runtime carries calls over its own MoQ media, not an iroh endpoint.
 // ---------------------------------------------------------------------------
-#[cfg(feature = "live-media")]
+#[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
 mod live {
     use super::{
         MAX_MEDIA_PAYLOAD, MAX_MEDIA_POLL, MAX_MEDIA_QUEUE, MAX_MEDIA_SENDER_BYTES, MediaObject,
@@ -880,7 +881,7 @@ mod tests {
     /// Binding runs on the app runtime and wakes the event loop; until then
     /// the engine is live without a ticket, and a failed bind falls back to
     /// the simulator instead of leaving calls on a dead stand-in.
-    #[cfg(feature = "live-media")]
+    #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
     #[test]
     fn live_engine_binds_in_the_background_and_falls_back_when_binding_fails() {
         let mut scope = ui::WakeScope::new();
@@ -913,7 +914,7 @@ mod tests {
     }
 
     // -- Real transport + codec loopback (only compiled with `live-media`) ----
-    #[cfg(feature = "live-media")]
+    #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
     mod live_loopback {
         use super::super::live::IrohTransport;
         use super::*;

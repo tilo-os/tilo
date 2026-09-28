@@ -15,7 +15,7 @@ unchanged.
 ## Building
 
 ```sh
-# Core + Books + Writer + test page in one directory (local development):
+# Core + Books + Writer + Chat + test page in one directory (local development):
 crates/browser/tilo-browser-runtime/scripts/build-web-dev.sh /abs/out [PACKAGE...]
 python3 -m http.server -d /abs/out   # then open it in a browser with WebGPU
 
@@ -23,6 +23,7 @@ python3 -m http.server -d /abs/out   # then open it in a browser with WebGPU
 crates/browser/tilo-browser-runtime/scripts/build-web-core.sh /abs/out [--features "..."]
 crates/browser/tilo-browser-runtime/scripts/build-web-app.sh /abs/out ebook
 crates/browser/tilo-browser-runtime/scripts/build-web-app.sh /abs/out word-processor
+crates/browser/tilo-browser-runtime/scripts/build-web-app.sh /abs/out chat
 ```
 
 Tools: the pinned Rust toolchain with `wasm32-unknown-unknown`, wasm-bindgen
@@ -62,7 +63,7 @@ one, not a second runtime.
 collection needs; a crate built with other features is another crate with other
 symbol names. The web core follows the same rule: it is built in one Cargo
 invocation with the apps of the web collection (`TILO_WEB_COLLECTION`, default
-`ebook word-processor`; recorded in `runtime.json`), so each crate they share
+`ebook word-processor chat`; recorded in `runtime.json`), so each crate they share
 with the core carries every feature any of them needs. An app outside the
 collection builds as long as it needs nothing more; otherwise
 `build-web-app.sh` names the crates and it joins the collection, which changes
@@ -331,6 +332,70 @@ records, which go to the profile's storage like a standalone mount's.
 - The desktop's tile catalogue follows the page's installs, so an app linked
   after the mount opens in a window like one linked before it.
 
+## Chat with an agent
+
+Chat (`so.tilo.chat`) is package-primary: every mount of one
+profile/device/room opens the room's one workspace, so two mounts are two
+participants in the same conversation and show each other's messages live.
+The first mount creates the workspace (its author owns it), so mount the
+person first. A mount with `agent` acts as an agent: its `author` must be an
+agent task participant, `agent-task:<task>`, which the app admits under the
+display name, as a host admits a delivered agent task.
+
+```js
+const room = {profile: 'demo', device: 'demo-device', room: '0b5f1c2e-9d7a-4c55-8a1e-3f1d2c4b5a69'};
+const you = await mountDesktop(youElement, {app: 'so.tilo.chat', ...room, author: 'Visitor', instance: 1});
+const agent = await mountDesktop(agentElement, {app: 'so.tilo.chat', ...room, instance: 2,
+  author: 'agent-task:reading', agent: 'Reading agent'});
+
+const general = 'chat.channel:c_general';   // the starter workspace's channel
+// Post from either mount; the message is that mount's author's.
+agent.invokeAction(general, 'post', {value: 'Welcome aboard. Which book are we reading?'});
+
+// Messages: a channel asked for by name lists its latest 20 messages as
+// children, kind `chat.message`, label `<author name>: <first 72 characters>`.
+const seen = new Set();
+function newMessages(mount) {
+  const ids = [...new Set(mount.actions(general)
+    .filter(a => a.resource_kind === 'chat.message').map(a => a.address.resource))];
+  return ids.filter(id => !seen.has(id) && seen.add(id))
+    .map(id => mount.invokeAction(id, 'read').output.value);
+}
+// Each: {id, channel, parent, author, authorName, agent, mine, ts, edited, text, work}
+for (const message of newMessages(agent)) {
+  if (message.agent) continue;                 // the agent's own lines
+  const reply = await answer(message.text);    // the page's model call
+  agent.invokeAction(general, 'post', {value: reply});
+}
+
+// The agent's record of what it did, on its own message (the newest here):
+agent.invokeAction(replyId, 'set-work', {state: 'done', did: 'Add note',
+  steps: [{resource: book, label: 'Add note', outcome: 'applied'}]});
+```
+
+- `post` takes `{value}` (a prompted action; `@Name` of a member becomes a
+  mention). An agent mount's post is recorded as the agent's
+  (`agent_authors/<author>` in the document), so every mount shows it as
+  `Reading agent · agent`; its own mount shows "You". The agent is not a row
+  in the People panel.
+- `read` on `chat.message:<id>` returns the message without changing
+  anything: `author` is the participant id (the mount's `author`),
+  `authorName` what the room calls them, `agent` whether it is an agent's,
+  `mine` whether this mount wrote it, `text` the whole plain text, `parent`
+  the thread it replies to or null, and `work` the agent's record or null.
+  The eager `actions()` listing holds no messages (it stays bounded); only
+  `actions('chat.channel:<id>')` and `actions('chat.message:<id>')` do.
+- `set-work` is offered on an agent mount's own messages only. `state` is
+  `taken`, `doing` (with `did`, `about`), `done` (with `did`) or `refused`;
+  `why` is how it decided; `steps` lists the operations it dispatched as
+  `{resource, label, outcome: asked | applied | no_change | refused, why?}`;
+  `say` supplies the words of a message that has none yet. It writes the
+  same `SetAgentWork` a delivered agent task writes, read back as `work`.
+  Chat's timeline does not draw the work yet; a page shows it itself.
+
+`chat.html` in the dev output mounts both side by side; "Agent: answer new
+messages" replies to what the person wrote since the last answer.
+
 ## Loading from a registry
 
 The registry client (`crates/browser/web-registry-client`) verifies the
@@ -375,14 +440,20 @@ MiB / 4.40 MiB after, measured 2026-09-28): the shell itself
 (`tilo_desktop`, 358 KiB linked; `tilo_desktop_model`, `tilo_automation`,
 `collab_types`), which the core linked but dead-stripped before.
 
-`build-web-dev.sh` writes `build/sizes.md`. Measured 2026-09-27 on main with
-the Cloud stack merged (collection Books + Writer, no `cloud`):
+`build-web-dev.sh` writes `build/sizes.md`. Measured 2026-09-28 (collection
+Books + Writer + Chat, no `cloud`):
 
 | module | linked | linked, brotli | `-Oz` | `-Oz`, brotli |
 |---|---:|---:|---:|---:|
-| core | 32.02 MiB | 4.81 MiB | 16.25 MiB | 3.65 MiB |
-| Books (`so.tilo.ebook`) | 1.50 MiB | 287 KiB | 854 KiB | 248 KiB |
-| Writer (`so.tilo.word-processor`) | 5.03 MiB | 661 KiB | 2.07 MiB | 588 KiB |
+| core | 36.60 MiB | 5.70 MiB | 18.82 MiB | 4.42 MiB |
+| Books (`so.tilo.ebook`) | 2.69 MiB | 468 KiB | 1.49 MiB | 414 KiB |
+| Writer (`so.tilo.word-processor`) | 5.39 MiB | 704 KiB | 2.21 MiB | 625 KiB |
+| Chat (`so.tilo.chat`) | 2.56 MiB | 423 KiB | 1.39 MiB | 370 KiB |
+
+Chat joining the collection grows the core from 18.27 MiB / 4.09 MiB (`-Oz`,
+brotli) to 18.82 MiB / 4.42 MiB: mostly the emoji tables (`crates/text/emoji`,
+in the core through `tilo-desktop` but dead code until Chat's picker imports
+them), and the generic instantiations Chat imports.
 
 | fonts | count | raw | brotli |
 |---|---:|---:|---:|

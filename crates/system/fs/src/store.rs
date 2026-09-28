@@ -18,12 +18,8 @@
 //! ([`ContentStore::blobs_protocol`]).
 
 use std::collections::HashSet;
-use std::io::ErrorKind;
 use std::path::Path;
-use std::sync::{
-    Arc, RwLock,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -64,8 +60,6 @@ pub const MAX_BLOB_LOOKUP_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_BLOB_LOOKUP_CHUNKS_PER_RECORD: usize = 100_000;
 
 const OWNED_BLOB_TAG_PREFIX: &str = "tilo/blob/v1/";
-const OWNED_TAG_MIGRATION_MARKER: &str = ".tilo-owned-blob-tags-v1";
-const OWNED_TAG_MIGRATION_MARKER_CONTENTS: &[u8] = b"tilo-owned-blob-tags-v1\n";
 
 /// Persistent stores sweep unreferenced blobs periodically. Explicit eviction
 /// does not wait for this interval; callers observe the queue to learn when a
@@ -266,13 +260,10 @@ impl ContentStore {
 
     /// Open a persistent store with background garbage collection enabled.
     ///
-    /// GC starts in an aborting state so the first sweep cannot race legacy
-    /// tag migration. Only a fully successful migration enables sweeping.
-    ///
     /// # Errors
     ///
-    /// Returns an error when configuration, directory creation, store loading,
-    /// or legacy-tag migration fails.
+    /// Returns an error when configuration, directory creation or store
+    /// loading fails.
     pub async fn open_with_gc_interval(
         cache_dir: impl AsRef<Path>,
         gc_interval: Duration,
@@ -286,8 +277,6 @@ impl ContentStore {
         std::fs::create_dir_all(dir)?;
         std::fs::create_dir_all(files_dir)?;
         let files = Arc::new(FileArea::open(files_dir, default_budget(files_dir))?);
-        let gc_ready = Arc::new(AtomicBool::new(false));
-        let ready = Arc::clone(&gc_ready);
         let gc_live = Arc::new(RwLock::new(None));
         let live = Arc::clone(&gc_live);
         let mut options = iroh_blobs::store::fs::options::Options::new(dir);
@@ -298,9 +287,6 @@ impl ContentStore {
             // anything until an exact authorized live set is installed.
             interval: gc_interval.min(Duration::from_millis(50)),
             add_protected: Some(Arc::new(move |live_set: &mut HashSet<Hash>| {
-                if !ready.load(Ordering::Acquire) {
-                    return Box::pin(async { ProtectOutcome::Abort });
-                }
                 let snapshot = live
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -319,14 +305,9 @@ impl ContentStore {
         let store = runtime
             .handle()
             .ok_or_else(|| anyhow::anyhow!("content store runtime is gone"))?
-            .spawn(async move {
-                let store = FsStore::load_with_opts(root.join("blobs.db"), options).await?;
-                migrate_legacy_auto_tags(&store, &root).await?;
-                Ok::<_, anyhow::Error>(store)
-            })
+            .spawn(async move { FsStore::load_with_opts(root.join("blobs.db"), options).await })
             .await
             .map_err(|error| anyhow::anyhow!("opening the content store failed: {error}"))??;
-        gc_ready.store(true, Ordering::Release);
         Ok(Self {
             backend: Backend::Fs(store),
             cache: Cache::new(2048),
@@ -1096,60 +1077,6 @@ fn owned_blob_tag(hash: Hash, format: BlobFormat) -> String {
     format!("{OWNED_BLOB_TAG_PREFIX}{format}/{hash}")
 }
 
-/// Upgrade tags created by the prototype's default `add_bytes().await`
-/// behavior. Promotion is ordered so a crash can only leave both tags, never
-/// an unprotected blob: install the deterministic owned tag first, then remove
-/// the legacy tag. The durable marker is written only after the entire scan.
-/// Any corrupt marker or migration error aborts store startup.
-async fn migrate_legacy_auto_tags(store: &FsStore, cache_dir: &Path) -> Result<()> {
-    let marker = cache_dir.join(OWNED_TAG_MIGRATION_MARKER);
-    match std::fs::read(&marker) {
-        // A valid marker records the understood schema, but we still rescan.
-        // That makes startup self-healing if an older binary wrote another
-        // `auto-*` tag after the first migration.
-        Ok(contents) if contents == OWNED_TAG_MIGRATION_MARKER_CONTENTS => {}
-        Ok(_) => anyhow::bail!(
-            "invalid owned blob tag migration marker at {}",
-            marker.display()
-        ),
-        Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-
-    // Collect before mutating so the result does not depend on whether the
-    // backend's range stream is a snapshot or a live cursor.
-    let mut stream = store.tags().list_prefix("auto-").await?;
-    let mut legacy = Vec::new();
-    while let Some(info) = stream.next().await {
-        legacy.push(info?);
-    }
-    drop(stream);
-
-    let mut protected = Vec::with_capacity(legacy.len());
-    for info in &legacy {
-        let value = iroh_blobs::HashAndFormat {
-            hash: info.hash,
-            format: info.format,
-        };
-        let temporary = store.tags().temp_tag(value).await?;
-        store
-            .tags()
-            .set(owned_blob_tag(info.hash, info.format), value)
-            .await?;
-        protected.push(temporary);
-    }
-    // Establish all owned tags durably before removing a single legacy tag.
-    store.sync_db().await?;
-    for info in legacy {
-        store.tags().delete(info.name).await?;
-    }
-    store.sync_db().await?;
-    drop(protected);
-
-    atomic_file::write(&marker, OWNED_TAG_MIGRATION_MARKER_CONTENTS)?;
-    Ok(())
-}
-
 /// How long an eviction waits for the blob store's GC to delete the selected
 /// blobs. The wait ends as soon as the next pass removes them; a pass over a
 /// large store on a loaded disk can take seconds, so this bound only catches
@@ -1288,77 +1215,6 @@ mod tests {
             assert!(reopened.local(selected).await.is_none());
             reopened.store().shutdown().await.unwrap();
         }
-        // Phase `persistent_store_migrates_auto_tags_and_survives_restart`.
-        {
-            let temp = tempfile::tempdir().unwrap();
-            let bytes = Bytes::from_static(b"legacy persistent blob");
-            let legacy_hash = {
-                let legacy = FsStore::load(temp.path()).await.unwrap();
-                let tag = legacy.blobs().add_bytes(bytes.clone()).await.unwrap();
-                assert!(tag.name.as_ref().starts_with(b"auto-"));
-                let hash = tag.hash;
-                legacy.shutdown().await.unwrap();
-                drop(legacy);
-                hash
-            };
-
-            {
-                let store = ContentStore::open(temp.path()).await.unwrap();
-                assert_eq!(store.local(legacy_hash).await, Some(bytes.clone()));
-                assert_eq!(
-                    tag_names(store.store()).await,
-                    vec![owned_blob_tag(legacy_hash, BlobFormat::Raw).into_bytes()]
-                );
-                assert_eq!(
-                    std::fs::read(temp.path().join(OWNED_TAG_MIGRATION_MARKER)).unwrap(),
-                    OWNED_TAG_MIGRATION_MARKER_CONTENTS
-                );
-                store.store().shutdown().await.unwrap();
-            }
-
-            // A valid marker is not permission to trust the tag set blindly. If an
-            // older binary writes another auto tag, the next startup rescans and
-            // converges it as well.
-            let late_bytes = Bytes::from_static(b"written by an older binary");
-            let late_hash = {
-                let legacy = FsStore::load(temp.path()).await.unwrap();
-                let tag = legacy.blobs().add_bytes(late_bytes.clone()).await.unwrap();
-                assert!(tag.name.as_ref().starts_with(b"auto-"));
-                legacy.shutdown().await.unwrap();
-                tag.hash
-            };
-
-            let reopened = ContentStore::open(temp.path()).await.unwrap();
-            assert_eq!(reopened.local(legacy_hash).await, Some(bytes));
-            assert_eq!(reopened.local(late_hash).await, Some(late_bytes));
-            let mut names = tag_names(reopened.store()).await;
-            names.sort();
-            let mut expected = vec![
-                owned_blob_tag(legacy_hash, BlobFormat::Raw).into_bytes(),
-                owned_blob_tag(late_hash, BlobFormat::Raw).into_bytes(),
-            ];
-            expected.sort();
-            assert_eq!(names, expected);
-        }
-        // Phase `corrupt_owned_tag_migration_marker_fails_closed`.
-        {
-            let temp = tempfile::tempdir().unwrap();
-            atomic_file::write(
-                &temp.path().join(OWNED_TAG_MIGRATION_MARKER),
-                b"unknown migration state\n",
-            )
-            .unwrap();
-
-            let error = ContentStore::open(temp.path())
-                .await
-                .err()
-                .expect("corrupt migration marker must reject startup");
-            assert!(
-                error
-                    .to_string()
-                    .contains("invalid owned blob tag migration marker")
-            );
-        }
     }
 
     #[tokio::test]
@@ -1402,10 +1258,13 @@ mod tests {
         {
             let store = ContentStore::memory();
             let missing = iroh_blobs::Hash::new(b"not persisted");
-            let manifest = crate::content::Manifest::legacy(vec![crate::content::ChunkRef {
-                hash: *missing.as_bytes(),
-                len: 13,
-            }]);
+            let manifest = crate::content::Manifest::new(
+                crate::content::ChunkTier::Small,
+                vec![crate::content::ChunkRef {
+                    hash: *missing.as_bytes(),
+                    len: 13,
+                }],
+            );
             let manifest_hash = store.ingest(Bytes::from(manifest.encode())).await.unwrap();
             let revision = collab_types::ContentRevisionV1 {
                 schema_version: collab_types::CONTENT_REVISION_VERSION,
@@ -1864,16 +1723,19 @@ mod tests {
             let first_only_chunk = store.ingest(Bytes::from_static(b"first")).await.unwrap();
             let second_only_chunk = store.ingest(Bytes::from_static(b"second")).await.unwrap();
             let manifest = |unique: Hash| {
-                crate::content::Manifest::legacy(vec![
-                    crate::content::ChunkRef {
-                        hash: *shared_chunk.as_bytes(),
-                        len: 6,
-                    },
-                    crate::content::ChunkRef {
-                        hash: *unique.as_bytes(),
-                        len: 6,
-                    },
-                ])
+                crate::content::Manifest::new(
+                    crate::content::ChunkTier::Small,
+                    vec![
+                        crate::content::ChunkRef {
+                            hash: *shared_chunk.as_bytes(),
+                            len: 6,
+                        },
+                        crate::content::ChunkRef {
+                            hash: *unique.as_bytes(),
+                            len: 6,
+                        },
+                    ],
+                )
             };
             let first_manifest = store
                 .ingest(Bytes::from(manifest(first_only_chunk).encode()))
