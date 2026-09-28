@@ -307,6 +307,31 @@ Release installer media contain no login account and mask `sshd`; joining a
 network must not expose a repository-known maintenance credential. The
 explicit `--dev-login` build is for isolated local diagnostics only.
 
+To prove the SELinux handoff in a disposable VM, build a diagnostic medium
+from the same source and run the full graphical installer/first-boot cycle:
+
+```bash
+export TILO_INSTALLER_OUTPUT="$PWD/os/output/installer-selinux-proof"
+export TILO_INSTALLER_DEV_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+./os/dev/build-custom-installer.sh --dev-login
+./os/dev/test-installer-cycle.sh \
+  "$TILO_INSTALLER_OUTPUT/qcow2/disk.qcow2" \
+  --build-profile-encoder --selinux-audit-ssh \
+  --out "$PWD/os/output/installer-selinux-proof-result"
+unset TILO_INSTALLER_DEV_PASSWORD
+```
+
+`--selinux-audit-ssh` requires `sshpass` on the VM host and `auditctl` and
+`ausearch` in the guest. Guest inspection runs through
+`os/dev/installer-selinux-audit.sh` so the release-gate cycle script stays free
+of guest-shell channels. It fails unless the installer is enforcing, its
+live-only policy is loaded, kernel audit is enabled with zero lost records,
+and both audit records and the system journal contain no AVC or USER_AVC. The
+existing cycle then proves the Finish screen, encrypted target boot, first
+login, and a second cold boot. The diagnostic medium adds SSH and a temporary
+wheel account, so this result complements the release workflow's graphical
+cycle on the SSH-disabled published medium; it does not replace that gate.
+
 The installed system's update origin defaults to
 `registry.tilo.so/tilo/tilo:latest`. `TILO_TARGET_IMGREF` may select a tag or digest
 in that same signature-required repository; the backend rejects other origins.
