@@ -103,6 +103,8 @@ fn open_state(app_id: &'static str) -> (ui::State, ui::persist::DocWriter) {
 extern crate runtime_dylib;
 
 pub fn main() {
+    // The opener imports a legacy address-book file once. The ResourceApp
+    // shell does not, so an existing book would open empty.
     ui::launch::run_or_exit(&launch_spec());
 }
 

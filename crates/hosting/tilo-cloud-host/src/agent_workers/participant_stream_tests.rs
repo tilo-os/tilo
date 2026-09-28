@@ -19,8 +19,8 @@ fn writer_texts(owner: &RuntimeOwner) -> Vec<String> {
         .document(WRITER, RECORD)
         .unwrap();
     let document = ui::automerge::AutoCommit::load(&bytes).unwrap();
-    let model = qdoc::model::open(&document, &ui::automerge::ROOT).unwrap();
-    qdoc::model::materialize(&document, &model)
+    let model = tilo_doc::model::open(&document, &ui::automerge::ROOT).unwrap();
+    tilo_doc::model::materialize(&document, &model)
         .blocks
         .into_iter()
         .map(|block| block.text)
@@ -145,8 +145,8 @@ async fn streamed_type_text_continues_the_appended_paragraph() {
             .document(WRITER, RECORD)
             .unwrap();
         let document = ui::automerge::AutoCommit::load(&bytes).unwrap();
-        let model = qdoc::model::open(&document, &ui::automerge::ROOT).unwrap();
-        qdoc::model::blocks_in_order(&document, &model)
+        let model = tilo_doc::model::open(&document, &ui::automerge::ROOT).unwrap();
+        tilo_doc::model::blocks_in_order(&document, &model)
             .pop()
             .unwrap()
     };

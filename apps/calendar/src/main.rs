@@ -153,6 +153,8 @@ extern crate runtime_dylib;
 /// PNG), or when the arguments are invalid — including a malformed shot
 /// option, which is never silently ignored.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // This spec imports an older calendar file once. The framework shell
+    // opens an empty record and would leave that history behind.
     ui::launch::run(&launch_spec())?;
     Ok(())
 }

@@ -45,8 +45,7 @@ use uuid::Uuid;
 
 use tilo_actions::{
     Action, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
-    ResultSpec,
+    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
 };
 
 use crate::doc::ApiDoc;
@@ -796,8 +795,9 @@ pub(crate) fn variable_resource(eid: Uuid, variable_id: &str, key: &str) -> Reso
     ))
 }
 
-impl ResourceProvider for crate::app::ApiTesterApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::ApiTesterApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         let mut roots = provide_root_resources(doc);
         if let Some(error) = self.search_error_message()
             && let Some(root) = roots.first_mut()
@@ -811,7 +811,7 @@ impl ResourceProvider for crate::app::ApiTesterApp {
         roots
     }
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
         self.resource_from_catalog(id)
     }
 }
@@ -896,7 +896,7 @@ mod tests {
             let environments = ApiDoc::environments(&doc, &ROOT);
             app.refresh_search_records(&collections, &environments);
             let variable = ApiDoc::environments(&doc, &ROOT)[0].variables[0].id.clone();
-            let root = <crate::app::ApiTesterApp as ResourceProvider>::resources(&app, &doc);
+            let root = crate::app::ApiTesterApp::publish_resources(&app, &doc);
             assert_eq!(root.len(), 1, "directory is bounded to the workspace root");
             assert!(
                 root[0]
@@ -922,9 +922,8 @@ mod tests {
                     &["rename", "set-value", "delete"][..],
                 ),
             ] {
-                let exact =
-                    <crate::app::ApiTesterApp as ResourceProvider>::resource(&app, &doc, &id)
-                        .expect("stable id resolves precisely on demand");
+                let exact = crate::app::ApiTesterApp::publish_resource(&app, &doc, &id)
+                    .expect("stable id resolves precisely on demand");
                 assert_eq!(exact.id.0, id);
                 for action in actions {
                     assert!(
@@ -947,8 +946,7 @@ mod tests {
             duplicate.name = "Conflicting duplicate".to_string();
             app.refresh_search_records(&[collection, duplicate], &[]);
 
-            let roots =
-                <crate::app::ApiTesterApp as ResourceProvider>::resources(&app, &AutoCommit::new());
+            let roots = crate::app::ApiTesterApp::publish_resources(&app, &AutoCommit::new());
             assert!(
                 roots[0]
                     .children
@@ -1027,9 +1025,9 @@ mod tests {
                 ));
             }
         }
-        let mut resources = <crate::app::ApiTesterApp as ResourceProvider>::resources(&app, doc);
+        let mut resources = crate::app::ApiTesterApp::publish_resources(&app, doc);
         resources.extend(ids.iter().map(|id| {
-            <crate::app::ApiTesterApp as ResourceProvider>::resource(&app, doc, id)
+            crate::app::ApiTesterApp::publish_resource(&app, doc, id)
                 .expect("a seeded record resolves")
         }));
         resources

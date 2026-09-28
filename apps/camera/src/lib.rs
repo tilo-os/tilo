@@ -42,6 +42,7 @@ pub mod library;
 pub mod media;
 pub mod model;
 pub mod paint;
+pub mod resource;
 pub mod scan;
 pub mod search;
 pub mod video;
@@ -65,3 +66,4 @@ pub fn app_root() -> Box<dyn Widget> {
 pub fn shots_root() -> Box<dyn Widget> {
     Box::new(CameraApp::sample())
 }
+pub use resource::{Camera, CameraShell, CameraState, launch_spec, standalone_launch};

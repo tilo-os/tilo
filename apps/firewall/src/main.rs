@@ -95,20 +95,39 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
+fn wants_standalone() -> bool {
+    std::env::args().any(|arg| {
+        [
+            "--shots",
+            "--responsive-matrix",
+            "--native-audit",
+            "--headless",
+        ]
+        .iter()
+        .any(|mode| arg == *mode || arg.starts_with(&format!("{mode}=")))
+    })
+}
+
+fn shot_spec() -> LaunchSpec {
+    LaunchSpec::new("so.tilo.firewall", firewall::app_root)
+        .shot_root(shot_root)
+        .scenarios(&[
+            "default",
+            "empty",
+            "error",
+            "confirmation",
+            "active-change",
+            "service-error",
+            "services",
+            "selected",
+        ])
+        .configure_app(|app| firewall::actions::register(app.action_registry_mut()))
+}
+
 pub fn main() {
-    ui::launch::run_or_exit(
-        &LaunchSpec::new("so.tilo.firewall", firewall::app_root)
-            .shot_root(shot_root)
-            .scenarios(&[
-                "default",
-                "empty",
-                "error",
-                "confirmation",
-                "active-change",
-                "service-error",
-                "services",
-                "selected",
-            ])
-            .configure_app(|app| firewall::actions::register(app.action_registry_mut())),
-    );
+    if wants_standalone() {
+        ui::launch::run_or_exit(&shot_spec());
+        return;
+    }
+    ui::launch::run_or_exit(&firewall::launch_spec());
 }

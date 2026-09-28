@@ -44,7 +44,7 @@ ebook = { path = "../../../apps/ebook", optional = true }
 taffy.workspace = true
 word-processor = { path = "../../../apps/word-processor", optional = true }
 chat = { path = "../../../apps/chat", default-features = false, optional = true }
-qdoc = { path = "../../doc/qdoc" }
+tilo-doc = { path = "../../doc/tilo-doc" }
 # Content hashes for the page-delivered assets it admits.
 tilo-content = { path = "../../system/content", default-features = false }
 tilo-actions = { path = "../../collab/actions" }

@@ -203,6 +203,10 @@ pub struct MergeView {
     /// merged buffer (a projection of the external inputs, not a replayable
     /// action) and clears any stale per-hunk resolutions.
     pending_seed: bool,
+    /// When the framework hosts this view, seed writes are queued here instead
+    /// of being written into the document directly.
+    hosted: bool,
+    seed_request: Option<String>,
     expected_content: Option<crate::doc::AuthoredSnapshot>,
     merged_output: String,
     /// A conflict resolution the user just triggered via a chip, waiting to be
@@ -240,6 +244,8 @@ impl MergeView {
             cursor: Point::ZERO,
             dirty: true,
             pending_seed: false,
+            hosted: false,
+            seed_request: None,
             expected_content: None,
             merged_output: String::new(),
             pending_action: None,
@@ -255,6 +261,22 @@ impl MergeView {
             .as_ref()
             .is_some_and(|expected| *expected == crate::doc::authored_snapshot(doc))
     }
+    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
+        self.hosted = hosted;
+    }
+
+    /// The provisional buffer a hosted view wants written as [`DiffmergeAction::SeedMerge`].
+    pub(crate) fn take_seed_request(&mut self) -> Option<String> {
+        self.seed_request.take()
+    }
+
+    /// Show the merged buffer the framework resource already holds.
+    pub(crate) fn adopt_merged(&mut self, merged: &str) {
+        if self.merged_output != merged {
+            self.merged_output = merged.to_string();
+        }
+    }
+
     pub(crate) fn acknowledge_content(&mut self, doc: &AutoCommit) {
         self.expected_content = Some(crate::doc::authored_snapshot(doc));
         self.merged_output = MergeDoc::merged_text(doc);
@@ -1035,10 +1057,20 @@ impl MergeView {
 
 impl Widget for MergeView {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
-        if self.pending_seed {
-            // Fresh inputs: seed the provisional merged output (a projection of
-            // the external inputs, not a replayable action) and drop any stale
-            // per-hunk resolutions whose indices no longer correspond.
+        if self.hosted {
+            if self.pending_seed {
+                self.seed_request = Some(self.model.merged_text());
+                self.pending_seed = false;
+            } else {
+                self.reconcile_content(state);
+                if !MergeDoc::has_merged(state) {
+                    self.seed_request = Some(self.model.merged_text());
+                }
+            }
+        } else if self.pending_seed {
+            // Fresh inputs: seed the provisional merged output and drop any
+            // stale per-hunk resolutions whose indices no longer correspond.
+            // The hosted path queues this as `SeedMerge` instead.
             MergeDoc::clear_resolutions(state);
             MergeDoc::set_merged(state, &self.model.merged_text());
             self.pending_seed = false;
@@ -1046,8 +1078,7 @@ impl Widget for MergeView {
         } else {
             self.reconcile_content(state);
         }
-        // Seed once for a late joiner that has no buffer yet.
-        if !MergeDoc::has_merged(state) {
+        if !self.hosted && !MergeDoc::has_merged(state) {
             MergeDoc::set_merged(state, &self.model.merged_text());
         }
         let merged = MergeDoc::merged_text_obj(state);

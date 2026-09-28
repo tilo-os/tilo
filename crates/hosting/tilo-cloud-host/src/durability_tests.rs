@@ -270,8 +270,8 @@ pub(super) fn document_message(store: &Store, device: &SigningKey) -> NeighbourM
     doc.set_actor(automerge::ActorId::from(
         device.verifying_key().to_bytes().to_vec(),
     ));
-    let model = qdoc::model::open(&doc, &automerge::ROOT).unwrap();
-    let block = qdoc::model::blocks_in_order(&doc, &model)[0].clone();
+    let model = tilo_doc::model::open(&doc, &automerge::ROOT).unwrap();
+    let block = tilo_doc::model::blocks_in_order(&doc, &model)[0].clone();
     word_processor::actions::RichTextAction::SpliceText {
         region: word_processor::actions::RegionKind::Body,
         block,

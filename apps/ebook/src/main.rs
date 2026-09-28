@@ -42,6 +42,10 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 extern crate runtime_dylib;
 
 pub fn main() {
+    if !ebook::standalone_launch() {
+        ui::framework::run::<ebook::EbookShell>();
+        return;
+    }
     ui::launch::run_or_exit(
         &LaunchSpec::new_with_args("so.tilo.ebook", live_root)
             .max_positionals(1)

@@ -1226,6 +1226,49 @@ impl FrameHarness {
         &mut self.action_registry
     }
 
+    /// Undo through the component that owns the action decoders. The harness
+    /// registry is the fallback for a widget that registered actions on the
+    /// driver itself.
+    fn history_through_component(
+        root: &mut dyn crate::widget::Widget,
+        doc: &mut automerge::AutoCommit,
+        binding: &crate::bound_dispatch::CallbackBinding,
+        request: crate::undo::UndoRequest,
+        fallback: &tilo_actions::ActionRegistry,
+    ) -> bool {
+        let mut acted = None;
+        let mut visit = |found: &crate::bound_dispatch::CallbackBinding,
+                         _: &mut dyn crate::widget::AppWidget,
+                         registry: &tilo_actions::ActionRegistry| {
+            if found.same_component(binding) {
+                acted = Some(
+                    found
+                        .history_request_with_registry(doc, request, Some(registry))
+                        .ok()
+                        .flatten()
+                        .is_some(),
+                );
+            }
+            None
+        };
+        let visited = root.visit_components(&mut crate::bound_dispatch::ComponentRequest {
+            target: Some(binding),
+            found: false,
+            visit: &mut visit,
+        });
+        if let Some(acted) = acted {
+            return acted;
+        }
+        if visited.is_err() {
+            return false;
+        }
+        binding
+            .history_request_with_registry(doc, request, Some(fallback))
+            .ok()
+            .flatten()
+            .is_some()
+    }
+
     /// Undo the last action, the way the live host does — through
     /// [`State::undo_as`](crate::state::State::undo_as) with this driver's
     /// author. Returns whether anything was undone.
@@ -1252,11 +1295,13 @@ impl FrameHarness {
             .and_then(|node| self.bindings.binding_for(node))
             .or_else(|| self.root.callback_binding())
         {
-            binding
-                .history_request(&mut self.state.doc, crate::undo::UndoRequest::Undo)
-                .ok()
-                .flatten()
-                .is_some()
+            Self::history_through_component(
+                &mut *self.root,
+                &mut self.state.doc,
+                &binding,
+                crate::undo::UndoRequest::Undo,
+                &self.action_registry,
+            )
         } else if let Some(owner) = self.focused.and_then(|node| self.bindings.legacy_for(node)) {
             crate::bound_dispatch::legacy_history_request(
                 &owner,
@@ -1296,11 +1341,13 @@ impl FrameHarness {
             .and_then(|node| self.bindings.binding_for(node))
             .or_else(|| self.root.callback_binding())
         {
-            binding
-                .history_request(&mut self.state.doc, crate::undo::UndoRequest::Redo)
-                .ok()
-                .flatten()
-                .is_some()
+            Self::history_through_component(
+                &mut *self.root,
+                &mut self.state.doc,
+                &binding,
+                crate::undo::UndoRequest::Redo,
+                &self.action_registry,
+            )
         } else if let Some(owner) = self.focused.and_then(|node| self.bindings.legacy_for(node)) {
             crate::bound_dispatch::legacy_history_request(
                 &owner,
@@ -1370,11 +1417,13 @@ impl FrameHarness {
         let mut acted = false;
         for (binding, legacy, req) in requests {
             acted |= if let Some(binding) = binding {
-                binding
-                    .history_request(&mut self.state.doc, req)
-                    .ok()
-                    .flatten()
-                    .is_some()
+                Self::history_through_component(
+                    &mut *self.root,
+                    &mut self.state.doc,
+                    &binding,
+                    req,
+                    &self.action_registry,
+                )
             } else if let Some(owner) = legacy {
                 crate::bound_dispatch::legacy_history_request(
                     &owner,

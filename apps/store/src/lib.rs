@@ -71,6 +71,7 @@ pub mod live;
 pub mod model;
 pub mod moderation_client;
 pub mod registry_client;
+pub mod resource;
 pub mod search_provider;
 pub mod shots;
 pub mod sources;
@@ -89,3 +90,4 @@ pub use model::{
 pub fn app_root() -> Box<dyn ui::widget::Widget> {
     live::app_root()
 }
+pub use resource::{Store, StoreShell};

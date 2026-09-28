@@ -21,14 +21,14 @@ pub type Addr = (Col, Row);
 /// `0 -> "A"`, `25 -> "Z"`, `26 -> "AA"`, `701 -> "ZZ"`. The letters are
 /// qdoc's, the same the `.xlsx`/`.ods` codecs write.
 pub fn col_to_letters(col: Col) -> String {
-    qdoc::sheet::a1::index_to_col(col.saturating_add(1))
+    tilo_doc::sheet::a1::index_to_col(col.saturating_add(1))
 }
 
 /// Parse spreadsheet column letters (case-insensitive) into a zero-based
 /// index. Returns `None` for empty or non-alphabetic input, and for a run of
 /// more than three letters (`XFD`, the last column, has three).
 pub fn letters_to_col(s: &str) -> Option<Col> {
-    qdoc::sheet::a1::col_to_index(s)?.checked_sub(1)
+    tilo_doc::sheet::a1::col_to_index(s)?.checked_sub(1)
 }
 
 /// Format an address as an A1 string: `(0, 0) -> "A1"`.

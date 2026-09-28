@@ -40,7 +40,7 @@ use uuid::Uuid;
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
     ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResourceProvider, ResultSpec, RetryPolicy,
+    Resource, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::ContactsDoc;
@@ -710,6 +710,9 @@ pub enum ContactsAction {
         source_id: String,
         patch: Box<ContactPatch>,
     },
+    /// Give legacy list rows stable ids. Idempotent: rows that already have ids
+    /// are left alone.
+    MigrateLegacyRows,
 }
 
 /// Durable, browseable history metadata for an address-book mutation.
@@ -741,6 +744,9 @@ pub fn history_context(action: &ContactsAction) -> tilo_actions::ActionContext {
             survivor_id.as_str(),
             "Contact".into(),
         ),
+        ContactsAction::MigrateLegacyRows => {
+            ("Repair address book rows", "book", "Contacts".into())
+        }
     };
     context.action_label = label.to_string();
     context.resource = Some(tilo_actions::ActionResource {
@@ -789,6 +795,7 @@ impl Action for ContactsAction {
                 source_id,
                 patch,
             } => apply_merge(doc, survivor_id, source_id, patch)?,
+            ContactsAction::MigrateLegacyRows => ContactsDoc::migrate_legacy_rows(doc),
         }
         Ok(())
     }
@@ -1862,12 +1869,13 @@ pub fn resolve_resource(ctx: &ContactsResourceCtx, id: &str) -> Option<Resource>
         .map(|contact| contact_resource(contact, ctx.export_busy))
 }
 
-impl ResourceProvider for crate::app::ContactsApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::ContactsApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.contacts_resource_ctx(), doc)
     }
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
         self.exact_contacts_resource_ctx(id)
             .and_then(|ctx| resolve_resource(&ctx, id))
     }

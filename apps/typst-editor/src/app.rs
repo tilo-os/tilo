@@ -326,6 +326,9 @@ pub struct TypstApp {
     status_hover: (bool, bool),
     /// `--shots` forces both bubbles fully visible so a still frame captures them.
     shots_status: bool,
+    /// Framework-hosted surfaces leave the palette tree to
+    /// `tilo_resource::publish`; standalone keeps the contextual builder.
+    framework_hosted: bool,
 }
 
 impl TypstApp {
@@ -429,7 +432,14 @@ impl TypstApp {
             last_right_label: String::new(),
             status_hover: (false, false),
             shots_status: false,
+            framework_hosted: false,
         }
+    }
+
+    /// Mark this editor as a framework-hosted surface so
+    /// [`Widget::resources`] defers to `tilo_resource::publish`.
+    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
+        self.framework_hosted = hosted;
     }
 
     /// Screenshot-only: pre-arrange a demo instance into a named state so the
@@ -1949,6 +1959,9 @@ impl Widget for TypstApp {
     }
 
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.framework_hosted {
+            return Vec::new();
+        }
         crate::actions::resources(doc)
     }
 

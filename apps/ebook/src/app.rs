@@ -1173,7 +1173,7 @@ pub struct BooksApp {
     /// Framework-owned action dispatch: each on-page affordance dispatches
     /// its [`EbookAction`](crate::actions::EbookAction) through this so it
     /// replays byte-identically on peers, exactly as the Ctrl+K palette does.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 }
 
 impl BooksApp {
@@ -1372,7 +1372,7 @@ impl BooksApp {
             layout: None,
             cover_cache: HashMap::new(),
             hits: Vec::new(),
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
         }
     }
 
@@ -3869,6 +3869,46 @@ impl BooksApp {
         );
     }
 
+    /// Show the shelf settings and drop books the shared library no longer lists.
+    /// An empty projection does not wipe a shelf that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::EbookState) {
+        if state.settings != self.settings {
+            self.settings = state.settings.clone();
+            self.layout = None;
+        }
+        self.library_prefs = state.prefs.clone();
+        if state.entries.is_empty() {
+            return;
+        }
+        let keep: std::collections::HashSet<&str> = state
+            .entries
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect();
+        let before = self.library.len();
+        std::sync::Arc::make_mut(&mut self.library).retain(|book| keep.contains(book.id.as_str()));
+        if self.library.len() == before {
+            return;
+        }
+        self.library_paths
+            .retain(|id, _| keep.contains(id.as_str()));
+        self.watched_sources
+            .retain(|_, id| keep.contains(id.as_str()));
+        self.book_idx = self.book_idx.min(self.library.len().saturating_sub(1));
+        if self.library.is_empty() {
+            self.view = View::Library;
+        }
+        self.layout = None;
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Ebook>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
     /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-page
     /// affordance dispatched: a control and its Ctrl+K entry must build the
     /// identical action.
@@ -4958,9 +4998,9 @@ impl Widget for BooksApp {
 
     /// Publish the open book + its annotations so the host's Ctrl+K action
     /// palette scopes to them, via [`crate::actions`]'s
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl.
+    /// [``]() impl.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        Self::publish_resources(self, doc)
     }
 
     fn action_directory_resource_page(
@@ -4983,7 +5023,7 @@ impl Widget for BooksApp {
         let resources = roots
             .get(offset..next_offset)?
             .iter()
-            .filter_map(|id| <Self as tilo_actions::ResourceProvider>::resource(self, doc, id))
+            .filter_map(|id| Self::publish_resource(self, doc, id))
             .collect();
         Some(ui::widget::ActionDirectoryResourcePage {
             resources,
@@ -5001,7 +5041,7 @@ impl Widget for BooksApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        Self::publish_resource(self, doc, id)
     }
 
     /// Hand the host the heads captured before an on-page affordance
@@ -5158,31 +5198,21 @@ impl Widget for BooksApp {
             self.all_annotations = Arc::new(Vec::new());
         }
         self.persist_progress(doc);
-        let mut live_actions = vec![<Self as tilo_actions::ResourceProvider>::resource(
-            self,
-            doc,
-            "ebook.settings",
-        )];
+        let mut live_actions = vec![Self::publish_resource(self, doc, "ebook.settings")];
         if let Some(book) = self.open_book() {
-            live_actions.push(<Self as tilo_actions::ResourceProvider>::resource(
+            live_actions.push(Self::publish_resource(
                 self,
                 doc,
                 &format!("ebook.book:{}", book.id),
             ));
         }
-        live_actions.extend(self.fonts.iter().map(|font| {
-            <Self as tilo_actions::ResourceProvider>::resource(
-                self,
-                doc,
-                &format!("ebook.font:{}", font.id),
-            )
-        }));
+        live_actions.extend(
+            self.fonts
+                .iter()
+                .map(|font| Self::publish_resource(self, doc, &format!("ebook.font:{}", font.id))),
+        );
         live_actions.extend(self.schemes.iter().map(|scheme| {
-            <Self as tilo_actions::ResourceProvider>::resource(
-                self,
-                doc,
-                &format!("ebook.scheme:{}", scheme.id),
-            )
+            Self::publish_resource(self, doc, &format!("ebook.scheme:{}", scheme.id))
         }));
         let live_actions = live_actions.into_iter().flatten().collect::<Vec<_>>();
         let mut action_hasher = std::collections::hash_map::DefaultHasher::new();

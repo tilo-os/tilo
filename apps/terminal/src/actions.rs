@@ -399,13 +399,16 @@ mod tests {
             assert_eq!(resources.len(), 1, "one terminal-session root");
             let terminal = &resources[0];
             assert_eq!(terminal.kind, "terminal.session");
-            let ids: Vec<_> = terminal
+            // publish() always offers apply/group for document session actions;
+            // PTY controls remain Effects on the same resource.
+            let effect_ids: Vec<_> = terminal
                 .actions
                 .iter()
+                .filter(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
                 .map(|action| action.id.as_str())
                 .collect();
             assert_eq!(
-                ids,
+                effect_ids,
                 vec![
                     "send",
                     "run",
@@ -415,29 +418,29 @@ mod tests {
                     "paste-primary"
                 ]
             );
-            assert!(
-                terminal
-                    .actions
-                    .iter()
-                    .all(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
-            );
+            assert!(terminal.actions.iter().any(|action| action.id == "apply"
+                && action.kind == ui::tilo_actions::OperationKind::Document));
             assert!(
                 widget.take_committed_action().is_none(),
                 "no action is dispatched, so no action-host undo boundary is recorded",
             );
             assert!(
-                terminal.actions.iter().all(|action| {
-                    matches!(
-                        action.contract.confirmation,
-                        ui::tilo_actions::ConfirmationPolicy::Confirm
-                    ) && matches!(
-                        action.contract.risk,
-                        ui::tilo_actions::RiskLevel::Privileged
-                    ) && matches!(
-                        action.contract.retry,
-                        ui::tilo_actions::RetryPolicy::AtMostOnce
-                    )
-                }),
+                terminal
+                    .actions
+                    .iter()
+                    .filter(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
+                    .all(|action| {
+                        matches!(
+                            action.contract.confirmation,
+                            ui::tilo_actions::ConfirmationPolicy::Confirm
+                        ) && matches!(
+                            action.contract.risk,
+                            ui::tilo_actions::RiskLevel::Privileged
+                        ) && matches!(
+                            action.contract.retry,
+                            ui::tilo_actions::RetryPolicy::AtMostOnce
+                        )
+                    }),
                 "palette and agents must explicitly confirm every operation that can affect a live shell"
             );
             let transcript = terminal
@@ -666,12 +669,16 @@ mod tests {
                 Widget::resources(&widget, &doc)
                     .into_iter()
                     .all(|resource| {
-                        resource.actions.iter().all(|action| {
-                            matches!(
-                                action.contract.availability,
-                                ui::tilo_actions::Availability::Unavailable { .. }
-                            )
-                        })
+                        resource
+                            .actions
+                            .iter()
+                            .filter(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
+                            .all(|action| {
+                                matches!(
+                                    action.contract.availability,
+                                    ui::tilo_actions::Availability::Unavailable { .. }
+                                )
+                            })
                     })
             );
         }

@@ -1165,7 +1165,7 @@ fn viewer_copy(value: &str, max_chars: usize) -> String {
 )]
 pub struct PhotosApp {
     /// Canonical dispatcher shared by toolbar edits and exported document actions.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// Where imported originals are kept and photographs are read from. The
     /// document names content by hash; this handle resolves it.
     content: ContentStore,
@@ -2058,7 +2058,7 @@ impl PhotosApp {
         }
         let initial_analysis_capability = Self::discover_library_analysis_capability().ok();
         Self {
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             content,
             #[cfg(test)]
             last_library_action: None,
@@ -3678,6 +3678,27 @@ impl PhotosApp {
             ),
         );
         self.notice = None;
+    }
+
+    /// Show the library, open image, and edits the framework resource already holds.
+    /// An empty projection does not wipe a library that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::PhotosState) {
+        if state.open.is_none() && state.library.photos.is_empty() {
+            return;
+        }
+        self.observed_content = Some(LiveContent {
+            image: state.open.clone(),
+            edits: state.edits.clone(),
+            library: state.library.clone(),
+        });
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Photos>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     /// Every card interaction routes through the same typed, replayable
@@ -16515,8 +16536,7 @@ impl Widget for PhotosApp {
     /// addresses. Without this the tree existed but only a caller already
     /// inside this process could reach it.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        use tilo_actions::ResourceProvider;
-        let mut resources = crate::actions::PhotosResources.resources(doc);
+        let mut resources = crate::actions::PhotosResources.publish_resources(doc);
         resources.extend(
             self.retained_buttons()
                 .into_iter()
@@ -16529,7 +16549,6 @@ impl Widget for PhotosApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        use tilo_actions::ResourceProvider;
         if id == "photos.search-status" {
             return self
                 .search_refresh_error
@@ -16544,7 +16563,7 @@ impl Widget for PhotosApp {
                     .flat_map(|button| button.resources(doc))
                     .find(|resource| resource.id.as_str() == id)
             })
-            .or_else(|| crate::actions::PhotosResources.resource(doc, id))
+            .or_else(|| crate::actions::PhotosResources.publish_resource(doc, id))
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

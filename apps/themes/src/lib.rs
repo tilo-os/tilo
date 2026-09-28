@@ -41,6 +41,7 @@ pub mod draw;
 pub mod gallery;
 pub mod model;
 pub mod preview;
+pub mod resource;
 pub mod store;
 pub mod widgets;
 
@@ -77,3 +78,4 @@ pub fn app_root_for_shot(width: u32) -> Box<dyn Widget> {
 mod framework_history_tests;
 
 pub mod framework_history;
+pub use resource::{Themes, ThemesShell};

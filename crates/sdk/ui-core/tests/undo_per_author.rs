@@ -165,7 +165,7 @@ fn baseline_moves_past_uncommitted_and_empty_changes() {
         let mut state = State::new();
         let me = UserId("someone".into());
         let root = state.root.clone();
-        qdoc::model::init(&mut state.doc, &root);
+        tilo_doc::model::init(&mut state.doc, &root);
 
         assert!(
             !state.commit_action_authored(None, None, Some(me.clone())),
@@ -183,7 +183,7 @@ fn baseline_moves_past_uncommitted_and_empty_changes() {
             "the keystroke is reverted"
         );
         assert!(
-            qdoc::model::open(&state.doc, &root).is_ok(),
+            tilo_doc::model::open(&state.doc, &root).is_ok(),
             "and the schema nobody committed here is still standing"
         );
     }
@@ -196,7 +196,7 @@ fn baseline_moves_past_uncommitted_and_empty_changes() {
         let mut state = State::new();
         let me = UserId("someone".into());
         let root = state.root.clone();
-        qdoc::model::init(&mut state.doc, &root);
+        tilo_doc::model::init(&mut state.doc, &root);
 
         let before = state.doc.get_heads();
         state.record_committed_action(before, None, None);
@@ -212,7 +212,7 @@ fn baseline_moves_past_uncommitted_and_empty_changes() {
             "the keystroke is reverted"
         );
         assert!(
-            qdoc::model::open(&state.doc, &root).is_ok(),
+            tilo_doc::model::open(&state.doc, &root).is_ok(),
             "and the schema nobody committed here is still standing"
         );
     }

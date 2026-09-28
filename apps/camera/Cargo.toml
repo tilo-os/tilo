@@ -46,7 +46,7 @@ image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 thumbnail = { path = "../../crates/media/thumbnail" }
 xdg-paths = { path = "../../crates/system/xdg-paths" }
 tilo-ocr = { path = "../../crates/media/ocr" }
-qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
+tilo-doc-pdf = { path = "../../crates/doc/tilo-doc-pdf" }
 os-actions = { path = "../../crates/system/os-actions" }
 
 # Pure-Rust QR/barcode fixtures and detection for scanner flows.

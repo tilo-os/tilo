@@ -508,7 +508,7 @@ pub struct CodeApp {
     /// a buffer (New file); it is dispatched through this host so it brackets one
     /// undo boundary and replays byte-identically on peers, the same path a
     /// Ctrl+K palette dispatch takes. See [`crate::actions`].
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// Command selected through an exported resource action. Resource
     /// operations intentionally receive an immutable document snapshot; the
     /// next sync applies the command with mutable CRDT access.
@@ -920,7 +920,7 @@ impl CodeApp {
             panel: BottomPanel::new(),
             panel_toggle,
             palette: CommandPalette::new(),
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             pending_resource_command: None,
             project_id,
             next_new_file_id,
@@ -1267,7 +1267,7 @@ impl CodeApp {
     /// not only newly-created scratch files, has an addressable resource and a
     /// validated action target. IDs are UUIDs persisted in the shared document;
     /// absolute disk locations stay solely in `disk_path` local provenance.
-    fn import_project_file_records(&self, doc: &mut AutoCommit) {
+    fn import_project_file_records(&mut self, doc: &mut AutoCommit) {
         let records: Vec<_> = self
             .session
             .project
@@ -1315,7 +1315,40 @@ impl CodeApp {
             })
             .collect();
         for record in records {
-            if EditorDoc::file(doc, &record.id).is_none() {
+            if EditorDoc::file(doc, &record.id).is_some() {
+                continue;
+            }
+            if self.actions.is_hosted() {
+                let action = if record.kind == "folder" {
+                    actions::CodeEditorAction::CreateFolder {
+                        id: record.id.clone(),
+                        name: record.name.clone(),
+                        parent: record.parent.clone(),
+                        order: record.order,
+                    }
+                } else {
+                    let seed = self
+                        .session
+                        .project
+                        .node_for_resource(&record.id)
+                        .and_then(|node| self.session.project.file_seed(node).ok())
+                        .map(|(text, _stamp)| text)
+                        .unwrap_or_default();
+                    actions::create_file_action(
+                        record.id.clone(),
+                        record.name.clone(),
+                        record.parent.clone(),
+                        record.order,
+                        seed,
+                    )
+                };
+                self.actions.dispatch_with_context(
+                    doc,
+                    actions::CODE_EDITOR_ACTION_TYPE,
+                    &action,
+                    actions::history_context(&action, &record.name, &self.project_id),
+                );
+            } else {
                 EditorDoc::create_file_record(doc, &record);
             }
         }
@@ -1328,6 +1361,36 @@ impl CodeApp {
     fn sync_collaborative_files(&mut self, doc: &AutoCommit) {
         let mut files = EditorDoc::files(doc);
         files.sort_by_key(|file| file.path.matches('/').count());
+        self.project_files(files);
+    }
+
+    /// Project durable file records into the local tree. An empty list does not
+    /// wipe a project that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::ProjectState) {
+        if state.files.is_empty() && !self.session.project.nodes.is_empty() {
+            return;
+        }
+        if let Some(id) = &state.project_id
+            && self.project_id.is_empty()
+        {
+            self.project_id = id.clone();
+        }
+        if !state.files.is_empty() {
+            let mut files = state.files.clone();
+            files.sort_by_key(|file| file.path.matches('/').count());
+            self.project_files(files);
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::CodeEditor>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    fn project_files(&mut self, files: Vec<crate::doc::CollaborativeFile>) {
         let ordering: Vec<_> = files
             .iter()
             .filter(|file| !file.deleted)
@@ -4201,10 +4264,10 @@ impl Widget for CodeApp {
     /// Publish a bounded contextual project snapshot for the shell's Ctrl+K
     /// palette. Any omitted file/symbol/result resolves lazily below through
     /// its canonical address. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [``]() impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        Self::publish_resources(self, doc)
     }
 
     fn action_directory_resource_page(
@@ -4229,7 +4292,7 @@ impl Widget for CodeApp {
     /// state. This is deliberately lazy: a palette row carries only an inert
     /// canonical address until activation.
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        Self::publish_resource(self, doc, id)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched

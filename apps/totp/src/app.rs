@@ -177,7 +177,7 @@ pub struct AuthenticatorApp {
     /// byte-identically on peers, exactly as the Ctrl+K palette does), and records
     /// the last one so a test can prove a button and its
     /// [`ActionSpec`](tilo_actions::ActionSpec) build the identical action.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 }
 
 impl Default for AuthenticatorApp {
@@ -271,7 +271,7 @@ impl AuthenticatorApp {
             persistence_pending: false,
             vault_recovery_required: false,
             persistence_message: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
         }
     }
 
@@ -324,6 +324,46 @@ impl AuthenticatorApp {
             action,
             tilo_actions::ActionContext::for_action("so.tilo.totp", "Authenticator", action),
         );
+    }
+
+    /// Show shared account metadata, keeping secrets that exist only on this device.
+    /// Accounts not yet in the document stay in the vault so the next sync can publish them.
+    pub(crate) fn adopt_resource_state(&mut self, state: &[crate::model::Account]) {
+        if state.is_empty() {
+            return;
+        }
+        let mut next_accounts: Vec<_> = state
+            .iter()
+            .cloned()
+            .map(|mut shared| {
+                if let Some(local) = self.vault.get(shared.id) {
+                    shared.secret.clone_from(&local.secret);
+                }
+                shared
+            })
+            .collect();
+        for local in self.vault.ordered() {
+            if state.iter().all(|shared| shared.id != local.id) {
+                next_accounts.push(local);
+            }
+        }
+        let next = crate::model::Vault {
+            accounts: next_accounts,
+        };
+        if next.ordered() == self.vault.ordered() {
+            return;
+        }
+        self.search_provider.update(&self.vault, &next);
+        self.vault = next;
+        self.list_dirty = true;
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Totp>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     /// Merge shared metadata with this device's secret-bearing vault. A remote
@@ -1108,7 +1148,23 @@ impl Widget for AuthenticatorApp {
         // that the document is authoritative: every mutation is an action, and
         // the vault is re-projected from the document below.
         if self.doc_dirty {
-            AuthDoc::sync_vault(state, &self.vault.ordered());
+            if self.actions.is_hosted() {
+                let existing: std::collections::HashSet<_> = AuthDoc::list_accounts(state)
+                    .into_iter()
+                    .map(|account| account.id)
+                    .collect();
+                for account in self.vault.ordered() {
+                    if existing.contains(&account.id) {
+                        continue;
+                    }
+                    self.perform_action(
+                        state,
+                        &crate::actions::add_account_action(&account, account.order),
+                    );
+                }
+            } else {
+                AuthDoc::sync_vault(state, &self.vault.ordered());
+            }
             self.doc_dirty = false;
         }
         // Re-project the vault from the document so palette dispatches and remote
@@ -1387,7 +1443,7 @@ impl Widget for AuthenticatorApp {
 
     /// Publish the open vault + its accounts so the host's Ctrl+K palette scopes
     /// to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [``]() impl in
     /// [`crate::actions`], which reads the accounts straight from the document.
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         let mut resources = crate::actions::provide_contextual_resources(&self.vault.accounts);

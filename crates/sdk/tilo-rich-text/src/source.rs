@@ -9,7 +9,7 @@
 
 use std::rc::Rc;
 
-use qdoc_rich_text::{RichText, RichTextAction, RichTextState};
+use tilo_document::{RichText, RichTextAction, RichTextState};
 use ui::ActionHost;
 use ui::automerge::transaction::Transactable;
 use ui::automerge::{ChangeHash, ObjId};

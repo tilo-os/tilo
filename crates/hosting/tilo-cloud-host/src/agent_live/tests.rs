@@ -249,8 +249,8 @@ fn capture_records_only_inside_a_capturing_scope() {
     assert_eq!(made.get(), 1, "scope restored");
 }
 
-fn writer(paragraphs: &[&str]) -> (qdoc::Document, Vec<String>) {
-    let mut doc = qdoc::Document::new();
+fn writer(paragraphs: &[&str]) -> (tilo_doc::Document, Vec<String>) {
+    let mut doc = tilo_doc::Document::new();
     let mut ids = Vec::new();
     for text in paragraphs {
         let id = doc.insert_block(ids.last().map(String::as_str), "paragraph");
@@ -282,7 +282,7 @@ fn writer_caret_is_the_utf8_end_of_the_grown_range() {
         })
     );
     // Insert into the middle of the first paragraph: end of the inserted run.
-    let mut middle = qdoc::Document::load(&after).unwrap();
+    let mut middle = tilo_doc::Document::load(&after).unwrap();
     middle.splice_text(&ids[0], 2, 0, "XY");
     let grown = middle.save();
     assert_eq!(
@@ -293,7 +293,7 @@ fn writer_caret_is_the_utf8_end_of_the_grown_range() {
         })
     );
     // A new paragraph: end of its text.
-    let mut appended = qdoc::Document::load(&grown).unwrap();
+    let mut appended = tilo_doc::Document::load(&grown).unwrap();
     let new = appended.insert_block(Some(&ids[1]), "paragraph");
     appended.splice_text(&new, 0, 0, "Neu");
     let appended_bytes = appended.save();
@@ -305,7 +305,7 @@ fn writer_caret_is_the_utf8_end_of_the_grown_range() {
         })
     );
     // Pure deletion or no change: no caret.
-    let mut deleted = qdoc::Document::load(&appended_bytes).unwrap();
+    let mut deleted = tilo_doc::Document::load(&appended_bytes).unwrap();
     deleted.splice_text(&ids[0], 0, 1, "");
     assert_eq!(commit_caret(Some(&appended_bytes), &deleted.save()), None);
     assert_eq!(commit_caret(Some(&appended_bytes), &appended_bytes), None);

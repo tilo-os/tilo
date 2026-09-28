@@ -16,7 +16,7 @@
 
 use std::time::Instant;
 
-use qdoc_rich_text::{RichText, RichTextAction};
+use tilo_document::{RichText, RichTextAction};
 use tilo_rich_text::RichTextViews;
 use ui::automerge::transaction::Transactable;
 use ui::automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};

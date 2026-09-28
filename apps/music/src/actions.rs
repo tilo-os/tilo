@@ -46,7 +46,7 @@ use tilo_actions::resource::INVALID_ARGUMENTS_TYPE;
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
-    Resource, ResourceProvider, ResultSpec, RetryPolicy,
+    Resource, ResultSpec, RetryPolicy,
 };
 
 use crate::doc as mdoc;
@@ -1761,12 +1761,13 @@ pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
         .map(|playlist| playlist_resource(playlist, &known_tracks, 0))
 }
 
-impl ResourceProvider for crate::app::MusicApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::MusicApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.music_resource_ctx(), doc)
     }
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
         let ctx = self.music_resource_ctx_for_id(id)?;
         resource_by_id(&ctx, id)
     }
@@ -1864,7 +1865,7 @@ mod tests {
     /// the resources of any document seeded the same way.
     fn contract_resources_for(doc: &AutoCommit) -> Vec<Resource> {
         let (app, _) = seeded();
-        ResourceProvider::resources(&app, doc)
+        app.publish_resources(doc)
     }
 
     fn playlist_key(res: &Resource) -> &str {

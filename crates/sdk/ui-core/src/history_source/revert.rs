@@ -530,7 +530,7 @@ pub fn latest_run_by(doc: &mut AutoCommit, actor_hex: &str) -> Option<ChangeRun>
     // Schema genesis is written by a fixed actor nobody is, so inverting it
     // would take the document's containers with it.
     let mine = |v: &tilo_resource::history::Version| {
-        !qdoc::model::is_schema_genesis(v) && v.actor.eq_ignore_ascii_case(actor_hex)
+        !tilo_doc::model::is_schema_genesis(v) && v.actor.eq_ignore_ascii_case(actor_hex)
     };
     let last = versions.iter().rposition(mine)?;
     let mut first = last;

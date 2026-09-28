@@ -6,8 +6,8 @@
 //! undoable document mutations.
 
 use automerge::{AutoCommit, ObjId};
-use qdoc::snapshot::BlockView;
 use taffy::{NodeId, TaffyTree};
+use tilo_doc::snapshot::BlockView;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};

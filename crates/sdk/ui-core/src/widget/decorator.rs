@@ -747,6 +747,12 @@ pub trait Decorator {
         self.inner_mut().take_committed_action()
     }
 
+    fn take_action_revert(
+        &mut self,
+    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
+        self.inner_mut().take_action_revert()
+    }
+
     fn keeps_undo_step_open(&self) -> bool {
         self.inner().keeps_undo_step_open()
     }

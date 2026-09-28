@@ -55,6 +55,7 @@ pub mod layout;
 pub mod model;
 pub mod paint;
 pub mod prefs;
+pub mod resource;
 pub mod responsive;
 pub mod sampler;
 pub mod tree;
@@ -67,3 +68,4 @@ pub use app::MonitorApp;
 pub fn app_root() -> Box<dyn ui::widget::Widget> {
     Box::new(MonitorApp::new_live())
 }
+pub use resource::{Monitor, MonitorShell};

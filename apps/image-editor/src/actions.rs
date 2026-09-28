@@ -13,6 +13,8 @@ pub const REMOVE_ADJUSTMENT_TYPE: &str = "image-editor.remove-adjustment";
 pub const UPDATE_ADJUSTMENT_TYPE: &str = "image-editor.update-adjustment";
 pub const RECONNECT_INPUT_TYPE: &str = "image-editor.reconnect-input";
 pub const OPERATION_TYPE: &str = "image-editor.operation";
+/// Unified document action type for the framework resource APPLY path.
+pub const IMAGE_EDITOR_ACTION_TYPE: &str = "image-editor.action";
 pub const PROJECT_RESOURCE_ID: &str = "image-editor.project";
 pub const SOURCE_RESOURCE_ID: &str = "image-editor.source";
 pub const EXPORT_RESOURCE_ID: &str = "image-editor.export";
@@ -33,10 +35,25 @@ pub enum EditorOperation {
     },
 }
 pub fn register(r: &mut ActionRegistry) {
+    r.register::<ImageEditorAction>(IMAGE_EDITOR_ACTION_TYPE);
     r.register::<AddAdjustment>(ADD_ADJUSTMENT_TYPE);
     r.register::<RemoveAdjustment>(REMOVE_ADJUSTMENT_TYPE);
     r.register::<UpdateAdjustment>(UPDATE_ADJUSTMENT_TYPE);
     r.register::<ReconnectInput>(RECONNECT_INPUT_TYPE);
+}
+
+/// Nested project catalogue for [`crate::resource::ImageEditor::children`].
+pub(crate) fn project_children(project: &Project) -> Vec<Resource> {
+    resource(project).children
+}
+
+/// Root View/Effect operations for [`crate::resource::ImageEditor::local_operations`].
+pub(crate) fn project_local_operations() -> Vec<ActionSpec> {
+    resource(&Project::blank())
+        .actions
+        .into_iter()
+        .filter(|spec| spec.kind != OperationKind::Document)
+        .collect()
 }
 
 /// The normal collaborative graph insertion action.  It names the stable
@@ -131,6 +148,64 @@ impl Action for ReconnectInput {
         ExecutionLocus::ClientLocal
     }
 }
+
+/// One document vocabulary for the project resource. Historical envelopes keep
+/// the per-edit type ids registered beside this.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub enum ImageEditorAction {
+    Add(AddAdjustment),
+    Remove(RemoveAdjustment),
+    Update(UpdateAdjustment),
+    Reconnect(ReconnectInput),
+}
+
+impl Action for ImageEditorAction {
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        match self {
+            Self::Add(action) => action.apply(doc),
+            Self::Remove(action) => action.apply(doc),
+            Self::Update(action) => action.apply(doc),
+            Self::Reconnect(action) => action.apply(doc),
+        }
+    }
+    fn locus(&self) -> ExecutionLocus {
+        match self {
+            Self::Add(action) => action.locus(),
+            Self::Remove(action) => action.locus(),
+            Self::Update(action) => action.locus(),
+            Self::Reconnect(action) => action.locus(),
+        }
+    }
+}
+
+pub(crate) trait AsEditorAction {
+    fn as_editor_action(&self) -> ImageEditorAction;
+}
+
+impl AsEditorAction for AddAdjustment {
+    fn as_editor_action(&self) -> ImageEditorAction {
+        ImageEditorAction::Add(self.clone())
+    }
+}
+
+impl AsEditorAction for RemoveAdjustment {
+    fn as_editor_action(&self) -> ImageEditorAction {
+        ImageEditorAction::Remove(self.clone())
+    }
+}
+
+impl AsEditorAction for UpdateAdjustment {
+    fn as_editor_action(&self) -> ImageEditorAction {
+        ImageEditorAction::Update(self.clone())
+    }
+}
+
+impl AsEditorAction for ReconnectInput {
+    fn as_editor_action(&self) -> ImageEditorAction {
+        ImageEditorAction::Reconnect(self.clone())
+    }
+}
+
 pub fn resource(project: &Project) -> Resource {
     let mut r = Resource::new(PROJECT_RESOURCE_ID, "image-editor.project", &project.name);
     if let Ok(open) = ActionSpec::operation(
