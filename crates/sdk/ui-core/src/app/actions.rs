@@ -1568,7 +1568,10 @@ impl App {
         let Ok(current) = self.try_action_directory_revision() else {
             return runtime_collab::ActionDirectoryResolution::Unavailable;
         };
-        if revision != current {
+        // An empty revision is this app asking for its own action, which the
+        // broker resolves as the app is now: the owner has no stale listing
+        // to guard against. Every other caller names the revision it chose at.
+        if !revision.is_empty() && revision != current {
             return runtime_collab::ActionDirectoryResolution::StaleRevision;
         }
         if let Some(row) = self
@@ -4324,6 +4327,7 @@ pub(crate) fn directory_row_wire_bytes(row: &runtime_collab::ActionDirectoryRow)
             + text(&descriptor.action)
             + text(&descriptor.resource_kind)
             + text(&descriptor.resource_label)
+            + text(&descriptor.resource_sensitivity)
             + text(&descriptor.action_label)
             + text(descriptor.description.as_deref().unwrap_or(""))
             + text(&descriptor.operation_kind)
@@ -4337,6 +4341,7 @@ pub(crate) fn directory_row_wire_bytes(row: &runtime_collab::ActionDirectoryRow)
         + text(&row.resource_kind)
         + text(&row.resource_label)
         + text(&row.resource_presentation_json)
+        + text(&row.resource_sensitivity)
         + text(row.action.as_deref().unwrap_or(""))
         + text(row.visibility_action.as_deref().unwrap_or(""))
         + text(&row.visibility_contract_json)

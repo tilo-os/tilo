@@ -804,3 +804,26 @@ fn directory_lifecycle_publishes_once_ready_and_refreshes_on_idle() {
         assert_eq!(calls.get(), materializations);
     }
 }
+
+/// The broker asks with an empty revision only for an app's own action (a
+/// control on a message deep in a conversation): the app resolves it as it
+/// is now, however often it has changed since anything listed it. Any other
+/// caller's stale revision is still refused.
+#[test]
+fn an_app_resolves_its_own_action_as_it_is_now() {
+    let (mut app, _calls) = declared_directory(1);
+    publish_declared_directory(&mut app);
+    let revision = app.action_directory_revision();
+    // The app moves on, as it does whenever a sync lands.
+    let generation = app.actions.resource_generation.get();
+    app.actions.resource_generation.set(generation + 1);
+    publish_declared_directory(&mut app);
+    assert!(matches!(
+        app.resolve_action_directory(&revision, "declared:0", "inspect"),
+        runtime_collab::ActionDirectoryResolution::StaleRevision
+    ));
+    assert!(matches!(
+        app.resolve_action_directory("", "declared:0", "inspect"),
+        runtime_collab::ActionDirectoryResolution::Found(_)
+    ));
+}

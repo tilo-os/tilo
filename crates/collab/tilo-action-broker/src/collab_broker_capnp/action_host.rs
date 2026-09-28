@@ -328,6 +328,15 @@ impl CapnpBrokerState {
         {
             return true;
         }
+        // A request of the app's own workspace — sharing what it posts,
+        // replaying a recording, meeting a person — is made for the person
+        // using the app, like opening an app there, and is checked against
+        // that person's authority where the workspace answers it.
+        if workspace_provider_room(&target.provider).is_some_and(|room| person.room() == Some(room))
+            && tilo_actions::remote::is_workspace_request(&target.address)
+        {
+            return true;
+        }
         if let Some(row) = self
             .eager_catalogue(person, true)
             .0
@@ -807,7 +816,7 @@ impl CapnpBrokerState {
         if is_launchable_provider(&request.target.provider) {
             return self.invoke_launchable(caller, request);
         }
-        if let Some(root) = self.directory_target(caller, request) {
+        if let Some(root) = self.directory_target(caller, own_peer, request) {
             return self.invoke_directory(caller, root, request);
         }
         if self.services.shortcut_library.is_some()
@@ -1076,9 +1085,17 @@ impl CapnpBrokerState {
     fn directory_target(
         &self,
         caller: &Caller,
+        own_peer: Option<u64>,
         request: &InvokeRequest,
     ) -> Option<ActionDirectoryRoot> {
-        let peer_id = request.target.provider.parse::<u64>().ok()?;
+        // An app asking for its own action (`own_peer`, for `OWN_PROVIDER`)
+        // is answered from its own directory too: a control on a message
+        // deep in a conversation names a resource no eager snapshot holds.
+        let peer_id = if request.target.provider == OWN_PROVIDER {
+            own_peer?
+        } else {
+            request.target.provider.parse::<u64>().ok()?
+        };
         let address = &request.target.address;
         let eager = self.published_surfaces().into_iter().any(|surface| {
             surface.peer_id == peer_id
@@ -1101,11 +1118,17 @@ impl CapnpBrokerState {
         let unavailable = || ActionHostError::Unavailable {
             reason: "the invocation ledger is unavailable".into(),
         };
-        let Some(revision) = request
+        // An app asking for its own action is resolved as it is now (the
+        // empty revision); every other caller names the revision it chose at.
+        let revision = if request.target.provider == OWN_PROVIDER {
+            String::new()
+        } else if let Some(revision) = request
             .revision
             .clone()
             .filter(|revision| !revision.is_empty())
-        else {
+        {
+            revision
+        } else {
             return Pending::ready(Err(ActionHostError::InvalidRequest {
                 reason: "a directory action needs the revision it was chosen at".into(),
             }));
@@ -1380,6 +1403,7 @@ impl CapnpBrokerState {
         argument: Option<&str>,
     ) -> Result<u64, ActionHostError> {
         let address = &request.target.address;
+        tracing::debug!(room, resource = %address.resource, action = %address.action, "a workspace request");
         let Some((workspace, policy, now)) = self
             .workspaces_for(caller)
             .into_iter()
@@ -1621,8 +1645,12 @@ impl CapnpBrokerState {
                     reason: "this session cannot replay recordings".into(),
                 })?;
         let replay_room = replay
-            .open_record(&record, &actor.id)
-            .map_err(|reason| ActionHostError::Refused { reason })?;
+            .open_record(&record, Some(workspace.room), &actor.id)
+            .map_err(|reason| {
+                tracing::debug!(record = %record.as_str(), %reason, "a replay of a recording was refused");
+                ActionHostError::Refused { reason }
+            })?;
+        tracing::debug!(record = %record.as_str(), opened = replay_room.is_some(), "replaying a recording");
         Ok(self.record_immediate_success(
             actor,
             tilo_actions::ActionOutput {
@@ -2450,5 +2478,125 @@ mod foreign_caller_tests {
         assert!(may_administer(&caller(governor, true)));
         assert!(!may_administer(&caller([8; 32], true)));
         assert!(may_administer(&caller([8; 32], false)));
+    }
+}
+
+#[cfg(test)]
+mod app_door_tests {
+    use std::sync::{Arc, Mutex};
+
+    use tilo_actions::ActionAddress;
+    use tilo_actions::remote::{
+        Caller, CallerPrincipal, InvokeArgument, InvokeRequest, OWN_PROVIDER, RemoteActionMessage,
+        RemoteActionTarget, workspace_provider,
+    };
+
+    use super::super::{BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher};
+
+    fn request(room: &str, resource: &str, action: &str) -> RemoteActionMessage {
+        RemoteActionMessage::Invoke(InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: workspace_provider(room),
+                address: ActionAddress::new(resource, action),
+            },
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+        })
+    }
+
+    /// Chat's replay, share and person requests reach its own workspace as
+    /// the person using it, as opening an app there does; anything else of
+    /// the workspace, or another room's, needs a declared grant.
+    #[test]
+    fn an_apps_requests_of_its_own_workspace_act_for_its_person() {
+        let (state, _bridge) = CapnpBrokerState::new(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        let person = Caller::local_person("person:reporter").in_room("room-a");
+        for (resource, action) in [
+            ("session.replay", "replay"),
+            ("room.records", "reference"),
+            ("people", "message"),
+            ("resources", "open"),
+        ] {
+            let caller = state
+                .app_door(
+                    &person,
+                    "so.tilo.chat",
+                    &request("room-a", resource, action),
+                )
+                .unwrap_or_else(|_| panic!("{resource}/{action} is the app's to ask"));
+            assert!(
+                matches!(caller.principal(), CallerPrincipal::Person(_)),
+                "{resource}/{action} is asked for the person"
+            );
+        }
+        for message in [
+            request("room-a", "workspace", "profile.set"),
+            request("room-b", "session.replay", "replay"),
+        ] {
+            assert!(
+                state.app_door(&person, "so.tilo.chat", &message).is_err(),
+                "an undeclared app may not ask its workspace anything else, nor another room"
+            );
+        }
+    }
+
+    /// A control on a message deep in a conversation names an action of the
+    /// app's own that no eager snapshot publishes; the broker finds it in
+    /// the app's own directory, as it would another caller's.
+    #[test]
+    fn an_apps_own_action_off_its_snapshot_is_found_in_its_directory() {
+        let workspace =
+            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(1), "Community");
+        let room = workspace.room.to_string();
+        let mut tree = crate::test_support::WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let (state, _bridge) = CapnpBrokerState::new(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.shared()),
+            None,
+        );
+        state.action_directory_roots.lock().expect("roots").insert(
+            7,
+            super::super::ActionDirectoryRoot {
+                peer_id: 7,
+                app_id: "so.tilo.chat".into(),
+                cluster_id: room.clone(),
+                record_id: "uuid:conversation".into(),
+            },
+        );
+        state.refresh_action_directory_root_snapshot();
+        let own = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: OWN_PROVIDER.into(),
+                address: ActionAddress::new("chat.attachment:m_1", "share"),
+            },
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+        };
+        let person = Caller::local_person("person:reporter").in_room(room);
+        assert_eq!(
+            state
+                .directory_target(&person, Some(7), &own)
+                .map(|root| root.peer_id),
+            Some(7)
+        );
+        assert!(
+            state.directory_target(&person, None, &own).is_none(),
+            "only an app connection has an own directory"
+        );
     }
 }

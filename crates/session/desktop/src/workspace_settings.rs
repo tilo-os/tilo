@@ -2407,6 +2407,12 @@ pub fn agents_add_rect(pane_rect: Rect) -> Rect {
     )
 }
 
+/// What the room's switch that allows or forbids members' recorders is
+/// called, on screen and to assistive technology.
+pub fn recording_delegates_label() -> String {
+    t("workspace-settings-recording-toggle")
+}
+
 /// Geometry for the room's switch that allows or forbids members' recorders,
 /// beside the setup entry point.
 pub fn recording_delegates_rect(pane_rect: Rect) -> Rect {

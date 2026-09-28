@@ -60,14 +60,19 @@ fn with_action_gate<R>(
     f: impl FnOnce(&crate::shell::chrome_state::ChromeState, &dyn ActionVisibility) -> R,
 ) -> Result<R, String> {
     let chrome = chrome_handle.borrow();
-    let tree = chrome.tree();
-    let workspace = tree
+    // A copy, so no read of the tree is held while `f` runs: providers read
+    // the tree again, and a second read waits behind any writer that queued
+    // after the first — the broker recording an invocation's receipt, say —
+    // while that writer waits for the first read to end.
+    let workspace = chrome
+        .tree()
         .desktop
         .active_workspace()
+        .cloned()
         .ok_or_else(|| "no active workspace to resolve capabilities against".to_string())?;
     let actor_id = chrome.local_user_for_room(&workspace.room);
     let actor = workspace.actor_for_person(&actor_id);
-    let gate = CapabilityVisibility::new(workspace, actor);
+    let gate = CapabilityVisibility::new(&workspace, actor);
     Ok(f(&chrome, &gate))
 }
 use smithay::reexports::calloop::{self, EventLoop, Interest, Mode, PostAction, generic::Generic};
@@ -2460,6 +2465,34 @@ fn keytag_into_winit_key(tag: KeyTag) -> Key {
             NamedKeyTag::Super => NamedKey::Super,
         }),
         KeyTag::Char(c) => Key::Character(SmolStr::new(c.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod action_gate_tests {
+    use std::sync::Arc;
+
+    use parking_lot::RwLock;
+
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
+
+    /// Providers read the tree while the gate is up, and another thread may
+    /// be waiting to write it meanwhile (the broker recording a receipt). Had
+    /// the gate kept its own read, that second read would wait behind the
+    /// writer, which waits for the first: the shell hung on `actions list`.
+    #[test]
+    fn the_action_gate_holds_no_read_of_the_tree_while_providers_run() {
+        let mut tree = WorkspaceTree::default();
+        tree.desktop
+            .workspaces
+            .push(Workspace::new(WorkspaceId(1), "Gate fixture"));
+        tree.desktop.active = WorkspaceId(1);
+        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
+        let chrome = ChromeState::new_with_handle(handle.clone());
+        let free = super::with_action_gate(&chrome, |_, _| handle.try_write().is_some())
+            .expect("an active workspace");
+        assert!(free, "the tree is free to write while the gate is up");
     }
 }
 

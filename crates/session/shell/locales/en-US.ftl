@@ -497,6 +497,8 @@ host-session-suspend-failed = Couldn’t suspend. Check the session log and try 
 host-session-restart-failed = Couldn’t restart. Check the session log and try again.
 host-session-shut-down-failed = Couldn’t shut down. Check the session log and try again.
 host-session-action-blocked = Session action blocked
+host-invite-unverified = Their identity is not verified in any room you share, so an invite could not be bound to them.
+host-invite-no-workspace = You have no workspace you may invite people into.
 
 # Search and app actions
 host-action-started = Started “{ $title }”

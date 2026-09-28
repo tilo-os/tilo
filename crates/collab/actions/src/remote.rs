@@ -395,6 +395,26 @@ pub const PEOPLE_RESOURCE: &str = "people";
 pub const PERSON_MESSAGE_ACTION: &str = "message";
 pub const PERSON_INVITE_ACTION: &str = "invite";
 
+/// Whether `address` is one of the requests an app makes of its own
+/// workspace for the person using it (see [`WorkspaceRequest`]): sharing
+/// what it posts, opening another app's resource, replaying a recording,
+/// meeting a person. Each is checked against that person's own authority.
+#[must_use]
+pub fn is_workspace_request(address: &ActionAddress) -> bool {
+    matches!(
+        (address.resource.as_str(), address.action.as_str()),
+        (
+            ROOM_RECORDS_RESOURCE,
+            ROOM_RECORD_REFERENCE_ACTION | ROOM_RECORD_UNREFERENCE_ACTION
+        ) | (RESOURCES_RESOURCE, RESOURCE_OPEN_ACTION)
+            | (SESSION_REPLAY_RESOURCE, SESSION_REPLAY_ACTION)
+            | (
+                PEOPLE_RESOURCE,
+                PERSON_MESSAGE_ACTION | PERSON_INVITE_ACTION
+            )
+    )
+}
+
 /// Where an invocation stands, as reported to its caller.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ReceiptStatus {

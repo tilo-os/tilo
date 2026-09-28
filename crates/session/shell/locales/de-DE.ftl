@@ -500,6 +500,8 @@ host-session-suspend-failed = Bereitschaft fehlgeschlagen. Sieh im Sitzungsproto
 host-session-restart-failed = Neustart fehlgeschlagen. Sieh im Sitzungsprotokoll nach und versuche es erneut.
 host-session-shut-down-failed = Herunterfahren fehlgeschlagen. Sieh im Sitzungsprotokoll nach und versuche es erneut.
 host-session-action-blocked = Sitzungsaktion blockiert
+host-invite-unverified = Ihre Identität ist in keinem gemeinsamen Raum bestätigt, daher konnte keine Einladung an sie gebunden werden.
+host-invite-no-workspace = Du hast keinen Arbeitsbereich, in den du Personen einladen darfst.
 
 # Suche und App-Aktionen
 host-action-started = „{ $title }“ gestartet

@@ -359,6 +359,10 @@ enum AuxiliaryEntry {
 }
 
 struct AuxiliarySnapshot {
+    /// When it was projected: past [`DIRECTORY_PAGE_FRESH`] it is projected
+    /// again, which reads the apps' directories again. The broker's revision
+    /// names who publishes, not what they publish, so it alone never would.
+    built: Instant,
     revision: String,
     query: String,
     scope: String,
@@ -698,7 +702,16 @@ impl LiveAppActionsProvider {
             }
             match pending.receiver.poll_ready() {
                 PendingPoll::Ready(Ok(page)) if !page.stale_cursor => {
+                    tracing::trace!(
+                        peer = key.0,
+                        rows = page.rows.len(),
+                        "a directory page arrived"
+                    );
                     ready.push((key.clone(), page, pending.initial_page));
+                    false
+                }
+                PendingPoll::Ready(Err(error)) => {
+                    tracing::debug!(peer = key.0, %error, "an app's directory refused a page");
                     false
                 }
                 PendingPoll::Ready(_) | PendingPoll::Abandoned => false,
@@ -820,7 +833,8 @@ impl LiveAppActionsProvider {
             .borrow()
             .as_ref()
             .is_some_and(|snapshot| {
-                snapshot.revision == revision
+                snapshot.built.elapsed() < DIRECTORY_PAGE_FRESH
+                    && snapshot.revision == revision
                     && snapshot.query == needle
                     && snapshot.scope == scope
                     && snapshot.resume == *resume
@@ -1034,6 +1048,7 @@ impl LiveAppActionsProvider {
             });
         }
         *self.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
+            built: Instant::now(),
             revision: revision.to_string(),
             query: needle.to_string(),
             scope,
@@ -1419,6 +1434,15 @@ impl LiveAppActionsProvider {
             .next()
             .is_none()
             .then_some((app, permission, cluster, record, resource, action))
+    }
+
+    /// Whether `id` names a row of an app's live directory (an action or a
+    /// resource), rather than an action the app published eagerly.
+    pub fn is_directory_id(id: &str) -> bool {
+        matches!(
+            id.split(ID_SEPARATOR).next(),
+            Some("directory" | "directory-resource")
+        )
     }
 
     pub fn capability_target(
@@ -2879,6 +2903,56 @@ mod tests {
         }
     }
 
+    /// The projection a search answers from is rebuilt once it is no longer
+    /// fresh, though no publisher came or went: that is when the apps'
+    /// directories are read again, so a message that arrived since is found.
+    #[test]
+    fn a_stale_projection_is_rebuilt_though_no_publisher_changed() {
+        let provider = LiveAppActionsProvider::new(
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+        );
+        let chrome = chrome();
+        let chrome = chrome.borrow();
+        let doc = AutoCommit::new();
+        let ctx = context("report", &chrome, &doc);
+        let resume = AuxiliaryResume {
+            root_after: None,
+            directory: None,
+        };
+        provider.prepare_auxiliary_snapshot(&ctx, "report", "r1", 8, &resume);
+        let first = provider
+            .auxiliary_snapshot
+            .borrow()
+            .as_ref()
+            .map(|snapshot| snapshot.built)
+            .expect("a projection");
+        provider.prepare_auxiliary_snapshot(&ctx, "report", "r1", 8, &resume);
+        assert_eq!(
+            provider
+                .auxiliary_snapshot
+                .borrow()
+                .as_ref()
+                .map(|snapshot| snapshot.built),
+            Some(first),
+            "a fresh projection answers as it is"
+        );
+        let stale = Instant::now()
+            .checked_sub(super::DIRECTORY_PAGE_FRESH * 2)
+            .expect("the clock is past two freshness periods");
+        if let Some(snapshot) = provider.auxiliary_snapshot.borrow_mut().as_mut() {
+            snapshot.built = stale;
+        }
+        provider.prepare_auxiliary_snapshot(&ctx, "report", "r1", 8, &resume);
+        assert!(
+            provider
+                .auxiliary_snapshot
+                .borrow()
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.built > stale),
+            "a stale one is projected again"
+        );
+    }
+
     /// A search's page describes the app when it was read. An app whose
     /// content moves on (a reply arriving) without republishing its surface
     /// is asked again once the page is no longer fresh, and the old page keeps
@@ -2988,6 +3062,7 @@ mod tests {
                     .is_some()
             );
             *provider.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
+                built: Instant::now(),
                 revision,
                 query: "open".into(),
                 scope,

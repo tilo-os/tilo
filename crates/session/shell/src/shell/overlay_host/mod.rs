@@ -3455,8 +3455,8 @@ impl ShellOverlayHost {
             .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
         let (Some(name), Some(key)) = (name, key) else {
             chrome.borrow_mut().push_notification(
-                "Invite unavailable",
-                "Their identity is not verified in any room you share, so an invite could not be bound to them.",
+                t("host-invite-unavailable-title"),
+                t("host-invite-unverified"),
             );
             return;
         };
@@ -3483,8 +3483,8 @@ impl ShellOverlayHost {
         };
         if workspaces.is_empty() {
             chrome.borrow_mut().push_notification(
-                "Invite unavailable",
-                "You have no workspace you may invite people into.",
+                t("host-invite-unavailable-title"),
+                t("host-invite-no-workspace"),
             );
             return;
         }
@@ -17650,7 +17650,10 @@ impl Widget for ShellOverlayHost {
                             let enabled = state.can_rename_active_workspace();
                             settings.children.push(
                                 AccessNode::new(Role::Switch)
-                                    .with_name(t("workspace-settings-recording-toggle"))
+                                    .with_name(
+                                        tilo_desktop::workspace_settings::recording_delegates_label(
+                                        ),
+                                    )
                                     .with_state(AccessState {
                                         focusable: enabled,
                                         disabled: !enabled,
