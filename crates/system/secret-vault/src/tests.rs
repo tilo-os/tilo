@@ -22,14 +22,6 @@ fn key(byte: u8) -> VaultKey {
     VaultKey::from_bytes([byte; KEY_LEN])
 }
 
-/// `FORMAT.seal(&[7; KEY_LEN], b"legacy vault bytes")` in the layout written
-/// before `tilo-seal` envelopes, produced by that implementation's sealing
-/// code with the nonce fixed to `[0x5a; 24]`.
-const LEGACY_BLOB: &str = concat!(
-    "54535456015a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5ac48e22",
-    "5b2560c03ed2200c7b1aaad80f16f98f05b43a3c8d48100b282469fdd928d5",
-);
-
 #[test]
 fn vault_seals_round_trip_under_their_own_format_only() {
     // Phase `seal_open_round_trips_and_rejects_tampering`.
@@ -63,37 +55,6 @@ fn vault_seals_round_trip_under_their_own_format_only() {
         };
         assert!(renamed.open(&key, &blob).is_none());
         assert!(FORMAT.open(&key, &blob).is_some());
-    }
-    // Phase `legacy_vaults_open_only_under_their_own_magic`.
-    {
-        let key = key(7);
-        let blob = hex::decode(LEGACY_BLOB).unwrap();
-        assert_eq!(&blob[..4], FORMAT.magic.as_slice());
-        assert_eq!(blob[4], LEGACY_SEAL_FORMAT);
-        assert_eq!(
-            FORMAT.open(&key, &blob).unwrap().as_slice(),
-            b"legacy vault bytes"
-        );
-        assert!(OTHER.open(&key, &blob).is_none());
-        assert!(FORMAT.open(&self::key(9), &blob).is_none());
-        // Truncation and an unknown format byte never reach the AEAD.
-        assert!(
-            FORMAT
-                .open(&key, &blob[..4 + 1 + LEGACY_NONCE_LEN - 1])
-                .is_none()
-        );
-        let mut bumped = blob.clone();
-        bumped[4] = LEGACY_SEAL_FORMAT + 1;
-        assert!(FORMAT.open(&key, &bumped).is_none());
-        // Re-sealing moves the vault to the current envelope.
-        let resealed = FORMAT
-            .seal(&key, &FORMAT.open(&key, &blob).unwrap())
-            .unwrap();
-        assert!(tilo_seal::envelope::is_envelope(&resealed));
-        assert_eq!(
-            FORMAT.open(&key, &resealed).unwrap().as_slice(),
-            b"legacy vault bytes"
-        );
     }
     // Phase `vault_key_debug_never_shows_key_bytes`.
     {

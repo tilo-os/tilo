@@ -24,36 +24,21 @@ use zeroize::{Zeroize, Zeroizing};
 use super::{IdentityLock, MAX_RECORD_BYTES, identity_from_record};
 
 const MAGIC: &[u8; 8] = b"TLOIBK\0\x01";
-/// Format v1: Argon2id with a fixed profile and a hand-rolled
-/// XChaCha20-Poly1305 header. Read-only.
-const FORMAT_V1: u8 = 1;
 /// Format v2: the magic, this version byte, then a `tilo-seal` password
 /// envelope that stores its own Argon2id parameters and salt.
 const FORMAT_V2: u8 = 2;
 const PREFIX_LEN: usize = MAGIC.len() + 1;
-const SALT_LEN: usize = 16;
-const NONCE_LEN: usize = 24;
-const AEAD_TAG_LEN: usize = 16;
-const V1_HEADER_LEN: usize = PREFIX_LEN + 4 + 4 + 4 + SALT_LEN + NONCE_LEN;
-/// Room for either header (v2's envelope header is well under 256 bytes)
-/// plus the AEAD tag.
+/// Room for the envelope header (well under 256 bytes) plus the AEAD tag.
 const MAX_BACKUP_BYTES: u64 = MAX_RECORD_BYTES + 256;
 
-// Immutable format-v1 Argon2id profile. Exact matching on read prevents a
-// hostile v1 envelope from selecting a denial-of-service workload.
-const ARGON_MEMORY_KIB: u32 = 19 * 1024;
-const ARGON_ITERATIONS: u32 = 2;
-const ARGON_LANES: u32 = 1;
-const V1_PARAMS: PasswordParams = PasswordParams {
-    m_cost_kib: ARGON_MEMORY_KIB,
-    t_cost: ARGON_ITERATIONS,
-    p_cost: ARGON_LANES,
+/// Parameters for new backups: the OWASP Argon2id baseline, so restoring
+/// stays fast on low-end devices. They are stored in the authenticated
+/// header, so raising them later needs no new format version.
+const V2_PARAMS: PasswordParams = PasswordParams {
+    m_cost_kib: 19 * 1024,
+    t_cost: 2,
+    p_cost: 1,
 };
-/// Parameters for new backups. They equal the v1 profile (the OWASP
-/// Argon2id baseline) so restoring stays fast on low-end devices; v2 stores
-/// them in the authenticated header, so raising them later needs no new
-/// format version.
-const V2_PARAMS: PasswordParams = V1_PARAMS;
 /// The most work a v2 backup may ask a reader to do. Larger stored
 /// parameters are refused before any derivation runs.
 const V2_MAX_MEMORY_KIB: u32 = 1024 * 1024;
@@ -396,7 +381,6 @@ fn open_record(blob: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>>>
         return Err(invalid_backup());
     }
     let plaintext = match blob.get(MAGIC.len()).copied() {
-        Some(FORMAT_V1) => open_v1(blob, passphrase)?,
         Some(FORMAT_V2) => open_v2(blob, passphrase)?,
         _ => return Err(invalid_backup()),
     };
@@ -429,39 +413,6 @@ fn open_v2(blob: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>>> {
     .map_err(|_| invalid_backup())
 }
 
-fn open_v1(blob: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>>> {
-    let header = parse_v1_header(blob)?;
-    let (authenticated_header, ciphertext) = blob
-        .split_at_checked(V1_HEADER_LEN)
-        .ok_or_else(invalid_backup)?;
-    if ciphertext.len() < AEAD_TAG_LEN {
-        return Err(invalid_backup());
-    }
-    let key = derive_v1_key(
-        passphrase,
-        &header.salt,
-        header.memory_kib,
-        header.iterations,
-        header.lanes,
-    )?;
-    tilo_seal::legacy::open_xchacha20poly1305(&key, &header.nonce, authenticated_header, ciphertext)
-        .map_err(|_| invalid_backup())
-}
-
-fn derive_v1_key(
-    passphrase: &[u8],
-    salt: &[u8; SALT_LEN],
-    memory_kib: u32,
-    iterations: u32,
-    lanes: u32,
-) -> io::Result<tilo_seal::SymmetricKey> {
-    if memory_kib != ARGON_MEMORY_KIB || iterations != ARGON_ITERATIONS || lanes != ARGON_LANES {
-        return Err(invalid_backup());
-    }
-    envelope::derive_password_key(passphrase, salt, V1_PARAMS)
-        .map_err(|_| io::Error::other("could not derive portable backup key"))
-}
-
 fn validate_passphrase(passphrase: &[u8]) -> io::Result<()> {
     if passphrase.len() < MIN_PASSPHRASE_BYTES {
         return Err(io::Error::new(
@@ -470,48 +421,6 @@ fn validate_passphrase(passphrase: &[u8]) -> io::Result<()> {
         ));
     }
     Ok(())
-}
-
-struct Header {
-    memory_kib: u32,
-    iterations: u32,
-    lanes: u32,
-    salt: [u8; SALT_LEN],
-    nonce: [u8; NONCE_LEN],
-}
-
-fn parse_v1_header(blob: &[u8]) -> io::Result<Header> {
-    if blob.get(..MAGIC.len()) != Some(MAGIC.as_slice()) {
-        return Err(invalid_backup());
-    }
-    let mut at = MAGIC.len();
-    let [version] = take_array(blob, &mut at)?;
-    if version != FORMAT_V1 {
-        return Err(invalid_backup());
-    }
-    let memory_kib = u32::from_le_bytes(take_array(blob, &mut at)?);
-    let iterations = u32::from_le_bytes(take_array(blob, &mut at)?);
-    let lanes = u32::from_le_bytes(take_array(blob, &mut at)?);
-    let salt = take_array(blob, &mut at)?;
-    let nonce = take_array(blob, &mut at)?;
-    Ok(Header {
-        memory_kib,
-        iterations,
-        lanes,
-        salt,
-        nonce,
-    })
-}
-
-fn take_array<const N: usize>(bytes: &[u8], offset: &mut usize) -> io::Result<[u8; N]> {
-    let end = offset.checked_add(N).ok_or_else(invalid_backup)?;
-    let value = bytes
-        .get(*offset..end)
-        .ok_or_else(invalid_backup)?
-        .try_into()
-        .map_err(|_| invalid_backup())?;
-    *offset = end;
-    Ok(value)
 }
 
 fn write_new_backup(destination: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -747,71 +656,8 @@ mod tests {
         dir.join(format!("{id}.json"))
     }
 
-    /// A v1 portable backup written before a crypto-stack upgrade. Backups
-    /// outlive builds, so Argon2id and XChaCha20-Poly1305 must keep opening it.
-    const KAT_BACKUP_V1: &str = "544c4f49424b000101004c00000200000001000000778b97c29ae8858d705c7e\
-        d1f0c67ac52e53e66db0040e72285076d6c2bb869433c84f1633e562604c9859\
-        e9ae53ccf2cdf1c4082d44c551dff6f5d09cafc811d936148ffe418157ab2890\
-        dd8c108e08bd0154e12c15bfc96ff9b5af170b989c5997effe646104909bb425\
-        856f269ecd36fa219cb89f86bfb30c8929959bdb618186a9e90ce59765c7a9bc\
-        ead39de0816fdb0bee39e639f9a74afb82aacc5641d5d759e635306d54d40e92\
-        9188b66802bcea15a6a4beb8aadfe41de45821f188c281ac436d9d37063879f4\
-        386caccf1dd5bcd2267e1e424d958a64e53267ca4811b3f850167f0b10de7fb7\
-        54c557692f4f1739cecf9cd72d19b2d6a23f51aef2ebdc66a53206ffa4d7b277\
-        8c1ea996d2bfb196597185f094a25aa5fb0c7a695aba8dc8268fff1cdabe9721\
-        cae74046999298ce4682b949b41a57b7ffe6d31da0991578b7ca375a59a0b816\
-        e5996780a19a1136385e2e92dfc1dcd3871ae309b2022b19e8666aee8f35bcd4\
-        9b6d03c1657a247bafaad71923a7614f561ee5b83ca8d3b832d3d57d290a85fb\
-        3ce6612f85db52d7c7cae40edf625111359e932942d84c81961b53b09d92de4c\
-        92b56906537ac00fad9a7e033a817a277955b882d5e38925f1a5ca9c81de8bca\
-        aed24e9b967e735952eccf446b86a804859ceca6e18887e2c154199b319617f8\
-        66c063f345fb17a9fb6775d6";
-
     #[test]
-    fn backups_round_trip_across_formats_and_fail_closed() {
-        // phase: v1_backup_from_an_earlier_build_still_opens
-        {
-            let passphrase = b"correct horse battery staple";
-            let key = derive_v1_key(
-                passphrase,
-                &[1; SALT_LEN],
-                ARGON_MEMORY_KIB,
-                ARGON_ITERATIONS,
-                ARGON_LANES,
-            )
-            .unwrap();
-            assert_eq!(
-                hex::encode(key.expose_secret()),
-                "eb641d1b946edf14c62d7dca0578e4dc9236cb4aaf2bfe103e9751bc8ac66242"
-            );
-            let blob = hex::decode(KAT_BACKUP_V1).unwrap();
-            let record = open_record(&blob, passphrase).unwrap();
-            // Compare as JSON values: the fixture's key order is fixed, but the
-            // expected record's order follows whether serde_json's
-            // `preserve_order` is unified into this build.
-            let opened: serde_json::Value = serde_json::from_slice(&record).unwrap();
-            let expected: serde_json::Value =
-                serde_json::from_slice(&record_bytes("Ada", 71)).unwrap();
-            assert_eq!(opened, expected);
-            assert!(open_record(&blob, b"wrong horse battery staple").is_err());
-            // A v1 header claiming a heavier profile is refused before derivation.
-            let mut heavier = blob;
-            heavier[9..13].copy_from_slice(&u32::MAX.to_le_bytes());
-            assert!(open_record(&heavier, passphrase).is_err());
-        }
-        // phase: v1_backup_file_still_verifies_and_imports
-        {
-            let dir = tempfile::tempdir().expect("dir");
-            let backup = dir.path().join("old.tilo-identity-backup");
-            fs::write(&backup, hex::decode(KAT_BACKUP_V1).unwrap()).expect("fixture");
-            let passphrase = b"correct horse battery staple";
-            let info = verify_portable_backup(&backup, passphrase).expect("v1 verifies");
-            let restored = tempfile::tempdir().expect("restore");
-            let imported = import_portable_backup(&backup, passphrase, restored.path(), "restored")
-                .expect("v1 imports");
-            let identity = super::super::load_from_path(imported).expect("restored identity loads");
-            assert_eq!(identity.group_public_key(), info.group_public_key);
-        }
+    fn backups_round_trip_and_fail_closed() {
         // phase: new_backups_are_v2_seal_envelopes_and_reject_tampering
         {
             let passphrase = b"a sufficient passphrase";
@@ -829,9 +675,9 @@ mod tests {
                 tampered[index] ^= 0x01;
                 assert!(open_record(&tampered, passphrase).is_err(), "byte {index}");
             }
-            // Rewriting the version byte cannot downgrade a v2 envelope to v1.
+            // Rewriting the version byte cannot downgrade the envelope.
             let mut downgraded = blob.to_vec();
-            downgraded[MAGIC.len()] = FORMAT_V1;
+            downgraded[MAGIC.len()] = 1;
             assert!(open_record(&downgraded, passphrase).is_err());
         }
         // phase: encrypted_portable_backup_round_trips_and_imports

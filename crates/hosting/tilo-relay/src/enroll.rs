@@ -32,10 +32,8 @@ const NEARBY_PORT: u16 = 23_831;
 const MAX_PACKET: usize = 60 * 1024;
 const RESPONSE_DOMAIN: &[u8] = b"tilo-host-enrollment-response-v1\0";
 const PAIR_DOMAIN: &[u8] = b"tilo-nearby-home-peer-offer-v1\0";
-/// Solicitation magic of devices that only read v1 pair offers.
-const PAIR_MAGIC_V1: [u8; 8] = *b"TLOPAIR1";
-/// Solicitation magic of devices that read v2 (HPKE) pair offers.
-const PAIR_MAGIC_V2: [u8; 8] = *b"TLOPAIR2";
+/// Solicitation magic: the device reads HPKE pair offers.
+const PAIR_MAGIC: [u8; 8] = *b"TLOPAIR2";
 
 #[derive(Parser)]
 #[command(name = "tilo-enroll")]
@@ -148,14 +146,6 @@ struct Request {
     kind: EnrollmentKind,
 }
 
-/// The v1 envelope framing shared by the pair offer, request and response.
-#[derive(Serialize, Deserialize)]
-struct LegacyEnvelope {
-    ephemeral_public_key: [u8; 32],
-    nonce: [u8; 12],
-    ciphertext: Vec<u8>,
-}
-
 /// Plaintext of a v2 request: the request plus the key its response is
 /// sealed to (only the requester holds the matching secret).
 #[derive(Serialize)]
@@ -170,22 +160,11 @@ struct RequestV2Owned {
     response_public_key: [u8; 32],
 }
 
-/// Wire version a peer spoke, which the answer mirrors.
+/// Where an enrollment response is sealed to: the response key inside the
+/// requester's sealed request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WireVersion {
-    V1,
-    V2,
-}
-
-/// Where an enrollment response is sealed to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ResponseRoute {
-    /// A v1 requester: its ephemeral X25519 key from the request envelope.
-    V1 {
-        requester_ephemeral_public_key: [u8; 32],
-    },
-    /// A v2 requester: the response key inside its sealed request.
-    V2 { response_public_key: [u8; 32] },
+struct ResponseRoute {
+    response_public_key: [u8; 32],
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1013,17 +992,8 @@ fn pairing_code(device_public_key: [u8; 32], relay_service_node_id: [u8; 32]) ->
     format!("{:06}", number % 1_000_000)
 }
 
-/// The pair-offer version a solicitation asks for.
-fn solicitation_version(solicitation: &PairSolicitation) -> Option<WireVersion> {
-    match solicitation.magic {
-        PAIR_MAGIC_V1 => Some(WireVersion::V1),
-        PAIR_MAGIC_V2 => Some(WireVersion::V2),
-        _ => None,
-    }
-}
-
 fn valid_solicitation(solicitation: &PairSolicitation) -> bool {
-    solicitation_version(solicitation).is_some()
+    solicitation.magic == PAIR_MAGIC
         && VerifyingKey::from_bytes(&solicitation.device_public_key).is_ok()
         && solicitation.relay_service_node_id != [0; 32]
         && tilo_relay::valid_home_peer_label(&solicitation.label)
@@ -1085,37 +1055,20 @@ fn discover(timeout: u64, kind: EnrollmentKind) -> anyhow::Result<()> {
     bail!("no matching unprovisioned Tilo device was found nearby")
 }
 
-// Wire versions of the three sealed envelopes (pair offer, request, response).
-//
-// v1 (legacy): `postcard({ ephemeral_public_key: [u8; 32], nonce: [u8; 12],
-// ciphertext })` = `epk(32) || nonce(12) || varint(len) || ciphertext+tag`,
-// an ad-hoc X25519 agreement hashed with BLAKE3 into a ChaCha20-Poly1305
-// key. Readers still accept it, and a responder answers a v1 peer in v1
-// during the transition.
-//
-// v2: `"TLOENRL" || 0x02 || tilo-seal HPKE sealed box` (RFC 9180 base mode,
+// The three sealed envelopes (pair offer, request, response) are
+// `"TLOENRL" || 0x02 || tilo-seal HPKE sealed box` (RFC 9180 base mode,
 // X25519-HKDF-SHA256 / ChaCha20-Poly1305), with one tilo-seal label per
-// step so an envelope for one step never opens as another.
-//
-// Discrimination: a v2 envelope always starts with the 8-byte prefix
-// `TLOENRL\x02`; a v1 envelope starts with its sender's random ephemeral
-// X25519 public key. Bytes with the v2 prefix are parsed only as v2, all
-// other bytes only as v1, so no envelope is ever tried under both parsers.
-// This build's v1 writer re-draws any ephemeral key whose encoding would
-// begin with the prefix, so nothing it writes is ambiguous; an old peer's
-// random key starts with it with probability 2^-64, and that envelope then
-// merely fails to open.
+// step so an envelope for one step never opens as another. Bytes without
+// that prefix are refused.
 const ENVELOPE_MAGIC: &[u8; 7] = b"TLOENRL";
 const ENVELOPE_V2: u8 = 2;
-const REQUEST_KEY_DOMAIN_V1: &[u8] = b"tilo-host-enrollment-request-key-v1\0";
-const RESPONSE_KEY_DOMAIN_V1: &[u8] = b"tilo-host-enrollment-key-v1\0";
 
 fn v2_header() -> [u8; 8] {
     let [m0, m1, m2, m3, m4, m5, m6] = *ENVELOPE_MAGIC;
     [m0, m1, m2, m3, m4, m5, m6, ENVELOPE_V2]
 }
 
-/// The v2 sealed box inside `bytes`, or `None` when `bytes` is not v2.
+/// The sealed box inside `bytes`, or `None` without the envelope prefix.
 fn v2_body(bytes: &[u8]) -> Option<&[u8]> {
     bytes.strip_prefix(&v2_header()[..])
 }
@@ -1140,96 +1093,18 @@ fn device_sealing_public(device_public_key: [u8; 32]) -> anyhow::Result<tilo_sea
     ))
 }
 
-/// A fresh ephemeral key for a v1 envelope whose encoding cannot be
-/// mistaken for the v2 prefix.
-fn v1_ephemeral() -> anyhow::Result<(tilo_seal::SecretKey, [u8; 32])> {
-    for _ in 0..8 {
-        let secret = tilo_seal::SecretKey::generate()?;
-        let public = secret.public_key()?.to_bytes();
-        if !public.starts_with(ENVELOPE_MAGIC) {
-            return Ok((secret, public));
-        }
-    }
-    bail!("could not draw an unambiguous ephemeral key")
-}
-
-/// Open the v1 framing shared by all three legacy envelopes. `context`
-/// lists the key-derivation inputs after the shared secret, given the
-/// sender's ephemeral public key.
-fn open_v1(
-    bytes: &[u8],
-    secret: &tilo_seal::SecretKey,
-    domain: &[u8],
-    context: impl FnOnce(&[u8; 32]) -> Vec<Vec<u8>>,
-    aad: impl FnOnce(&[u8; 32]) -> Vec<u8>,
-) -> anyhow::Result<(zeroize::Zeroizing<Vec<u8>>, [u8; 32])> {
-    let envelope: LegacyEnvelope = postcard::from_bytes(bytes)?;
-    let context = context(&envelope.ephemeral_public_key);
-    let parts: Vec<&[u8]> = context.iter().map(Vec::as_slice).collect();
-    let key = tilo_seal::legacy::blake3_x25519_key(
-        secret,
-        &tilo_seal::PublicKey::from_bytes(envelope.ephemeral_public_key),
-        domain,
-        &parts,
-    )?;
-    let plaintext = tilo_seal::legacy::open_chacha20poly1305(
-        &key,
-        &envelope.nonce,
-        &aad(&envelope.ephemeral_public_key),
-        &envelope.ciphertext,
-    )?;
-    Ok((plaintext, envelope.ephemeral_public_key))
-}
-
-/// Seal in the v1 framing, only to answer a peer that spoke v1.
-fn seal_v1_for_transition(
-    peer: &tilo_seal::PublicKey,
-    domain: &[u8],
-    context: impl FnOnce(&[u8; 32]) -> Vec<Vec<u8>>,
-    aad: &[u8],
-    plaintext: &[u8],
-) -> anyhow::Result<Vec<u8>> {
-    let (ephemeral, ephemeral_public_key) = v1_ephemeral()?;
-    let context = context(&ephemeral_public_key);
-    let parts: Vec<&[u8]> = context.iter().map(Vec::as_slice).collect();
-    let key = tilo_seal::legacy::blake3_x25519_key(&ephemeral, peer, domain, &parts)?;
-    let (nonce, ciphertext) =
-        tilo_seal::legacy::seal_chacha20poly1305_for_transition(&key, aad, plaintext)?;
-    Ok(postcard::to_stdvec(&LegacyEnvelope {
-        ephemeral_public_key,
-        nonce,
-        ciphertext,
-    })?)
-}
-
 fn pair_offer_aad(recipient: [u8; 32]) -> Vec<u8> {
     [PAIR_DOMAIN, &recipient].concat()
 }
 
-/// Seal an enrollment token to the soliciting device, in the offer version
-/// its solicitation asked for.
-fn encrypt_pair_offer(
-    token: &str,
-    recipient: [u8; 32],
-    version: WireVersion,
-) -> anyhow::Result<Vec<u8>> {
-    let recipient_public = device_sealing_public(recipient)?;
-    let aad = pair_offer_aad(recipient);
-    match version {
-        WireVersion::V2 => Ok(wrap_v2(&tilo_seal::hpke::seal(
-            &recipient_public,
-            tilo_seal::Label::RelayEnrollOffer,
-            &aad,
-            token.as_bytes(),
-        )?)),
-        WireVersion::V1 => seal_v1_for_transition(
-            &recipient_public,
-            PAIR_DOMAIN,
-            |ephemeral| vec![recipient.to_vec(), ephemeral.to_vec()],
-            &aad,
-            token.as_bytes(),
-        ),
-    }
+/// Seal an enrollment token to the soliciting device.
+fn encrypt_pair_offer(token: &str, recipient: [u8; 32]) -> anyhow::Result<Vec<u8>> {
+    Ok(wrap_v2(&tilo_seal::hpke::seal(
+        &device_sealing_public(recipient)?,
+        tilo_seal::Label::RelayEnrollOffer,
+        &pair_offer_aad(recipient),
+        token.as_bytes(),
+    )?))
 }
 
 fn decrypt_pair_offer(
@@ -1239,21 +1114,12 @@ fn decrypt_pair_offer(
     let recipient_public = recipient.verifying_key().to_bytes();
     let secret = device_sealing_secret(recipient);
     let aad = pair_offer_aad(recipient_public);
-    let plaintext = match v2_body(bytes) {
-        Some(body) => {
+    let plaintext = v2_body(bytes)
+        .and_then(|body| {
             tilo_seal::hpke::open_bytes(&secret, tilo_seal::Label::RelayEnrollOffer, &aad, body)
-                .map_err(anyhow::Error::from)
-        }
-        None => open_v1(
-            bytes,
-            &secret,
-            PAIR_DOMAIN,
-            |ephemeral| vec![recipient_public.to_vec(), ephemeral.to_vec()],
-            |_| aad.clone(),
-        )
-        .map(|(plaintext, _)| plaintext),
-    }
-    .map_err(|_| anyhow::anyhow!("nearby pairing offer was not encrypted for this server"))?;
+                .ok()
+        })
+        .ok_or_else(|| anyhow::anyhow!("nearby pairing offer was not encrypted for this server"))?;
     String::from_utf8(plaintext.to_vec()).context("nearby pairing offer is not text")
 }
 
@@ -1264,7 +1130,7 @@ fn response_aad(token_nonce: [u8; 16], recipient: [u8; 32]) -> Vec<u8> {
     aad
 }
 
-/// Seal an enrollment request to the issuing device (always v2). Returns
+/// Seal an enrollment request to the issuing device. Returns
 /// the envelope and the secret its response will be sealed to.
 fn encrypt_request(
     request: &Request,
@@ -1284,47 +1150,32 @@ fn encrypt_request(
     Ok((wrap_v2(&sealed), response_secret))
 }
 
-/// Open an enrollment request of either wire version, returning where its
-/// response must be sealed to (which also fixes the response's version).
+/// Open an enrollment request, returning where its response must be sealed
+/// to.
 fn decrypt_request(
     bytes: &[u8],
     issuer_device: &ed25519_dalek::SigningKey,
 ) -> anyhow::Result<(Request, ResponseRoute)> {
     let secret = device_sealing_secret(issuer_device);
     let not_for_us = || anyhow::anyhow!("enrollment request was not encrypted for this issuer");
-    if let Some(body) = v2_body(bytes) {
-        let plaintext = tilo_seal::hpke::open_bytes(
-            &secret,
-            tilo_seal::Label::RelayEnrollRequest,
-            &v2_header(),
-            body,
-        )
-        .map_err(|_| not_for_us())?;
-        let decoded: RequestV2Owned = postcard::from_bytes(&plaintext)?;
-        return Ok((
-            decoded.request,
-            ResponseRoute::V2 {
-                response_public_key: decoded.response_public_key,
-            },
-        ));
-    }
-    let (plaintext, ephemeral_public_key) = open_v1(
-        bytes,
+    let body = v2_body(bytes).ok_or_else(not_for_us)?;
+    let plaintext = tilo_seal::hpke::open_bytes(
         &secret,
-        REQUEST_KEY_DOMAIN_V1,
-        |ephemeral| vec![ephemeral.to_vec()],
-        |ephemeral| ephemeral.to_vec(),
+        tilo_seal::Label::RelayEnrollRequest,
+        &v2_header(),
+        body,
     )
     .map_err(|_| not_for_us())?;
+    let decoded: RequestV2Owned = postcard::from_bytes(&plaintext)?;
     Ok((
-        postcard::from_bytes(&plaintext)?,
-        ResponseRoute::V1 {
-            requester_ephemeral_public_key: ephemeral_public_key,
+        decoded.request,
+        ResponseRoute {
+            response_public_key: decoded.response_public_key,
         },
     ))
 }
 
-/// Seal the signed response to the requester, mirroring its wire version.
+/// Seal the signed response to the requester.
 fn encrypt_response(
     response: &Response,
     token_nonce: [u8; 16],
@@ -1333,25 +1184,12 @@ fn encrypt_response(
 ) -> anyhow::Result<Vec<u8>> {
     let plaintext = zeroize::Zeroizing::new(postcard::to_stdvec(response)?);
     let aad = response_aad(token_nonce, recipient);
-    match route {
-        ResponseRoute::V2 {
-            response_public_key,
-        } => Ok(wrap_v2(&tilo_seal::hpke::seal(
-            &tilo_seal::PublicKey::from_bytes(response_public_key),
-            tilo_seal::Label::RelayEnrollResponse,
-            &aad,
-            &plaintext,
-        )?)),
-        ResponseRoute::V1 {
-            requester_ephemeral_public_key,
-        } => seal_v1_for_transition(
-            &tilo_seal::PublicKey::from_bytes(requester_ephemeral_public_key),
-            RESPONSE_KEY_DOMAIN_V1,
-            |_| vec![token_nonce.to_vec(), recipient.to_vec()],
-            &aad,
-            &plaintext,
-        ),
-    }
+    Ok(wrap_v2(&tilo_seal::hpke::seal(
+        &tilo_seal::PublicKey::from_bytes(route.response_public_key),
+        tilo_seal::Label::RelayEnrollResponse,
+        &aad,
+        &plaintext,
+    )?))
 }
 
 fn decrypt_response(
@@ -1361,24 +1199,17 @@ fn decrypt_response(
     response_secret: &tilo_seal::SecretKey,
 ) -> anyhow::Result<Response> {
     let aad = response_aad(token_nonce, recipient);
-    let plaintext = match v2_body(bytes) {
-        Some(body) => tilo_seal::hpke::open_bytes(
-            response_secret,
-            tilo_seal::Label::RelayEnrollResponse,
-            &aad,
-            body,
-        )
-        .map_err(anyhow::Error::from),
-        None => open_v1(
-            bytes,
-            response_secret,
-            RESPONSE_KEY_DOMAIN_V1,
-            |_| vec![token_nonce.to_vec(), recipient.to_vec()],
-            |_| aad.clone(),
-        )
-        .map(|(plaintext, _)| plaintext),
-    }
-    .map_err(|_| anyhow::anyhow!("enrollment response was not encrypted for this device"))?;
+    let plaintext = v2_body(bytes)
+        .and_then(|body| {
+            tilo_seal::hpke::open_bytes(
+                response_secret,
+                tilo_seal::Label::RelayEnrollResponse,
+                &aad,
+                body,
+            )
+            .ok()
+        })
+        .ok_or_else(|| anyhow::anyhow!("enrollment response was not encrypted for this device"))?;
     postcard::from_bytes(&plaintext).map_err(Into::into)
 }
 
@@ -1822,7 +1653,7 @@ fn pair(
         bail!("home-server label must be a printable single-line name");
     }
     let solicitation = postcard::to_stdvec(&PairSolicitation {
-        magic: PAIR_MAGIC_V2,
+        magic: PAIR_MAGIC,
         device_public_key: device.verifying_key().to_bytes(),
         relay_service_node_id,
         label: label.clone(),
@@ -2065,12 +1896,12 @@ fn handle_solicitation(
             token_text,
         });
     }
-    if let (Some(selection), Some(version)) = (selected, solicitation_version(solicitation)) {
-        // Each solicitation is answered in the offer version it asked for.
+    if let Some(selection) = selected
+        && valid_solicitation(solicitation)
+    {
         let offer = encrypt_pair_offer(
             &selection.token_text,
             selection.solicitation.device_public_key,
-            version,
         )?;
         socket.send_to(&offer, sender)?;
     }
@@ -2663,7 +2494,7 @@ mod tests {
                 &signed,
                 [3; 16],
                 device.verifying_key().to_bytes(),
-                ResponseRoute::V2 {
+                ResponseRoute {
                     response_public_key: request_public,
                 },
             )
@@ -3220,9 +3051,7 @@ mod tests {
         {
             let server = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
             let token = "signed-host-enrollment-token";
-            let encrypted =
-                encrypt_pair_offer(token, server.verifying_key().to_bytes(), WireVersion::V2)
-                    .unwrap();
+            let encrypted = encrypt_pair_offer(token, server.verifying_key().to_bytes()).unwrap();
             assert!(v2_body(&encrypted).is_some());
             assert!(
                 !encrypted
@@ -3345,31 +3174,6 @@ mod tests {
         }
     }
 
-    // Byte fixtures produced by the enrollment code before a crypto-stack
-    // upgrade. Enrollment blobs cross devices running different builds, so
-    // decrypting them proves Ed25519-to-X25519 conversion, X25519 agreement,
-    // ChaCha20-Poly1305 and the postcard framing all stayed byte-compatible.
-    const KAT_PAIR_OFFER: &str = "d0e014c51b6faaf168eb9a629804a5cf9eabbb666318369dccaec9eb3a8dbc0d\
-        07189ed4428bc2d1c596e9782167343cec81004105d1275f7105e70365bedcfe\
-        fc511381c19fef25960fd9444a62";
-    const KAT_REQUEST: &str = "49681ddb0d310c132f72f076bbaac37b9be5edbe98ee074e216b42299532274d\
-        1465fd79f168e36085d553de66f27e784ca62d250acb45d8040a55346ccd5dd3\
-        4f78c085e59326b7fd8374279b404d0f3ef67bcf405fda1a8d83f706d3420904\
-        26aaf976690c8a63213d242e47765f3640906728c76823bc3e189762bf3eae40\
-        c6883b3a5176c6d99d12fff3f424405981e733";
-    const KAT_RESPONSE: &str = "7a7009cf2b5bedfe755de254721eca30a874669a6694d7014baece97b5448510\
-        b6817a3cf12ffce507ab4b2ce7022762eb9d9dfc5fc8ce997f151429a3b17c46\
-        8bc8b61e724e5064d8918ec4e5450388294a24e29b8626145fd6d5cb782a3f27\
-        c18725e4f9664fe265ee832db061bf70d49082a4f8946133bc784aa36ec8565a\
-        90ca8fb99ff752c06f3b6677b7a95d4409d4eb1985fdebd10044f1e7b72e0347\
-        3beeea80a610ba90b6d027b81211ecf818304d6fbba3bab98908e8e2ebaf584d\
-        6b511b9f4c017c7476d2a144b5e519c73a6de2a1ed8e36415e5081553b6b6b37\
-        27603b281f6e9ead1c690fafbaa1286d39a3eb685e9fb154a87800aa1e580015\
-        8061468aec871810f870d33413b8fb61d48c8760ce1bf1f94075a9a48441beb7\
-        aebe3cf154d76054060ee25110c7e78481abbd493f8d47ec8c7215c48d086f5a\
-        d42343e8923340ae8e1461dd874130c8907631761c1169f9cd89afca1c316025\
-        3b8ab6ba3b0eef0eff1abaf1f1c45a2028801ecdbdfcd5c8f2589f12aeaad3ea\
-        fb16e4d76d3037caef5a0f242c4f5547bf575f6450";
     const KAT_RESPONSE_SIGNATURE: &str = "a645d9aa10752fbf8b19d1ccca48b9cf5405d6ec88eb69fea45df36466edda10\
         e8b1bf1f0d85e9f224b21f75a7251771b1482ce6ceed2ce018d43895124e6f0c";
     const KAT_ACK: &str = "0404040404040404040404040404040417cb79fb2b4120f2b1ec65e4198d6e08\
@@ -3380,25 +3184,12 @@ mod tests {
 
     #[test]
     fn pairing_crypto_matches_known_answers() {
-        // Phase `known_answer_x25519_agreement_and_ed25519_conversion`.
+        // Phase `known_answer_x25519_and_ed25519_conversion`.
         {
             let a = tilo_seal::SecretKey::from_bytes([0x11; 32]);
-            let b = tilo_seal::SecretKey::from_bytes([0x22; 32]);
             assert_eq!(
                 hex::encode(a.public_key().unwrap().to_bytes()),
                 "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13"
-            );
-            // The legacy KDF is BLAKE3(domain || shared || context); with an
-            // empty domain and context it is BLAKE3 of the raw agreement, which
-            // pins the X25519 output an earlier build computed.
-            let shared =
-                hex::decode("9e004098efc091d4ec2663b4e9f5cfd4d7064571690b4bea97ab146ab9f35056")
-                    .unwrap();
-            assert_eq!(
-                tilo_seal::legacy::blake3_x25519_key(&a, &b.public_key().unwrap(), b"", &[])
-                    .unwrap()
-                    .expose_secret(),
-                blake3::hash(&shared).as_bytes()
             );
             let recipient = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
             assert_eq!(
@@ -3410,54 +3201,12 @@ mod tests {
                 "931aad030ad93d3ff8042699324fdb230585be4daf500266eaa4b8f747543f50"
             );
         }
-        // Phase `known_answer_pair_offer_opens`.
-        {
-            let recipient = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
-            let offer = hex::decode(KAT_PAIR_OFFER).unwrap();
-            assert_eq!(
-                decrypt_pair_offer(&offer, &recipient).unwrap(),
-                "kat-pairing-token"
-            );
-            let wrong = ed25519_dalek::SigningKey::from_bytes(&[0x22; 32]);
-            assert!(decrypt_pair_offer(&offer, &wrong).is_err());
-        }
-        // Phase `known_answer_request_opens`.
-        {
-            let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-            let bytes = hex::decode(KAT_REQUEST).unwrap();
-            let (request, route) = decrypt_request(&bytes, &issuer).unwrap();
-            assert_eq!(request.token, "kat-bearer-token");
-            assert_eq!(request.device_public_key, [7; 32]);
-            assert_eq!(request.relay_service_node_id, [8; 32]);
-            assert_eq!(request.label, "NAS");
-            assert!(matches!(request.kind, EnrollmentKind::HomePeer));
-            assert_eq!(
-                route,
-                ResponseRoute::V1 {
-                    requester_ephemeral_public_key: bytes[..32].try_into().unwrap()
-                }
-            );
-        }
-        // Phase `known_answer_response_opens_and_verifies`.
+        // Phase `known_answer_response_signature_verifies`.
         {
             let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-            let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
             let signed = sign_response(payload(&root), &root).unwrap();
             assert_eq!(hex::encode(&signed.signature), KAT_RESPONSE_SIGNATURE);
-            let request_ephemeral = tilo_seal::SecretKey::from_bytes([0x5a; 32]);
-            let decrypted = decrypt_response(
-                &hex::decode(KAT_RESPONSE).unwrap(),
-                [3; 16],
-                device.verifying_key().to_bytes(),
-                &request_ephemeral,
-            )
-            .unwrap();
-            assert_eq!(hex::encode(&decrypted.signature), KAT_RESPONSE_SIGNATURE);
-            assert_eq!(
-                postcard::to_stdvec(&decrypted.payload).unwrap(),
-                postcard::to_stdvec(&signed.payload).unwrap()
-            );
-            verify_response(&decrypted, root.verifying_key().to_bytes()).unwrap();
+            verify_response(&signed, root.verifying_key().to_bytes()).unwrap();
         }
         // Phase `known_answer_ack_signature`.
         {
@@ -3472,37 +3221,6 @@ mod tests {
             )
             .unwrap();
         }
-    }
-
-    /// A request in the v1 wire format, as a device running an earlier
-    /// build still sends it. Returns the envelope and the requester's
-    /// ephemeral secret that a v1 response is sealed to.
-    fn legacy_v1_request(
-        request: &Request,
-        issuer_device_public_key: [u8; 32],
-    ) -> (Vec<u8>, tilo_seal::SecretKey) {
-        let (ephemeral, ephemeral_public_key) = v1_ephemeral().unwrap();
-        let issuer = device_sealing_public(issuer_device_public_key).unwrap();
-        let key = tilo_seal::legacy::blake3_x25519_key(
-            &ephemeral,
-            &issuer,
-            REQUEST_KEY_DOMAIN_V1,
-            &[&ephemeral_public_key],
-        )
-        .unwrap();
-        let (nonce, ciphertext) = tilo_seal::legacy::seal_chacha20poly1305_for_transition(
-            &key,
-            &ephemeral_public_key,
-            &postcard::to_stdvec(request).unwrap(),
-        )
-        .unwrap();
-        let bytes = postcard::to_stdvec(&LegacyEnvelope {
-            ephemeral_public_key,
-            nonce,
-            ciphertext,
-        })
-        .unwrap();
-        (bytes, ephemeral)
     }
 
     fn sample_request() -> Request {
@@ -3522,7 +3240,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
     )]
-    fn pairing_envelope_versions_are_negotiated_and_step_bound() {
+    fn pairing_envelopes_are_step_bound() {
         // Phase `v2_request_gets_a_v2_response_only_the_requester_opens`.
         {
             let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
@@ -3533,7 +3251,6 @@ mod tests {
             assert_eq!(&bytes[..8], b"TLOENRL\x02");
             let (request, route) = decrypt_request(&bytes, &issuer).unwrap();
             assert_eq!(request.token, "bearer");
-            assert!(matches!(route, ResponseRoute::V2 { .. }));
             let signed = sign_response(payload(&root), &root).unwrap();
             let response =
                 encrypt_response(&signed, [3; 16], device.verifying_key().to_bytes(), route)
@@ -3569,76 +3286,33 @@ mod tests {
             );
             assert!(decrypt_response(&response, [3; 16], [1; 32], &response_secret).is_err());
         }
-        // Phase `v1_request_is_still_accepted_and_answered_in_v1`.
-        {
-            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-            let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-            let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-            let (bytes, requester_ephemeral) =
-                legacy_v1_request(&sample_request(), issuer.verifying_key().to_bytes());
-            assert!(v2_body(&bytes).is_none());
-            let (request, route) = decrypt_request(&bytes, &issuer).unwrap();
-            assert_eq!(request.token, "bearer");
-            assert_eq!(
-                route,
-                ResponseRoute::V1 {
-                    requester_ephemeral_public_key: requester_ephemeral
-                        .public_key()
-                        .unwrap()
-                        .to_bytes()
-                }
-            );
-            let signed = sign_response(payload(&root), &root).unwrap();
-            let response =
-                encrypt_response(&signed, [3; 16], device.verifying_key().to_bytes(), route)
-                    .unwrap();
-            // An earlier build parses exactly the v1 framing.
-            assert!(v2_body(&response).is_none());
-            let envelope: LegacyEnvelope = postcard::from_bytes(&response).unwrap();
-            assert_eq!(postcard::to_stdvec(&envelope).unwrap(), response);
-            let opened = decrypt_response(
-                &response,
-                [3; 16],
-                device.verifying_key().to_bytes(),
-                &requester_ephemeral,
-            )
-            .unwrap();
-            verify_response(&opened, root.verifying_key().to_bytes()).unwrap();
-        }
-        // Phase `pair_offers_mirror_the_solicitation_version`.
+        // Phase `pair_offers_answer_only_the_current_solicitation_magic`.
         {
             let server = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
             let mut solicitation = PairSolicitation {
-                magic: PAIR_MAGIC_V1,
+                magic: PAIR_MAGIC,
                 device_public_key: server.verifying_key().to_bytes(),
                 relay_service_node_id: [8; 32],
                 label: "NAS".into(),
                 kind: EnrollmentKind::HomePeer,
             };
-            assert_eq!(solicitation_version(&solicitation), Some(WireVersion::V1));
-            let v1 = encrypt_pair_offer("token", solicitation.device_public_key, WireVersion::V1)
-                .unwrap();
-            assert!(v2_body(&v1).is_none());
-            assert!(postcard::from_bytes::<LegacyEnvelope>(&v1).is_ok());
-            assert_eq!(decrypt_pair_offer(&v1, &server).unwrap(), "token");
+            assert!(valid_solicitation(&solicitation));
+            let offer = encrypt_pair_offer("token", solicitation.device_public_key).unwrap();
+            assert!(v2_body(&offer).is_some());
+            assert_eq!(decrypt_pair_offer(&offer, &server).unwrap(), "token");
 
-            solicitation.magic = PAIR_MAGIC_V2;
-            assert_eq!(solicitation_version(&solicitation), Some(WireVersion::V2));
-            let v2 = encrypt_pair_offer("token", solicitation.device_public_key, WireVersion::V2)
-                .unwrap();
-            assert!(v2_body(&v2).is_some());
-            assert_eq!(decrypt_pair_offer(&v2, &server).unwrap(), "token");
-
-            solicitation.magic = *b"TLOPAIR9";
-            assert!(!valid_solicitation(&solicitation));
+            for magic in [*b"TLOPAIR1", *b"TLOPAIR9"] {
+                solicitation.magic = magic;
+                assert!(!valid_solicitation(&solicitation));
+            }
         }
         // Phase `version_prefix_decides_the_parser_and_tampering_fails`.
         {
             let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
             let (bytes, _) =
                 encrypt_request(&sample_request(), issuer.verifying_key().to_bytes()).unwrap();
-            // Every byte of a v2 envelope is covered: flipping the version or any
-            // sealed byte fails, and a stripped prefix is not read as v1.
+            // Every byte of an envelope is covered: flipping the version or any
+            // sealed byte fails, and a stripped prefix is refused.
             for index in 0..bytes.len() {
                 let mut tampered = bytes.clone();
                 tampered[index] ^= 1;
@@ -3647,19 +3321,11 @@ mod tests {
             assert!(decrypt_request(&bytes[8..], &issuer).is_err());
             let wrong = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
             assert!(decrypt_request(&bytes, &wrong).is_err());
-            // A v1 envelope never begins with the v2 prefix.
-            for _ in 0..32 {
-                let (legacy, _) =
-                    legacy_v1_request(&sample_request(), issuer.verifying_key().to_bytes());
-                assert!(v2_body(&legacy).is_none());
-            }
         }
         // Phase `v2_envelopes_do_not_open_as_another_step`.
         {
             let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-            let offer =
-                encrypt_pair_offer("token", device.verifying_key().to_bytes(), WireVersion::V2)
-                    .unwrap();
+            let offer = encrypt_pair_offer("token", device.verifying_key().to_bytes()).unwrap();
             // Same recipient key, different step label: the request reader
             // must refuse the pairing offer.
             assert!(decrypt_request(&offer, &device).is_err());
