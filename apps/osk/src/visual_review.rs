@@ -206,6 +206,16 @@ fn states() -> Vec<State> {
             after_layout: |osk| long_press(osk, "o", 8),
         },
         State {
+            name: "french-longpress-e",
+            build: || OskWidget::new().with_active_layout("azerty"),
+            after_layout: |osk| long_press(osk, "e", 1),
+        },
+        State {
+            name: "french-longpress-o",
+            build: || OskWidget::new().with_active_layout("azerty"),
+            after_layout: |osk| long_press(osk, "o", 2),
+        },
+        State {
             name: "space-cursor",
             build: plain,
             after_layout: |osk| {

@@ -146,46 +146,58 @@ impl Key {
         }
     }
 
-    /// What a long press on this key offers: the letter itself first, then
-    /// its accented forms, cased for `shift`. Empty for keys without any.
-    pub fn alternates(&self, shift: ShiftState) -> Vec<String> {
+    /// What a long press on this key offers: the letter itself first (so a
+    /// press released without sliding types it), then its accented forms,
+    /// cased for `shift`. `usage` says how often the typing language uses a
+    /// form: forms it uses come first, most used first; the rest follow in
+    /// [`ALTERNATES`] order. Empty for keys without accented forms.
+    pub fn alternates(&self, shift: ShiftState, usage: impl Fn(char) -> f64) -> Vec<String> {
         let KeyAction::Char(s) = &self.action else {
             return Vec::new();
         };
         let Some(&(_, forms)) = ALTERNATES.iter().find(|(base, _)| base == s) else {
             return Vec::new();
         };
-        let case = |form: &str| {
+        let mut ranked: Vec<(usize, f64, char)> = forms
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| (i, usage(c).max(0.0), c))
+            .collect();
+        // Stable on the inventory order for equal (including zero) usage.
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        let case = |c: char| {
+            let form = c.to_string();
             let upper = form.to_uppercase();
             // Casing must not change the length (ß → SS): keep such forms.
-            if shift.is_upper() && upper.chars().count() == form.chars().count() {
+            if shift.is_upper() && upper.chars().count() == 1 {
                 upper
             } else {
-                form.to_string()
+                form
             }
         };
-        std::iter::once(s.as_str())
-            .chain(forms.iter().copied())
-            .map(case)
+        let base = s.chars().next().map(case);
+        base.into_iter()
+            .chain(ranked.into_iter().map(|(_, _, c)| case(c)))
             .collect()
     }
 }
 
 /// Accented forms offered on a long press, for the Latin letters the shipped
-/// layouts type (French, German, Spanish, Portuguese, Nordic and Central
-/// European forms), most common first.
-const ALTERNATES: &[(&str, &[&str])] = &[
-    ("a", &["à", "á", "â", "ä", "æ", "ã", "å", "ā"]),
-    ("c", &["ç", "ć", "č"]),
-    ("e", &["é", "è", "ê", "ë", "ē", "ę", "ė"]),
-    ("i", &["î", "ï", "í", "ì", "ī"]),
-    ("l", &["ł"]),
-    ("n", &["ñ", "ń"]),
-    ("o", &["ô", "ö", "ó", "ò", "œ", "ø", "õ", "ō"]),
-    ("s", &["ß", "ś", "š"]),
-    ("u", &["ù", "û", "ü", "ú", "ū"]),
-    ("y", &["ÿ", "ý"]),
-    ("z", &["ž", "ź", "ż"]),
+/// layouts type: French (é è ê ë à â ç ù û ü ô œ î ï ÿ), German, Spanish,
+/// Portuguese, Nordic and Central European. The typing language's usage
+/// reorders them (see [`Key::alternates`]); this order breaks ties.
+const ALTERNATES: &[(&str, &[char])] = &[
+    ("a", &['à', 'â', 'á', 'ä', 'æ', 'ã', 'å', 'ā']),
+    ("c", &['ç', 'ć', 'č']),
+    ("e", &['é', 'è', 'ê', 'ë', 'ē', 'ę', 'ė']),
+    ("i", &['î', 'ï', 'í', 'ì', 'ī']),
+    ("l", &['ł']),
+    ("n", &['ñ', 'ń']),
+    ("o", &['ô', 'œ', 'ö', 'ó', 'ò', 'ø', 'õ', 'ō']),
+    ("s", &['ß', 'ś', 'š']),
+    ("u", &['ù', 'û', 'ü', 'ú', 'ū']),
+    ("y", &['ÿ', 'ý']),
+    ("z", &['ž', 'ź', 'ż']),
 ];
 
 /// Shift / caps-lock state. The transition cycle on tapping Shift is
