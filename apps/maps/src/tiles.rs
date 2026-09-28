@@ -22,7 +22,9 @@
 //! never a blank frame.
 
 use std::collections::HashMap;
-use std::collections::VecDeque;
+use std::num::NonZeroUsize;
+
+use lru::LruCache;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -45,7 +47,10 @@ pub const TILE_PX: f64 = 256.0;
 /// How many decoded tiles we keep resident in RAM. Each tile is 256×256×4 ≈
 /// 256 KiB, so 512 tiles ≈ 128 MiB worst case — comfortable, and far more
 /// than any single viewport needs (a 4K screen covers < 150 tiles).
-const MEM_CACHE_CAP: usize = 512;
+const MEM_CACHE_CAP: NonZeroUsize = match NonZeroUsize::new(512) {
+    Some(cap) => cap,
+    None => NonZeroUsize::MIN,
+};
 
 /// First retry delay for a tile whose fetch failed. The delay doubles on each
 /// consecutive failure (see [`FAIL_BACKOFF_MAX`]).
@@ -203,10 +208,9 @@ impl DownloadProgress {
 
 /// The non-blocking tile layer owned by the app.
 pub struct TileLayer {
-    /// Decoded tiles resident in memory, keyed by `z/x/y`.
-    mem: HashMap<TileId, DecodedTile>,
-    /// LRU recency queue (front = oldest) used to evict from `mem`.
-    lru: VecDeque<TileId>,
+    /// Decoded tiles resident in memory, keyed by `z/x/y`, least recently
+    /// used evicted first.
+    mem: LruCache<TileId, DecodedTile>,
     /// Tiles already requested and awaiting the worker, so we don't enqueue
     /// the same tile twice per frame.
     inflight: std::collections::HashSet<TileId>,
@@ -282,8 +286,7 @@ impl TileLayer {
             .spawn(move || worker(&job_rx, &done_tx, &dir, &base_url))
             .is_ok();
         Self {
-            mem: HashMap::new(),
-            lru: VecDeque::new(),
+            mem: LruCache::new(MEM_CACHE_CAP),
             inflight: std::collections::HashSet::new(),
             failed: HashMap::new(),
             job_tx: spawned.then_some(job_tx),
@@ -311,7 +314,6 @@ impl TileLayer {
         }
         // Wrong-tone imagery must not linger through the switch.
         self.mem.clear();
-        self.lru.clear();
         self.inflight.clear();
         self.failed.clear();
         // Re-spawn the worker for the new style (live layers only; offline layers
@@ -348,8 +350,7 @@ impl TileLayer {
     /// disposable temp dir instead of the user's real default cache.
     pub fn offline_with_cache_dir(cache_dir: PathBuf) -> Self {
         Self {
-            mem: HashMap::new(),
-            lru: VecDeque::new(),
+            mem: LruCache::new(MEM_CACHE_CAP),
             inflight: std::collections::HashSet::new(),
             failed: HashMap::new(),
             job_tx: None,
@@ -465,12 +466,7 @@ impl TileLayer {
 
     /// Look up a decoded tile, marking it most-recently-used.
     pub fn get(&mut self, id: TileId) -> Option<&PenikoImage> {
-        if self.mem.contains_key(&id) {
-            self.touch(id);
-            self.mem.get(&id).map(|t| &t.image)
-        } else {
-            None
-        }
+        self.mem.get(&id).map(|t| &t.image)
     }
 
     /// Has this tile been requested but not yet returned?
@@ -494,7 +490,7 @@ impl TileLayer {
     /// suppressed by the failure backoff. Returns immediately — the UI thread
     /// never blocks on I/O or decode.
     pub fn request(&mut self, id: TileId) {
-        if self.mem.contains_key(&id) || self.inflight.contains(&id) {
+        if self.mem.contains(&id) || self.inflight.contains(&id) {
             return;
         }
         // Negative cache: a tile whose fetch recently failed is not requested
@@ -558,10 +554,7 @@ impl TileLayer {
             let base_y = parent.y << depth;
             for j in 0..span {
                 for i in 0..span {
-                    if self
-                        .mem
-                        .contains_key(&TileId::new(cz, base_x + i, base_y + j))
-                    {
+                    if self.mem.contains(&TileId::new(cz, base_x + i, base_y + j)) {
                         return true;
                     }
                 }
@@ -578,8 +571,7 @@ impl TileLayer {
         let mut up = 0u8;
         while let Some(p) = cur.parent() {
             up += 1;
-            if self.mem.contains_key(&p) {
-                self.touch(p);
+            if self.mem.promote(&p) {
                 return Some((p, up));
             }
             cur = p;
@@ -623,7 +615,6 @@ impl TileLayer {
     /// dark tiles); for a test/offline layer it is exactly its `cache_dir`.
     pub fn clear_cache(&mut self) -> u64 {
         self.mem.clear();
-        self.lru.clear();
         self.inflight.clear();
         self.failed.clear();
         self.progress = DownloadProgress::default();
@@ -643,10 +634,7 @@ impl TileLayer {
     pub fn delete_tiles(&mut self, ids: &[TileId]) -> u64 {
         let mut freed = 0u64;
         for id in ids {
-            self.mem.remove(id);
-            if let Some(pos) = self.lru.iter().position(|t| t == id) {
-                self.lru.remove(pos);
-            }
+            self.mem.pop(id);
             let path = self.cache_dir.join(id.cache_rel());
             if let Ok(meta) = std::fs::metadata(&path) {
                 freed += meta.len();
@@ -664,25 +652,7 @@ impl TileLayer {
 
     // --- internal ----------------------------------------------------------
     fn insert(&mut self, id: TileId, tile: DecodedTile) {
-        if self.mem.insert(id, tile).is_none() {
-            self.lru.push_back(id);
-        } else {
-            self.touch(id);
-        }
-        while self.mem.len() > MEM_CACHE_CAP {
-            if let Some(old) = self.lru.pop_front() {
-                self.mem.remove(&old);
-            } else {
-                break;
-            }
-        }
-    }
-
-    fn touch(&mut self, id: TileId) {
-        if let Some(pos) = self.lru.iter().position(|&t| t == id) {
-            self.lru.remove(pos);
-        }
-        self.lru.push_back(id);
+        self.mem.put(id, tile);
     }
 
     // --- test hooks --------------------------------------------------------
@@ -1307,15 +1277,15 @@ mod tests {
         {
             let mut layer = TileLayer::offline();
             let img = make_image(vec![0u8; 4 * 4 * 4], 4, 4).unwrap();
-            for i in 0..(MEM_CACHE_CAP as u32 + 50) {
+            for i in 0..(MEM_CACHE_CAP.get() as u32 + 50) {
                 layer.insert(TileId::new(14, i, 0), DecodedTile { image: img.clone() });
             }
-            assert!(layer.mem_len() <= MEM_CACHE_CAP);
+            assert!(layer.mem_len() <= MEM_CACHE_CAP.get());
             // The most-recently-inserted tile must still be resident.
             assert!(
                 layer
                     .mem
-                    .contains_key(&TileId::new(14, MEM_CACHE_CAP as u32 + 49, 0))
+                    .contains(&TileId::new(14, MEM_CACHE_CAP.get() as u32 + 49, 0))
             );
         }
     }
