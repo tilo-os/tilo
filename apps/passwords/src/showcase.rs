@@ -1266,7 +1266,7 @@ impl PasswordsSurface {
                 let lease =
                     accounts::ClipboardLease::new(secret, std::time::Duration::from_secs(30));
                 let clearing = ui::rt::spawn_thread("passwords-clipboard-clear", move || {
-                    std::thread::sleep(std::time::Duration::from_secs(30));
+                    let _ = ui::rt::sleep_thread(std::time::Duration::from_secs(30));
                     let current = ui::text_selection::clipboard_paste();
                     if lease.should_clear(current.as_deref()) {
                         let _ = ui::try_clipboard_copy("");
@@ -1295,7 +1295,7 @@ impl PasswordsSurface {
                     secret,
                     ui::time::now()
                         .checked_add(std::time::Duration::from_secs(10))
-                        .unwrap_or_else(ui::time::Instant::now),
+                        .unwrap_or_else(ui::time::now),
                 ));
             }
             Err(error) => self.status = error,
@@ -1785,7 +1785,7 @@ impl PasswordsSurface {
         };
         let items = model.items();
         let csv = crate::transfer::export_browser_csv(&items);
-        atomic_file::write_with_mode(path, csv.as_bytes(), 0o600)
+        tilo_files::native::atomic::write_with_mode(path, csv.as_bytes(), 0o600)
             .map_err(|_| "Could not finish writing the selected file".to_string())?;
         Ok(items.len())
     }
@@ -1800,7 +1800,7 @@ impl PasswordsSurface {
         };
         let items = model.items();
         let backup = crate::transfer::export_encrypted_backup(&items, passphrase)?;
-        atomic_file::write_with_mode(path, &backup, 0o600)
+        tilo_files::native::atomic::write_with_mode(path, &backup, 0o600)
             .map_err(|_| "Could not finish writing the selected backup".to_string())?;
         Ok(items.len())
     }
@@ -5347,7 +5347,7 @@ impl Widget for PasswordsSurface {
             let deadline = self.transfer_poll_deadline.get().unwrap_or_else(|| {
                 ui::time::now()
                     .checked_add(std::time::Duration::from_millis(16))
-                    .unwrap_or_else(ui::time::Instant::now)
+                    .unwrap_or_else(ui::time::now)
             });
             self.transfer_poll_deadline.set(Some(deadline));
             Some(deadline)

@@ -128,41 +128,40 @@ pub enum Fonts {
     Failed(String),
 }
 
-/// The browser bundle ships the fonts `typst-assets` embeds as host data
-/// (`build.sh` copies them from the crate, checking them against this list),
-/// fetched when the editor opens.
-#[cfg(target_arch = "wasm32")]
+/// Typst's bundled fonts: embedded in native builds, and in a page fetched
+/// from the host by name when the editor opens (`tilo_typst_fonts`).
 mod fonts {
     use typst::foundations::Bytes;
     use typst::text::Font;
 
     use super::Fonts;
 
-    pub const BROWSER_FONTS: [&str; 17] = [
-        "typst/LibertinusSerif-Regular.otf",
-        "typst/LibertinusSerif-Bold.otf",
-        "typst/LibertinusSerif-Italic.otf",
-        "typst/LibertinusSerif-BoldItalic.otf",
-        "typst/LibertinusSerif-Semibold.otf",
-        "typst/LibertinusSerif-SemiboldItalic.otf",
-        "typst/NewCMMath-Bold.otf",
-        "typst/NewCMMath-Book.otf",
-        "typst/NewCMMath-Regular.otf",
-        "typst/NewCM10-Regular.otf",
-        "typst/NewCM10-Bold.otf",
-        "typst/NewCM10-Italic.otf",
-        "typst/NewCM10-BoldItalic.otf",
-        "typst/DejaVuSansMono-Bold.ttf",
-        "typst/DejaVuSansMono-BoldOblique.ttf",
-        "typst/DejaVuSansMono-Oblique.ttf",
-        "typst/DejaVuSansMono.ttf",
-    ];
-
     /// The bundled fonts available now.
     pub fn bundled() -> (Vec<Font>, Fonts) {
+        if tilo_typst_fonts::EMBEDDED {
+            (embedded(), Fonts::Ready)
+        } else {
+            from_host()
+        }
+    }
+
+    #[cfg(feature = "thin")]
+    fn embedded() -> Vec<Font> {
+        runtime_dylib::typst_fonts()
+    }
+
+    #[cfg(not(feature = "thin"))]
+    fn embedded() -> Vec<Font> {
+        tilo_typst_fonts::embedded()
+            .into_iter()
+            .flat_map(|data| Font::iter(Bytes::new(data)))
+            .collect()
+    }
+
+    fn from_host() -> (Vec<Font>, Fonts) {
         let mut fonts = Vec::new();
         let mut state = Fonts::Ready;
-        for name in BROWSER_FONTS {
+        for name in tilo_typst_fonts::HOST_FONTS {
             match ui::host_data::request(name) {
                 ui::host_data::Status::Ready(bytes) => fonts.extend(Font::iter(Bytes::new(bytes))),
                 ui::host_data::Status::Pending => state = Fonts::Loading,
@@ -177,32 +176,10 @@ mod fonts {
     }
 
     pub fn loading() -> bool {
-        BROWSER_FONTS
-            .iter()
-            .any(|name| ui::host_data::request(name) == ui::host_data::Status::Pending)
-    }
-}
-
-/// Every other build embeds the fonts.
-#[cfg(not(target_arch = "wasm32"))]
-mod fonts {
-    use typst::foundations::Bytes;
-    use typst::text::Font;
-
-    use super::Fonts;
-
-    pub fn bundled() -> (Vec<Font>, Fonts) {
-        #[cfg(feature = "thin")]
-        let fonts = runtime_dylib::typst_fonts();
-        #[cfg(not(feature = "thin"))]
-        let fonts: Vec<Font> = typst_assets::fonts()
-            .flat_map(|data| Font::iter(Bytes::new(data)))
-            .collect();
-        (fonts, Fonts::Ready)
-    }
-
-    pub fn loading() -> bool {
-        false
+        !tilo_typst_fonts::EMBEDDED
+            && tilo_typst_fonts::HOST_FONTS
+                .iter()
+                .any(|name| ui::host_data::request(name) == ui::host_data::Status::Pending)
     }
 }
 
@@ -244,13 +221,11 @@ impl WorldParts {
     }
 
     fn build() -> Self {
-        let (fonts, state) = fonts::bundled();
-        #[cfg(target_os = "windows")]
-        let fonts = {
-            let mut fonts = fonts;
+        let (mut fonts, state) = fonts::bundled();
+        if tilo_typst_fonts::BORROW_SYSTEM_EMOJI {
             // The toolkit already validates and shares the installed font
             // catalog. Reuse its emoji face instead of bundling a second
-            // copy or relying on machine-specific Windows font discovery.
+            // copy or relying on machine-specific system font discovery.
             let system = ui::text_render::configured_font_system();
             let database = system.db();
             if let Some(face) = database.faces().find(|face| {
@@ -262,8 +237,7 @@ impl WorldParts {
             }) {
                 fonts.push(font);
             }
-            fonts
-        };
+        }
         let book = FontBook::from_fonts(fonts.iter());
         Self {
             library: LazyHash::new(Library::builder().build()),

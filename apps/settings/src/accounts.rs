@@ -174,8 +174,12 @@ impl AccountRoot {
         };
         let bytes = serde_json::to_vec(&journal)
             .map_err(|error| format!("could not serialize account transaction: {error}"))?;
-        atomic_file::write_creating_parent_with_mode(&self.mutation_journal_path()?, &bytes, 0o600)
-            .map_err(|error| format!("could not persist account transaction intent: {error}"))
+        tilo_files::native::atomic::write_creating_parent_with_mode(
+            &self.mutation_journal_path()?,
+            &bytes,
+            0o600,
+        )
+        .map_err(|error| format!("could not persist account transaction intent: {error}"))
     }
 
     /// # Errors
@@ -227,8 +231,12 @@ impl AccountRoot {
         let vault_path = accounts::vault_dir_in(&self.require()?).join("vault.enc");
         match journal.vault_ciphertext {
             Some(ciphertext) => {
-                atomic_file::write_creating_parent_with_mode(&vault_path, &ciphertext, 0o600)
-                    .map_err(|error| format!("could not recover credential vault: {error}"))?;
+                tilo_files::native::atomic::write_creating_parent_with_mode(
+                    &vault_path,
+                    &ciphertext,
+                    0o600,
+                )
+                .map_err(|error| format!("could not recover credential vault: {error}"))?;
             }
             None => match std::fs::remove_file(&vault_path) {
                 Ok(()) => {}

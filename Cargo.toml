@@ -235,6 +235,7 @@ members = [
     "crates/platform/tilo-rt",
     "crates/platform/tilo-secrets",
     "crates/platform/tilo-sandbox",
+    "crates/platform/tilo-typst-fonts",
 
     # Runtime
     "crates/runtime/cli",

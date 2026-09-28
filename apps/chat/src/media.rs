@@ -406,25 +406,7 @@ mod live {
     /// while the loopback test constructs [`IrohTransport`] directly and does
     /// not depend on this probe (iroh QUIC needs no session).
     pub fn environment_supports_media() -> bool {
-        session_bus_present() || std::env::var_os("WAYLAND_DISPLAY").is_some()
-    }
-
-    /// A session bus address that names a socket which exists. The test
-    /// environment points the address at one that never does.
-    fn session_bus_present() -> bool {
-        let Some(address) = std::env::var_os("DBUS_SESSION_BUS_ADDRESS") else {
-            return false;
-        };
-        let address = address.to_string_lossy();
-        address
-            .split(';')
-            .any(|entry| match entry.strip_prefix("unix:path=") {
-                Some(rest) => {
-                    let path = rest.split(',').next().unwrap_or_default();
-                    std::path::Path::new(path).exists()
-                }
-                None => !entry.is_empty(),
-            })
+        tilo_paths::session::has_desktop_session()
     }
 
     /// Every media object on the stream: a little-endian `u32` length, then

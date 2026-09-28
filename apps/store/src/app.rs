@@ -3831,24 +3831,27 @@ impl StoreApp {
             return;
         };
         let update = match outcome {
-            ui::portal::PortalOutcome::Opened(path) => match atomic_file::write(&path, &bytes) {
-                Ok(()) => {
-                    self.status_line = format!("Exported report evidence to {}.", path.display());
-                    tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput::default(),
+            ui::portal::PortalOutcome::Opened(path) => {
+                match tilo_files::native::atomic::write(&path, &bytes) {
+                    Ok(()) => {
+                        self.status_line =
+                            format!("Exported report evidence to {}.", path.display());
+                        tilo_actions::InvocationUpdate::Succeeded {
+                            invocation,
+                            output: tilo_actions::ActionOutput::default(),
+                        }
                     }
-                }
-                Err(error) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "store.report_export_failed".into(),
-                        message: format!("Could not export report evidence: {error}"),
-                        details: None,
-                        retryable: true,
+                    Err(error) => tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "store.report_export_failed".into(),
+                            message: format!("Could not export report evidence: {error}"),
+                            details: None,
+                            retryable: true,
+                        },
                     },
-                },
-            },
+                }
+            }
             ui::portal::PortalOutcome::Cancelled => tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("Export cancelled".into()),

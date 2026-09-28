@@ -107,10 +107,8 @@ impl LocalIdentity {
     /// Deterministic last resort: a `user@host` hash, so even with no disk and
     /// no runtime identity two different machines/users still differ.
     fn from_user_host() -> Self {
-        let user = std::env::var("USER")
-            .or_else(|_| std::env::var("USERNAME"))
-            .unwrap_or_default();
-        let host = hostname();
+        let user = tilo_paths::session::user_name().unwrap_or_default();
+        let host = tilo_paths::session::host_name().unwrap_or_default();
         let seed = format!("{user}@{host}");
         let id = if seed == "@" {
             format!("u_{}", uuid::Uuid::new_v4().simple())
@@ -154,15 +152,10 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     std::hash::Hasher::finish(&hasher)
 }
 
-/// Present a tidy display name from `$USER`, splitting on common separators so
-/// "ada.lovelace" → "Ada Lovelace". Falls back to "You".
+/// Present a tidy display name from the login name, splitting on common
+/// separators so "ada.lovelace" → "Ada Lovelace". Falls back to "You".
 fn user_display() -> String {
-    let raw = std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "You".to_string());
+    let raw = tilo_paths::session::user_name().unwrap_or_else(|| "You".to_string());
     let display: String = raw
         .split(['.', '_', '-', ' '])
         .filter(|p| !p.is_empty())
@@ -188,20 +181,6 @@ fn initials_of(name: &str) -> String {
 /// gave this participant and has to move the monogram with it.
 pub fn initials_for(name: &str) -> String {
     initials_of(name)
-}
-
-fn hostname() -> String {
-    std::env::var("HOSTNAME")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            tilo_files::file_at(std::path::Path::new("/etc/hostname"))
-                .and_then(|(dir, name)| tilo_files::blocking::read(&dir, &name))
-                .ok()
-                .and_then(|bytes| String::from_utf8(bytes).ok())
-                .map(|s| s.trim().to_string())
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

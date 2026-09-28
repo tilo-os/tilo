@@ -109,13 +109,14 @@ fn fetch_rules(
         let _private_write = crate::storage::private_root_write_guard(directory)?;
         std::fs::create_dir_all(directory).map_err(|_| "Cannot save filter cache")?;
         for (path, text) in &downloads {
-            atomic_file::write(path, text.as_bytes()).map_err(|_| "Cannot save filter cache")?;
+            tilo_files::native::atomic::write(path, text.as_bytes())
+                .map_err(|_| "Cannot save filter cache")?;
         }
         let updated = ui::time::wall()
             .duration_since(ui::time::UNIX_EPOCH)
             .ok()
             .map(|duration| duration.as_secs());
-        let _ = atomic_file::write(
+        let _ = tilo_files::native::atomic::write(
             &directory.join("native-filter-updated.json"),
             &serde_json::to_vec(&updated).unwrap_or_default(),
         );

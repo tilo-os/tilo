@@ -52,7 +52,7 @@ chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tracing.workspace = true
 tempfile.workspace = true
 url.workspace = true

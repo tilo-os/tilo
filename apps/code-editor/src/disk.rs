@@ -3,7 +3,7 @@
 //!
 //! Two rules shape this module.
 //!
-//! **Writes are atomic.** A save goes through [`atomic_file::write`], which
+//! **Writes are atomic.** A save goes through [`tilo_files::native::atomic::write`], which
 //! writes a sibling temp file, fsyncs it, and renames it over the target. A
 //! crash or a full disk therefore leaves either the old file or the new one,
 //! never a half-written source file. An editor that can truncate your code on a
@@ -140,7 +140,8 @@ pub fn save(path: &Path, text: &str, expected: Option<&Stamp>) -> Result<Stamp, 
             Err(e) => return Err(SaveError::Io(e)),
         }
     }
-    atomic_file::write_creating_parent(path, text.as_bytes()).map_err(SaveError::Io)?;
+    tilo_files::native::atomic::write_creating_parent(path, text.as_bytes())
+        .map_err(SaveError::Io)?;
     Stamp::of(path).map_err(SaveError::Io)
 }
 

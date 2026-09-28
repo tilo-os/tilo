@@ -33,7 +33,7 @@ use std::sync::Mutex;
 /// Root of the Tilo P2P FUSE filesystem. Every collaborator mounts the same
 /// logical tree here, so a workspace-relative media path resolves to the
 /// same logical file for all peers (the bytes hydrate per-peer on read).
-pub const WORKSPACE_ROOT: &str = "/var/workspace";
+pub use ::media::source::WORKSPACE_ROOT;
 
 /// Sub-directory under the workspace where the editor expects project media
 /// to be imported. Keeping imports under a single prefix makes the

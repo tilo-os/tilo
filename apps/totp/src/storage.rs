@@ -70,13 +70,10 @@ pub(crate) fn force_save_failure_for_test(fail: bool) {
     FORCE_SAVE_FAILURE.with(|forced| forced.set(fail));
 }
 
-/// Resolve `$XDG_DATA_HOME/tilo-authenticator`, then `$HOME/.local/share/...`
-/// (Windows: `LocalAppData`). Returns `None` when no user directory is
-/// available.
+/// `tilo-authenticator` in [`tilo_paths::legacy_data_home`], where existing
+/// vaults live. Returns `None` when no user directory is available.
 pub fn data_dir() -> Option<PathBuf> {
-    let base =
-        xdg_paths::env_dir("XDG_DATA_HOME").or_else(xdg_paths::data_home_or_local_app_data)?;
-    Some(base.join("tilo-authenticator"))
+    Some(tilo_paths::legacy_data_home()?.join("tilo-authenticator"))
 }
 
 /// Path of the encrypted vault (`.../tilo-authenticator/vault.enc`). This is

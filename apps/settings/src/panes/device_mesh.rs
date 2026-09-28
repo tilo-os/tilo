@@ -254,7 +254,7 @@ fn workspace_key(id: u64) -> String {
 }
 
 fn discover_workspaces(config: &RelayConfig) -> Vec<DiscoveredWorkspace> {
-    let path = xdg_paths::config_dir().map_or_else(
+    let path = tilo_paths::config_dir().map_or_else(
         || PathBuf::from("state.json"),
         |dir| dir.join("tilo/state.json"),
     );
@@ -432,7 +432,8 @@ fn load_home_peer_last_seen() -> HashMap<String, u64> {
 
 fn save_home_peer_last_seen(last_seen: &HashMap<String, u64>) {
     if let Ok(bytes) = serde_json::to_vec_pretty(last_seen) {
-        let _ = atomic_file::write_with_mode(&home_peer_health_path(), &bytes, 0o600);
+        let _ =
+            tilo_files::native::atomic::write_with_mode(&home_peer_health_path(), &bytes, 0o600);
     }
 }
 
@@ -472,7 +473,7 @@ pub(crate) fn identity_root() -> PathBuf {
             if PathBuf::from("/var/lib/tilo/device").is_dir() {
                 PathBuf::from("/var/lib/tilo")
             } else {
-                xdg_paths::data_dir()
+                tilo_paths::data_dir()
                     .unwrap_or_else(|| PathBuf::from(".local/share"))
                     .join("tilo")
             }

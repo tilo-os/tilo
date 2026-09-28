@@ -98,8 +98,8 @@ zeroize.workspace = true
 # per-user config root; uuid mints stable account ids.
 serde.workspace = true
 serde_json.workspace = true
-atomic-file = { path = "../../crates/system/atomic-file" }
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 quick-xml.workspace = true
 uuid.workspace = true
 workspace-hack = { version = "0.1" }

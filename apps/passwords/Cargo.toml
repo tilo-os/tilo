@@ -29,7 +29,7 @@ winit.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tilo-seal = { path = "../../crates/system/tilo-seal" }
-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

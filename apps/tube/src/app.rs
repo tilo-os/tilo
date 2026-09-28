@@ -78,10 +78,8 @@ fn resolve_history_owner() -> String {
     {
         return owner;
     }
-    let user = std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_default();
-    let host = std::env::var("HOSTNAME").unwrap_or_default();
+    let user = tilo_paths::session::user_name().unwrap_or_default();
+    let host = tilo_paths::session::host_name().unwrap_or_default();
     let seed = format!("{user}@{host}");
     if seed == "@" {
         owner

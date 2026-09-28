@@ -5599,7 +5599,7 @@ fn tsv_cell(display: &str) -> String {
 /// `$XDG_DATA_HOME/tilo/sheets/workbook.automerge` (falls back to
 /// `~/.local/share`).
 fn workbook_store() -> (tilo_files::Location, tilo_files::VPath) {
-    let location = xdg_paths::env_dir("XDG_DATA_HOME").map_or_else(
+    let location = tilo_paths::env_dir("XDG_DATA_HOME").map_or_else(
         || tilo_paths::AppPaths::for_app("tilo").data(),
         |base| tilo_files::Location::Native(base.join("tilo")),
     );

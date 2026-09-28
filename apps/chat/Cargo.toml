@@ -68,8 +68,9 @@ uuid.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-# XDG data-dir resolution for on-disk persistence of the workspace document.
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+# The data directory for the workspace document, the workspace mount the
+# attachment picker browses, and the session's account and host names.
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 # Read image headers for workspace attachments and encode demo thumbnails for
 # the shared `ui::ImageStore`.
 # Attachment bytes live in the app's content store; no

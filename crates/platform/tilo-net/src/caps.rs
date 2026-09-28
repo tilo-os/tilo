@@ -77,9 +77,10 @@ pub const CAPABILITIES: &[(Feature, [Availability; 3])] = {
             [Available, Available, Unsupported(WEB_SOCKETS)],
         ),
         (Feature::Status, [Available, Available, Available]),
+        // Linux asks NetworkManager, which may not be running.
         (
             Feature::Metered,
-            [Unsupported(NOT_YET), Unsupported(NOT_YET), Available],
+            [Available, Unsupported(NOT_YET), Available],
         ),
     ]
 };

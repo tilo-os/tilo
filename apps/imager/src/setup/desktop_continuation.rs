@@ -448,7 +448,7 @@ pub(super) fn persist_review(choices: &[FolderChoice]) -> Result<(), String> {
 /// off-thread; a missing, unauthentic or incomplete session keeps work pending.
 #[cfg(target_os = "linux")]
 pub(super) fn trusted_identity_complete() -> Result<(), String> {
-    let runtime = xdg_paths::xdg::runtime_dir().ok_or("No Tilo session runtime directory")?;
+    let runtime = tilo_paths::xdg::runtime_dir().ok_or("No Tilo session runtime directory")?;
     let display = std::env::var_os("WAYLAND_DISPLAY")
         .ok_or("Open Add folders inside Tilo after identity setup")?;
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -1084,7 +1084,7 @@ mod tests {
         // wrong account and must never prepare another user's continuation.
         let uid = unsafe { libc::getuid() };
         assert_ne!(uid, 0, "run this fixture as the ordinary proof login user");
-        let home = xdg_paths::home().unwrap().canonicalize().unwrap();
+        let home = tilo_paths::home().unwrap().canonicalize().unwrap();
         let requested = PathBuf::from(
             std::env::var_os("TILO_CONTINUATION_FIXTURE_SOURCE")
                 .expect("set the dedicated fixture root"),

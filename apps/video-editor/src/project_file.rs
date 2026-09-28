@@ -329,7 +329,7 @@ pub mod recents {
         if id.contains('/') || id.contains('\\') || id == "." || id == ".." {
             return None;
         }
-        let base = xdg_paths::xdg::data_home()?;
+        let base = tilo_paths::xdg::data_home()?;
         Some(base.join(id))
     }
 

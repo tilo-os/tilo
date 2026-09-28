@@ -601,8 +601,8 @@ impl TypstApp {
         if let Some(dir) = std::env::var_os("TILO_TYPST_LIBRARY_DIR") {
             return Some(PathBuf::from(dir));
         }
-        xdg_paths::document_dir()
-            .or_else(xdg_paths::data_dir)
+        tilo_paths::document_dir()
+            .or_else(tilo_paths::data_dir)
             .map(|d| d.join("typst_editor"))
     }
 
@@ -2314,7 +2314,7 @@ impl Widget for TypstApp {
         let deadline = self.background_poll_deadline.get().unwrap_or_else(|| {
             ui::time::now()
                 .checked_add(std::time::Duration::from_millis(16))
-                .unwrap_or_else(Instant::now)
+                .unwrap_or_else(ui::time::now)
         });
         self.background_poll_deadline.set(Some(deadline));
         Some(deadline)

@@ -173,7 +173,7 @@ impl AutofillStore {
             .filter(|p| !p.as_os_str().is_empty())
             .ok_or("Address profile directory is unavailable")?;
         std::fs::create_dir_all(parent).map_err(|_| "Cannot create address profile directory")?;
-        atomic_file::write_with_mode(path, &bytes, 0o600)
+        tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
             .map_err(|_| "Cannot save address profiles")?;
         self.saved = next;
         Ok(())
