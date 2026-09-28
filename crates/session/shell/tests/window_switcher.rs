@@ -426,7 +426,19 @@ fn clicking_a_window_in_the_switcher_goes_there() {
     ));
     let focused = h.focused();
     let active = h.host.window_switcher_active();
+    let release_absorbed = h.event(
+        &WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        },
+        ModifiersState::ALT,
+    );
     drop(h);
     assert_eq!(focused, 4);
     assert!(!active);
+    assert!(
+        release_absorbed,
+        "the release of the click that chose a window never reaches that window"
+    );
 }
