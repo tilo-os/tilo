@@ -91,7 +91,7 @@ pick() {
 }
 session_rpm=$(pick tilo-session "$rpm_arch")
 apps_rpm=$(pick tilo-session-apps "$rpm_arch")
-devel_rpm=$(pick tilo-session-devel noarch)
+devel_rpm=$(pick tilo-session-devel "$rpm_arch")
 if [[ -z $session_rpm || -z $apps_rpm ]] && (( ! dry_run )); then
     found=$(find "$out/RPMS" -name 'tilo-session-*.rpm' -printf '  %f\n' 2>/dev/null)
     die "no tilo-session $version-$release RPMs in $out/RPMS (built for HEAD $commit)${found:+; found:
