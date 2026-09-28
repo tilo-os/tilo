@@ -891,10 +891,6 @@ impl HistoryScrubber {
     }
 
     /// Used for every button so styling stays uniform.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Scrubber button painting combines render context, bounds and label, hover state, and primary/neutral styling."
-    )]
     fn draw_button(
         scene: &mut Scene,
         transform: Affine,

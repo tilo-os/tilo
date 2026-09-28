@@ -56,17 +56,19 @@ fn main() {
         let mut y = 0.0f64;
         for index in 0..rows {
             let spans = [ui::richtext::RichSpan::new(format!("{index} {MESSAGE}"))];
-            let layout = ui::richtext::RichTextLayout::shape(
+            let layout = ui::richtext::RichTextLayout::shape_styled(
                 &mut text.font_system,
                 &spans,
-                false,
-                15.0,
-                600.0,
+                &ui::richtext::RichTextLayout::block_style(
+                    false,
+                    15.0,
+                    ui::richtext::FontFamily::Sans,
+                    1.3,
+                ),
+                Some(600.0),
                 ui::richtext::TextAlign::Left,
-                ui::richtext::FontFamily::Sans,
                 Vec::new(),
                 Vec::new(),
-                1.3,
             );
             text.draw_rich(
                 &mut scene,

@@ -4047,10 +4047,6 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
 
 /// Paint a decorated row's leading icon centred vertically on `anchor.y`,
 /// starting at `anchor.x`. Returns the width it occupied.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one icon's paint context: scene, transform, text, theme, the icon, its anchor, the row's line box and the row's transition opacity"
-)]
 fn paint_row_icon(
     scene: &mut Scene,
     transform: Affine,

@@ -177,29 +177,10 @@ pub(crate) fn build_root<A: ResourceApp>(
     let dispatch = Dispatcher::new(A::ID, resource_id, read_only);
     let saved = ui_core::LocalState::new(ui_core::record::RecordSaveStatus::Saved);
     let stages = Stages::new();
-    let mut cx = ViewCx::root(
-        live.clone(),
-        updaters.clone(),
-        &alive,
-        dispatch.clone(),
-        published,
-        saved.clone(),
-        stages.clone(),
-    );
+    let mut cx = ViewCx::root(live, updaters, &alive, dispatch, published, saved, stages);
     let content = A::view(&mut cx);
-    ResourceRoot::new(
-        A::TITLE,
-        icon::<A>(),
-        label,
-        live,
-        updaters,
-        alive,
-        dispatch,
-        saved,
-        stages,
-        content,
-    )
-    .following(permissions, scope)
+    ResourceRoot::new(A::TITLE, icon::<A>(), label, cx, alive, content)
+        .following(permissions, scope)
 }
 
 #[allow(

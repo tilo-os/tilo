@@ -26,6 +26,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -539,10 +540,7 @@ impl Widget for AddDeviceHostScreen {
         } else {
             paint_cell(scene, transform, theme, plan.qr, false);
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 plan.qr,
                 QR_PLACEHOLDER,
                 Role::Caption,
@@ -551,10 +549,7 @@ impl Widget for AddDeviceHostScreen {
             );
         }
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.code,
             &self.code_text(),
             Role::Code,
@@ -562,10 +557,7 @@ impl Widget for AddDeviceHostScreen {
             false,
         );
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.status,
             &self.status,
             Role::Caption,

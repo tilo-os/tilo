@@ -45,6 +45,24 @@ impl HudSwatch {
     }
 }
 
+/// Which controls a [`SelectionHud`] offers besides the always-present Copy:
+/// the highlight swatch row, and the Note and Delete controls when enabled.
+#[derive(Clone, Copy, Debug)]
+pub struct HudControls<'a> {
+    pub swatches: &'a [HudSwatch],
+    pub show_note: bool,
+    pub show_delete: bool,
+}
+
+/// Where a [`SelectionHud`] floats: `anchor` is the horizontal centre and
+/// top-y of the selection's first band, `bounds` the area the bar must stay
+/// inside, both in the drawing transform's space.
+#[derive(Clone, Copy, Debug)]
+pub struct HudPlacement {
+    pub anchor: Point,
+    pub bounds: Rect,
+}
+
 /// Passing resolved colours rather than a `Theme` keeps the component usable
 /// from a reader whose *page* palette differs from OS chrome.
 #[derive(Clone, Copy, Debug)]
@@ -92,7 +110,8 @@ mod dims {
 /// Geometry [`SelectionHud::measure`] computes once and the draw helpers
 /// below consume — split out of [`SelectionHud::draw`] so that function
 /// stays under the line-count limit without changing any of its arithmetic.
-struct HudMeasurements {
+struct HudMeasurements<'a> {
+    controls: HudControls<'a>,
     rect: Rect,
     hud_x: f64,
     cyc: f64,
@@ -103,28 +122,19 @@ struct HudMeasurements {
 }
 
 impl SelectionHud {
-    /// `anchor` is the point the bar floats above (horizontal centre + top-y
-    /// of the selection's first band, in `transform`'s space); the bar
-    /// centres on `anchor.x` and prefers just above `anchor.y`, dropping
-    /// below if that would leave `bounds`. Copy is always present;
-    /// `show_note`/`show_delete` gate the other two controls.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the HUD paints from the scene, transform, renderer, theme and its own geometry inputs, each independently load-bearing"
-    )]
+    /// The bar centres on `placement.anchor.x` and prefers just above
+    /// `placement.anchor.y`, dropping below if that would leave
+    /// `placement.bounds`. `cursor` drives the hover treatment.
     pub fn draw(
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         style: &ReaderHudStyle,
-        swatches: &[HudSwatch],
-        show_note: bool,
-        show_delete: bool,
+        controls: &HudControls<'_>,
+        placement: HudPlacement,
         cursor: Point,
-        anchor: Point,
-        bounds: Rect,
     ) -> Self {
-        let m = Self::measure(tr, swatches, show_note, show_delete, anchor, bounds);
+        let m = Self::measure(tr, *controls, placement);
         let mut hud = SelectionHud {
             rect: m.rect,
             shown: true,
@@ -137,18 +147,8 @@ impl SelectionHud {
         fill_round(scene, transform, m.rect, radius, style.surface);
         stroke_round(scene, transform, m.rect, radius, style.border, 1.0);
 
-        Self::draw_swatches(scene, transform, style, swatches, cursor, &m, &mut hud);
-        Self::draw_pills(
-            scene,
-            transform,
-            tr,
-            style,
-            show_note,
-            show_delete,
-            cursor,
-            &m,
-            &mut hud,
-        );
+        hud.draw_swatches(scene, transform, style, cursor, &m);
+        hud.draw_pills(scene, transform, tr, style, cursor, &m);
 
         hud
     }
@@ -156,19 +156,18 @@ impl SelectionHud {
     /// The sizing/positioning half of [`Self::draw`] — every value here is
     /// pixel-comparing-test-sensitive, so this is pure code motion out of
     /// `draw`, not a rewrite.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the HUD paints from the scene, transform, renderer, theme and its own geometry inputs, each independently load-bearing"
-    )]
-    fn measure(
+    fn measure<'a>(
         tr: &mut TextRenderer,
-        swatches: &[HudSwatch],
-        show_note: bool,
-        show_delete: bool,
-        anchor: Point,
-        bounds: Rect,
-    ) -> HudMeasurements {
+        controls: HudControls<'a>,
+        placement: HudPlacement,
+    ) -> HudMeasurements<'a> {
         use dims::{ANCHOR_GAP, DOT_GAP, DOT_R, HEIGHT, PAD, PILL_GAP, SEP_W, TRASH};
+        let HudControls {
+            swatches,
+            show_note,
+            show_delete,
+        } = controls;
+        let HudPlacement { anchor, bounds } = placement;
 
         // Swatch counts are always small (a handful of highlight colours);
         // this cast can't lose meaningful precision, and the layout formula
@@ -204,6 +203,7 @@ impl SelectionHud {
         let rect = Rect::new(hud_x, hud_y, hud_x + hud_w, hud_y + HEIGHT);
         let cyc = hud_y + HEIGHT / 2.0;
         HudMeasurements {
+            controls,
             rect,
             hud_x,
             cyc,
@@ -216,15 +216,15 @@ impl SelectionHud {
 
     /// The swatch-dot row + its divider, the second half of [`Self::draw`].
     fn draw_swatches(
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         style: &ReaderHudStyle,
-        swatches: &[HudSwatch],
         cursor: Point,
-        m: &HudMeasurements,
-        hud: &mut SelectionHud,
+        m: &HudMeasurements<'_>,
     ) {
         use dims::{DOT_GAP, DOT_R, PAD};
+        let swatches = m.controls.swatches;
 
         let mut x = m.hud_x + PAD + DOT_R;
         for (i, sw) in swatches.iter().enumerate() {
@@ -261,7 +261,7 @@ impl SelectionHud {
                     1.2,
                 );
             }
-            hud.buttons
+            self.buttons
                 .push((dot.inflate(3.0, 3.0), HudAction::Highlight(i)));
             x += DOT_R * 2.0 + DOT_GAP;
         }
@@ -283,22 +283,21 @@ impl SelectionHud {
     }
 
     /// The Copy / Note / Delete pills, the third half of [`Self::draw`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the HUD paints from the scene, transform, renderer, theme and its own geometry inputs, each independently load-bearing"
-    )]
     fn draw_pills(
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         style: &ReaderHudStyle,
-        show_note: bool,
-        show_delete: bool,
         cursor: Point,
-        m: &HudMeasurements,
-        hud: &mut SelectionHud,
+        m: &HudMeasurements<'_>,
     ) {
         use dims::{PAD, PILL_GAP, TRASH};
+        let HudControls {
+            show_note,
+            show_delete,
+            ..
+        } = m.controls;
 
         let dots_end = m.hud_x + PAD + m.dots_w;
         let copy_x = dots_end + m.sep_w;
@@ -327,7 +326,7 @@ impl SelectionHud {
             None,
             TextWeight::Medium,
         );
-        hud.buttons.push((copy_rect, HudAction::Copy));
+        self.buttons.push((copy_rect, HudAction::Copy));
 
         let mut cursor_x = copy_x + m.copy_w;
         if show_note {
@@ -355,7 +354,7 @@ impl SelectionHud {
                 None,
                 TextWeight::Medium,
             );
-            hud.buttons.push((note_rect, HudAction::Note));
+            self.buttons.push((note_rect, HudAction::Note));
             cursor_x = note_x + m.note_w;
         }
 
@@ -373,7 +372,7 @@ impl SelectionHud {
                 if thov { style.danger } else { style.text },
                 1.5,
             );
-            hud.buttons.push((trash, HudAction::Delete));
+            self.buttons.push((trash, HudAction::Delete));
         }
     }
 
@@ -563,12 +562,13 @@ mod tests {
             Affine::IDENTITY,
             &mut tr,
             &style(),
-            &swatches(),
-            show_note,
-            show_delete,
+            &HudControls {
+                swatches: &swatches(),
+                show_note,
+                show_delete,
+            },
+            HudPlacement { anchor, bounds },
             Point::new(-1000.0, -1000.0),
-            anchor,
-            bounds,
         )
     }
 

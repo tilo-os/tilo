@@ -443,7 +443,9 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
 use crate::support::application::{ProbeHost, definition};
 use automerge::{AutoCommit, ObjId, ReadDoc, transaction::Transactable};
 use std::cell::{Cell, RefCell};
-use tilo_ui::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
+use tilo_ui::application::{
+    AppComponent, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+};
 use tilo_ui::local_state::LocalState;
 use tilo_ui::widget::{AppKind, AppWidget, Column, IconDescriptor, TileHost};
 type RefusedNode = (
@@ -1332,13 +1334,15 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
         let permissions = crate::support::application::permissions();
         let context = HostContext::prepare(
             &definition,
-            host.records.clone(),
-            host.views,
-            "D".into(),
-            1,
-            permissions.clone(),
-            crate::support::application::author(),
-            crate::support::application::provenance(),
+            HostContextInputs {
+                records: host.records.clone(),
+                views: host.views,
+                device_id: "D".into(),
+                instance_id: 1,
+                permissions: permissions.clone(),
+                author: crate::support::application::author(),
+                action_context: crate::support::application::provenance(),
+            },
             &LaunchTarget::New,
         )
         .unwrap();
