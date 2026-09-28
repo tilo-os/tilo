@@ -12940,6 +12940,7 @@ dependencies = [
 name = "settings-store"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "atomic-file",
  "notify",
  "serde",

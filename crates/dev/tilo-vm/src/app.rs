@@ -4432,14 +4432,7 @@ pub fn stop_escalating(
         step = StopStep::GuestPoweroff;
         // ssh fails as the guest drops the connection; the wait below judges.
         let _ = runner.output(poweroff);
-        down = await_down(
-            runner,
-            adapter,
-            vm,
-            lock.as_deref_mut(),
-            graces.guest,
-            graces.poll,
-        );
+        down = await_down(runner, adapter, vm, lock, graces.guest, graces.poll);
         if down != Some(false) {
             return Ok((down, step));
         }

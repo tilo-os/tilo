@@ -166,14 +166,7 @@ impl PowerService {
         // Best-effort: if logind refuses the delegate lock we still run our policy; logind may
         // just also act on the lid. Do not fail startup.
         let seat = std::env::var("XDG_SEAT").ok();
-        let delegate = if !receives_seat_buttons(seat.as_deref()) {
-            info!(
-                target: "tilo::power",
-                seat = seat.as_deref().unwrap_or_default(),
-                "logind: lid/power-key stay with logind; they belong to seat0, not this seat"
-            );
-            None
-        } else {
+        let delegate = if receives_seat_buttons(seat.as_deref()) {
             match logind.delegate_handled_keys().await {
                 Ok(l) => {
                     info!(target: "tilo::power", "logind: delegating lid/power-key to compositor policy");
@@ -184,6 +177,13 @@ impl PowerService {
                     None
                 }
             }
+        } else {
+            info!(
+                target: "tilo::power",
+                seat = seat.as_deref().unwrap_or_default(),
+                "logind: lid/power-key stay with logind; they belong to seat0, not this seat"
+            );
+            None
         };
         let sleep_delay_lock = take_sleep_delay_lock(&logind).await;
 
