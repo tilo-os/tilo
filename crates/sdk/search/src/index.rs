@@ -10,7 +10,7 @@ use tantivy::schema::{
     FAST, Field, INDEXED, IndexRecordOption, Schema, TextFieldIndexing, TextOptions,
 };
 use tantivy::{
-    DocId, Index, IndexReader, IndexWriter, ReloadPolicy, Score, SegmentReader,
+    DocId, Index, IndexReader, IndexSettings, IndexWriter, ReloadPolicy, Score, SegmentReader,
     SingleSegmentIndexWriter, TantivyDocument, Term,
 };
 
@@ -231,8 +231,20 @@ fn schema() -> (Schema, Fields) {
     )
 }
 
+/// An index in memory that never starts a thread of its own: its writes go
+/// through [`SingleSegmentIndexWriter`] (and, natively, an incremental
+/// writer), and no doc store compressor thread runs, since nothing is
+/// stored. Threads cannot start in the browser.
 fn in_memory(schema: Schema) -> Index {
-    let index = Index::create_in_ram(schema);
+    let settings = IndexSettings {
+        docstore_compress_dedicated_thread: false,
+        ..IndexSettings::default()
+    };
+    let index = Index::builder()
+        .schema(schema.clone())
+        .settings(settings)
+        .create_in_ram()
+        .unwrap_or_else(|_| Index::create_in_ram(schema));
     index.tokenizers().register(GRAMS, GramTokenizer::default());
     index.tokenizers().register(WORDS, WordTokenizer::default());
     index

@@ -26,7 +26,9 @@ tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-# The tests cover `DiskIndex` too.
+
+# The native tests cover `DiskIndex` too.
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 tilo-search = { path = ".", features = ["disk"] }
 
 [lints]
