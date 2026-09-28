@@ -13,11 +13,17 @@
 //! and task records in its own workspace file, the invocation journal and
 //! collaboration history.
 
+mod joined;
 mod owner;
+mod rooms;
 mod workspace;
 
-use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, profile, unix};
+use crate::{
+    BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, Joiner, RuntimeServices, apps, profile, unix,
+};
+use joined::Joined;
 use owner::{AdoptedRoom, RecordCreation, RoomOwner};
+use rooms::{Owners, Rooms};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -49,6 +55,7 @@ const COLLABORATION_HISTORY: &str = "state/tilo/collaboration/history";
 /// A standalone service session over one profile. Drop applications first.
 pub struct Standalone {
     broker: BrokerHandle,
+    joined: Arc<Joined>,
     _identity: IdentityBrokerHandle,
     room: String,
     actor: String,
@@ -86,18 +93,30 @@ impl Standalone {
         let apps = Arc::new(apps::Apps::from_env(root, &room_id));
         stage("opening the room owner");
         let owner = room_owner(root, &room_id, &workspace, &apps, dev)?;
+        let channels = Arc::new(Mutex::new(channels(root)));
+        let fanout = Arc::new(FanoutState::new());
+        stage("opening the joined rooms");
+        let joined = joined_rooms(root, &room_id, (Arc::clone(&channels), Arc::clone(&fanout)))?;
+        let rooms = Arc::new(Rooms {
+            profile: Arc::clone(&workspace),
+            joined: Arc::clone(&joined),
+        });
         let identity_socket = root.join(IDENTITY_SOCKET);
         stage("starting the identity service");
         let identity = tilo_identity_host::broker::spawn(
             identity_socket.clone(),
-            Arc::clone(&workspace) as Arc<dyn WorkspaceMembership>,
+            Arc::clone(&rooms) as Arc<dyn WorkspaceMembership>,
             Arc::new(()),
         )?;
         stage("starting the collaboration broker");
+        let owners = Arc::new(Owners {
+            own: owner,
+            joined: Arc::clone(&joined),
+        });
         let broker = tilo_action_broker::collab_broker::spawn_with_services(
             root.join(COLLAB_SOCKET),
-            Some(Arc::clone(&workspace) as Arc<dyn WorkspaceAuthority>),
-            PeerPublisher::with_optional_owner_commit(None, owner),
+            Some(rooms as Arc<dyn WorkspaceAuthority>),
+            PeerPublisher::with_optional_owner_commit(None, owners),
             None,
             HostServices {
                 native_certificates: Some(Arc::new(Certificates {
@@ -114,14 +133,15 @@ impl Standalone {
                 legacy_workspace: Some(Arc::clone(&workspace) as Arc<dyn LegacyWorkspaceProjection>),
                 ..HostServices::default()
             },
-            Arc::new(Mutex::new(channels(root))),
-            Arc::new(FanoutState::new()),
+            channels,
+            fanout,
         )?;
         let blob_socket = root.join(BLOB_SOCKET);
         stage("opening the content store");
         let media = profile::MediaHost::start(&root.join("content"), &blob_socket)?;
         Ok(Self {
             broker,
+            joined,
             _identity: identity,
             room: room_id,
             actor,
@@ -157,6 +177,19 @@ impl RuntimeServices for Standalone {
             .app_action_broker()
             .map(RuntimeActionHost)
             .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))
+    }
+
+    fn joiner(&self) -> Option<Joiner> {
+        let joined = Arc::clone(&self.joined);
+        Some(Arc::new(move |invitation: &str| {
+            let joined = Arc::clone(&joined);
+            let invitation = invitation.to_owned();
+            tilo_rt::app()
+                .handle()
+                .block_on(async move { joined.join(&invitation).await })
+                .map(|room| room.to_string())
+                .map_err(io::Error::other)
+        }))
     }
 
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
@@ -274,6 +307,35 @@ fn room_owner(
     let device = tilo_identity_host::broker::trusted_current_device(room)?;
     let owner = RoomOwner::open(profile, room, device, creation, Arc::clone(workspace))?;
     Ok(Arc::new(owner))
+}
+
+/// The rooms this profile joined, synced as this device over an endpoint
+/// keyed by its device key. It refuses to enroll in its own room and in the
+/// rooms the desktop session already enrolled this device in.
+fn joined_rooms(
+    profile: &Path,
+    room: &str,
+    broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
+) -> io::Result<Arc<Joined>> {
+    let (key, cert) = tilo_identity_host::broker::trusted_current_device(room)?;
+    let custody = tilo_identity_host::custody::HostIdentity {
+        device_cert: cert,
+        device_signing_key: key.clone(),
+        workspace_device_certs: std::collections::HashMap::new(),
+        workspace_revocations: std::collections::HashMap::new(),
+        identity_paths: Some(tilo_identity_host::provisioning::collaboration_identity_paths()),
+    };
+    let endpoint = tilo_rt::app()
+        .handle()
+        .block_on(
+            iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+                .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
+                .bind(),
+        )
+        .map_err(io::Error::other)?;
+    let mut refused = joined::desktop_enrolled(profile)?;
+    refused.extend(tilo_desktop_model::RoomId::parse(room));
+    Joined::open(profile, custody, endpoint, refused, broker)
 }
 
 #[cfg(test)]
