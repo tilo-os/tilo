@@ -7,10 +7,9 @@
 //! crate owns the component, its records and the GPU. Everything runs on the
 //! page's thread.
 //!
-//! The host glue is ported from the qOS browser runtime (PR 541); see
-//! `docs/architecture/browser-runtime.md` for provenance. Everything is
-//! browser-only; native workspace builds compile an empty library. The page's
-//! host services are the platform crates' web backends (`tilo-dialogs`,
+//! See `docs/architecture/browser-runtime.md`. Everything is browser-only;
+//! native workspace builds compile an empty library. The page's host services
+//! are the platform crates' web backends (`tilo-dialogs`,
 //! `tilo-clipboard`, `tilo-notify`).
 #![cfg_attr(
     target_arch = "wasm32",

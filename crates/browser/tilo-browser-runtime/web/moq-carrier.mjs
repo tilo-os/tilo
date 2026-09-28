@@ -1,7 +1,7 @@
 /**
  * The browser side of the Tilo MoQ carrier: `moq-lite` over WebTransport,
  * opened by the host admission preface (the host side and the wire contract
- * are documented in qos-moq's `carrier` module).
+ * are documented in tilo-moq's `carrier` module).
  *
  * 1. `new WebTransport(url, {protocols: [MOQ_PROTOCOL]})`; the URL is routing
  *    only and never carries a grant (URLs reach logs and history, and
