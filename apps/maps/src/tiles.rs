@@ -72,16 +72,30 @@ struct FailedFetch {
     retry_at: Instant,
     /// Current backoff window; doubles per failure up to [`FAIL_BACKOFF_MAX`].
     delay: Duration,
+    /// Why the most recent fetch failed.
+    fault: TileFault,
 }
 
-/// Which CARTO basemap the raster layer fetches. Both variants are deliberately
-/// **label-free** (`*_nolabels`) — the app draws its own themed, clickable
-/// POI/place markers over the imagery, so the base tiles must NOT bake in place
-/// names of their own (the standard `tile.openstreetmap.org` raster does, which
-/// would double up with the marker layer). The style is resolved from the active
-/// OS [`Theme`] so the basemap tracks it: a dark chrome theme gets the *dark*
-/// basemap, a light theme the *light* one, and a view is never a mix of the two.
-/// Data is OpenStreetMap in both cases; CARTO serves the raster.
+/// The OpenStreetMap Standard raster, used under the OSMF Tile Usage Policy
+/// (<https://operations.osmfoundation.org/policies/tiles/>): an identifying
+/// [`USER_AGENT`], attribution visible on the map, a persistent local cache, and
+/// no bulk download or prefetch — so offline areas are refused
+/// ([`TileLayer::allows_prefetch`]). The host must stay in the manifest's
+/// `[sandbox] net` allowlist.
+pub const TILE_SERVER: &str = "https://tile.openstreetmap.org";
+
+/// The credit [`TILE_SERVER`]'s licence requires on the map.
+pub const TILE_ATTRIBUTION: &str = "© OpenStreetMap contributors";
+
+/// Cache subdirectory for [`TILE_SERVER`] under the style-agnostic cache root.
+/// Earlier builds cached CARTO's `light`/`dark` trees beside it; those hold
+/// "API key required" placeholders and are never read.
+const TILE_SERVER_CACHE: &str = "osm";
+
+/// The tone the raster is drawn in, resolved from the active OS [`Theme`] so the
+/// basemap tracks it and a view is never a mix of light and dark. The server
+/// has one (light) rendering; [`TileStyle::Dark`] re-tones those same tiles on
+/// decode, so both styles share one download and one on-disk cache.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TileStyle {
     Light,
@@ -89,20 +103,33 @@ pub enum TileStyle {
 }
 
 impl TileStyle {
-    /// The CARTO label-free basemap endpoint for this style.
-    pub fn base_url(self) -> &'static str {
-        match self {
-            TileStyle::Light => "https://basemaps.cartocdn.com/light_nolabels",
-            TileStyle::Dark => "https://basemaps.cartocdn.com/dark_nolabels",
+    /// Re-tone decoded RGBA8 tile pixels for this style in place. Dark inverts
+    /// lightness while keeping hue (invert, then rotate hue by 180°) and softens
+    /// contrast, so pale land turns deep, roads turn into light ribbons, and
+    /// water and parks keep their blue and green.
+    fn retone(self, rgba: &mut [u8]) {
+        // CSS `hue-rotate(180deg)` in linear form.
+        const HUE_180: [[f32; 3]; 3] = [
+            [-0.574, 1.430, 0.144],
+            [0.426, 0.430, 0.144],
+            [0.426, 1.430, -0.856],
+        ];
+        const CONTRAST: f32 = 0.85;
+        if self == TileStyle::Light {
+            return;
         }
-    }
-
-    /// Cache subdirectory, so light and dark tiles for the same `z/x/y` never
-    /// collide on disk (switching theme must not read a wrong-tone tile).
-    pub fn subdir(self) -> &'static str {
-        match self {
-            TileStyle::Light => "light",
-            TileStyle::Dark => "dark",
+        for px in rgba.chunks_exact_mut(4) {
+            let [r, g, b, _] = *px else { continue };
+            let inv = [
+                255.0 - f32::from(r),
+                255.0 - f32::from(g),
+                255.0 - f32::from(b),
+            ];
+            for (channel, row) in px.iter_mut().zip(HUE_180) {
+                let rotated = row[0] * inv[0] + row[1] * inv[1] + row[2] * inv[2];
+                let softened = (rotated - 128.0) * CONTRAST + 128.0;
+                *channel = softened.round().clamp(0.0, 255.0) as u8;
+            }
         }
     }
 
@@ -120,7 +147,24 @@ impl TileStyle {
     }
 }
 
-const USER_AGENT: &str = "Tilo-Maps/0.1 (https://example.test; native maps app)";
+/// Identifies Tilo Maps to the tile server, as its usage policy requires; a
+/// library default User-Agent is blocked.
+pub(crate) const USER_AGENT: &str = concat!(
+    "Tilo-Maps/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://code.tilo.so/tilo/tilo)"
+);
+
+/// Why a tile fetch failed, so the map can tell the user whether imagery is
+/// unreachable or being refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TileFault {
+    /// No response: offline, egress blocked, or the connection failed.
+    Unreachable,
+    /// The server answered with an error status, a non-PNG body, or bytes that
+    /// do not decode as a tile — imagery is being refused, not merely delayed.
+    Rejected,
+}
 
 /// A tile coordinate in the slippy-map scheme.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -175,10 +219,10 @@ enum Job {
 
 /// Result shipped back from the worker.
 enum Done {
-    /// A tile finished (or failed): `Some` bytes were decoded, `None` failed.
+    /// A tile finished: decoded RGBA pixels, or why it failed.
     Tile {
         id: TileId,
-        rgba: Option<(Vec<u8>, u32, u32)>,
+        rgba: Result<(Vec<u8>, u32, u32), TileFault>,
     },
     /// One bulk-download item finished (success flag for progress accounting).
     Download { ok: bool },
@@ -223,15 +267,21 @@ pub struct TileLayer {
     job_tx: Option<Sender<Job>>,
     /// Finished tiles + download ticks arrive here.
     done_rx: Option<Receiver<Done>>,
-    /// The active basemap style. Drives both the fetch endpoint and the cache
-    /// subdirectory, so the resident + on-disk tiles always match the theme.
+    /// The active basemap style: the tone the worker decodes tiles into, so the
+    /// resident tiles always match the theme.
     style: TileStyle,
-    /// The style-agnostic cache root, when this layer owns one (the live app).
-    /// Tiles live under `cache_root/<style.subdir()>/z/x/y.png`, so switching
-    /// theme swaps the whole tile tree without cross-tone collisions. `None` for
-    /// the hermetic test/offline layers, whose `cache_dir` is exactly as given.
+    /// The tile server the worker fetches from.
+    base_url: String,
+    /// Whether the tile server's terms permit fetching tiles nobody is viewing
+    /// (offline areas). [`TILE_SERVER`]'s do not.
+    allows_prefetch: bool,
+    /// The cache root this layer owns (the live app), which
+    /// [`clear_cache`](Self::clear_cache) removes whole, including trees left
+    /// by earlier tile servers. `None` for the hermetic test/offline layers,
+    /// whose `cache_dir` is exactly as given.
     cache_root: Option<PathBuf>,
-    /// On-disk cache dir for the *current* style (`z/x/y.png` beneath it).
+    /// On-disk cache of raw server tiles (`z/x/y.png` beneath it), shared by
+    /// both styles.
     cache_dir: PathBuf,
     /// Live offline-download progress.
     progress: DownloadProgress,
@@ -245,16 +295,13 @@ impl TileLayer {
         Self::live_with_root(default_cache_dir())
     }
 
-    /// A live, style-scoped tile layer rooted at `root`: tiles live under
-    /// `root/<style>/z/x/y.png`. Starts in [`TileStyle::Light`]; the app calls
+    /// A live tile layer rooted at `root`, fetching from [`TILE_SERVER`] into
+    /// `root/osm/z/x/y.png`. Starts in [`TileStyle::Light`]; the app calls
     /// [`set_style`](Self::set_style) with the theme's style each draw, which
-    /// re-points the worker + cache dir on a change.
+    /// re-points the worker's decode on a change.
     pub fn live_with_root(root: PathBuf) -> Self {
-        let style = TileStyle::Light;
-        let cache_dir = root.join(style.subdir());
-        let mut layer = Self::spawn_worker(cache_dir, style.base_url().to_string());
+        let mut layer = Self::spawn_worker(root.join(TILE_SERVER_CACHE), TILE_SERVER.to_string());
         layer.cache_root = Some(root);
-        layer.style = style;
         layer
     }
 
@@ -262,7 +309,7 @@ impl TileLayer {
     /// subdir). The worker runs off the UI thread. Used by the tile unit tests
     /// to point the cache at a temp dir and drive the raw fetch path.
     pub fn with_cache_dir(cache_dir: PathBuf) -> Self {
-        Self::with_cache_dir_and_base(cache_dir, TileStyle::Light.base_url().to_string())
+        Self::with_cache_dir_and_base(cache_dir, TILE_SERVER.to_string())
     }
 
     /// Live tile layer at an explicit dir with an explicit tile-server base URL.
@@ -275,62 +322,49 @@ impl TileLayer {
     /// Spawn the background worker for `cache_dir` + `base_url` and wrap it in a
     /// fresh layer (style-agnostic root left `None`; the caller sets it).
     fn spawn_worker(cache_dir: PathBuf, base_url: String) -> Self {
+        let mut layer = Self::offline_with_cache_dir(cache_dir);
+        layer.base_url = base_url;
+        layer.respawn_worker();
+        layer
+    }
+
+    /// (Re)start the background worker for the current cache dir, server and
+    /// style. The previous worker exits when its channel drops, discarding any
+    /// in-flight result with it. A spawn failure (OS resource exhaustion)
+    /// degrades to no worker rather than crashing the app — the layer then
+    /// behaves like an offline one, serving whatever is already resident.
+    fn respawn_worker(&mut self) {
         let (job_tx, job_rx) = channel::<Job>();
         let (done_tx, done_rx) = channel::<Done>();
-        let dir = cache_dir.clone();
-        // A spawn failure (OS resource exhaustion) degrades to no background
-        // worker rather than crashing the app — the layer then behaves like an
-        // offline one, serving whatever is already cached.
+        let dir = self.cache_dir.clone();
+        let base_url = self.base_url.clone();
+        let style = self.style;
         let spawned = std::thread::Builder::new()
             .name("maps-tiles".into())
-            .spawn(move || worker(&job_rx, &done_tx, &dir, &base_url))
+            .spawn(move || worker(&job_rx, &done_tx, &dir, &base_url, style))
             .is_ok();
-        Self {
-            mem: LruCache::new(MEM_CACHE_CAP),
-            inflight: std::collections::HashSet::new(),
-            failed: HashMap::new(),
-            job_tx: spawned.then_some(job_tx),
-            done_rx: spawned.then_some(done_rx),
-            style: TileStyle::Light,
-            cache_root: None,
-            cache_dir,
-            progress: DownloadProgress::default(),
-        }
+        self.job_tx = spawned.then_some(job_tx);
+        self.done_rx = spawned.then_some(done_rx);
     }
 
     /// Point the layer at the basemap `style` for the active theme. A no-op when
-    /// unchanged; on a change it re-points the on-disk cache dir, drops the
-    /// now-wrong-tone resident tiles, and re-spawns the worker against the new
-    /// endpoint + cache dir (the old worker exits when its channel drops, so any
-    /// in-flight wrong-style result is discarded with it). Offline layers just
+    /// unchanged; on a change it drops the now-wrong-tone resident tiles and
+    /// re-spawns the worker to decode in the new tone (the raw tiles on disk
+    /// serve both styles, so nothing is downloaded again). Offline layers just
     /// record the style. Cheap on the steady state, so the app calls it each draw.
     pub fn set_style(&mut self, style: TileStyle) {
         if self.style == style {
             return;
         }
         self.style = style;
-        if let Some(root) = &self.cache_root {
-            self.cache_dir = root.join(style.subdir());
-        }
         // Wrong-tone imagery must not linger through the switch.
         self.mem.clear();
         self.inflight.clear();
         self.failed.clear();
-        // Re-spawn the worker for the new style (live layers only; offline layers
-        // have no `job_tx` and simply keep serving from the — now cleared — set).
+        // Live layers only; offline layers have no `job_tx` and simply keep
+        // serving from the — now cleared — set.
         if self.job_tx.is_some() {
-            let (job_tx, job_rx) = channel::<Job>();
-            let (done_tx, done_rx) = channel::<Done>();
-            let dir = self.cache_dir.clone();
-            let base_url = style.base_url().to_string();
-            // As in `spawn_worker`: a failed spawn degrades to no worker rather
-            // than panicking.
-            let spawned = std::thread::Builder::new()
-                .name("maps-tiles".into())
-                .spawn(move || worker(&job_rx, &done_tx, &dir, &base_url))
-                .is_ok();
-            self.job_tx = spawned.then_some(job_tx);
-            self.done_rx = spawned.then_some(done_rx);
+            self.respawn_worker();
         }
     }
 
@@ -356,6 +390,8 @@ impl TileLayer {
             job_tx: None,
             done_rx: None,
             style: TileStyle::Light,
+            base_url: TILE_SERVER.to_string(),
+            allows_prefetch: false,
             cache_root: None,
             cache_dir,
             progress: DownloadProgress::default(),
@@ -443,7 +479,7 @@ impl TileLayer {
                 Done::Tile { id, rgba } => {
                     self.inflight.remove(&id);
                     match rgba {
-                        Some((rgba, w, h)) => {
+                        Ok((rgba, w, h)) => {
                             // A successful fetch clears any negative-cache entry
                             // so a recovered tile loads normally next time.
                             self.failed.remove(&id);
@@ -451,7 +487,7 @@ impl TileLayer {
                                 self.insert(id, DecodedTile { image: img });
                             }
                         }
-                        None => self.note_failure(id),
+                        Err(fault) => self.note_failure(id, fault),
                     }
                 }
                 Done::Download { ok } => {
@@ -486,6 +522,28 @@ impl TileLayer {
         !self.failed.is_empty()
     }
 
+    /// The most telling fault among the failing tiles: [`TileFault::Rejected`]
+    /// when the server refused any of them, so a refusing server is never
+    /// reported as the user merely being offline.
+    pub fn failure(&self) -> Option<TileFault> {
+        let mut faults = self.failed.values().map(|f| f.fault);
+        let first = faults.next()?;
+        Some(
+            if first == TileFault::Rejected || faults.any(|f| f == TileFault::Rejected) {
+                TileFault::Rejected
+            } else {
+                TileFault::Unreachable
+            },
+        )
+    }
+
+    /// Whether the tile server permits fetching tiles nobody is viewing, which
+    /// offline areas need. [`TILE_SERVER`]'s policy forbids it, so the app
+    /// refuses to save areas rather than scrape the community server.
+    pub fn allows_prefetch(&self) -> bool {
+        self.allows_prefetch
+    }
+
     /// Request `id` from the worker if it isn't already resident, inflight, or
     /// suppressed by the failure backoff. Returns immediately — the UI thread
     /// never blocks on I/O or decode.
@@ -514,7 +572,7 @@ impl TileLayer {
     /// Record a failed fetch, extending this tile's backoff. The first failure
     /// waits [`FAIL_BACKOFF_MIN`]; each consecutive failure doubles the window
     /// up to [`FAIL_BACKOFF_MAX`].
-    fn note_failure(&mut self, id: TileId) {
+    fn note_failure(&mut self, id: TileId, fault: TileFault) {
         let now = Instant::now();
         let delay = match self.failed.get(&id) {
             Some(f) => (f.delay * 2).min(FAIL_BACKOFF_MAX),
@@ -525,6 +583,7 @@ impl TileLayer {
             FailedFetch {
                 retry_at: now + delay,
                 delay,
+                fault,
             },
         );
         if self.failed.len() > FAIL_CACHE_CAP {
@@ -584,8 +643,12 @@ impl TileLayer {
 
     /// Begin downloading every tile covering `region` across `z0..=z1` into the
     /// on-disk cache. Non-blocking: the worker streams progress back via
-    /// `drain`. Returns the number of tiles queued.
+    /// `drain`. Returns the number of tiles queued — none when the tile server
+    /// forbids prefetching ([`allows_prefetch`](Self::allows_prefetch)).
     pub fn start_download(&mut self, region: GeoBounds, z0: u8, z1: u8) -> u32 {
+        if !self.allows_prefetch {
+            return 0;
+        }
         let ids = region.tiles_in_range(z0, z1);
         let total = ids.len() as u32;
         self.progress = DownloadProgress {
@@ -659,9 +722,19 @@ impl TileLayer {
     /// A live layer whose worker fetches from `base_url` instead of the public
     /// OSM server — so a test can drive the real fetch→fail→negative-cache path
     /// against a local (closed-port) endpoint without any external traffic.
+    /// The local server is the test's own, so it permits prefetching.
     #[cfg(test)]
     fn with_cache_dir_url(cache_dir: PathBuf, base_url: String) -> Self {
-        Self::with_cache_dir_and_base(cache_dir, base_url)
+        let mut layer = Self::with_cache_dir_and_base(cache_dir, base_url);
+        layer.allows_prefetch = true;
+        layer
+    }
+
+    /// Stand in for a tile server whose terms permit offline areas, so the
+    /// offline-area flow can be exercised end to end.
+    #[cfg(test)]
+    pub(crate) fn allow_prefetch_for_test(&mut self) {
+        self.allows_prefetch = true;
     }
 
     /// The on-disk path a tile would occupy under this layer's cache root.
@@ -753,7 +826,13 @@ fn lonlat_to_tile(lat: f64, lon: f64, z: u8) -> (u32, u32) {
 
 /// Background worker: services fetch + download jobs entirely off the UI
 /// thread. Disk cache first, then network; decode happens here too.
-fn worker(rx: &Receiver<Job>, tx: &Sender<Done>, cache_dir: &std::path::Path, base_url: &str) {
+fn worker(
+    rx: &Receiver<Job>,
+    tx: &Sender<Done>,
+    cache_dir: &std::path::Path,
+    base_url: &str,
+    style: TileStyle,
+) {
     let client = match tilo_net::http::blocking_client()
         .user_agent(USER_AGENT)
         .timeout(std::time::Duration::from_secs(15))
@@ -768,7 +847,11 @@ fn worker(rx: &Receiver<Job>, tx: &Sender<Done>, cache_dir: &std::path::Path, ba
     while let Ok(job) = rx.recv() {
         match job {
             Job::Fetch(id) => {
-                let rgba = load_tile(client.as_ref(), cache_dir, base_url, id);
+                let rgba =
+                    load_tile(client.as_ref(), cache_dir, base_url, id).map(|(mut rgba, w, h)| {
+                        style.retone(&mut rgba);
+                        (rgba, w, h)
+                    });
                 if tx.send(Done::Tile { id, rgba }).is_err() {
                     break;
                 }
@@ -791,28 +874,26 @@ fn worker(rx: &Receiver<Job>, tx: &Sender<Done>, cache_dir: &std::path::Path, ba
 }
 
 /// Load a tile's RGBA pixels: disk cache → network. Writes fetched bytes to
-/// disk so re-views and zoom are instant. Returns `None` on any failure.
+/// disk so re-views and zoom are instant.
 fn load_tile(
     client: Option<&reqwest::blocking::Client>,
     cache_dir: &std::path::Path,
     base_url: &str,
     id: TileId,
-) -> Option<(Vec<u8>, u32, u32)> {
+) -> Result<(Vec<u8>, u32, u32), TileFault> {
     let path = cache_dir.join(id.cache_rel());
     if let Ok(bytes) = std::fs::read(&path)
         && let Ok(t) = decode_png(&bytes)
     {
-        return Some(t);
+        return Ok(t);
     }
-    let client = client?;
-    let resp = client.get(id.url(base_url)).send().ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let bytes = resp.bytes().ok()?;
-    let decoded = decode_png(&bytes).ok()?;
+    let bytes = fetch_tile(client, base_url, id)?;
+    let decoded = decode_png(&bytes).map_err(|e| {
+        tracing::warn!("maps tile {id:?} does not decode as PNG: {e}");
+        TileFault::Rejected
+    })?;
     write_cache(&path, &bytes);
-    Some(decoded)
+    Ok(decoded)
 }
 
 /// Fetch a tile to the on-disk cache only (no decode) — for bulk downloads.
@@ -822,21 +903,45 @@ fn fetch_to_disk(
     base_url: &str,
     id: TileId,
 ) -> bool {
-    let Some(client) = client else {
-        return false;
-    };
-    let path = cache_dir.join(id.cache_rel());
-    match client
-        .get(id.url(base_url))
-        .send()
-        .and_then(reqwest::blocking::Response::bytes)
-    {
+    match fetch_tile(client, base_url, id) {
         Ok(bytes) if decode_png(&bytes).is_ok() => {
-            write_cache(&path, &bytes);
+            write_cache(&cache_dir.join(id.cache_rel()), &bytes);
             true
         }
         _ => false,
     }
+}
+
+/// GET one tile's bytes, accepting only a successful `image/png` answer: an
+/// error status or an HTML/JSON error page is the server refusing imagery.
+fn fetch_tile(
+    client: Option<&reqwest::blocking::Client>,
+    base_url: &str,
+    id: TileId,
+) -> Result<Vec<u8>, TileFault> {
+    let client = client.ok_or(TileFault::Unreachable)?;
+    let resp = client
+        .get(id.url(base_url))
+        .send()
+        .map_err(|_| TileFault::Unreachable)?;
+    let status = resp.status();
+    if !status.is_success() {
+        tracing::warn!("maps tile server answered {status} for {id:?}");
+        return Err(TileFault::Rejected);
+    }
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    if !content_type.starts_with("image/png") {
+        tracing::warn!("maps tile server sent {content_type:?} for {id:?}, not a PNG tile");
+        return Err(TileFault::Rejected);
+    }
+    resp.bytes()
+        .map(|bytes| bytes.to_vec())
+        .map_err(|_| TileFault::Unreachable)
 }
 
 fn write_cache(path: &std::path::Path, bytes: &[u8]) {
@@ -1098,33 +1203,79 @@ mod tests {
             assert_eq!(&rgba[4..8], &[0, 255, 0, 255]);
         }
 
-        // Phase `base_tile_urls_are_label_free_per_theme`.
-        // The base raster style the worker fetches must be **label-free**, so the
-        // app's own themed marker layer is the *only* source of POI/place labels
-        // (no duplicate, mismatched names baked into the tiles). This asserts on
-        // the exact constant the live worker uses, not a copy.
+        // Phase `tile_server_is_osm_standard_identified_and_sandbox_allowed`.
+        // The worker fetches the OSM Standard raster at the exact URL its usage
+        // policy names, identifies itself, and the host is one the app's sandbox
+        // lets it reach. CARTO's host never was, and it now answers every tile
+        // with an "API key required" placeholder.
         {
-            for style in [TileStyle::Light, TileStyle::Dark] {
-                let url = style.base_url();
-                assert!(
-                    url.contains("nolabels"),
-                    "base tiles must be a label-free style so only the app draws POIs: {url}"
-                );
-                assert!(
-                    !url.contains("tile.openstreetmap.org"),
-                    "the standard OSM raster bakes labels into the tiles: {url}"
-                );
-            }
-            // Light and dark are distinct endpoints, so a single view is never a mix
-            // of the two tones (the reported light-centre/dark-edge bug).
-            assert_ne!(TileStyle::Light.base_url(), TileStyle::Dark.base_url());
-            // A well-formed z/x/y URL is produced for a sample tile.
             let id = TileId::new(14, 8800, 5680);
-            let url = TileStyle::Dark.base_url();
+            assert_eq!(
+                id.url(TILE_SERVER),
+                "https://tile.openstreetmap.org/14/8800/5680.png"
+            );
             assert!(
-                id.url(url).ends_with("/14/8800/5680.png"),
-                "{}",
-                id.url(url)
+                USER_AGENT.starts_with("Tilo-Maps/") && USER_AGENT.contains("(+https://"),
+                "the tile server blocks unidentified clients: {USER_AGENT}"
+            );
+            let net = include_str!("../tilo-app.toml")
+                .split("\n[")
+                .find(|table| table.starts_with("sandbox.net]"))
+                .expect("a [sandbox.net] allowlist");
+            let host = TILE_SERVER.trim_start_matches("https://");
+            assert!(
+                net.lines()
+                    .any(|line| line.trim() == format!("\"{host}\",")),
+                "the sandbox must allow the tile server {host}: {net}"
+            );
+        }
+
+        // Phase `dark_style_retones_the_light_raster`.
+        // Both styles decode the one raster the server renders: light passes it
+        // through, dark turns the pale land deep and the black labels light,
+        // while water stays blue and parks green.
+        {
+            let osm = [
+                [242, 239, 233, 255], // land
+                [170, 211, 223, 255], // water
+                [200, 250, 204, 255], // park
+                [0, 0, 0, 255],       // label
+            ];
+            let mut light = osm.concat();
+            TileStyle::Light.retone(&mut light);
+            assert_eq!(
+                light,
+                osm.concat(),
+                "the light style is the raster as served"
+            );
+
+            let mut dark = osm.concat();
+            TileStyle::Dark.retone(&mut dark);
+            let px = |i: usize| {
+                [
+                    dark[i * 4],
+                    dark[i * 4 + 1],
+                    dark[i * 4 + 2],
+                    dark[i * 4 + 3],
+                ]
+            };
+            let luma = |c: [u8; 4]| {
+                0.2126 * f64::from(c[0]) + 0.7152 * f64::from(c[1]) + 0.0722 * f64::from(c[2])
+            };
+            let [land, water, park, label] = [px(0), px(1), px(2), px(3)];
+            assert!(luma(land) < 48.0, "dark land is deep: {land:?}");
+            assert!(luma(label) > 200.0, "dark labels are light: {label:?}");
+            assert!(
+                water[2] > water[0] && water[2] > luma(land) as u8,
+                "water stays blue: {water:?}"
+            );
+            assert!(
+                park[1] > park[0] && park[1] > park[2],
+                "parks stay green: {park:?}"
+            );
+            assert!(
+                dark.chunks_exact(4).all(|c| c[3] == 255),
+                "alpha is untouched"
             );
         }
 
@@ -1310,7 +1461,8 @@ mod tests {
                 std::fs::create_dir_all(p.parent().unwrap()).unwrap();
                 std::fs::write(&p, solid_png(32, 32, [9, 9, 9, 255])).unwrap();
             }
-            let mut layer = TileLayer::with_cache_dir(cache.clone());
+            // A local server that permits prefetching; every tile is a disk hit.
+            let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
 
             let est = TileLayer::estimate_download(bounds, z0, z1);
             let t0 = std::time::Instant::now();
@@ -1503,6 +1655,11 @@ mod tests {
                 "a failed tile must be negative-cached"
             );
             assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN));
+            assert_eq!(
+                layer.failure(),
+                Some(TileFault::Unreachable),
+                "a refused connection is unreachable imagery, not a refusal"
+            );
 
             // The decisive assertion: re-requesting the doomed tile is a no-op while
             // it is backing off — no new job, nothing in flight. `has_inflight()`
@@ -1527,11 +1684,11 @@ mod tests {
         {
             let mut layer = TileLayer::offline();
             let id = TileId::new(12, 1, 2);
-            layer.note_failure(id);
+            layer.note_failure(id, TileFault::Unreachable);
             assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN));
-            layer.note_failure(id);
+            layer.note_failure(id, TileFault::Unreachable);
             assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN * 2));
-            layer.note_failure(id);
+            layer.note_failure(id, TileFault::Unreachable);
             assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN * 4));
 
             // A resident tile (success) clears the negative cache. Simulate the
@@ -1554,7 +1711,7 @@ mod tests {
             let mut layer = TileLayer::offline();
             let id = TileId::new(10, 3, 4);
             for _ in 0..40 {
-                layer.note_failure(id);
+                layer.note_failure(id, TileFault::Unreachable);
             }
             assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MAX));
         }
@@ -1566,6 +1723,12 @@ mod tests {
     /// same PNG bytes, so the *real* fetch→decode→persist path can be exercised
     /// hermetically (no external server). Returns the base URL.
     fn serve_png(png: Vec<u8>) -> String {
+        serve("200 OK", "image/png", png)
+    }
+
+    /// A local HTTP/1.1 server answering every request with `status`,
+    /// `content_type` and `body`. Returns the base URL.
+    fn serve(status: &'static str, content_type: &'static str, body: Vec<u8>) -> String {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1576,14 +1739,125 @@ mod tests {
                 let mut buf = [0u8; 1024];
                 let _ = stream.read(&mut buf);
                 let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    png.len()
+                    "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
                 );
                 let _ = stream.write_all(head.as_bytes());
-                let _ = stream.write_all(&png);
+                let _ = stream.write_all(&body);
                 let _ = stream.flush();
             }
         });
         format!("http://127.0.0.1:{port}")
+    }
+
+    /// Request `id` and pump `drain` until the worker answers.
+    fn settle(layer: &mut TileLayer, id: TileId) {
+        layer.request(id);
+        let deadline = tilo_test_env::hang_deadline();
+        while Instant::now() < deadline && layer.is_inflight(id) {
+            layer.drain();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            !layer.is_inflight(id),
+            "the worker never answered for {id:?}"
+        );
+    }
+
+    /// A server that refuses imagery — an error status, or a success carrying
+    /// something other than a PNG — yields a rejected failure the map can
+    /// report, never a resident tile or a cached file.
+    #[test]
+    fn refused_tiles_are_rejected_failures_not_imagery() {
+        let id = TileId::new(14, 8802, 5682);
+        for (status, content_type, body) in [
+            (
+                "403 Forbidden",
+                "image/png",
+                solid_png(256, 256, [200, 0, 0, 255]),
+            ),
+            (
+                "200 OK",
+                "text/html",
+                b"<html>API key required</html>".to_vec(),
+            ),
+            ("200 OK", "image/png", b"not a png".to_vec()),
+        ] {
+            let cache = temp_cache();
+            let base = serve(status, content_type, body);
+            let mut layer = TileLayer::with_cache_dir_url(cache.clone(), base);
+            settle(&mut layer, id);
+            assert!(
+                layer.get(id).is_none(),
+                "{status} {content_type}: not resident"
+            );
+            assert_eq!(
+                layer.failure(),
+                Some(TileFault::Rejected),
+                "{status} {content_type}: the server refused the tile"
+            );
+            assert!(
+                !layer.cache_path(id).exists(),
+                "{status} {content_type}: a refused answer is never cached"
+            );
+            let _ = std::fs::remove_dir_all(&cache);
+        }
+
+        // A refusal outweighs unreachable tiles, so a refusing server is not
+        // reported as the user being offline.
+        let mut layer = TileLayer::offline();
+        layer.note_failure(TileId::new(3, 1, 1), TileFault::Unreachable);
+        assert_eq!(layer.failure(), Some(TileFault::Unreachable));
+        layer.note_failure(TileId::new(3, 2, 1), TileFault::Rejected);
+        layer.note_failure(TileId::new(3, 3, 1), TileFault::Unreachable);
+        assert_eq!(layer.failure(), Some(TileFault::Rejected));
+    }
+
+    /// The OSM tile server forbids prefetching, so a download on its layer
+    /// queues nothing and reads nothing from the network.
+    #[test]
+    fn the_osm_layer_refuses_offline_downloads() {
+        let cache = temp_cache();
+        let mut layer = TileLayer::with_cache_dir(cache.clone());
+        assert!(!layer.allows_prefetch());
+        let bounds = GeoBounds::new(LatLon::new(48.13, 11.57), LatLon::new(48.15, 11.59));
+        assert_eq!(layer.start_download(bounds, 13, 14), 0);
+        assert_eq!(layer.progress(), DownloadProgress::default());
+        assert!(!cache.exists(), "nothing was fetched into the cache");
+        assert!(!TileLayer::offline().allows_prefetch());
+    }
+
+    /// The worker decodes in the active style: a dark theme gets the served
+    /// tile re-toned, from the same cached bytes the light style reads.
+    #[test]
+    fn the_worker_decodes_in_the_active_style() {
+        let cache = temp_cache();
+        let id = TileId::new(14, 8803, 5683);
+        let path = cache.join(id.cache_rel());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, solid_png(256, 256, [242, 239, 233, 255])).unwrap();
+        let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
+
+        let first_pixel = |layer: &mut TileLayer| {
+            let data = layer.get(id).expect("tile resident").data.data().to_vec();
+            [data[0], data[1], data[2], data[3]]
+        };
+        settle(&mut layer, id);
+        assert_eq!(first_pixel(&mut layer), [242, 239, 233, 255]);
+
+        layer.set_style(TileStyle::Dark);
+        assert!(
+            layer.get(id).is_none(),
+            "the light tile is dropped on the switch"
+        );
+        settle(&mut layer, id);
+        let mut expected = vec![242, 239, 233, 255];
+        TileStyle::Dark.retone(&mut expected);
+        assert_eq!(first_pixel(&mut layer).to_vec(), expected);
+        assert!(
+            !layer.has_failures(),
+            "both styles read the one cached tile"
+        );
+        let _ = std::fs::remove_dir_all(&cache);
     }
 }
