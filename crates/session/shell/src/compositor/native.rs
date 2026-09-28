@@ -3533,7 +3533,7 @@ fn dispatch_for_agent(
     command: test_control::Command,
     scope: &AgentScope,
     fb: &FrameBuilder,
-    ctx: &TestControlCtx,
+    ctx: &mut TestControlCtx,
     state: &mut State,
     lock: &LockController,
 ) -> (test_control::Response, Vec<PlannedAction>) {
