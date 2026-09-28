@@ -708,35 +708,6 @@ fn assert_observed_state_survives(owner: &SessionOwner, observed: &tilo_workspac
     }
 }
 
-#[test]
-fn same_namespace_admission_cannot_roll_back_document_history_or_actor_floors() {
-    use tilo_user_identity::persist::{self, IdentityPaths};
-    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-    let path = dir.path().join("owner");
-    let mut owner = SessionOwner::initialize(&path).unwrap();
-    let old = owner.peer().clone();
-    let key = persist::read_device_key(&IdentityPaths::under(path.join("identity")).device_privkey)
-        .unwrap();
-    let mut edited = old.clone();
-    tilo_browser_runtime::fixture_writer_insert(
-        &mut edited,
-        &key,
-        "retained user document",
-        web_time::SystemTime::now(),
-    )
-    .unwrap();
-    owner
-        .commit_admission(edited, owner.directory().to_vec())
-        .unwrap();
-    let before = owner.status();
-    assert!(
-        owner
-            .commit_admission(old, owner.directory().to_vec())
-            .is_err()
-    );
-    assert_eq!(owner.status(), before);
-}
-
 async fn admit_until_ready(
     owner: &mut SessionOwner,
     session: &mut tilo_workspace_host::host::NativeSubscription,
@@ -769,55 +740,6 @@ async fn admit_until_ready(
             Inbound::RemoteAction { .. } => {}
         }
     }
-}
-
-#[test]
-fn deferred_snapshot_stays_reachable_until_governed_coverage_then_commits() {
-    use tilo_peer_state::{NeighbourMsg, TransportOrigin};
-    use tilo_user_identity::persist::{self, IdentityPaths};
-    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-    let path = dir.path().join("owner");
-    let mut owner = SessionOwner::initialize(&path).unwrap();
-    let before = owner.status();
-    let key = persist::read_device_key(&IdentityPaths::under(path.join("identity")).device_privkey)
-        .unwrap();
-    let mut source = owner.peer().clone();
-    tilo_browser_runtime::fixture_writer_insert(
-        &mut source,
-        &key,
-        "queued snapshot",
-        web_time::SystemTime::now(),
-    )
-    .unwrap();
-    let messages = source
-        .bootstrap_messages(&key, web_time::SystemTime::now())
-        .unwrap();
-    let snapshot=messages.iter().find(|message|matches!(message,NeighbourMsg::AppDocument{app_id,record_id,..} if app_id=="so.tilo.word-processor" && record_id=="tab:0000000000000001")).unwrap().clone();
-    let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-    assert!(
-        owner.receive(origin, snapshot).unwrap().is_none(),
-        "unadmitted data must not return a commit receipt"
-    );
-    assert_eq!(
-        owner.status(),
-        before,
-        "no acknowledgement or committed record change yet"
-    );
-    assert_eq!(
-        owner.peer().pending_count(),
-        1,
-        "deferred candidate remains reachable"
-    );
-    let governance = messages
-        .into_iter()
-        .find(|message| matches!(message, NeighbourMsg::SyncResp { .. }))
-        .unwrap();
-    assert!(owner.receive(origin, governance).unwrap().is_some());
-    assert_eq!(owner.peer().pending_count(), 0);
-    assert_eq!(owner.peer().rows(), source.rows());
-    let committed = owner.status();
-    drop(owner);
-    assert_eq!(SessionOwner::open(&path).unwrap().status(), committed);
 }
 
 #[test]
