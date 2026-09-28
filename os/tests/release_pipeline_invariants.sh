@@ -426,7 +426,7 @@ grep -Fq 'TILO_APP_COLLECTION_SHA256' "$os" \
   && test "$(grep -Fc 'https:\/\/code.tilo.so}' "$os")" -eq 2 \
   && ! grep -Fq -- "--proto '=http'" "$os" \
   && ! grep -Fq '[[ $EVENT_NAME != pull_request ]] || exit 0' "$os" \
-  && grep -Fq 'Authorization: Bearer $jwt' "$os" \
+  && grep -Fq 'auth="Bearer $jwt"' "$os" \
   && grep -Fq 'TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}' "$os" \
   && grep -Fq 'TAPP_DIR=/out/prebuilt-apps' "$repo/os/Containerfile" \
   && grep -Fq 'cp -a /build/os/app-runtime/tilo-runtime /usr/lib/' "$repo/os/Containerfile" \
