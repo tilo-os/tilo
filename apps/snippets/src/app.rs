@@ -220,10 +220,9 @@ pub struct SnippetsApp {
     /// open. A staged `--shots` scenario sets this so its snap isn't undone.
     settled_layout: bool,
 
-    /// Framework-owned action dispatch. Each on-screen affordance dispatches its
-    /// [`SnippetsAction`] through this; the host brackets the undo boundary and
-    /// applies the action through the executor.
-    actions: ui::ActionHost,
+    /// Framework dispatcher when hosted; the local action host otherwise.
+    /// Each on-screen affordance submits a [`SnippetsAction`] through this.
+    actions: crate::resource::ActionSink,
 }
 
 /// A clickable region recorded during draw and resolved on mouse-down.
@@ -406,7 +405,7 @@ impl SnippetsApp {
             push: FlapState::closed_by_default(),
             push_pane: PushPane::Master,
             settled_layout: false,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
         };
         app.recompute_visible();
         app
@@ -467,6 +466,29 @@ impl SnippetsApp {
     /// Re-project the authoritative document into the in-memory library. Called
     /// after every dispatched action so the list/detail reflect it immediately,
     /// before the next frame's `sync`.
+    /// Show the library the framework resource already holds.
+    pub(crate) fn adopt_resource_state(&mut self, state: &[crate::model::Snippet]) {
+        let next = Library {
+            snippets: state.to_vec(),
+        };
+        if self.library.snippets != next.snippets {
+            self.search_provider.update(&self.library, &next);
+            self.library = next;
+            self.recompute_visible();
+            self.sync_body_editor();
+        }
+        self.seeded = true;
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Snippets>,
+    ) {
+        self.actions.attach(dispatcher);
+        self.seeded = true;
+    }
+
     fn refresh_from_doc(&mut self, doc: &AutoCommit) {
         let next = Library {
             snippets: SnippetsDoc::list(doc),
@@ -693,9 +715,9 @@ impl SnippetsApp {
     fn sync_library(&mut self, doc: &mut AutoCommit) {
         let remote = SnippetsDoc::list(doc);
         if !self.seeded {
-            if remote.is_empty() {
-                // We're the origin — seed our starter set into the document,
-                // which becomes authoritative from here on.
+            if remote.is_empty() && !self.actions.is_hosted() {
+                // A screenshot fixture may arrive with a local starter set.
+                // The hosted app never writes that around the resource action.
                 for s in self.library.snippets.clone() {
                     SnippetsDoc::upsert(doc, &s);
                 }
@@ -1061,7 +1083,7 @@ impl ui::widget::Widget for SnippetsApp {
 
     /// Publish the library + its snippets so the host's Ctrl+K action palette
     /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [``]() impl in
     /// [`crate::actions`].
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())

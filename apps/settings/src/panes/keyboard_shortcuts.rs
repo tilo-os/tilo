@@ -115,7 +115,7 @@ pub struct ShortcutPane {
     commit_context_pending: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 }
 
 impl Default for ShortcutPane {
@@ -137,7 +137,7 @@ impl Default for ShortcutPane {
             commit_context_pending: false,
             composed: None,
             rect: Rect::ZERO,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
         }
     }
 }
@@ -189,6 +189,13 @@ impl ShortcutPane {
             action,
             tilo_actions::ActionContext::for_action("so.tilo.settings", "Settings", action),
         );
+    }
+
+    pub(crate) fn bind_dispatcher(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Settings>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 }
 

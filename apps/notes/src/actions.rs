@@ -38,15 +38,17 @@ use uuid::Uuid;
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
     ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResourcePresentation, ResourceProvider, ResourceViewSpec, ResultSpec, RetryPolicy,
+    Resource, ResourcePresentation, ResourceViewSpec, ResultSpec, RetryPolicy,
 };
 
 use crate::continuation::{self, BuilderDomain};
 use crate::doc::NotesDoc;
 use crate::model::{PageId, PageMeta, TagId, TagMeta};
 use crate::num;
-use qdoc_rich_text::RichTextAction;
-use qdoc_rich_text::action::RegionKind;
+use tilo_document::RichText;
+use tilo_document::RichTextAction;
+use tilo_document::action::RegionKind;
+use ui::tilo_resource::Resource as _;
 use ui::widget::marks::{Mark, MarkSpan};
 use ui::widget::{BlockContent, BlockKind};
 
@@ -1023,7 +1025,7 @@ pub fn set_mark_action(
         page,
         RichTextAction::SetMark {
             region: RegionKind::Body,
-            spans: vec![qdoc_rich_text::action::Span {
+            spans: vec![tilo_document::action::Span {
                 block: block.to_owned(),
                 start: range.start,
                 end: range.end,
@@ -1499,6 +1501,50 @@ pub(crate) fn page_resource(m: &PageMeta, pages: &[PageMeta], doc: &AutoCommit) 
     page_resource_from_index(m, &index, doc, workspace.as_ref(), 0, &mut remaining)
 }
 
+/// Root page resources for the notebook — the tree [`Resource::children`] and
+/// [`provide_resources`] both publish. Each page nests its rich-text body.
+pub(crate) fn notebook_page_children(
+    pages: &[PageMeta],
+    doc: Option<&AutoCommit>,
+) -> Vec<Resource> {
+    let index = PageResourceIndex::new(pages);
+    let mut remaining = RESOURCE_PAGE_SNAPSHOT_LIMIT;
+    let empty = AutoCommit::new();
+    let doc = doc.unwrap_or(&empty);
+    let workspace = crate::notebook::project(doc, None).ok();
+    index
+        .children_of(None)
+        .iter()
+        .filter_map(|root| {
+            if remaining == 0 {
+                return None;
+            }
+            Some(page_resource_from_index(
+                root,
+                &index,
+                doc,
+                workspace.as_ref(),
+                0,
+                &mut remaining,
+            ))
+        })
+        .collect()
+}
+
+fn page_body_child(page: &PageMeta) -> Resource {
+    // Vocabulary door for the nested body. Live editor edits still wrap
+    // through [`NotesAction::EditBody`] until a nested dispatcher can address
+    // the page's body map directly.
+    let mut body_doc = AutoCommit::new();
+    RichText::initialize(&mut body_doc).expect("empty rich text initializes");
+    let state = RichText::read(&body_doc).expect("empty rich text reads");
+    ui::tilo_resource::publish::<RichText>(
+        &format!("notes.page:{}/body", page.id),
+        &page.title,
+        &state,
+    )
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "the published page-resource action table: one independent spec per action"
@@ -1646,6 +1692,8 @@ fn page_resource_from_index(
             ));
         }
     }
+    // Nested rich-text body — same action vocabulary as a root RichText.
+    res = res.with_child(page_body_child(m));
     res
 }
 
@@ -1786,7 +1834,11 @@ pub fn provide_resources(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Vec<Resour
 }
 
 fn notebook_resource(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Resource {
-    let mut notebook = Resource::new("notes.notebook", "notes.notebook", "Notes");
+    let state =
+        <crate::resource::Notebook as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+    let published =
+        ui::tilo_resource::publish::<crate::resource::Notebook>("notes.notebook", "Notes", &state);
+    let mut notebook = published;
 
     if ctx.can_go_back
         && let Some(action) = view_operation_spec("back", "Back", &NotesOperation::NavigateBack)
@@ -1827,24 +1879,9 @@ fn notebook_resource(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Resource {
     notebook = notebook.with_action(markdown_content_operation());
     notebook = with_daily_note_action(notebook, ctx, &index);
 
-    let mut remaining = RESOURCE_PAGE_SNAPSHOT_LIMIT;
-    // Every action in this publication reads the same immutable document.
-    // Validate it once; revalidating every block for each note's four tree
-    // actions and duplicate action made ordinary typing stall on menu refresh.
-    let workspace = crate::notebook::project(doc, None).ok();
-    for root in index.children_of(None) {
-        if remaining == 0 {
-            break;
-        }
-        notebook = notebook.with_child(page_resource_from_index(
-            root,
-            &index,
-            doc,
-            workspace.as_ref(),
-            0,
-            &mut remaining,
-        ));
-    }
+    // `publish` already attached [`crate::resource::Notebook::children`];
+    // replace with the doc-enriched tree (previews, duplicate, tree moves).
+    notebook.children = notebook_page_children(&ctx.pages, Some(doc));
     decorate_tag_actions(&mut notebook, ctx);
     notebook
 }
@@ -2095,14 +2132,15 @@ fn tag_page_resource(tag: TagId, page: &PageMeta) -> Resource {
     page_ref
 }
 
-impl ResourceProvider for crate::app::NotesApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::NotesApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         self.notes_resource_ctx_for(doc)
             .map(|ctx| provide_resources(&ctx, doc))
             .unwrap_or_default()
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         let ctx = self.notes_resource_ctx_for(doc)?;
         if id == "notes.notebook" {
             return Some(notebook_resource(&ctx, doc));
@@ -2641,7 +2679,7 @@ mod tests {
     fn notebook_resources(doc: &AutoCommit) -> Vec<Resource> {
         let author = ui::permissions::UserId("action-contract".into());
         let app = crate::app::NotesApp::from_document(doc, &author).expect("a canonical notebook");
-        ResourceProvider::resources(&app, doc)
+        app.publish_resources(doc)
     }
 
     fn page_meta(doc: &AutoCommit, id: PageId) -> PageMeta {
@@ -2700,7 +2738,7 @@ mod tests {
     fn page_resources_publish_the_tree_view_copy_link_and_valid_moves() {
         eprintln!("phase ctrl_k_publishes_the_nested_page_tree");
         {
-            let (doc, _projects, _a, _b, _inbox) = seeded();
+            let (doc, projects_id, _a, _b, _inbox) = seeded();
             let resources = provide_resources(&ctx_from(&doc), &doc);
             assert_eq!(resources.len(), 2, "notebook + stable tags root");
             let notebook = &resources[0];
@@ -2722,14 +2760,21 @@ mod tests {
             assert!(p_actions.contains(&"delete"), "{p_actions:?}");
             assert!(p_actions.contains(&"new-child"), "{p_actions:?}");
 
-            // Its two children nest underneath, in order.
-            assert_eq!(
-                projects.children.len(),
-                2,
-                "Launch + Notes nest under Projects"
-            );
-            assert_eq!(projects.children[0].label, "Launch");
-            assert_eq!(projects.children[1].label, "Notes");
+            // Its two child notes nest underneath, in order, plus the body.
+            let page_children: Vec<_> = projects
+                .children
+                .iter()
+                .filter(|r| r.kind == "notes.page")
+                .collect();
+            assert_eq!(page_children.len(), 2, "Launch + Notes nest under Projects");
+            assert_eq!(page_children[0].label, "Launch");
+            assert_eq!(page_children[1].label, "Notes");
+            let body = projects
+                .children
+                .iter()
+                .find(|r| r.kind == RichText::KIND)
+                .expect("page nests a rich-text body child");
+            assert_eq!(body.id.as_str(), format!("notes.page:{projects_id}/body"));
         }
 
         eprintln!("phase page_resource_publishes_the_localized_editor_view");
@@ -3153,8 +3198,9 @@ mod tests {
                 can_go_forward: false,
             };
             let resources = provide_resources(&ctx, &AutoCommit::new());
+            // Each published page also nests one rich-text body child.
             assert!(
-                resource_count(&resources[0]) <= RESOURCE_PAGE_SNAPSHOT_LIMIT + 1,
+                resource_count(&resources[0]) <= RESOURCE_PAGE_SNAPSHOT_LIMIT * 2 + 1,
                 "notebook context must remain bounded"
             );
             let late = pages.last().expect("late note");

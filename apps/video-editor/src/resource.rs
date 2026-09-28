@@ -13,12 +13,12 @@
 //! and a History mode that draws past versions with the real timeline.
 
 use automerge::{AutoCommit, ChangeHash};
-use tilo_actions::{ActionParam, EncodedAction, ParamType};
+use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
 use ui::framework::{Dispatcher, ResourceApp, ViewCx};
 use ui::tilo_resource::{ActionDecl, ActionRef, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
-use crate::actions::{VIDEO_EDITOR_ACTION_TYPE, VideoEditorAction};
+use crate::actions::{VIDEO_EDITOR_ACTION_TYPE, VideoEditorAction, VideoResourceCtx};
 use crate::app::{EMPTY_CAPTURE, IMPORT_CAPTURE, NARROW_CAPTURE, ShotScenario};
 use crate::doc::VideoDoc;
 use crate::model::{Marker, Project};
@@ -50,9 +50,11 @@ impl Resource for VideoProject {
         Ok(VideoDoc::load_project(doc))
     }
 
-    /// View-independent named actions. The editor publishes its richer tree
-    /// (split at the playhead, trim to the playhead, per-clip grades) itself,
-    /// because those are bound to where its user is.
+    /// Named catalogue actions an agent can invoke without the playhead.
+    /// Playhead-bound conveniences (split/trim-at-playhead) stay on the nested
+    /// tree from [`Self::children`], built with playhead `0` for the publish
+    /// path; the live surface may still layer a playhead-accurate tree when
+    /// it is not framework-hosted.
     fn declarations() -> Vec<ActionDecl<Self>> {
         vec![
             ActionDecl::new(
@@ -75,6 +77,36 @@ impl Resource for VideoProject {
             )
             .describe("Place a named marker on the project timeline."),
         ]
+    }
+
+    /// Tracks, clips, media and markers — the richer palette tree, published
+    /// through `tilo_resource::publish` rather than a second hand-built root.
+    fn children(project: &Project) -> Vec<tilo_actions::Resource> {
+        let ctx = VideoResourceCtx {
+            project: project.clone(),
+            playhead: 0.0,
+            mix: crate::audio::MixSnapshot::default(),
+        };
+        crate::actions::provide_resources(&ctx)
+            .into_iter()
+            .next()
+            .map(|root| root.children)
+            .unwrap_or_default()
+    }
+
+    /// Import / open / save / export and other non-document project jobs.
+    fn local_operations() -> Vec<ActionSpec> {
+        let ctx = VideoResourceCtx::default();
+        crate::actions::provide_resources(&ctx)
+            .into_iter()
+            .next()
+            .map(|root| {
+                root.actions
+                    .into_iter()
+                    .filter(|spec| spec.kind != OperationKind::Document)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn search(project: &Project) -> Vec<SearchEntry> {

@@ -5,7 +5,7 @@
 //! typed [`ReviewAction`] to the document.
 
 use crate::paint_context::PaintContext;
-use qdoc::snapshot::{ChangeKind, ChangeView, CommentView};
+use tilo_doc::snapshot::{ChangeKind, ChangeView, CommentView};
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
 

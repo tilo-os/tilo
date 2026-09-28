@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use tilo_actions::{
     Action, ActionAddress, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
+    ExecutionLocus, OperationKind, Resource, RetryPolicy,
 };
 
 use crate::doc::SnippetsDoc;
@@ -476,8 +476,9 @@ pub fn provide_resources(ctx: &SnippetsResourceCtx, doc: &AutoCommit) -> Vec<Res
     vec![lib]
 }
 
-impl ResourceProvider for crate::app::SnippetsApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::SnippetsApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.snippets_resource_ctx(), doc)
     }
 }

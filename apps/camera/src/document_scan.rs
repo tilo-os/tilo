@@ -258,7 +258,7 @@ impl ScanSession {
             .iter()
             .map(|page| {
                 let image = page.rendered().to_rgb8();
-                qdoc_pdf::ScannedPdfPage {
+                tilo_doc_pdf::ScannedPdfPage {
                     width: image.width(),
                     height: image.height(),
                     rgb: image.into_raw(),
@@ -269,7 +269,7 @@ impl ScanSession {
                 }
             })
             .collect::<Vec<_>>();
-        qdoc_pdf::render_scanned_pdf(&pages)
+        tilo_doc_pdf::render_scanned_pdf(&pages)
     }
 }
 

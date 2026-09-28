@@ -32,7 +32,7 @@ use uuid::Uuid;
 use tilo_actions::{
     Action, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
     ConfirmationPolicy, DiscoveryScope, Doc, EncodedAction, ExecutionLocus, OperationKind,
-    ParamType, Resource, ResourceProvider, RetryPolicy, RiskLevel,
+    ParamType, Resource, RetryPolicy, RiskLevel,
 };
 
 use crate::doc;
@@ -637,8 +637,9 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     vec![root]
 }
 
-impl ResourceProvider for crate::app::ThemesApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::ThemesApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(doc)
     }
 }

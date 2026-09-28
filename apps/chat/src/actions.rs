@@ -69,7 +69,7 @@ use tilo_clock::unix_now_i64;
 
 use tilo_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider,
+    OperationKind, Resource,
 };
 
 use crate::doc::{ChatDoc, NewMessage, VoiceState};
@@ -198,7 +198,7 @@ pub enum ChatAction {
         /// is its plain text. Empty for a plain message, and in a frame from
         /// a release that predates rich bodies.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        body: Vec<qdoc_rich_text::ClipBlock>,
+        body: Vec<tilo_document::ClipBlock>,
     },
     /// Replace a message's body, archiving the prior text into its edit history
     /// and flagging it edited. `ts` (the edit time) is minted at authoring.
@@ -209,7 +209,7 @@ pub enum ChatAction {
         ts: i64,
         /// The new body as written; empty for a plain edit.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        body: Vec<qdoc_rich_text::ClipBlock>,
+        body: Vec<tilo_document::ClipBlock>,
     },
     /// Delete a message row from `channel`.
     DeleteMessage {
@@ -394,6 +394,17 @@ pub enum ChatAction {
         hardware_decode: Vec<String>,
         software_decode: Vec<String>,
     },
+    /// Announce this peer into the shared roster. Writes only fields that differ,
+    /// so a repeat is a no-op.
+    EnsureUser {
+        id: String,
+        name: String,
+        initials: String,
+        color_idx: usize,
+        status: String,
+    },
+    /// One pass of the legacy attachment-path repair. Idempotent.
+    MigrateLegacyAttachments,
 }
 
 /// Longest agent display name recorded beside an agent-authored message.
@@ -504,6 +515,16 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
         | ChatAction::SetCallVideoCaps { channel, .. } => {
             ("Update call connection", channel, channel, "chat.call")
         }
+        ChatAction::EnsureUser { id, .. } => ("Join chat", id, id, "chat.user"),
+        ChatAction::MigrateLegacyAttachments => {
+            context.action_label = "Repair attachments".into();
+            context.resource = Some(tilo_actions::ActionResource {
+                id: "chat".into(),
+                kind: "chat.workspace".into(),
+                label: "Chat".into(),
+            });
+            return context;
+        }
         // A well-formed one delegated above; a nested wrapper applies nothing.
         ChatAction::AgentAuthored { .. } => return context,
     };
@@ -530,6 +551,22 @@ impl Action for ChatAction {
             if let ChatAction::SendMessage { id, author, .. } = &**send {
                 ChatDoc::label_agent_author(doc, id, author, name);
             }
+            return Ok(());
+        }
+        if let ChatAction::EnsureUser {
+            id,
+            name,
+            initials,
+            color_idx,
+            status,
+        } = self
+        {
+            let presence = status.parse().unwrap_or(crate::model::Presence::Online);
+            let _ = ChatDoc::ensure_user(doc, id, name, initials, *color_idx, presence);
+            return Ok(());
+        }
+        if matches!(self, ChatAction::MigrateLegacyAttachments) {
+            ChatDoc::migrate_legacy_attachment_paths(doc);
             return Ok(());
         }
         // Each helper matches only its own category's variants (a `_ => {}`
@@ -845,7 +882,7 @@ impl ChatAction {
     /// A send or an edit carrying the body as written (`text` its plain
     /// text); any other action unchanged.
     #[must_use]
-    pub fn with_body(mut self, written: Vec<qdoc_rich_text::ClipBlock>) -> Self {
+    pub fn with_body(mut self, written: Vec<tilo_document::ClipBlock>) -> Self {
         if let ChatAction::SendMessage { body, .. } | ChatAction::EditMessage { body, .. } =
             &mut self
         {
@@ -1174,6 +1211,10 @@ fn channel_label(ch: &ChannelResource) -> String {
 /// `chat.message:<id>` per message. Every operation is the same action the
 /// on-screen affordance dispatches.
 pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    let state =
+        <crate::resource::Chat as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+    let published =
+        ui::tilo_resource::publish::<crate::resource::Chat>("chat.workspace", "Chat", &state);
     let users = ChatDoc::list_users(doc);
     let mut resource_ctx = ctx.clone();
     // Mentionable people: the room roster the caller supplied (workspace
@@ -1191,8 +1232,13 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
         }
     }
     let all_channels = ChatDoc::list_channels(doc);
-    let mut forest = Vec::new();
-    let mut remaining = EAGER_RESOURCE_SNAPSHOT_LIMIT.saturating_sub(1 + EAGER_PEOPLE_LIMIT);
+    let mut root = published;
+    // The publish root, its rich-text draft children, and the people page are
+    // already spoken for; the remainder is the eager workspace/channel page.
+    let mut remaining = EAGER_RESOURCE_SNAPSHOT_LIMIT
+        .saturating_sub(1)
+        .saturating_sub(state.draft_keys.len())
+        .saturating_sub(1 + EAGER_PEOPLE_LIMIT);
     let mut workspaces = ChatDoc::list_workspaces(doc);
     // Context first: the open room's siblings are more useful than an
     // arbitrary early workspace when only one bounded page is materialised.
@@ -1236,7 +1282,7 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
             remaining = remaining.saturating_sub(1);
         }
         annotate_contracts(&mut workspace);
-        forest.push(workspace);
+        root = root.with_child(workspace);
     }
 
     let mut people = Resource::new("chat.people", "chat.people", "People");
@@ -1250,8 +1296,8 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
                 )),
         );
     }
-    forest.push(people);
-    forest
+    root = root.with_child(people);
+    vec![root]
 }
 
 fn workspace_resource(id: &str, name: &str) -> Resource {
@@ -2183,8 +2229,9 @@ fn message_label(
     format!("{author}: {snippet}")
 }
 
-impl ResourceProvider for crate::app::ChatApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::ChatApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         let ctx = self.chat_resource_ctx();
         // Heads identify the committed document exactly; frames with pending
         // (uncommitted) operations rebuild.
@@ -2206,7 +2253,7 @@ impl ResourceProvider for crate::app::ChatApp {
         resources
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         resolve_resource(&self.chat_resource_ctx(), doc, id)
     }
 }
@@ -2221,6 +2268,22 @@ mod tests {
     /// A fixed authoring timestamp for tests — actions carry it in the payload,
     /// so nothing here reads the wall-clock.
     const TS: i64 = 1_782_000_000;
+
+    /// The published tree is one `publish` root; workspaces hang under it.
+    fn workspace<'a>(resources: &'a [Resource], id: &str) -> &'a Resource {
+        let want = format!("chat.workspace:{id}");
+        resources
+            .iter()
+            .find(|resource| resource.id.as_str() == want)
+            .or_else(|| {
+                resources.iter().find_map(|root| {
+                    root.children
+                        .iter()
+                        .find(|resource| resource.id.as_str() == want)
+                })
+            })
+            .unwrap_or_else(|| panic!("{want} published"))
+    }
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -2322,10 +2385,7 @@ mod tests {
         {
             let doc = seeded();
             let resources = provide_resources(&ctx_from(&doc), &doc);
-            let ws = resources
-                .iter()
-                .find(|resource| resource.id.as_str() == "chat.workspace:ws_acme")
-                .expect("Acme workspace root");
+            let ws = workspace(&resources, "ws_acme");
             assert_eq!(ws.kind, "chat.workspace");
             let ws_actions: Vec<&str> = ws.actions.iter().map(|a| a.id.as_str()).collect();
             assert!(ws_actions.contains(&"new-channel"), "{ws_actions:?}");
@@ -2490,9 +2550,9 @@ mod tests {
                 .collect();
             let resources = provide_resources(&ctx, &doc);
             assert!(
-                resources
+                workspace(&resources, "ws_acme")
+                    .children
                     .iter()
-                    .flat_map(|workspace| &workspace.children)
                     .filter(|resource| resource.kind == "chat.channel")
                     .all(|channel| channel
                         .children
@@ -2525,9 +2585,9 @@ mod tests {
             let resources = provide_resources(&ctx, &doc);
             assert!(resource_count(&resources) <= EAGER_RESOURCE_SNAPSHOT_LIMIT);
             assert!(
-                resources
+                workspace(&resources, "ws_acme")
+                    .children
                     .iter()
-                    .flat_map(|resource| &resource.children)
                     .all(|resource| resource.id.as_str() != "chat.channel:c_late_107")
             );
             let lazy = resolve_resource(&ctx, &doc, "chat.channel:c_late_107")
@@ -2541,7 +2601,7 @@ mod tests {
         {
             let doc = seeded();
             let resources = provide_resources(&ctx_from(&doc), &doc);
-            let channel = resources[0]
+            let channel = workspace(&resources, "ws_acme")
                 .children
                 .iter()
                 .find(|r| r.id.as_str() == "chat.channel:c_crit")
@@ -2640,10 +2700,7 @@ mod tests {
             .find(|c| c.workspace == "ws_acme" && c.kind == ChannelKind::Voice)
             .expect("seeded voice channel");
         let resources = provide_resources(&ctx_from(&doc), &doc);
-        let ws = resources
-            .iter()
-            .find(|resource| resource.id.as_str() == "chat.workspace:ws_acme")
-            .unwrap();
+        let ws = workspace(&resources, "ws_acme");
         let channel = |id: &str| {
             ws.children
                 .iter()
@@ -2695,14 +2752,10 @@ mod tests {
             is_agent: false,
         });
         let resources = provide_resources(&ctx, &doc);
-        let crit = resources
+        let crit = workspace(&resources, "ws_acme")
+            .children
             .iter()
-            .find(|resource| resource.id.as_str() == "chat.workspace:ws_acme")
-            .and_then(|ws| {
-                ws.children
-                    .iter()
-                    .find(|c| c.id.as_str() == "chat.channel:c_crit")
-            })
+            .find(|c| c.id.as_str() == "chat.channel:c_crit")
             .unwrap();
         let post = crit.actions.iter().find(|a| a.id == "post").unwrap();
         // The message id is minted per build, so read the palette's build
@@ -2970,7 +3023,7 @@ mod tests {
             );
 
             let resources = provide_resources(&ctx_from(&doc), &doc);
-            let category = resources[0]
+            let category = workspace(&resources, "ws_acme")
                 .children
                 .iter()
                 .find(|resource| resource.id.as_str() == "chat.category:cat_action")

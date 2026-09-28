@@ -47,6 +47,7 @@ pub mod model;
 pub mod panels;
 pub mod podman;
 pub mod presentation;
+pub mod resource;
 pub mod search_provider;
 pub mod terminal;
 
@@ -116,3 +117,4 @@ pub fn app_root_shot(scenario: &str) -> Box<dyn Widget> {
     app.seed_shot(scenario);
     Box::new(app)
 }
+pub use resource::{Containers, ContainersShell};

@@ -328,7 +328,7 @@ mod tests {
                     tilo_actions::door::resolve(&resources, &address)
                         .is_some_and(|spec| spec.kind == tilo_actions::OperationKind::View)
                         || app
-                            .resource(&doc, address.resource.as_str())
+                            .publish_resource(&doc, address.resource.as_str())
                             .is_some_and(|resource| {
                                 tilo_actions::door::resolve(&[resource], &address).is_some_and(
                                     |spec| spec.kind == tilo_actions::OperationKind::View,

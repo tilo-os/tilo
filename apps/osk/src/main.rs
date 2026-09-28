@@ -94,6 +94,9 @@ const HIT_OVERLAY_FLAG: &str = "--debug-hit-areas";
 extern crate runtime_dylib;
 
 pub fn main() {
+    // Input-method auto-show and virtual-keyboard injection live on this
+    // spec. The ResourceApp shell does not commit text into the focused
+    // field, so it is not the keyboard a person opens.
     ui::launch::run_or_exit(&launch_spec());
 }
 

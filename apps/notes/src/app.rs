@@ -680,10 +680,9 @@ pub struct NotesApp {
     /// Rect of the content area (between top bar and status bar). Used
     /// to place the drawer scrim in narrow mode.
     content_rect: Rect,
-    /// Framework-owned action dispatch. Each on-screen affordance dispatches its
-    /// [`NotesAction`] through this: the host brackets the undo boundary and
-    /// applies the action through the executor, as the Ctrl+K palette does.
-    actions: ui::ActionHost,
+    /// Framework-owned action dispatch. Hosted via
+    /// [`crate::resource::ActionSink`]; standalone tests use the local host.
+    actions: crate::resource::ActionSink,
     /// Page ids that have appeared in the shared document. Steady-state `sync`
     /// uses this to tell a never-yet-mirrored local page (push it up) from a page
     /// the document dropped — a Ctrl+Z undo of a create, or a remote delete —
@@ -988,7 +987,7 @@ impl NotesApp {
             topbar_rect: Rect::ZERO,
             menu_btn_rect: Rect::ZERO,
             content_rect: Rect::ZERO,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             known_in_doc: std::collections::HashSet::new(),
             known_tags_in_doc: std::collections::HashSet::new(),
             active_tag_filter: None,
@@ -1980,12 +1979,39 @@ impl NotesApp {
     /// the caller for immediate UI feedback and reconciled from the document on
     /// the next `sync`. This app supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &NotesAction) {
-        self.actions.dispatch_with_context(
-            doc,
-            actions::NOTES_ACTION_TYPE,
-            action,
-            actions::history_context(action),
-        );
+        self.actions.dispatch(doc, action);
+    }
+
+    /// Empty surface for the framework host; [`Self::adopt_resource_state`]
+    /// installs the live workspace before the first frame.
+    pub(crate) fn empty_surface(author: &ui::permissions::UserId) -> Self {
+        let mut sidebar = PageSidebar::new();
+        sidebar.sync_from_workspace(&Workspace::default());
+        let mut main = MainPanel::new();
+        main.set_local_author(Some(author.0.clone()));
+        let mut app = Self::build_widget(Workspace::default(), sidebar, main, None);
+        app.seeded = true;
+        app.adopted = true;
+        app
+    }
+
+    /// Present the framework's workspace projection.
+    pub(crate) fn adopt_resource_state(&mut self, state: &std::rc::Rc<Workspace>) {
+        self.workspace = (**state).clone();
+        self.sidebar.sync_from_workspace(&self.workspace);
+        self.bound_page = self.workspace.selected();
+        self.refresh_link_pages();
+        self.self_dirty = true;
+    }
+
+    /// Attach the framework dispatcher when hosted as a surface.
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Notebook>,
+    ) {
+        self.actions.attach(dispatcher);
+        self.seeded = true;
+        self.adopted = true;
     }
 
     /// The context Ctrl+K needs to build the notebook's resource tree: the page
@@ -1994,7 +2020,7 @@ impl NotesApp {
         crate::actions::NotesResourceCtx {
             pages: self.workspace.pages().to_vec(),
             // The palette snapshot does not eagerly materialize block
-            // resources. ResourceProvider::resource resolves a requested
+            // resources.::resource resolves a requested
             // stable block id from the durable document, after stale checks.
             blocks: HashMap::new(),
             tags: self.workspace.tags().to_vec(),
@@ -2125,6 +2151,46 @@ impl NotesApp {
         Ok(())
     }
 
+    /// Bring a notebook still holding first-format pages to rich text, once
+    /// it is open. A no-op for a current notebook.
+    fn upgrade_notebook(&mut self, doc: &mut AutoCommit) {
+        if !NotesDoc::needs_upgrade(doc) {
+            return;
+        }
+        let action = NotesAction::UpgradeNotebook;
+        let context = actions::history_context(&action);
+        if self.actions.is_hosted() {
+            if let Err(error) = self.actions.try_dispatch_with_context(
+                doc,
+                actions::NOTES_ACTION_TYPE,
+                &action,
+                context,
+            ) {
+                tracing::error!(%error, "notes: notebook upgrade refused");
+            } else {
+                self.bound_page = None;
+                self.canonical_synced = None;
+                self.self_dirty = true;
+            }
+            return;
+        }
+        match self.upgrade_actions.try_dispatch_with_context(
+            doc,
+            actions::NOTES_ACTION_TYPE,
+            &action,
+            context,
+        ) {
+            Ok(()) => {
+                // Not a person's edit: no undo step for it.
+                let _ = self.upgrade_actions.take_committed();
+                self.bound_page = None;
+                self.canonical_synced = None;
+                self.self_dirty = true;
+            }
+            Err(error) => tracing::error!(%error, "notes: notebook upgrade refused"),
+        }
+    }
+
     fn dispatch_canonical_action(
         &mut self,
         doc: &mut AutoCommit,
@@ -2220,7 +2286,7 @@ impl NotesApp {
         };
         if let Some((resource_id, action_id)) = resource_action {
             let resource = self
-                .resource(doc, &resource_id)
+                .publish_resource(doc, &resource_id)
                 .ok_or("page action resource no longer exists")?;
             ui::ActionHost::authorize_resource_action(doc, &resource, action_id)?;
         }
@@ -2856,8 +2922,8 @@ impl NotesApp {
             .flatten();
         let text = format!("![{}]({destination})", alt.trim());
         let edit = match after {
-            Some(after) => qdoc_rich_text::RichTextAction::InsertParagraph { after, text },
-            None => qdoc_rich_text::RichTextAction::AppendParagraph { text },
+            Some(after) => tilo_document::RichTextAction::InsertParagraph { after, text },
+            None => tilo_document::RichTextAction::AppendParagraph { text },
         };
         let action = if let Some(bytes) = canonical_bytes {
             actions::add_image_asset_action(page, bytes, edit)
@@ -4475,7 +4541,7 @@ impl Widget for NotesApp {
 
     /// Publish the open notebook + its pages (nested by the tree) so the host's
     /// Ctrl+K action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [``]() impl in
     /// [`crate::actions`].
     fn action_directory_invocation_domain(
         &self,
@@ -4485,7 +4551,7 @@ impl Widget for NotesApp {
     }
 
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        let mut resources = Self::publish_resources(self, doc);
         resources.extend(self.pending_import_resource());
         resources
     }
@@ -4494,7 +4560,7 @@ impl Widget for NotesApp {
         if id == "notes.pending-import" {
             return self.pending_import_resource();
         }
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        Self::publish_resource(self, doc, id)
     }
 
     /// Fold the notebook into the unified Ctrl+K palette: a snapshot
@@ -6095,7 +6161,7 @@ mod tests {
             // images; compatibility custody must not replace the canonical map.
             let action = actions::edit_body_action(
                 page,
-                qdoc_rich_text::RichTextAction::InsertParagraph {
+                tilo_document::RichTextAction::InsertParagraph {
                     after: images.last().map(|(id, _)| id.clone()).unwrap(),
                     text: format!("![Existing]({legacy_reference})"),
                 },
@@ -6690,8 +6756,8 @@ mod tests {
                 &mut state.doc,
                 &actions::edit_body_action(
                     source,
-                    qdoc_rich_text::RichTextAction::SpliceText {
-                        region: qdoc_rich_text::action::RegionKind::Body,
+                    tilo_document::RichTextAction::SpliceText {
+                        region: tilo_document::action::RegionKind::Body,
                         block: block.clone(),
                         at: 0,
                         del: 0,
@@ -7490,7 +7556,7 @@ mod tests {
             let last = app.search_blocks[&welcome].last().unwrap().id.clone();
             crate::actions::edit_body_action(
                 welcome,
-                qdoc_rich_text::RichTextAction::InsertParagraph {
+                tilo_document::RichTextAction::InsertParagraph {
                     after: last.clone(),
                     text: original.text,
                 },
@@ -7505,7 +7571,7 @@ mod tests {
                 .0;
             crate::actions::edit_body_action(
                 welcome,
-                qdoc_rich_text::RichTextAction::MoveBlocks {
+                tilo_document::RichTextAction::MoveBlocks {
                     blocks: vec![inserted],
                     after: None,
                 },

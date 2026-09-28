@@ -1,8 +1,8 @@
 //! Immutable message pages over `ChatDoc` storage. No action publication or caller authority is minted here.
 pub mod action;
 use automerge::AutoCommit;
-use qdoc::semantic_read::{Basis, Limits, ReadError, TextPosition};
 use serde::{Deserialize, Serialize};
+use tilo_doc::semantic_read::{Basis, Limits, ReadError, TextPosition};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cursor {
@@ -30,11 +30,11 @@ pub struct Page {
     pub next: Option<Cursor>,
 }
 use automerge::{ObjType, ScalarValueRef};
-use qdoc::semantic_read::{
+use std::ops::ControlFlow;
+use tilo_doc::semantic_read::{
     json_len,
     source::{Source, Value},
 };
-use std::ops::ControlFlow;
 /// Read only the selected channel's canonical message list. A page retains at most the requested
 /// messages plus one lookahead; text is streamed element by element.
 ///

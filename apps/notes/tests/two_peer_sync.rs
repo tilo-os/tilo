@@ -126,8 +126,8 @@ fn peer_edits_and_duplicates_replicate_before_the_other_peer_opens_them() {
         NotesDoc::edit_page_body(
             &mut doc_a,
             sel,
-            &qdoc_rich_text::RichTextAction::SpliceText {
-                region: qdoc_rich_text::action::RegionKind::Body,
+            &tilo_document::RichTextAction::SpliceText {
+                region: tilo_document::action::RegionKind::Body,
                 block: first,
                 at: 0,
                 del: 0,

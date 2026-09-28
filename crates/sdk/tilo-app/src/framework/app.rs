@@ -62,6 +62,15 @@ pub trait ResourceApp: 'static {
         <Self::Resource as Resource>::LABEL.to_owned()
     }
 
+    /// View and effect operations of this app's presentation, published on
+    /// the same resource as [`Resource::local_operations`]. A shared resource
+    /// type (rich text) does not know about one app's chrome. Document
+    /// mutations do not belong here. History does not either: it is the
+    /// resource's own history, not a toggle beside it.
+    fn local_operations() -> Vec<tilo_actions::ActionSpec> {
+        Vec::new()
+    }
+
     /// Named screenshot scenarios for `--shots --scenario NAME`.
     fn scenarios() -> &'static [&'static str] {
         &[]
@@ -181,6 +190,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     let content = A::view(&mut cx);
     ResourceRoot::new(A::TITLE, icon::<A>(), label, cx, alive, content)
         .following(permissions, scope)
+        .with_presentation(A::local_operations())
 }
 
 #[allow(

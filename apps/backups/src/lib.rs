@@ -45,6 +45,7 @@ pub mod doc;
 pub mod engine;
 pub mod model;
 pub mod paint;
+pub mod resource;
 pub mod search_provider;
 
 pub use app::BackupsApp;
@@ -61,3 +62,4 @@ pub fn app_root() -> Box<dyn Widget> {
 pub fn app_root_demo() -> Box<dyn Widget> {
     Box::new(BackupsApp::new_demo())
 }
+pub use resource::{Backups, BackupsShell};

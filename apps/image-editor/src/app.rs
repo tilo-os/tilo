@@ -112,7 +112,7 @@ pub struct ImageEditorApp {
     /// The authoritative dispatch boundary for every shared graph mutation.
     /// Toolbar, inspector, keyboard and assistive-technology controls all use
     /// this host, matching the actions exposed through global search.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 }
 impl ImageEditorApp {
     pub fn new() -> Self {
@@ -226,7 +226,7 @@ impl ImageEditorApp {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             gesture_checkpoint: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
         }
     }
     pub fn seed_shot(&mut self, doc: &mut AutoCommit, path: &std::path::Path, advanced: bool) {
@@ -467,7 +467,7 @@ impl ImageEditorApp {
     /// frame.
     fn dispatch_graph_action<A>(&mut self, state: &mut AutoCommit, type_id: &str, action: &A)
     where
-        A: tilo_actions::Action + serde::Serialize,
+        A: tilo_actions::Action + serde::Serialize + crate::actions::AsEditorAction,
     {
         self.actions.dispatch_with_context(
             state,
@@ -478,6 +478,28 @@ impl ImageEditorApp {
         self.project = ProjectDoc::read(state);
         self.rendered_project = None;
         self.rebuild_crop_editor();
+    }
+
+    /// Show the project graph the framework resource already holds.
+    /// An empty projection does not wipe a graph that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::model::Project) {
+        if state.name.is_empty()
+            && state.operations.is_empty()
+            && !self.project.operations.is_empty()
+        {
+            return;
+        }
+        self.project = state.clone();
+        self.rendered_project = None;
+        self.rebuild_crop_editor();
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::ImageEditor>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     /// Persist a graph position after the editor has provided fluid local drag

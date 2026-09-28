@@ -2481,8 +2481,42 @@ impl Widget for TerminalWidget {
         ]
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        vec![self.session_resource()]
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        let state = <crate::resource::Terminal as ui::tilo_resource::Resource>::read(doc)
+            .unwrap_or_default();
+        let id = self.terminal_resource_id();
+        let label = if self.title == "Terminal" {
+            "Terminal session".to_owned()
+        } else {
+            format!("Terminal — {}", self.title)
+        };
+        let published =
+            ui::tilo_resource::publish::<crate::resource::Terminal>(&id, &label, &state);
+        let protocol = self.session_resource();
+        let mut root = published;
+        // Prefer the live session's Effect specs so disconnect availability is
+        // accurate; keep publish's apply/group for document session actions.
+        for action in protocol.actions {
+            if let Some(index) = root
+                .actions
+                .iter()
+                .position(|existing| existing.id == action.id)
+            {
+                root.actions[index] = action;
+            } else {
+                root = root.with_action(action);
+            }
+        }
+        for view in protocol.views {
+            root = root.with_view(view);
+        }
+        for child in protocol.children {
+            if root.children.iter().any(|existing| existing.id == child.id) {
+                continue;
+            }
+            root = root.with_child(child);
+        }
+        vec![root]
     }
 
     fn action_directory_resource_page(

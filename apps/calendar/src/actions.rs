@@ -26,14 +26,14 @@
 
 use automerge::AutoCommit;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
-use qdoc_rich_text::RichTextAction;
 use serde::{Deserialize, Serialize};
+use tilo_document::RichTextAction;
 use uuid::Uuid;
 
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, OperationKind, ParamType, PermissionRequirement, Resource,
-    ResourceProvider, ResultSpec, RetryPolicy,
+    ResultSpec, RetryPolicy,
 };
 
 use crate::doc::CalDoc;
@@ -1343,7 +1343,17 @@ fn apply_upsert_event(doc: &mut Doc, data: &EventData) {
     if let Some(event) = data.to_event()
         && CalDoc::project_exists(doc, event.project)
     {
+        let remote = event.calendar_id.clone();
+        // Undo of delete restores through UpsertEvent: clear the tombstone
+        // the delete wrote so the row can be rewritten.
+        CalDoc::clear_tombstone(doc, "event", event.id);
         CalDoc::update_event(doc, &event);
+        // A remote-calendar event is an outside consequence: the push outbox
+        // is the projection Sync drains. Undo of a remote delete restores
+        // through UpsertEvent and must re-queue the upload the same way.
+        if remote.is_some() {
+            CalDoc::enqueue_push(doc, event.id);
+        }
     }
 }
 
@@ -1551,6 +1561,56 @@ impl Action for CalendarAction {
 
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
+    }
+
+    /// Outside-consequence undo: creating a remote event is undone by a
+    /// remote delete (del_outbox); undoing that delete re-upserts and
+    /// re-queues the push. Computed before `apply` so a delete can still
+    /// read the event it removes. Pure local CRDT edits leave this as `None`.
+    fn inverse_before(&self, doc: &Doc) -> Option<Self> {
+        match self {
+            CalendarAction::UpsertEvent(data) => {
+                let event = data.to_event()?;
+                let calendar = event.calendar_id.clone()?;
+                Some(CalendarAction::DeleteEvent {
+                    id: event.id.to_string(),
+                    remote_delete: Some(calendar),
+                })
+            }
+            CalendarAction::PatchEvent { id, patch } if patch.enqueue_remote == Some(true) => {
+                // Filing an existing event onto a remote calendar: after Sync
+                // has PUT it, undo must queue a CalDAV delete.
+                let event_id = id.parse::<Id>().ok()?;
+                let event = CalDoc::read_model(doc).event(event_id)?.clone();
+                let calendar = patch
+                    .calendar_id
+                    .clone()
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| event.calendar_id.clone())?;
+                Some(CalendarAction::DeleteEvent {
+                    id: id.clone(),
+                    remote_delete: Some(calendar),
+                })
+            }
+            CalendarAction::DeleteEvent {
+                id,
+                remote_delete: Some(calendar),
+            } => {
+                let event_id = id.parse::<Id>().ok()?;
+                let event = CalDoc::read_model(doc).event(event_id)?.clone();
+                if event.calendar_id.as_deref() != Some(calendar.as_str()) {
+                    return None;
+                }
+                // UpsertEvent of a remote event re-queues the push in apply.
+                Some(CalendarAction::UpsertEvent(EventData::from_event(&event)))
+            }
+            _ => None,
+        }
+    }
+
+    fn inverse_encoded(&self, doc: &Doc) -> Option<EncodedAction> {
+        self.inverse_before(doc)
+            .and_then(|inverse| EncodedAction::encode(CALENDAR_ACTION_TYPE, &inverse).ok())
     }
 }
 
@@ -2101,8 +2161,33 @@ pub fn calendar_root(ctx: &CalendarResourceCtx) -> Resource {
     clippy::too_many_lines,
     reason = "the bounded eager resource projection keeps every entity's canonical ownership and action construction in one auditable routing table"
 )]
-pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    let mut root = calendar_root(ctx);
+pub fn provide_resources(ctx: &CalendarResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    let model = CalDoc::read_model(doc);
+    // Document actions and view/effect ops come from `Resource::publish`.
+    // Ctx-scoped entity children (visibility, reminders, attendees) still
+    // attach below for the standalone widget path until those bind to
+    // `Resource::children` fully.
+    let published = ui::tilo_resource::publish::<crate::resource::Calendar>(
+        "calendar.calendar",
+        "Calendar",
+        &model,
+    );
+    let mut root = published;
+    // Root actions already come from publish; merge only missing ids (ctx
+    // gates such as sync-unavailable). Entity children still attach below.
+    let protocol = calendar_root(ctx);
+    for action in protocol.actions {
+        if root.actions.iter().any(|existing| existing.id == action.id) {
+            continue;
+        }
+        root = root.with_action(action);
+    }
+    for view in protocol.views {
+        if root.views.iter().any(|existing| existing.id == view.id) {
+            continue;
+        }
+        root = root.with_view(view);
+    }
     // Reserve one bounded node per visible collection context (plus an
     // unfiled-task bucket) before materialising leaves. This keeps the entire
     // eager tree bounded even when one account has an enormous history; every
@@ -3201,12 +3286,13 @@ fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> O
     None
 }
 
-impl ResourceProvider for crate::app::CalendarApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::CalendarApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.calendar_resource_ctx(), doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         self.exact_resource_ctx(id)
             .and_then(|ctx| resource_from_ctx(&ctx, doc, id))
     }
@@ -3346,7 +3432,7 @@ mod tests {
                 "the open-resource snapshot must stay bounded"
             );
             let late = event_resource_id(late_id);
-            let resolved = <CalendarApp as ResourceProvider>::resource(&app, &doc, &late)
+            let resolved = CalendarApp::publish_resource(&app, &doc, &late)
                 .expect("a current late event resolves on demand");
             assert_eq!(resolved.id.as_str(), late);
             assert!(resolved.actions.iter().any(|action| action.id == "open"));
@@ -3359,7 +3445,7 @@ mod tests {
             .expect("delete is accepted");
             app.sync(&mut doc, &ROOT);
             assert!(
-                <CalendarApp as ResourceProvider>::resource(&app, &doc, &late).is_none(),
+                CalendarApp::publish_resource(&app, &doc, &late).is_none(),
                 "a deleted stable id is refused rather than redirected"
             );
         }
@@ -4311,5 +4397,91 @@ mod tests {
                 "out-of-range priority was not persisted"
             );
         }
+    }
+
+    /// Creating a remote-calendar event queues a push; after that push is
+    /// drained (as Sync's Effect does), undo must run the inverse document
+    /// action through `apply` so a CalDAV delete is queued. Inverse Automerge
+    /// patches alone leave the server copy to be resurrected by a later pull.
+    #[test]
+    fn undo_of_remote_event_create_queues_caldav_delete_through_apply() {
+        let remote = "work/team".to_owned();
+        let data = EventData {
+            id: Uuid::new_v4().to_string(),
+            title: "Standup".into(),
+            start: "2026-09-08T09:00".into(),
+            end: "2026-09-08T09:30".into(),
+            all_day: false,
+            location: String::new(),
+            color: Palette::Indigo.index(),
+            rrule: String::new(),
+            recurrence_interval: 1,
+            recurrence_until: String::new(),
+            recurrence_count: 0,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: String::new(),
+            attendees: Vec::new(),
+            reminder: -1,
+            project: String::new(),
+            calendar_id: remote.clone(),
+        };
+        let id = data.id.parse::<Id>().expect("id");
+
+        let mut doc = AutoCommit::new();
+        let create = CalendarAction::UpsertEvent(data.clone());
+        let undo_create = create
+            .inverse_before(&doc)
+            .expect("remote upsert names a compensating delete");
+        assert!(
+            matches!(
+                &undo_create,
+                CalendarAction::DeleteEvent {
+                    remote_delete: Some(cal),
+                    ..
+                } if cal == &remote
+            ),
+            "inverse of a remote create is a remote delete, not a silent CRDT revert"
+        );
+        create.apply(&mut doc).expect("create applies");
+        assert!(
+            CalDoc::outbox(&doc).contains(&id),
+            "creating a remote event records the push outbox entry"
+        );
+        // Sync's Effect drained the push queue after a successful PUT.
+        CalDoc::dequeue_push(&mut doc, id);
+        assert!(CalDoc::delete_outbox(&doc).is_empty());
+
+        // Undo through apply (not inverse patches).
+        undo_create.apply(&mut doc).expect("inverse delete applies");
+        assert!(CalDoc::read_model(&doc).event(id).is_none());
+        assert!(
+            CalDoc::delete_outbox(&doc)
+                .iter()
+                .any(|(cal, uid)| cal == &remote && uid == &id),
+            "undo queued a CalDAV delete; patch-only undo would leave the server copy"
+        );
+
+        // Undoing that delete restores the event and re-queues the upload.
+        let mut live = AutoCommit::new();
+        CalendarAction::UpsertEvent(data.clone())
+            .apply(&mut live)
+            .unwrap();
+        let delete = CalendarAction::DeleteEvent {
+            id: data.id.clone(),
+            remote_delete: Some(remote.clone()),
+        };
+        let undo_delete = delete
+            .inverse_before(&live)
+            .expect("remote delete names a restoring upsert");
+        delete.apply(&mut live).unwrap();
+        CalDoc::dequeue_delete(&mut live, id); // sync drained del_outbox
+        undo_delete.apply(&mut live).expect("restore applies");
+        assert!(CalDoc::read_model(&live).event(id).is_some());
+        assert!(
+            CalDoc::outbox(&live).contains(&id),
+            "undoing a remote delete re-queues the upload"
+        );
     }
 }

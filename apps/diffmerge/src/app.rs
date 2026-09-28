@@ -131,7 +131,7 @@ pub struct DiffMergeApp {
     /// [`DiffmergeAction`] through here so it brackets **one** undo boundary,
     /// encodes under [`DIFFMERGE_ACTION_TYPE`](crate::actions::DIFFMERGE_ACTION_TYPE),
     /// and replays byte-identically on peers — the same path Ctrl+K takes.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// The diff/merge summary, surfaced as a transient floating bubble
     /// (see [`Self::draw_status_bubble`]) instead of a permanent bottom strip.
     /// Poked only when the summary text actually changes, or held open while
@@ -242,7 +242,7 @@ impl DiffMergeApp {
             resource_result: None,
             dirty: true,
             structure_dirty: false,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             status_bubble: ui::StatusBubble::new(),
             status_bubble_rect: Rect::ZERO,
             last_status: String::new(),
@@ -374,6 +374,20 @@ impl DiffMergeApp {
             tilo_actions::ActionContext::for_action("so.tilo.diffmerge", "Diff", action),
         );
         self.merge.acknowledge_content(doc);
+    }
+
+    /// Show the merged buffer the framework resource already holds.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::MergeState) {
+        self.merge.adopt_merged(&state.merged);
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Diffmerge>,
+    ) {
+        self.actions.attach(dispatcher);
+        self.merge.set_framework_hosted(true);
     }
 
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
@@ -1115,6 +1129,19 @@ impl Widget for DiffMergeApp {
         // Only the active mode owns the shared merged buffer; sync the merge
         // panel always so its CRDT mirror stays seeded.
         self.merge.sync(state, path);
+        if self.actions.is_hosted()
+            && let Some(merged) = self.merge.take_seed_request()
+        {
+            let action = crate::actions::DiffmergeAction::SeedMerge { merged };
+            self.actions.dispatch_with_context(
+                state,
+                crate::actions::DIFFMERGE_ACTION_TYPE,
+                &action,
+                tilo_actions::ActionContext::for_action("so.tilo.diffmerge", "Diff", &action),
+            );
+            self.merge.acknowledge_content(state);
+            self.merge.sync(state, path);
+        }
         self.diff.sync(state, path);
     }
 
@@ -1464,10 +1491,10 @@ impl Widget for DiffMergeApp {
 
     /// Publish the open merge + its hunks so the host's Ctrl+K action palette
     /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [``]() impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        Self::publish_resources(self, doc)
     }
 
     fn get_rect(&self) -> Rect {

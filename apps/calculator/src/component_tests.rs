@@ -449,7 +449,7 @@ fn revoked_viewer_authority_refuses_real_calculator_mutation_without_record_chan
     .unwrap();
     let address = ui::bound_dispatch::BoundActionAddress {
         instance_id: 45,
-        address: tilo_actions::ActionAddress::new("calculator.workspace", "add-function"),
+        address: tilo_actions::ActionAddress::new("calculator.document", "add-function"),
     };
     driver
         .invoke_bound_action(

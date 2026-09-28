@@ -490,14 +490,18 @@ impl App {
                     .flatten()
                 } else {
                     match request {
-                        crate::undo::UndoRequest::Undo => {
-                            self.state
-                                .undo_as(Some(&self.collaboration.local_author), None, None)
-                        }
-                        crate::undo::UndoRequest::Redo => {
-                            self.state
-                                .redo_as(Some(&self.collaboration.local_author), None, None)
-                        }
+                        crate::undo::UndoRequest::Undo => self.state.undo_as_with_registry(
+                            Some(&self.collaboration.local_author),
+                            None,
+                            None,
+                            Some(&self.actions.action_registry),
+                        ),
+                        crate::undo::UndoRequest::Redo => self.state.redo_as_with_registry(
+                            Some(&self.collaboration.local_author),
+                            None,
+                            None,
+                            Some(&self.actions.action_registry),
+                        ),
                     }
                 };
                 changed |= entry.is_some();

@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use ui::widget::Widget;
 
 mod actions;
+pub mod resource;
 mod showcase;
 mod transfer;
 pub use showcase::{PasswordsSurface, ShowcaseMode};
@@ -362,3 +363,4 @@ mod tests {
         }
     }
 }
+pub use resource::{Passwords, PasswordsShell, launch_spec};

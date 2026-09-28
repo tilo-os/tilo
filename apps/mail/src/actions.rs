@@ -41,13 +41,13 @@
 //! a peer.
 
 use automerge::AutoCommit;
-use qdoc_rich_text::RichTextAction;
 use serde::{Deserialize, Serialize};
+use tilo_document::RichTextAction;
 
 use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
-    Resource, ResourceProvider, ResultSpec, RetryPolicy,
+    Resource, ResultSpec, RetryPolicy,
 };
 
 use crate::attachment_store;
@@ -348,6 +348,38 @@ pub enum MailAction {
     StartDraftBody(DraftBodySeed),
     /// One edit of the in-progress draft's body.
     EditDraftBody(RichTextAction),
+    /// First baseline for messages hydrated from the mail server. Existing
+    /// flags win, so a later fetch cannot overwrite a `MailAction`.
+    IngestBaselines { messages: Vec<IngestBaseline> },
+}
+
+/// A message id plus the server flags used only when the document has none yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IngestBaseline {
+    pub id: String,
+    pub read: Option<bool>,
+    pub starred: Option<bool>,
+    pub folder: Option<String>,
+}
+
+impl IngestBaseline {
+    pub fn from_message(message: &crate::model::Message) -> Self {
+        Self {
+            id: message.id.to_string(),
+            read: Some(message.read),
+            starred: Some(message.starred),
+            folder: Some(message.folder.as_key().to_string()),
+        }
+    }
+
+    pub fn register_only(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            read: None,
+            starred: None,
+            folder: None,
+        }
+    }
 }
 
 /// What a draft body starts from: the HTML part when there is one, else the
@@ -486,6 +518,18 @@ impl Action for MailAction {
                 let body = MailDoc::draft_body(doc)
                     .ok_or_else(|| ActionError::Refused("the draft has no body".into()))?;
                 edit.apply_under(doc, &body)?;
+            }
+            MailAction::IngestBaselines { messages } => {
+                for message in messages {
+                    let folder = message.folder.as_deref().and_then(Folder::from_key);
+                    MailDoc::ingest_baseline(
+                        doc,
+                        &message.id,
+                        message.read,
+                        message.starred,
+                        folder,
+                    );
+                }
             }
         }
         Ok(())
@@ -1090,8 +1134,25 @@ pub fn mailbox_root(ctx: &MailResourceCtx) -> Resource {
     root
 }
 
-pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    let mut root = mailbox_root(ctx);
+pub fn provide_resources(ctx: &MailResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    let state =
+        <crate::resource::Mail as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+    let published = ui::tilo_resource::publish::<crate::resource::Mail>(
+        "mail.mailbox",
+        &ctx.mailbox_label,
+        &state,
+    );
+    let protocol = mailbox_root(ctx);
+    let mut root = published;
+    for action in protocol.actions {
+        if root.actions.iter().any(|existing| existing.id == action.id) {
+            continue;
+        }
+        root = root.with_action(action);
+    }
+    for view in protocol.views {
+        root = root.with_view(view);
+    }
     root = root.with_child(
         Resource::new("mail.accounts", "mail.account.collection", "Accounts").with_children(
             ctx.accounts.iter().map(|(id, label, active)| {
@@ -1223,8 +1284,9 @@ pub(crate) fn thread_resource_key(folder: Folder, thread_id: &str) -> String {
     format!("{}:{thread_id}", folder.as_key())
 }
 
-impl ResourceProvider for crate::app::MailApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::MailApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         let mut roots = provide_resources(&self.mail_resource_ctx(doc), doc);
         if let Some(error) = self.mail_search_error()
             && let Some(mailbox) = roots
@@ -1240,7 +1302,7 @@ impl ResourceProvider for crate::app::MailApp {
         roots
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         fn find(resources: Vec<Resource>, id: &str) -> Option<Resource> {
             for resource in resources {
                 if resource.id.as_str() == id {
@@ -1514,12 +1576,9 @@ mod tests {
                 "messages are grouped under searchable thread resources"
             );
             let id = app.mail_resource_ctx(&state.doc).messages[0].id.clone();
-            let message = <MailApp as ResourceProvider>::resource(
-                &app,
-                &state.doc,
-                &format!("mail.message:{id}"),
-            )
-            .expect("a message remains addressable outside the snapshot");
+            let message =
+                MailApp::publish_resource(&app, &state.doc, &format!("mail.message:{id}"))
+                    .expect("a message remains addressable outside the snapshot");
             let msg_actions: Vec<&str> = message.actions.iter().map(|a| a.id.as_str()).collect();
             for want in ["read", "star", "archive", "delete", "add-label"] {
                 assert!(
@@ -1560,9 +1619,8 @@ mod tests {
                     .any(|resource| resource.id.as_str() == "mail.search-status"),
                 "the persistent index failure is published, not just shown in a toast"
             );
-            let status =
-                <MailApp as ResourceProvider>::resource(&app, &state.doc, "mail.search-status")
-                    .expect("diagnostic resource resolves exactly");
+            let status = MailApp::publish_resource(&app, &state.doc, "mail.search-status")
+                .expect("diagnostic resource resolves exactly");
             assert_eq!(status.kind, "mail.search_status");
 
             app.refresh_mail_search_for_test()
@@ -1799,7 +1857,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: mailbox_seed(),
         registry: registry(),
-        resources: |doc| with_seeded(|seeded| ResourceProvider::resources(&seeded.app, doc)),
+        resources: |doc| with_seeded(|seeded| seeded.app.publish_resources(doc)),
         palette: ["New folder", "Compose message", "Archive", "Rename folder", "Discard draft"],
         replay: [
             set_starred => |doc| {
@@ -2000,7 +2058,7 @@ mod tests {
 
     #[test]
     fn the_draft_body_is_rich_text_started_and_edited_by_actions() {
-        use qdoc_rich_text::action::RegionKind;
+        use tilo_document::action::RegionKind;
         let text = |doc: &mut AutoCommit| {
             let body = MailDoc::draft_body(doc).expect("a body");
             tilo_rich_text::blocks_under(doc, &body)

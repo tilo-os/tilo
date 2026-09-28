@@ -37,6 +37,7 @@
 pub mod actions;
 pub mod framework_history;
 mod graphics;
+pub mod resource;
 
 pub use graphics::TerminalImagePlacement;
 
@@ -323,3 +324,4 @@ impl std::fmt::Display for HostedTerminalError {
     }
 }
 impl std::error::Error for HostedTerminalError {}
+pub use resource::{Terminal, TerminalShell};

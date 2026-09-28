@@ -631,7 +631,10 @@ pub struct PlayerApp {
     /// hermetic. Live runs always derive loading from decoder frame state.
     shot_loading: bool,
     pending_pip: Option<ui::floating_surface::FloatingSurfaceRequest>,
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
+    /// Framework-hosted surfaces leave the palette tree to
+    /// `tilo_resource::publish`; standalone keeps the contextual builder.
+    framework_hosted: bool,
     shared_library: crate::shared::SharedLibrary,
     shot_shared: bool,
     /// Opaque source identity for durable shared playlists and markers. It
@@ -936,7 +939,8 @@ impl PlayerApp {
             shot_metadata: None,
             shot_loading: false,
             pending_pip: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
+            framework_hosted: false,
             shared_library: crate::shared::SharedLibrary::default(),
             shot_shared: false,
             current_media_ref: None,
@@ -1246,6 +1250,38 @@ impl PlayerApp {
         self.collab = Some(CollabPlayback::new(role));
         self.manager = Some(CollaborationManager::new());
         self
+    }
+
+    /// Mark this player as a framework-hosted surface so
+    /// [`Widget::resources`] defers to `tilo_resource::publish`.
+    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
+        self.framework_hosted = hosted;
+    }
+
+    /// Show the playlists and annotations the framework resource holds.
+    /// An empty projection does not wipe a library that has not been published yet.
+    pub(crate) fn adopt_shared_library(&mut self, state: &crate::shared::SharedLibrary) {
+        let incoming_empty =
+            state.playlists.is_empty() && state.items.is_empty() && state.annotations.is_empty();
+        let local_has_rows = !self.shared_library.playlists.is_empty()
+            || !self.shared_library.items.is_empty()
+            || !self.shared_library.annotations.is_empty();
+        if incoming_empty && (local_has_rows || self.shot_shared) {
+            return;
+        }
+        if state != &self.shared_library {
+            self.shared_library = state.clone();
+            self.invalidate_search_cache();
+            self.dirty = true;
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::VideoPlayer>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     /// Shared read access to the inner video surface (for the headless shot
@@ -3484,6 +3520,9 @@ impl Widget for PlayerApp {
     }
 
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.framework_hosted {
+            return Vec::new();
+        }
         let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
         crate::actions::resources(
             &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),

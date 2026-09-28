@@ -77,7 +77,7 @@ enum ProcAction {
 /// or agent inventing positional string arguments that disagree with the
 /// visible Stop/Kill affordances.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum MonitorOperation {
+pub(crate) enum MonitorOperation {
     /// Select one exact process lifetime in the Monitor view. This is a safe
     /// view operation used by global search; it never sends an OS signal.
     Inspect {
@@ -106,7 +106,7 @@ enum MonitorOperation {
 /// from [`StopKind`], which is the sampler's platform-facing representation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum MonitorSignal {
+pub(crate) enum MonitorSignal {
     Stop,
     Kill,
 }
@@ -120,7 +120,7 @@ impl MonitorSignal {
     }
 }
 
-const MONITOR_OPERATION_TYPE: &str = "monitor.operation";
+pub(crate) const MONITOR_OPERATION_TYPE: &str = "monitor.operation";
 
 /// A process is only the same action resource for the lifetime identified by
 /// its kernel start-time tick.  In particular, do not use a bare PID here:
@@ -391,7 +391,7 @@ fn process_resource_label(process: &ProcessInfo) -> String {
 }
 
 /// The always-addressable root of Monitor's live process catalogue.
-fn monitor_process_root_resource() -> Resource {
+pub(crate) fn monitor_process_root_resource() -> Resource {
     let mut root = Resource::new("processes", "monitor.processes", "Processes");
     if let Ok(refresh) = ActionSpec::operation(
         "refresh",

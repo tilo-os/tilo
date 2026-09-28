@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
     Action, ActionContract, ActionError, ActionRegistry, ActionSpec, ConfirmationPolicy, Doc,
-    EncodedAction, ExecutionLocus, Resource, ResourceProvider, RetryPolicy, RiskLevel,
+    EncodedAction, ExecutionLocus, Resource, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::MapsDoc;
@@ -529,12 +529,13 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     vec![root]
 }
 
-impl ResourceProvider for crate::app::MapsApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::MapsApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         let model = MapsDoc::load(doc)?;
         if id == "maps.workspace" {
             return provide_resources(doc).into_iter().next();
@@ -850,15 +851,17 @@ mod tests {
 
             let app = crate::app::MapsApp::offline();
             assert!(
-                ResourceProvider::resource(&app, &doc, "maps.place:place-19").is_some(),
+                app.publish_resource(&doc, "maps.place:place-19").is_some(),
                 "an omitted saved place remains exactly addressable"
             );
             assert!(
-                ResourceProvider::resource(&app, &doc, "maps.region:region-19").is_some(),
+                app.publish_resource(&doc, "maps.region:region-19")
+                    .is_some(),
                 "an omitted offline region remains exactly addressable"
             );
             assert!(
-                ResourceProvider::resource(&app, &doc, "maps.search-history:query-19").is_some(),
+                app.publish_resource(&doc, "maps.search-history:query-19")
+                    .is_some(),
                 "an omitted history item remains exactly addressable"
             );
         }

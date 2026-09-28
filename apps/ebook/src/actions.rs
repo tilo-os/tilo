@@ -22,7 +22,7 @@ use uuid::Uuid;
 use tilo_actions::{
     Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, ConfirmationPolicy,
     Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
-    ResourcePresentation, ResourceProvider, ResultSpec, RetryPolicy, RiskLevel,
+    ResourcePresentation, ResultSpec, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::BooksDoc;
@@ -252,7 +252,7 @@ pub enum EbookAction {
     /// formatting, a new paragraph, applied to the note's rich text.
     EditNoteText {
         id: String,
-        edit: qdoc_rich_text::RichTextAction,
+        edit: tilo_document::RichTextAction,
     },
     /// Mark an annotation as finished at an author-supplied timestamp. Draft
     /// editors create their row first and then use this action on Save/Escape;
@@ -745,7 +745,7 @@ impl EbookAction {
     fn apply_edit_note_text(
         doc: &mut Doc,
         id: &str,
-        edit: &qdoc_rich_text::RichTextAction,
+        edit: &tilo_document::RichTextAction,
     ) -> Result<(), ActionError> {
         let id = Self::require_live_annotation(doc, id)?;
         let root = BooksDoc::annotation_text(doc, id)
@@ -1229,7 +1229,7 @@ pub fn edit_note_action(id: Uuid, note: &str) -> EbookAction {
 }
 
 /// One edit of an annotation's note, as its SDK editor writes it.
-pub fn edit_note_text_action(id: Uuid, edit: qdoc_rich_text::RichTextAction) -> EbookAction {
+pub fn edit_note_text_action(id: Uuid, edit: tilo_document::RichTextAction) -> EbookAction {
     EbookAction::EditNoteText {
         id: id.to_string(),
         edit,
@@ -1936,18 +1936,19 @@ pub fn provide_resources(_books: &[crate::model::Book], doc: &AutoCommit) -> Vec
     vec![library_preference_actions(library, doc), settings]
 }
 
-impl ResourceProvider for crate::app::BooksApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::BooksApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         // Directory discovery is intentionally root-only. Children are exact,
         // lazy resources resolved through the retained provider; exporting a
         // whole EPUB/annotation tree here would make opening Ctrl+K O(library).
         ["ebook.library", "ebook.settings"]
             .into_iter()
-            .filter_map(|id| self.resource(doc, id))
+            .filter_map(|id| self.publish_resource(doc, id))
             .collect()
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         if id == "ebook.library" {
             return Some(library_preference_actions(
                 Resource::new("ebook.library", "ebook.library", "Books library")

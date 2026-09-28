@@ -81,6 +81,7 @@ pub mod pixels;
 pub mod places;
 mod presentation;
 pub mod reference;
+pub mod resource;
 pub mod search;
 pub mod strings;
 mod timeline_projection;
@@ -626,3 +627,4 @@ mod camera_import_tests {
         }
     }
 }
+pub use resource::{Photos, PhotosShell, PhotosState, launch_spec, standalone_launch};

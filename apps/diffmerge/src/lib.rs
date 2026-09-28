@@ -44,6 +44,7 @@ pub mod doc;
 pub mod highlight;
 pub mod merge_view;
 pub mod model;
+pub mod resource;
 pub mod samples;
 
 pub use actions::{DIFFMERGE_ACTION_TYPE, DiffmergeAction, HunkChoice};
@@ -77,3 +78,4 @@ pub fn app_root() -> Box<dyn Widget> {
 mod framework_history_tests;
 
 pub mod framework_history;
+pub use resource::{Diffmerge, DiffmergeShell, launch_spec};

@@ -145,7 +145,10 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
                 "text-only edits must retain unrelated block views"
             );
             let c = wp.inner.containers.as_ref().unwrap();
-            assert_eq!(wp.blocks, qdoc::model::materialize(&state.doc, c).blocks);
+            assert_eq!(
+                wp.blocks,
+                tilo_doc::model::materialize(&state.doc, c).blocks
+            );
         }
         // A mutation outside the known local edit invalidates the optimization.
         let first = wp.blocks[0].id.clone();
@@ -174,7 +177,10 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
             &mut false,
         );
         let c = wp.inner.containers.as_ref().unwrap();
-        assert_eq!(wp.blocks, qdoc::model::materialize(&state.doc, c).blocks);
+        assert_eq!(
+            wp.blocks,
+            tilo_doc::model::materialize(&state.doc, c).blocks
+        );
         assert_eq!(wp.blocks.len(), 3);
         wp.handle_key_press(
             &mut state.doc,
@@ -203,7 +209,10 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
             &mut false,
         );
         let c = wp.inner.containers.as_ref().unwrap();
-        assert_eq!(wp.blocks, qdoc::model::materialize(&state.doc, c).blocks);
+        assert_eq!(
+            wp.blocks,
+            tilo_doc::model::materialize(&state.doc, c).blocks
+        );
         assert_eq!(
             wp.blocks.len(),
             1,
@@ -233,7 +242,7 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
         let c = wp.inner.containers.as_ref().unwrap();
         assert_eq!(
             wp.blocks,
-            qdoc::model::materialize_blocks(
+            tilo_doc::model::materialize_blocks(
                 &state.doc,
                 c,
                 &wp.body_order
@@ -560,7 +569,7 @@ fn drawing_lays_out_every_block_within_a_bounded_viewport() {
             let (start, end) = wp.body_window_bounds();
             assert_eq!(
                 wp.blocks,
-                qdoc::model::materialize_blocks(
+                tilo_doc::model::materialize_blocks(
                     &state.doc,
                     wp.inner.containers.as_ref().unwrap(),
                     &wp.body_order
@@ -581,7 +590,7 @@ fn drawing_lays_out_every_block_within_a_bounded_viewport() {
         let (start, end) = wp.body_window_bounds();
         assert_eq!(
             wp.blocks,
-            qdoc::model::materialize_blocks(
+            tilo_doc::model::materialize_blocks(
                 &state.doc,
                 wp.inner.containers.as_ref().unwrap(),
                 &wp.body_order
@@ -1130,12 +1139,12 @@ fn headings_draw_bold_and_unchanged_blocks_reuse_their_layout() {
 
     // Phase: draw_renders_headings_and_bold.
     {
-        use qdoc_codecs::{FormatProvider, MarkdownCodec};
+        use tilo_doc_codecs::{FormatProvider, MarkdownCodec};
         let mut state = ui::State::new();
-        let c = qdoc::model::init(&mut state.doc, &state.root);
-        let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+        let c = tilo_doc::model::init(&mut state.doc, &state.root);
+        let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut state.doc,
                 c: &c,
                 ids: &mut ids,
@@ -1298,15 +1307,15 @@ fn custom_styles_are_created_deleted_and_sized_in_one_place() {
             "custom style removed from the sheet"
         );
         assert!(
-            !qdoc::model::style_ids(&state.doc, &wp.model().containers.clone().unwrap())
+            !tilo_doc::model::style_ids(&state.doc, &wp.model().containers.clone().unwrap())
                 .iter()
                 .any(|s| s == &custom_id),
             "custom style removed from the document"
         );
         // The block no longer references the deleted style.
         let c = wp.model().containers.clone().unwrap();
-        let dangling = qdoc::model::materialize(&state.doc, &c).blocks.iter().any(
-            |b| matches!(b.attrs.get("style"), Some(qdoc::AttrVal::Str(s)) if s == &custom_id),
+        let dangling = tilo_doc::model::materialize(&state.doc, &c).blocks.iter().any(
+            |b| matches!(b.attrs.get("style"), Some(tilo_doc::AttrVal::Str(s)) if s == &custom_id),
         );
         assert!(!dangling, "no block still references the deleted style");
     }
@@ -1739,7 +1748,7 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
 
         let block_kind = |wp: &WordProcessorWidget, st: &ui::State| -> (String, Option<i64>) {
             let c = wp.model().containers.clone().unwrap();
-            let b = qdoc::model::materialize(&st.doc, &c)
+            let b = tilo_doc::model::materialize(&st.doc, &c)
                 .blocks
                 .into_iter()
                 .next()
@@ -1844,10 +1853,10 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
 }
 
 /// Build a doc directly in `state` from a closure over a `DocMut`.
-fn with_doc(state: &mut ui::State, f: impl FnOnce(&mut qdoc::DocMut)) {
-    let c = qdoc::model::init(&mut state.doc, &state.root);
-    let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
-    let mut dm = qdoc::DocMut {
+fn with_doc(state: &mut ui::State, f: impl FnOnce(&mut tilo_doc::DocMut)) {
+    let c = tilo_doc::model::init(&mut state.doc, &state.root);
+    let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
+    let mut dm = tilo_doc::DocMut {
         doc: &mut state.doc,
         c: &c,
         ids: &mut ids,
@@ -2322,16 +2331,16 @@ fn page_fields_and_margins_resolve_per_page_and_persist() {
         wp.sync(&mut state.doc, &state.root);
         // Build a footer with a page-number field via the production model API.
         let c = wp.model().containers.clone().unwrap();
-        let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+        let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut state.doc,
                 c: &c,
                 ids: &mut ids,
             };
-            let f = dm.insert_block_in(qdoc::model::Region::Footer, None, "paragraph");
-            dm.splice_text_in(qdoc::model::Region::Footer, &f, 0, 0, "Page ");
-            dm.insert_page_number_field(qdoc::model::Region::Footer, &f, 5);
+            let f = dm.insert_block_in(tilo_doc::model::Region::Footer, None, "paragraph");
+            dm.splice_text_in(tilo_doc::model::Region::Footer, &f, 0, 0, "Page ");
+            dm.insert_page_number_field(tilo_doc::model::Region::Footer, &f, 5);
         }
         // Body long enough to span two pages.
         for i in 0..120 {
@@ -2378,7 +2387,7 @@ fn page_fields_and_margins_resolve_per_page_and_persist() {
         assert_eq!(join(1), "Page 1", "page 1 footer resolves to 'Page 1'");
         assert_eq!(join(2), "Page 2", "page 2 footer resolves to 'Page 2'");
         assert!(
-            !join(2).contains(qdoc::schema::FIELD_PLACEHOLDER),
+            !join(2).contains(tilo_doc::schema::FIELD_PLACEHOLDER),
             "the field placeholder is substituted, not rendered literally"
         );
     }
@@ -2430,14 +2439,14 @@ fn page_fields_and_margins_resolve_per_page_and_persist() {
 /// Header / footer materialized text via the production snapshot path.
 fn header_text(wp: &WordProcessorWidget, state: &ui::State) -> Vec<String> {
     let c = wp.model().containers.clone().unwrap();
-    qdoc::model::materialize_region(&state.doc, &c, qdoc::model::Region::Header)
+    tilo_doc::model::materialize_region(&state.doc, &c, tilo_doc::model::Region::Header)
         .into_iter()
         .map(|b| b.text)
         .collect()
 }
 fn body_text(wp: &WordProcessorWidget, state: &ui::State) -> Vec<String> {
     let c = wp.model().containers.clone().unwrap();
-    qdoc::model::materialize(&state.doc, &c)
+    tilo_doc::model::materialize(&state.doc, &c)
         .blocks
         .into_iter()
         .map(|b| b.text)
@@ -2743,7 +2752,7 @@ fn native_text_shortcuts_delete_and_stop_at_visual_lines() {
             driver.set_modifiers(&[]);
             driver.key("Backspace");
             assert_eq!(
-                qdoc::model::materialize(&driver.state_mut().doc, &containers).blocks[0].text,
+                tilo_doc::model::materialize(&driver.state_mut().doc, &containers).blocks[0].text,
                 expected
             );
         }
@@ -3949,9 +3958,9 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
         wp.model_mut().insert_str(&mut state.doc, "alpha");
         wp.model_mut().enter(&mut state.doc);
         wp.model_mut().insert_str(&mut state.doc, "beta");
-        let ids = qdoc::model::blocks_in_order(
+        let ids = tilo_doc::model::blocks_in_order(
             &state.doc,
-            &qdoc::model::open(&state.doc, &state.root).unwrap(),
+            &tilo_doc::model::open(&state.doc, &state.root).unwrap(),
         );
         wp.model_mut().set_caret(Caret {
             block: ids[0].clone(),
@@ -3972,9 +3981,9 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
             action,
             crate::actions::RichTextAction::ReplaceSelection { .. }
         ));
-        let blocks = qdoc::model::materialize(
+        let blocks = tilo_doc::model::materialize(
             &state.doc,
-            &qdoc::model::open(&state.doc, &state.root).unwrap(),
+            &tilo_doc::model::open(&state.doc, &state.root).unwrap(),
         )
         .blocks;
         assert_eq!(blocks.len(), 1);
@@ -4018,7 +4027,7 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
         let containers = wp.inner.containers.clone().expect("bound document");
         let block = wp.inner.caret.block.clone();
         assert_eq!(wp.inner.current_text(&state.doc), "hellohello");
-        assert!(qdoc::model::has_mark_over(
+        assert!(tilo_doc::model::has_mark_over(
             &state.doc,
             &containers,
             &block,
@@ -4034,7 +4043,7 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
         wp.clipboard_paste_plain(&mut state.doc);
         let block = wp.inner.caret.block.clone();
         assert_eq!(wp.inner.current_text(&state.doc), "hello");
-        assert!(!qdoc::model::has_mark_over(
+        assert!(!tilo_doc::model::has_mark_over(
             &state.doc,
             &containers,
             &block,
@@ -4048,7 +4057,7 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
         clipboard_copy("external");
         wp.clipboard_paste(&mut state.doc);
         assert_eq!(wp.inner.current_text(&state.doc), "helloexternal");
-        assert!(!qdoc::model::has_mark_over(
+        assert!(!tilo_doc::model::has_mark_over(
             &state.doc,
             &containers,
             &block,
@@ -4258,7 +4267,7 @@ fn host_undo_and_right_click_leave_an_open_menus_selection_alone() {
             driver.set_modifiers(&["ctrl".into()]);
             driver.key("z");
             assert_eq!(
-                qdoc::model::materialize(&driver.state_mut().doc, &containers).blocks[0].text,
+                tilo_doc::model::materialize(&driver.state_mut().doc, &containers).blocks[0].text,
                 "Keep this edit",
                 "host undo must be captured while a menu is open"
             );
@@ -4267,7 +4276,7 @@ fn host_undo_and_right_click_leave_an_open_menus_selection_alone() {
             driver.set_modifiers(&["ctrl".into()]);
             driver.key("z");
             assert_eq!(
-                qdoc::model::materialize(&driver.state_mut().doc, &containers).blocks[0].text,
+                tilo_doc::model::materialize(&driver.state_mut().doc, &containers).blocks[0].text,
                 "",
                 "ordinary undo resumes after dismissal"
             );
@@ -4477,10 +4486,10 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
 /// constructed `ui::State`.
 fn author_doc_with_footnote(body: &str, ref_idx: usize, note_body: &str) -> ui::State {
     let mut state = ui::State::new();
-    let c = qdoc::model::init(&mut state.doc, &state.root);
-    let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+    let c = tilo_doc::model::init(&mut state.doc, &state.root);
+    let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut state.doc,
             c: &c,
             ids: &mut ids,
@@ -4514,7 +4523,7 @@ fn footnotes_render_in_the_page_area_numbered_in_document_order() {
         assert_eq!(wp.notes.len(), 1, "one note materialized");
         assert_eq!(
             wp.notes[0].kind,
-            qdoc::schema::NOTE_KIND_FOOTNOTE,
+            tilo_doc::schema::NOTE_KIND_FOOTNOTE,
             "it is a footnote"
         );
 
@@ -4559,11 +4568,11 @@ fn footnotes_render_in_the_page_area_numbered_in_document_order() {
         // Two footnote references in one paragraph; the FIRST reference (by source
         // position) must be number 1 regardless of the notes' id sort order.
         let mut state = ui::State::new();
-        let c = qdoc::model::init(&mut state.doc, &state.root);
-        let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+        let c = tilo_doc::model::init(&mut state.doc, &state.root);
+        let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
         let (n_first, n_second);
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut state.doc,
                 c: &c,
                 ids: &mut ids,
@@ -4607,16 +4616,16 @@ fn doc_with_paragraph(
 ) -> (
     WordProcessorWidget,
     ui::State,
-    qdoc::Containers,
-    qdoc::IdGen,
+    tilo_doc::Containers,
+    tilo_doc::IdGen,
     String,
 ) {
     let mut state = ui::State::new();
-    let c = qdoc::model::init(&mut state.doc, &state.root);
-    let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+    let c = tilo_doc::model::init(&mut state.doc, &state.root);
+    let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
     let bid;
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut state.doc,
             c: &c,
             ids: &mut ids,
@@ -4642,7 +4651,7 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
         // "hello world" with a comment over the word "world" (chars 6..11).
         let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut state.doc,
                 c: &c,
                 ids: &mut ids,
@@ -4697,7 +4706,7 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
         let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
         let comment;
         {
-            let mut dm = qdoc::model::DocMut {
+            let mut dm = tilo_doc::model::DocMut {
                 doc: &mut state.doc,
                 c: &c,
                 ids: &mut ids,
@@ -4782,7 +4791,7 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
         // "hello world" with a comment over "world" (chars 6..11).
         let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
         let cid = {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut state.doc,
                 c: &c,
                 ids: &mut ids,
@@ -4843,14 +4852,14 @@ fn tracked_changes_render_and_accept_individually() {
         let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
         let (ins_id, del_id);
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut state.doc,
                 c: &c,
                 ids: &mut ids,
             };
             // "keep" is already in the block; mark it as a tracked insertion.
-            ins_id = dm.insert_change(qdoc::ChangeKind::Ins, "Ada", "");
-            dm.add_change_mark(qdoc::ChangeKind::Ins, &bid, 0, 4, &ins_id);
+            ins_id = dm.insert_change(tilo_doc::ChangeKind::Ins, "Ada", "");
+            dm.add_change_mark(tilo_doc::ChangeKind::Ins, &bid, 0, 4, &ins_id);
             // "gone" stays in the doc but is flagged for deletion.
             del_id = dm.track_delete(&bid, 5, 9, "Ada", "");
         }
@@ -4876,8 +4885,8 @@ fn tracked_changes_render_and_accept_individually() {
             .iter()
             .find(|ch| ch.id == del_id)
             .expect("del change");
-        assert_eq!(ins.kind, qdoc::ChangeKind::Ins);
-        assert_eq!(del.kind, qdoc::ChangeKind::Del);
+        assert_eq!(ins.kind, tilo_doc::ChangeKind::Ins);
+        assert_eq!(del.kind, tilo_doc::ChangeKind::Del);
 
         let b = wp
             .blocks
@@ -4939,13 +4948,13 @@ fn tracked_changes_render_and_accept_individually() {
         // "keep gone": flag "keep" (0..4) as a tracked insertion.
         let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
         let ins_id = {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut state.doc,
                 c: &c,
                 ids: &mut ids,
             };
-            let id = dm.insert_change(qdoc::ChangeKind::Ins, "Ada", "");
-            dm.add_change_mark(qdoc::ChangeKind::Ins, &bid, 0, 4, &id);
+            let id = dm.insert_change(tilo_doc::ChangeKind::Ins, "Ada", "");
+            dm.add_change_mark(tilo_doc::ChangeKind::Ins, &bid, 0, 4, &id);
             id
         };
         state.doc.commit();
@@ -4987,7 +4996,7 @@ fn tracked_changes_render_and_accept_individually() {
             "no `ins` decoration remains after accept"
         );
         assert!(
-            !b.marks.iter().any(|m| m.name == qdoc::schema::MARK_INS),
+            !b.marks.iter().any(|m| m.name == tilo_doc::schema::MARK_INS),
             "the `ins` mark is cleared from the block after accept"
         );
     }
@@ -5000,7 +5009,7 @@ fn tracked_changes_render_and_accept_individually() {
         // on the materialized snapshot (the production read path).
         let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
         let del_id = {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut state.doc,
                 c: &c,
                 ids: &mut ids,
@@ -5045,8 +5054,8 @@ fn tracked_changes_render_and_accept_individually() {
 /// Re-materialize the document straight from the CRDT (the production
 /// snapshot path) so a test asserts on what every reader sees — not on the
 /// widget's cached copy.
-fn snapshot(state: &ui::State, c: &qdoc::Containers) -> qdoc::snapshot::DocSnapshot {
-    qdoc::model::materialize(&state.doc, c)
+fn snapshot(state: &ui::State, c: &tilo_doc::Containers) -> tilo_doc::snapshot::DocSnapshot {
+    tilo_doc::model::materialize(&state.doc, c)
 }
 
 /// Rejecting a tracked deletion keeps the text and drops the mark, and accept all clears every tracked
@@ -5059,7 +5068,7 @@ fn tracked_changes_reject_and_accept_all() {
         // chose NOT to delete) and clears the `del` strike.
         let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
         let del_id = {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut state.doc,
                 c: &c,
                 ids: &mut ids,
@@ -5090,13 +5099,13 @@ fn tracked_changes_reject_and_accept_all() {
         // Two changes: an insertion over "keep" and a deletion over "gone".
         let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut state.doc,
                 c: &c,
                 ids: &mut ids,
             };
-            let ins = dm.insert_change(qdoc::ChangeKind::Ins, "Ada", "");
-            dm.add_change_mark(qdoc::ChangeKind::Ins, &bid, 0, 4, &ins);
+            let ins = dm.insert_change(tilo_doc::ChangeKind::Ins, "Ada", "");
+            dm.add_change_mark(tilo_doc::ChangeKind::Ins, &bid, 0, 4, &ins);
             dm.track_delete(&bid, 5, 9, "Ada", "");
         }
         state.doc.commit();
@@ -5125,7 +5134,8 @@ fn tracked_changes_reject_and_accept_all() {
         assert!(
             b.marks
                 .iter()
-                .all(|m| m.name != qdoc::schema::MARK_INS && m.name != qdoc::schema::MARK_DEL)
+                .all(|m| m.name != tilo_doc::schema::MARK_INS
+                    && m.name != tilo_doc::schema::MARK_DEL)
         );
     }
 }
@@ -5145,14 +5155,14 @@ fn review_markup_registers_card_hits_and_toggles_off() {
         let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
         let (cid, ins_id);
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut state.doc,
                 c: &c,
                 ids: &mut ids,
             };
             cid = dm.add_comment(&bid, 0, 4, "Ada", "look");
-            ins_id = dm.insert_change(qdoc::ChangeKind::Ins, "Ada", "");
-            dm.add_change_mark(qdoc::ChangeKind::Ins, &bid, 5, 9, &ins_id);
+            ins_id = dm.insert_change(tilo_doc::ChangeKind::Ins, "Ada", "");
+            dm.add_change_mark(tilo_doc::ChangeKind::Ins, &bid, 5, 9, &ins_id);
         }
         state.doc.commit();
         let mut framed = mount(state, wp, 1200, 900);
@@ -5224,14 +5234,14 @@ fn review_markup_registers_card_hits_and_toggles_off() {
     {
         let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut state.doc,
                 c: &c,
                 ids: &mut ids,
             };
             dm.add_comment(&bid, 0, 5, "Ada", "note");
-            let ci = dm.insert_change(qdoc::ChangeKind::Ins, "Ada", "");
-            dm.add_change_mark(qdoc::ChangeKind::Ins, &bid, 6, 11, &ci);
+            let ci = dm.insert_change(tilo_doc::ChangeKind::Ins, "Ada", "");
+            dm.add_change_mark(tilo_doc::ChangeKind::Ins, &bid, 6, 11, &ci);
         }
         state.doc.commit();
 
@@ -5323,7 +5333,7 @@ fn the_outline_and_toc_follow_the_headings() {
         wp.apply_tool(&mut state.doc, ToolAction::InsertToc);
 
         let c = wp.model().containers.clone().unwrap();
-        let snap = qdoc::model::materialize(&state.doc, &c);
+        let snap = tilo_doc::model::materialize(&state.doc, &c);
         let toc: Vec<_> = snap
             .blocks
             .iter()
@@ -5454,7 +5464,7 @@ fn regenerating_the_toc_replaces_it_and_confirms() {
         wp.apply_tool(&mut state.doc, ToolAction::InsertToc);
 
         let c = wp.model().containers.clone().unwrap();
-        let snap = qdoc::model::materialize(&state.doc, &c);
+        let snap = tilo_doc::model::materialize(&state.doc, &c);
         let toc_count = snap
             .blocks
             .iter()
@@ -5486,7 +5496,7 @@ fn regenerating_the_toc_replaces_it_and_confirms() {
         );
         // And it actually produced TOC lines.
         let c = wp.model().containers.clone().unwrap();
-        let toc = qdoc::model::materialize(&state.doc, &c)
+        let toc = tilo_doc::model::materialize(&state.doc, &c)
             .blocks
             .iter()
             .filter(|b| crate::word_processor::block_is_toc(b))
@@ -5500,7 +5510,7 @@ fn regenerating_the_toc_replaces_it_and_confirms() {
 /// The materialized first block of the document in `state`.
 fn first_block(wp: &WordProcessorWidget, state: &ui::State) -> Option<BlockView> {
     let c = wp.model().containers.clone()?;
-    qdoc::model::materialize(&state.doc, &c)
+    tilo_doc::model::materialize(&state.doc, &c)
         .blocks
         .into_iter()
         .next()
@@ -5736,7 +5746,7 @@ fn templates_replace_the_document_only_when_chosen() {
         );
         // The old draft text is gone — the body is the template, not an append.
         let c = wp.model().containers.clone().unwrap();
-        let all_text: String = qdoc::model::materialize(&state.doc, &c)
+        let all_text: String = tilo_doc::model::materialize(&state.doc, &c)
             .blocks
             .iter()
             .map(|b| b.text.clone())
@@ -5838,11 +5848,11 @@ fn recovery_autosaves_restores_and_discards_per_document() {
             let c = wp.inner.containers.as_ref().unwrap();
             let expected = WpFormat::Markdown
                 .export(
-                    qdoc::DocRef { doc: &state.doc, c },
+                    tilo_doc::DocRef { doc: &state.doc, c },
                     &tilo_content::NoContent,
                 )
                 .unwrap();
-            let scans = qdoc::model::ordered_keys_scan_count();
+            let scans = tilo_doc::model::ordered_keys_scan_count();
             for _ in 0..AUTOSAVE_EDIT_THRESHOLD {
                 wp.note_edit_for_autosave(&mut state.doc);
             }
@@ -5853,7 +5863,7 @@ fn recovery_autosaves_restores_and_discards_per_document() {
             );
             if case == "fresh" {
                 assert_eq!(
-                    qdoc::model::ordered_keys_scan_count(),
+                    tilo_doc::model::ordered_keys_scan_count(),
                     scans,
                     "fresh complete views must avoid full document materialization"
                 );
@@ -5887,7 +5897,7 @@ fn recovery_autosaves_restores_and_discards_per_document() {
             std::fs::read(&recovery_path).unwrap(),
             WpFormat::Markdown
                 .export(
-                    qdoc::DocRef { doc: &state.doc, c },
+                    tilo_doc::DocRef { doc: &state.doc, c },
                     &tilo_content::NoContent
                 )
                 .unwrap(),
@@ -6487,8 +6497,8 @@ fn the_accessibility_tree_mirrors_the_document_structure() {
     // [`BlockView`], since setting an arbitrary block attr is not on the model's
     // public surface.
     {
-        use qdoc::snapshot::{AttrVal, BlockView};
         use std::collections::BTreeMap;
+        use tilo_doc::snapshot::{AttrVal, BlockView};
         use ui::a11y::Role;
 
         let mut attrs = BTreeMap::new();
@@ -6991,7 +7001,7 @@ fn pick_titles(recorder: &ui::host::HostRecorder) -> Vec<String> {
 
 fn image_block_count(wp: &WordProcessorWidget, state: &ui::State) -> usize {
     let c = wp.model().containers.clone().unwrap();
-    qdoc::model::materialize(&state.doc, &c)
+    tilo_doc::model::materialize(&state.doc, &c)
         .blocks
         .iter()
         .filter(|b| b.kind == "image")
@@ -7444,9 +7454,9 @@ fn file_ux_never_replaces_a_draft_without_a_decision() {
 }
 
 /// Each body block's text and marks, what a reader sees of the document.
-fn body_content(doc: &automerge::AutoCommit) -> Vec<(String, Vec<qdoc::MarkSpan>)> {
-    let c = qdoc::model::open(doc, &automerge::ROOT).expect("qdoc schema");
-    qdoc::model::materialize(doc, &c)
+fn body_content(doc: &automerge::AutoCommit) -> Vec<(String, Vec<tilo_doc::MarkSpan>)> {
+    let c = tilo_doc::model::open(doc, &automerge::ROOT).expect("qdoc schema");
+    tilo_doc::model::materialize(doc, &c)
         .blocks
         .into_iter()
         .map(|b| (b.text, b.marks))
@@ -7639,15 +7649,15 @@ fn save_and_open_preserve_identity_recovery_and_bytes() {
         wp.model_mut().enter(&mut state.doc);
         let deleted_id = wp.model_mut().caret().block.clone();
         wp.model_mut().backspace(&mut state.doc);
-        let containers = qdoc::model::open(&state.doc, &state.root).unwrap();
-        assert!(!qdoc::model::blocks_in_order(&state.doc, &containers).contains(&deleted_id));
+        let containers = tilo_doc::model::open(&state.doc, &state.root).unwrap();
+        assert!(!tilo_doc::model::blocks_in_order(&state.doc, &containers).contains(&deleted_id));
 
         assert!(wp.model_mut().replace_with_format(
             &mut state.doc,
             b"replacement document",
             WpFormat::Markdown,
         ));
-        let replacement_ids = qdoc::model::blocks_in_order(&state.doc, &containers);
+        let replacement_ids = tilo_doc::model::blocks_in_order(&state.doc, &containers);
         assert!(!replacement_ids.is_empty());
         assert!(
             !replacement_ids.contains(&deleted_id),
@@ -7810,8 +7820,8 @@ fn dropped_and_selected_images_expose_their_controls() {
         // The image landed adjacent to the drop-target paragraph — its document
         // index is right after the paragraph the pointer was over.
         let c = wp.model().containers.clone().unwrap();
-        let order: Vec<String> = qdoc::model::blocks_in_order(&state.doc, &c);
-        let img_idx = qdoc::model::materialize(&state.doc, &c)
+        let order: Vec<String> = tilo_doc::model::blocks_in_order(&state.doc, &c);
+        let img_idx = tilo_doc::model::materialize(&state.doc, &c)
             .blocks
             .iter()
             .position(|b| b.kind == "image")
@@ -7897,7 +7907,7 @@ fn doc_with_selected_image() -> (Framed<WordProcessorWidget>, String) {
     wp.model_mut().insert_image_bytes(&mut state.doc, TEST_PNG);
     wp.sync(&mut state.doc, &state.root);
     let c = wp.model().containers.clone().unwrap();
-    let img_id = qdoc::model::materialize(&state.doc, &c)
+    let img_id = tilo_doc::model::materialize(&state.doc, &c)
         .blocks
         .iter()
         .find(|b| b.kind == "image")
@@ -7967,18 +7977,18 @@ fn image_controls_are_named_and_resize_and_flip() {
             &state.root,
         ));
         let containers = wp.model().containers.clone().expect("open document");
-        let image = qdoc::model::materialize(&state.doc, &containers)
+        let image = tilo_doc::model::materialize(&state.doc, &containers)
             .blocks
             .into_iter()
             .find(|block| block.kind == "image")
             .expect("selected image remains materialized");
         assert!(matches!(
             image.attrs.get("anchor"),
-            Some(qdoc::AttrVal::Str(anchor)) if anchor == "paragraph"
+            Some(tilo_doc::AttrVal::Str(anchor)) if anchor == "paragraph"
         ));
         assert!(matches!(
             image.attrs.get("wrap"),
-            Some(qdoc::AttrVal::Str(wrap)) if wrap == "left"
+            Some(tilo_doc::AttrVal::Str(wrap)) if wrap == "left"
         ));
     }
 
@@ -8027,11 +8037,11 @@ fn image_controls_are_named_and_resize_and_flip() {
         );
         left_click(wp, state, pt);
         let c = wp.model().containers.clone().unwrap();
-        let flipped = qdoc::model::materialize(&state.doc, &c)
+        let flipped = tilo_doc::model::materialize(&state.doc, &c)
             .blocks
             .iter()
             .find(|b| b.id == id)
-            .is_some_and(|b| matches!(b.attrs.get("flip_h"), Some(qdoc::AttrVal::Bool(true))));
+            .is_some_and(|b| matches!(b.attrs.get("flip_h"), Some(tilo_doc::AttrVal::Bool(true))));
         assert!(
             flipped,
             "the image's flip_h attr is set after clicking Flip Horizontal"
@@ -8271,7 +8281,7 @@ fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
     );
     let (wp, mut state, c, mut ids, first) = doc_with_paragraph(&body);
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut state.doc,
             c: &c,
             ids: &mut ids,
@@ -8286,8 +8296,8 @@ fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
             "Footnote remains associated with its page.",
         );
         dm.add_comment(&first, 0, 9, "Reviewer", "Keep this comment.");
-        let change = dm.insert_change(qdoc::ChangeKind::Ins, "Reviewer", "");
-        dm.add_change_mark(qdoc::ChangeKind::Ins, &first, 12, 20, &change);
+        let change = dm.insert_change(tilo_doc::ChangeKind::Ins, "Reviewer", "");
+        dm.add_change_mark(tilo_doc::ChangeKind::Ins, &first, 12, 20, &change);
         let mut after = first;
         for i in 0..24 {
             let id = dm.insert_block(Some(&after), "paragraph");
@@ -8576,14 +8586,14 @@ fn render_review_shots() {
         let (wp, mut state, c, mut ids, bid) =
             doc_with_paragraph("Keep this passage and review the ending.");
         {
-            let mut doc = qdoc::DocMut {
+            let mut doc = tilo_doc::DocMut {
                 doc: &mut state.doc,
                 c: &c,
                 ids: &mut ids,
             };
             doc.add_comment(&bid, 5, 17, "Ada", "This needs a source.");
-            let change = doc.insert_change(qdoc::ChangeKind::Ins, "Lin", "");
-            doc.add_change_mark(qdoc::ChangeKind::Ins, &bid, 29, 39, &change);
+            let change = doc.insert_change(tilo_doc::ChangeKind::Ins, "Lin", "");
+            doc.add_change_mark(tilo_doc::ChangeKind::Ins, &bid, 29, 39, &change);
         }
         state.doc.commit();
         let mut framed = mount(state, wp, w, h);

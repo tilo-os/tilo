@@ -48,7 +48,7 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::{
     ActionContract, ActionError, ActionRegistry, ActionSpec, ConfirmationPolicy, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, PermissionRequirement, Resource,
-    ResourceProvider, ResultSpec, RetryPolicy, RiskLevel,
+    ResultSpec, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::VpnDoc;
@@ -355,8 +355,9 @@ pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
     vec![root]
 }
 
-impl ResourceProvider for crate::app::VpnApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::VpnApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         // Level-triggered: recomputed each frame from the document, the source
         // of truth every action reads and writes.
         provide_resources(&VpnDoc::read_vault(doc))
@@ -568,7 +569,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: seeded().1,
         registry: registry(),
-        resources: |doc| ResourceProvider::resources(&VpnApp::new_demo(), doc),
+        resources: |doc| VpnApp::new_demo().publish_resources(doc),
         palette: [
             "Route all traffic over Tor",
             "Import WireGuard profile",

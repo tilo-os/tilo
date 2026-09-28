@@ -16,8 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
     Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
-    ResultSpec, RetryPolicy,
+    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::MergeDoc;
@@ -88,7 +87,7 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: DiffmergeOperati
     clippy::expect_used,
     reason = "the typed local operation has an infallible serde shape"
 )]
-fn workspace_operations() -> Resource {
+pub(crate) fn workspace_operations() -> Resource {
     let mut root = Resource::new("diffmerge.workspace", "diffmerge.workspace", "Diff & Merge");
     root = root.with_action(
         ActionSpec::typed_operation(
@@ -229,6 +228,9 @@ pub enum DiffmergeAction {
     /// resolution lands). Splice-diffed against the current text, so the CRDT
     /// records a minimal edit.
     SetMerged { merged: String },
+    /// Open a new merge: drop resolutions that belonged to the previous inputs
+    /// and install the provisional merged buffer. One history step.
+    SeedMerge { merged: String },
 }
 
 impl Action for DiffmergeAction {
@@ -243,6 +245,10 @@ impl Action for DiffmergeAction {
                 MergeDoc::set_merged(doc, merged);
             }
             DiffmergeAction::SetMerged { merged } => {
+                MergeDoc::set_merged(doc, merged);
+            }
+            DiffmergeAction::SeedMerge { merged } => {
+                MergeDoc::clear_resolutions(doc);
                 MergeDoc::set_merged(doc, merged);
             }
         }
@@ -666,8 +672,9 @@ fn ensure_trailing_newline(text: &str) -> String {
     }
 }
 
-impl ResourceProvider for crate::app::DiffMergeApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::DiffMergeApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         match self.merge_resource_ctx(doc) {
             Some(ctx) => provide_resources(&ctx, doc),
             None => self.diff_resource_ctx().map_or_else(

@@ -762,7 +762,7 @@ pub struct DbClientApp {
     modal: ConnectModal,
     /// Dispatches saved-connection CRUD through the shared action model, so the
     /// connection list is collaborative, undoable document state.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// Id of a connection the local user just added and wants opened as soon as
     /// it lands back through the document reconcile (peer-added connections do
     /// not set this, so they are listed but not auto-connected).
@@ -980,7 +980,7 @@ impl DbClientApp {
             schema_activations,
             schema_signature,
             modal: ConnectModal::new(),
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             pending_connect_id: None,
             resource_operation: None,
             export_rx: None,
@@ -1261,10 +1261,61 @@ impl DbClientApp {
     }
 
     fn load_snippet(&mut self, sql: &str, doc: &mut AutoCommit) {
-        EditorDoc::set_sql(doc, sql);
+        self.replace_editor_sql(doc, sql);
         self.editor.pull(doc);
         self.snippets_open = false;
         self.dirty = true;
+    }
+
+    /// Replace the shared SQL buffer. Hosted sessions submit
+    /// [`DbAction::ReplaceEditorSql`](crate::actions::DbAction::ReplaceEditorSql);
+    /// standalone tests keep the direct splice.
+    fn replace_editor_sql(&mut self, doc: &mut AutoCommit, sql: &str) {
+        if self.actions.is_hosted() {
+            let action = crate::actions::DbAction::ReplaceEditorSql {
+                sql: sql.to_string(),
+            };
+            self.actions.dispatch_with_context(
+                doc,
+                crate::actions::DB_ACTION_TYPE,
+                &action,
+                tilo_actions::ActionContext::for_action("so.tilo.db-client", "Database", &action),
+            );
+        } else {
+            EditorDoc::set_sql(doc, sql);
+        }
+    }
+
+    /// Show the saved connections the framework resource holds.
+    /// An empty projection does not wipe a roster that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::DbState) {
+        if self.demo {
+            return;
+        }
+        if state.connections.is_empty() && !self.session.connections.is_empty() {
+            return;
+        }
+        let same =
+            state.connections.len() == self.session.connections.len()
+                && state.connections.iter().zip(&self.session.connections).all(
+                    |(incoming, local)| {
+                        incoming.id == local.id
+                            && incoming.name == local.name
+                            && incoming.host == local.host
+                            && incoming.database == local.database
+                    },
+                );
+        if !same {
+            self.session.set_connections(state.connections.clone());
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::DbClient>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     /// Save a new connection profile. The live app routes it through the action
@@ -2587,7 +2638,7 @@ impl Widget for DbClientApp {
                 self.snippets_open = !self.snippets_open;
             }
             "db.editor.sql" if let Action::SetValue(value) = action => {
-                EditorDoc::set_sql(state, value);
+                self.replace_editor_sql(state, value);
                 self.editor.pull(state);
             }
             "db.editor.sql" if matches!(action, Action::Focus | Action::Activate) => {
@@ -5485,7 +5536,7 @@ mod behavior_tests {
             let relation_id =
                 catalog_resource_id("relation", &[&connection, &schema.name, &relation.name]);
             let resolved = app
-                .resource(&doc, &relation_id)
+                .publish_resource(&doc, &relation_id)
                 .expect("exact relation resolves");
             assert_eq!(resolved.id.as_str(), relation_id);
             assert!(resolved.actions.iter().any(|action| action.id == "browse"));
@@ -5501,7 +5552,7 @@ mod behavior_tests {
                 "an arbitrary SQL envelope is never advertised as harmless"
             );
             assert!(
-                app.resource(&doc, "database")
+                app.publish_resource(&doc, "database")
                     .expect("root resolves exactly")
                     .actions
                     .iter()
@@ -5532,7 +5583,7 @@ mod behavior_tests {
                 catalog_resource_id("relation", &[&connection, "other:schema", &original.name]);
             assert_ne!(first_id, second_id, "encoded ids cannot collide on colons");
             let resolved = app
-                .resource(&doc, &second_id)
+                .publish_resource(&doc, &second_id)
                 .expect("exact relation resolves");
             let browse = resolved
                 .actions

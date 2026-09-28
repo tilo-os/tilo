@@ -39,6 +39,7 @@ pub mod doc;
 pub mod model;
 pub mod ops;
 pub mod probe;
+pub mod resource;
 
 pub use app::DisksApp;
 pub use model::{Drive, DriveKind, Partition, SmartInfo, Topology};
@@ -49,3 +50,4 @@ use ui::widget::Widget;
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(DisksApp::new())
 }
+pub use resource::{Disks, DisksShell};
