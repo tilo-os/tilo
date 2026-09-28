@@ -20,7 +20,7 @@ const SOCKET: &str = "owner.sock";
 /// Largest request file an operator command accepts.
 pub const MAX_REQUEST_FILE_BYTES: usize = 64 * 1024;
 /// Largest encoded request or reply on the socket.
-const MAX_FRAME: usize = 1024 * 1024;
+const FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(1024 * 1024);
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -121,21 +121,13 @@ fn forward(_: &Path, _: &[String], _: Option<Vec<u8>>) -> Result<serde_json::Val
 }
 
 fn write_frame(stream: &mut impl std::io::Write, bytes: &[u8]) -> Result<()> {
-    ensure!(bytes.len() <= MAX_FRAME, "operator frame too large");
-    stream.write_all(&u32::try_from(bytes.len())?.to_le_bytes())?;
-    stream.write_all(bytes)?;
+    FRAMING.write(stream, bytes)?;
     stream.flush()?;
     Ok(())
 }
 
 fn read_frame(stream: &mut impl std::io::Read) -> Result<Vec<u8>> {
-    let mut length = [0; 4];
-    stream.read_exact(&mut length)?;
-    let length = u32::from_le_bytes(length) as usize;
-    ensure!(length <= MAX_FRAME, "operator frame too large");
-    let mut bytes = vec![0; length];
-    stream.read_exact(&mut bytes)?;
-    Ok(bytes)
+    FRAMING.read(stream)?.context("operator stream closed")
 }
 
 /// Execute one operator command against `root`'s Store: the daemon's
