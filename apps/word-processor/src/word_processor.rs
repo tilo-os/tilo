@@ -423,22 +423,17 @@ impl WordProcessor {
         char_end: usize,
         text: &str,
     ) {
-        let Some(containers) = self.containers.clone() else {
+        if self.containers.is_none() || self.ids.is_none() {
             return;
-        };
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            dm.splice_text(
-                block_id,
-                char_start,
-                num::isize_of_usize(char_end.saturating_sub(char_start)),
-                text,
-            );
         }
+        let action = crate::actions::RichTextAction::SpliceText {
+            region: self.action_region(),
+            block: block_id.to_string(),
+            at: char_start,
+            del: char_end.saturating_sub(char_start),
+            ins: text.to_string(),
+        };
+        let _ = action.apply_under(state, &automerge::ROOT);
     }
 
     /// Replace the **entire body** with `markdown`, in place, on the live document:
@@ -1257,30 +1252,13 @@ impl WordProcessor {
     /// snapshot and its highlight band disappears. No-op for an unknown id or an
     /// unbound document.
     pub fn delete_comment(&mut self, state: &mut AutoCommit, comment_id: &str) {
-        let Some(containers) = self.containers.clone() else {
+        if self.containers.is_none() || self.ids.is_none() {
             return;
-        };
-        // The anchored range (recovered from the `comment` mark), if still present.
-        let range = tilo_doc::model::comment_range(state, &containers, comment_id);
-        let comments_obj = containers.comments.clone();
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            // 1. Clear the anchoring mark over its range so the highlight clears.
-            if let Some((b, s, e)) = &range
-                && e > s
-            {
-                dm.remove_mark(b, *s, *e, tilo_doc::schema::MARK_COMMENT);
-            }
-            // 2. Drop the comment entry from the comments container. `dm.doc` is
-            //    the host `AutoCommit`; the container id comes from `Containers`.
-            if let Some(obj) = comments_obj.as_ref() {
-                let _ = dm.doc.delete(obj, comment_id);
-            }
         }
+        let action = crate::actions::RichTextAction::ResolveComment {
+            id: comment_id.to_string(),
+        };
+        let _ = action.apply_under(state, &automerge::ROOT);
     }
 
     /// Whether a named boolean run mark covers the whole of `ranges`.
