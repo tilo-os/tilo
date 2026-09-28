@@ -65,6 +65,7 @@ for path in /usr/bin/fs /usr/bin/file-explorer /usr/bin/tilo-launcher \
             /usr/libexec/tilo/native-atspi-smoke.sh \
             /usr/libexec/tilo/atspi-external-client.py /usr/libexec/tilo/installed-atspi-apps.sh \
             /usr/libexec/tilo-session /usr/libexec/tilo-account-credential \
+            /usr/libexec/tilo-flight-recorder /usr/libexec/tilo-session-report \
             /usr/bin/dbus-update-activation-environment; do
   require_exec "$path"
 done
