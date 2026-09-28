@@ -566,7 +566,15 @@ impl Turn<'_> {
 
 impl crate::watch::WatchSink for Computer {
     fn set_watching(&self, watching: bool) -> Result<(), String> {
-        self.send(&json!({"op":"watch","watching":watching}))
+        // Watch is session-wide paint policy, not per-agent input: use the
+        // default (no agent) turn so the command still reaches the socket.
+        let state = self.state_of(None);
+        Turn {
+            computer: self,
+            agent: None,
+            state: &state,
+        }
+        .send(&json!({"op":"watch","watching":watching}))
     }
 }
 
