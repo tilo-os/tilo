@@ -38,6 +38,11 @@ dev-session = []
 # that harnesses can still drive. `tools/policy/check_dev_overrides_contract.py`
 # fails the policy suite if a production image build enables it.
 dev-overrides = []
+# Honour `TILO_AGENT_CONTROL` on the headless backend: a socket serving the
+# input, clipboard and screenshot subset of the control protocol, for a hosted
+# machine an agent drives (no local person, no lock screen). Non-default and
+# independent of `dev-overrides`; desktop and OS images never enable it.
+agent-control = []
 
 [dependencies]
 fnv.workspace = true
