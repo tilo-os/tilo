@@ -320,7 +320,6 @@ mod tests {
 
     #[test]
     fn an_action_row_queues_its_invocation_for_the_host_and_closes() {
-        use ui::widget::Widget as _;
         let mut resource = Resource::new("page-1", "notes.page", "Groceries");
         resource
             .actions
@@ -344,9 +343,7 @@ mod tests {
         search.palette_mut().activate_selected(&mut doc, &ROOT);
         assert!(search.observe());
         assert_eq!(search.take_choice(), None, "the host's action door runs it");
-        let invocation = search
-            .palette_mut()
-            .take_control_invocation()
+        let invocation = ui::widget::controls::take_control_invocation(search.palette_mut())
             .expect("queued for the host");
         assert_eq!(
             invocation.address,
