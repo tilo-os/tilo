@@ -36,7 +36,7 @@ use tilo_automation::SHORTCUTS_APP_ID;
 impl BrokerActor {
     /// The broker actor a caller is admitted as.
     #[must_use]
-    pub fn for_caller(caller: &Caller) -> Self {
+    pub(super) fn for_caller(caller: &Caller) -> Self {
         match caller.principal() {
             CallerPrincipal::Person(id) => Self::person(id.clone()),
             CallerPrincipal::Agent(id) => Self::agent(format!("agent:{id}")),
@@ -367,7 +367,6 @@ impl CapnpBrokerState {
         let Ok(tree) = membership.snapshot() else {
             return Vec::new();
         };
-        let actor = BrokerActor::for_caller(caller);
         tree.workspaces
             .into_iter()
             .filter(|workspace| {
@@ -384,7 +383,9 @@ impl CapnpBrokerState {
                 }
             })
             .map(|workspace| {
-                let policy = actor.policy_in(&workspace, now);
+                let policy = self
+                    .caller_actor(caller, &workspace.room.to_string())
+                    .policy_in(&workspace, now);
                 (workspace, policy, now)
             })
             .collect()
@@ -712,7 +713,7 @@ impl CapnpBrokerState {
         root: &ActionDirectoryRoot,
         query: &CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        let actor = BrokerActor::for_caller(caller);
+        let actor = self.caller_actor(caller, &root.cluster_id);
         let queue = self.action_directory_request_queue();
         let reply = if let Some(target) = &query.target {
             let Some(revision) = query
@@ -1124,7 +1125,7 @@ impl CapnpBrokerState {
             Ok(Reservation::Reserved) => {}
         }
         let resolved = self.action_directory_request_queue().try_resolve_pending(
-            BrokerActor::for_caller(caller),
+            self.caller_actor(caller, &root.cluster_id),
             &root.cluster_id,
             root.peer_id,
             revision,
@@ -1206,7 +1207,7 @@ impl CapnpBrokerState {
         };
         let offered =
             published_directory_action(&row).map_err(|_| ActionHostError::UnknownAction)?;
-        let actor = BrokerActor::for_caller(caller);
+        let actor = self.caller_actor(caller, &root.cluster_id);
         let token = self.confirmation_token(
             root.peer_id,
             &offered,
@@ -1246,14 +1247,13 @@ impl CapnpBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Result<u64, ActionHostError> {
-        let actor = BrokerActor::for_caller(caller);
         let address = &request.target.address;
         let argument = request.argument.to_slot();
         let provider = request.target.provider.as_str();
         if let Some(room) = workspace_provider_room(provider) {
             return self.start_workspace_action(
                 caller,
-                &actor,
+                &self.caller_actor(caller, room),
                 room,
                 launch,
                 request,
@@ -1267,7 +1267,7 @@ impl CapnpBrokerState {
                 .parse::<u64>()
                 .map_err(|_| ActionHostError::UnknownAction)?
         };
-        let offered = self
+        let (offered, room) = self
             .published_surfaces()
             .into_iter()
             .find(|surface| surface.peer_id == peer_id && surface.live)
@@ -1293,9 +1293,10 @@ impl CapnpBrokerState {
                     &action.action,
                     action.contract.permission,
                 )
-                .then_some(action)
+                .then_some((action, surface.route.cluster_id))
             })
             .ok_or(ActionHostError::UnknownAction)?;
+        let actor = self.caller_actor(caller, &room);
         let token = self.confirmation_token(
             peer_id,
             &offered,
@@ -2089,5 +2090,61 @@ mod launch_content_tests {
             tilo_actions::ARGUMENTS_JSON_PREFIX
         );
         assert_eq!(launch_content_hash(Some(&nonempty)), nonempty);
+    }
+}
+
+#[cfg(test)]
+mod foreign_caller_tests {
+    use super::super::{BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher};
+    use super::{CapDecision, ResourceRef, Verb};
+    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+    use std::sync::{Arc, Mutex};
+    use tilo_actions::remote::Caller;
+
+    /// Every room is governed by one device.
+    struct GovernedBy([u8; 32]);
+
+    impl crate::peer_actions::CertificateAuthority for GovernedBy {
+        fn authorize(
+            &self,
+            _room: uuid::Uuid,
+            _certificate: &tilo_user_identity::DeviceCert,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn governs(&self, _room: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
+            device == Some(&self.0)
+        }
+    }
+
+    #[test]
+    fn a_foreign_caller_is_capped_only_in_rooms_its_device_does_not_govern() {
+        let user = [26; 32];
+        let mut workspace = Workspace::new(WorkspaceId(6), "Callers");
+        workspace.owner = Some(hex::encode(user));
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.shared()),
+            None,
+        );
+        let governor = [7; 32];
+        let authority: Arc<dyn crate::peer_actions::CertificateAuthority> =
+            Arc::new(GovernedBy(governor));
+        assert!(state.certificate_authority.set(authority).is_ok());
+        let may_administer = |caller: &Caller| {
+            let (workspace, policy, now) = state.workspaces_for(caller).pop().unwrap();
+            workspace.decide_at(&policy, &ResourceRef::Workspace, Verb::Admin, now)
+                == CapDecision::Allow
+        };
+        let caller =
+            |device, foreign| Caller::authenticated(user, device).from_foreign_device(foreign);
+
+        assert!(may_administer(&caller(governor, true)));
+        assert!(!may_administer(&caller([8; 32], true)));
+        assert!(may_administer(&caller([8; 32], false)));
     }
 }

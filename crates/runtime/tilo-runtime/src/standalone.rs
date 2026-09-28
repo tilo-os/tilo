@@ -174,9 +174,13 @@ impl RuntimeServices for Standalone {
 }
 
 /// The broker's action door as one more local caller, standing for no app
-/// connection.
+/// connection. Its callers act from this foreign device.
 #[derive(Clone)]
 pub struct RuntimeActionHost(AppActionBroker);
+
+fn on_this_device(caller: &Caller) -> Caller {
+    caller.clone().from_foreign_device(true)
+}
 
 impl ActionHost for RuntimeActionHost {
     fn query(
@@ -184,7 +188,7 @@ impl ActionHost for RuntimeActionHost {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        self.0.state().action_query(caller, &query)
+        self.0.state().action_query(&on_this_device(caller), &query)
     }
 
     fn invoke(
@@ -192,7 +196,9 @@ impl ActionHost for RuntimeActionHost {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        self.0.state().action_invoke(caller, None, None, &request)
+        self.0
+            .state()
+            .action_invoke(&on_this_device(caller), None, None, &request)
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
@@ -231,8 +237,8 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for Certificates {
     ) -> Result<(), String> {
         tilo_identity_host::certificates::authorize_join(&room.to_string(), cert)
     }
-    fn governs(&self, room: uuid::Uuid, cert: &tilo_user_identity::DeviceCert) -> bool {
-        uuid::Uuid::parse_str(&self.room) == Ok(room) && cert.device_public_key == self.device
+    fn governs(&self, room: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
+        uuid::Uuid::parse_str(&self.room) == Ok(room) && device.is_none_or(|d| *d == self.device)
     }
 }
 
