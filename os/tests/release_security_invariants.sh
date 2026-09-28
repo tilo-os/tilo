@@ -63,9 +63,8 @@ oci_exports="$(grep -Ec 'type=oci,dest=/var/tmp/tilo-image' "$workflow")"
   || bad 'an OS image export keeps build-time file mtimes'
 
 # Integration images skip the second uncached build, but every publication
-# (tag, nightly or protected manual main release) must still run it. The third
-# publication branch unbinds the shared compiler cache
-# (tools/tests/test_publication_compiler_cache.py).
+# (tag, nightly or protected manual main release) must still run it, with no
+# compiler cache (tools/tests/test_publication_compiler_cache.py).
 # The rebuild runs in its own, parallel reproduction lane, which exists only in
 # publication matrices and refuses to run otherwise; the publication lane waits
 # for its digest before installing or signing.
