@@ -154,14 +154,19 @@ impl Comments {
                 let Some(parent) = checkout.id.comment_parent() else {
                     continue;
                 };
-                if !parents.contains(&parent) || wanted.iter().any(|w| w.id == checkout.id) {
+                if !parents.contains(&parent) {
                     continue;
                 }
+                // A message is a parent whoever wrote it: the author's own
+                // report, already wanted, still gathers others' votes and
+                // replies.
                 if checkout.kind.as_str() == MESSAGE_KIND {
-                    parents.insert(checkout.id.clone());
+                    grew |= parents.insert(checkout.id.clone());
                 }
-                wanted.push(checkout.clone());
-                grew = true;
+                if !wanted.iter().any(|w| w.id == checkout.id) {
+                    wanted.push(checkout.clone());
+                    grew = true;
+                }
             }
             if !grew || wanted.len() > ui::record::MAX_JOINED_RECORDS {
                 break;
@@ -578,6 +583,59 @@ mod tests {
         );
         assert_eq!(ChatDoc::list_messages(&doc, "c_kernel").len(), 1);
         assert!(app.comments.joined().is_empty());
+    }
+
+    /// Whoever writes a report hears what others say about it: the votes
+    /// and replies on one's own report are followed like anyone else's.
+    #[test]
+    fn the_author_of_a_report_follows_the_votes_and_replies_on_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut app, mut doc, _owners) = app_with_identity(&temp);
+        app.perform_action(
+            &mut doc,
+            &actions::send_message_action(
+                "c_fb",
+                "m_report",
+                "u_me",
+                1,
+                "Send does nothing",
+                None,
+                None,
+                Vec::new(),
+            ),
+        );
+        let report = app
+            .comments
+            .joined()
+            .joined()
+            .into_iter()
+            .find(|c| c.kind.as_str() == MESSAGE_KIND)
+            .expect("the report is the author's own record");
+        let their = |local: &str, kind: &str| {
+            ui::record::RecordCheckout::new(
+                ui::record::RecordId::for_comment([9; 32], local, &report.id).unwrap(),
+                ui::record::RecordKind::new(kind),
+            )
+        };
+        let reply = their("m_reply", MESSAGE_KIND);
+        let vote = their("reactions", REACTIONS_KIND);
+        let mut index = AutoCommit::new();
+        for checkout in [&report, &reply, &vote] {
+            assert!(ui::record::room::reference(
+                &mut index,
+                &checkout.id,
+                &checkout.kind
+            ));
+        }
+        app.comments
+            .index_changed(&index, &["c_fb".to_string()], &[]);
+        let joined = app.comments.joined();
+        assert!(
+            joined.contains(&reply.id),
+            "the reply on one's own report is followed"
+        );
+        assert!(joined.contains(&vote.id), "and so is the vote");
+        assert!(joined.may_write(&report.id), "the report stays one's own");
     }
 
     #[test]
