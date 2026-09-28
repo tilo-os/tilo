@@ -406,6 +406,7 @@ jobs:
       - name: Materialize the pinned app collection
         env:
           COLLECTION_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
+          PACKAGE_TOKEN: ${{ github.event_name == 'workflow_call' && secrets.REGISTRY_TOKEN || '' }}
           COLLECTION_URL_INPUT: ${{ github.event.inputs.app_collection_url }}
           COLLECTION_SHA256_INPUT: ${{ github.event.inputs.app_collection_sha256 }}
           COLLECTION_URL_DEFAULT: ${{ vars.TILO_APP_COLLECTION_URL }}
@@ -447,16 +448,24 @@ jobs:
           }
           work=$(mktemp -d)
           trap 'rm -rf "$work"' EXIT
-          jwt=$(curl --fail --silent --show-error \
-            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$COLLECTION_AUDIENCE" \
-            | jq -er .value)
-          echo "::add-mask::$jwt"
+          if [[ -n ${ACTIONS_ID_TOKEN_REQUEST_URL:-} ]]; then
+            jwt=$(curl --fail --silent --show-error \
+              --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$COLLECTION_AUDIENCE" \
+              | jq -er .value)
+            echo "::add-mask::$jwt"
+            auth="Bearer $jwt"
+          else
+            # A called workflow (Build / OS dev) receives no OIDC token. Its
+            # package read uses the CI account; the SHA-256 pins the bytes.
+            [[ -n ${PACKAGE_TOKEN:-} ]] || { echo '::error::no OIDC token and no package token'; exit 1; }
+            auth="token $PACKAGE_TOKEN"
+          fi
           case "$COLLECTION_URL" in
             https://*)
               curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
                 --fail --location --retry 3 \
-                --header "Authorization: Bearer $jwt" \
+                --header "Authorization: $auth" \
                 "$COLLECTION_URL" -o "$work/apps.tar.gz"
               ;;
             http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*)
@@ -466,7 +475,7 @@ jobs:
               collection_public=${COLLECTION_URL/http:\/\/forgejo.forgejo.svc.cluster.local:3000/https:\/\/code.tilo.so}
               curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
                 --fail --location --retry 3 \
-                --header "Authorization: Bearer $jwt" \
+                --header "Authorization: $auth" \
                 "$collection_public" -o "$work/apps.tar.gz"
               ;;
             *)
@@ -512,6 +521,7 @@ jobs:
       - name: Materialize the pinned desktop payload
         env:
           PAYLOAD_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
+          PACKAGE_TOKEN: ${{ github.event_name == 'workflow_call' && secrets.REGISTRY_TOKEN || '' }}
           PAYLOAD_URL_INPUT: ${{ github.event.inputs.desktop_payload_url }}
           PAYLOAD_SHA256_INPUT: ${{ github.event.inputs.desktop_payload_sha256 }}
           PAYLOAD_URL_DEFAULT: ${{ vars.TILO_DESKTOP_PAYLOAD_URL }}
@@ -544,23 +554,31 @@ jobs:
           [[ -n ${PAYLOAD_AUDIENCE:-} && $PAYLOAD_SHA256 =~ ^[0-9a-fA-F]{64}$ ]]
           work=$(mktemp -d)
           trap 'rm -rf "$work"' EXIT
-          jwt=$(curl --fail --silent --show-error \
-            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$PAYLOAD_AUDIENCE" \
-            | jq -er .value)
-          echo "::add-mask::$jwt"
+          if [[ -n ${ACTIONS_ID_TOKEN_REQUEST_URL:-} ]]; then
+            jwt=$(curl --fail --silent --show-error \
+              --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$PAYLOAD_AUDIENCE" \
+              | jq -er .value)
+            echo "::add-mask::$jwt"
+            auth="Bearer $jwt"
+          else
+            # A called workflow (Build / OS dev) receives no OIDC token. Its
+            # package read uses the CI account; the SHA-256 pins the bytes.
+            [[ -n ${PACKAGE_TOKEN:-} ]] || { echo '::error::no OIDC token and no package token'; exit 1; }
+            auth="token $PACKAGE_TOKEN"
+          fi
           case "$PAYLOAD_URL" in
             https://*)
               curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
                 --fail --location --retry 3 \
-                --header "Authorization: Bearer $jwt" "$PAYLOAD_URL" \
+                --header "Authorization: $auth" "$PAYLOAD_URL" \
                 --output "$work/desktop.tar.gz"
               ;;
             http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*)
               payload_public=${PAYLOAD_URL/http:\/\/forgejo.forgejo.svc.cluster.local:3000/https:\/\/code.tilo.so}
               curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
                 --fail --location --retry 3 \
-                --header "Authorization: Bearer $jwt" "$payload_public" \
+                --header "Authorization: $auth" "$payload_public" \
                 --output "$work/desktop.tar.gz"
               ;;
             *)
