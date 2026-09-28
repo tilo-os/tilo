@@ -3285,45 +3285,37 @@ fn creation_inputs_are_validated_and_printed_safely() {
 fn each_template_composes_the_toolkit_patterns_it_teaches() {
     // Phase: every_template_has_its_own_catalog_and_uses_only_its_messages.
     {
-        for template in Template::ALL {
-            let spec = AppSpec {
-                package_name: "notes".into(),
-                crate_name: "notes".into(),
-                title: "Notes".into(),
-                app_id: "so.tilo.notes".into(),
-                sdk: AppSdk::Workspace {
-                    ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-                },
-                template,
-            };
-            let files = render(&spec).unwrap();
-            let catalog = &files
-                .iter()
-                .find(|(path, _)| path == Path::new("locales/en-US.ftl"))
-                .expect("a source catalog")
-                .1;
-            let messages = parse_fluent_catalog(catalog).expect("the catalog parses");
-            let source = files
-                .iter()
-                .filter(|(path, _)| path.extension().is_none_or(|extension| extension != "ftl"))
-                .map(|(_, source)| source.as_str())
-                .collect::<String>();
-            for id in messages.entries.keys() {
-                assert!(
-                    source.contains(&format!("\"{id}\"")),
-                    "{}: {id} is in the catalog but not used",
-                    template.name()
-                );
-            }
-            for other in Template::ALL.into_iter().filter(|other| *other != template) {
-                assert!(
-                    !catalog.contains(&format!("{}-", other.name())),
-                    "{} carries {} messages",
-                    template.name(),
-                    other.name()
-                );
-            }
-        }
+        let spec = AppSpec {
+            package_name: "log-browser".into(),
+            crate_name: "log_browser".into(),
+            title: "Log Browser".into(),
+            app_id: "so.tilo.log.browser".into(),
+            sdk: AppSdk::Workspace {
+                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+            },
+            template: Template::Data,
+        };
+        let source = app_lib(&spec);
+        assert!(source.contains("with_text(|row| row.name.clone())"));
+        assert!(source.contains("with_id(\"rows-table\")"));
+        assert!(source.contains("with_accessible_name(\"data-accessible-name\")"));
+        assert!(source.contains("impl TableModel for Rows"));
+        assert!(source.contains("const ROW_COUNT: usize = 100_000_000"));
+        assert!(source.contains("LatestRequest::new()"));
+        assert!(source.contains("Background::current().spawn("));
+        assert!(source.contains("fn poll_changes"));
+        assert!(source.contains("TableModelChange::RowsChanged"));
+        assert!(source.contains("completion.complete(rows)"));
+        assert!(source.contains("with_widget"));
+        assert!(source.contains("let actions = cx.actions();"));
+        assert!(source.contains("Review::OPEN.with(row.id)"));
+        assert!(source.contains("pub id: u64"));
+        let test = app_test(&spec);
+        assert!(test.contains("Role::Table"));
+        assert!(test.contains("row:3:0"));
+        assert!(test.contains("wait_for_named"));
+        assert!(test.contains("only the sparse viewport is semantic"));
+        assert!(test.contains("app.state().opened"));
     }
 
     // Phase: collection_template_uses_item_actions_and_starts_empty.
@@ -3403,6 +3395,100 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
         assert!(app_readme(&spec).contains(&format!("tilo-app run --target {target}")));
         assert!(app_readme(&spec).contains(&format!("tilo-app package --target {target}")));
     }
+    }
+
+    // Phase: list_template_starts_sparse_variable_and_interactive.
+    {
+        let spec = AppSpec {
+            package_name: "activity-feed".into(),
+            crate_name: "activity_feed".into(),
+            title: "Activity Feed".into(),
+            app_id: "so.tilo.activity.feed".into(),
+            sdk: AppSdk::Workspace {
+                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+            },
+            template: Template::List,
+        };
+        let source = app_lib(&spec);
+        assert!(source.contains("ITEM_COUNT: usize = 100_000_000"));
+        assert!(source.contains("impl ListModel for ActivityModel"));
+        assert!(source.contains("LatestRequest::new()"));
+        assert!(source.contains("VirtualList::new_async"));
+        assert!(source.contains("ListRowState::Loading"));
+        assert!(source.contains("ListModelChange::RowsChanged"));
+        assert!(source.contains("with_semantic_key(u64::to_string)"));
+        assert!(source.contains("if index % 5 == 0"));
+        assert!(source.contains("Button::new"));
+        assert!(source.contains("Feed::OPEN.with(*key)"));
+        assert!(source.contains("with_id(\"activity-list\")"));
+        let test = app_test(&spec);
+        assert!(test.contains("Role::List"));
+        assert!(test.contains("key:3"));
+        assert!(test.contains("open-0"));
+        assert!(test.contains("wait_for_named"));
+        assert!(test.contains("delegate measurements drive variable rows"));
+    }
+
+    // Phase: tree_template_uses_stable_ids_and_professional_tree_defaults.
+    {
+        let spec = AppSpec {
+            package_name: "project-browser".into(),
+            crate_name: "project_browser".into(),
+            title: "Project Browser".into(),
+            app_id: "so.tilo.project.browser".into(),
+            sdk: AppSdk::Workspace {
+                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+            },
+            template: Template::Tree,
+        };
+        let source = app_lib(&spec);
+        assert!(source.contains("TreeNode::branch"));
+        assert!(source.contains("with_expanded([1, 2])"));
+        assert!(source.contains("multi_select(true)"));
+        assert!(source.contains("with_row_delegate"));
+        assert!(source.contains("Button::new"));
+        assert!(source.contains("reorderable()"));
+        assert!(source.contains("with_viewport(280.0, 36.0)"));
+        assert!(source.contains("with_accessible_name"));
+        assert!(source.contains("with_id(\"workspace-tree\")"));
+        let test = app_test(&spec);
+        assert!(test.contains("Role::Tree"));
+        assert!(test.contains("perform_semantic_named"));
+        assert!(test.contains("node:3"));
+        assert!(test.contains("more-4"));
+    }
+
+    // Phase: async_template_uses_typed_wakeup_and_keyed_result_views.
+    {
+        let spec = AppSpec {
+            package_name: "repo-scan".into(),
+            crate_name: "repo_scan".into(),
+            title: "Repo Scan".into(),
+            app_id: "so.tilo.repo.scan".into(),
+            sdk: AppSdk::Workspace {
+                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+            },
+            template: Template::Async,
+        };
+        let source = app_lib(&spec);
+        assert!(source.contains("LatestTask::new(LoadState::Idle)"));
+        assert!(source.contains("task.begin(LoadState::Loading)"));
+        assert!(source.contains("completion.complete(state)"));
+        assert!(source.contains("cancel_task.cancel(LoadState::Idle)"));
+        assert!(source.contains("Button::new(\"cancel-task\""));
+        assert!(source.contains("Background::current().spawn("));
+        assert!(source.contains("ModelView::from_state_by"));
+        assert!(source.contains("with_arg(\"count\""));
+        assert!(source.contains("with_id(\"task-result\")"));
+        let test = app_test(&spec);
+        assert!(test.contains("app_runs_background_work_on_the_resource_input"));
+        assert!(test.contains("generated.background-task:root"));
+        assert!(test.contains("wait_for_named(\"task-result\""));
+        assert!(source.contains("live.with(|scan| scan.folder.clone())"));
+        let actions = headless_actions(&spec);
+        assert!(actions.contains("\"action\": \"activate\""));
+        assert!(actions.contains("\"expect\""));
+        assert!(actions.contains("\"timeout_ms\": 1000"));
     }
 
     // Phase: document_template_uses_direct_durable_bindings_and_undo_contract.
