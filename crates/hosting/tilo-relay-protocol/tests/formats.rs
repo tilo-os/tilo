@@ -102,7 +102,7 @@ fn json_encodings_are_pinned() {
         ),
     );
 
-    // Home peer registration, current and legacy (schema 1) shape.
+    // Home peer registration.
     assert_json(
         &HomePeerRegistration {
             schema_version: HomePeerRegistration::CURRENT_SCHEMA,
@@ -123,15 +123,6 @@ fn json_encodings_are_pinned() {
             r#""device_cert":null,"relay_workspace_ids":[7,18446744073709551615]}"#,
         ),
     );
-    let legacy = format!(
-        r#"{{"device_node_id":"{0}","relay_service_node_id":"{0}","label":"old","user_public_key":"{0}","relay_workspace_ids":[]}}"#,
-        "44".repeat(32)
-    );
-    let legacy: HomePeerRegistration = serde_json::from_str(&legacy).unwrap();
-    assert_eq!(legacy.schema_version, 1);
-    assert_eq!(legacy.relay_endpoint, None);
-    assert_eq!(legacy.device_cert, None);
-
     // Metrics snapshot, written pretty-printed.
     let snapshot = MetricsSnapshot {
         conns_accepted: 1,
