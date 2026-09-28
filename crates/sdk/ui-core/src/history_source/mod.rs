@@ -123,6 +123,7 @@ pub struct HistorySource {
     authors: AuthorDirectory,
     artifact_kind: ArtifactKind,
     max_entries: usize,
+    record_genesis: bool,
 }
 
 impl Default for HistorySource {
@@ -138,7 +139,18 @@ impl HistorySource {
             authors: AuthorDirectory::new(),
             artifact_kind: ArtifactKind::File,
             max_entries: DEFAULT_MAX_ENTRIES,
+            record_genesis: true,
         }
+    }
+
+    /// Leave out a record's genesis: the change that created it with its
+    /// initial content, made by an actor derived from the record's identity
+    /// at time zero. A document's own history keeps it as the version to
+    /// restore to; a feed of what people did has no one to name for it.
+    #[must_use]
+    pub fn without_record_genesis(mut self) -> Self {
+        self.record_genesis = false;
+        self
     }
 
     #[must_use]
@@ -183,7 +195,10 @@ impl HistorySource {
             return Vec::new();
         }
         let start = versions.len().saturating_sub(self.max_entries);
-        let genesis = crate::record::genesis_actor(doc).map(|actor| actor.to_hex_string());
+        let genesis = (!self.record_genesis)
+            .then(|| crate::record::genesis_actor(doc))
+            .flatten()
+            .map(|actor| actor.to_hex_string());
 
         // Plus the one before the window — the patch path diffs between
         // consecutive frontiers.
@@ -222,8 +237,8 @@ impl HistorySource {
             // a revision to a nonexistent person. Skipped here rather than in
             // `versions`, which stays positional (`materialize_at` / `prefix_heads`
             // address a change by its place).
-            // A record's genesis is the same kind of change: made by an actor
-            // derived from the record's identity, at time zero.
+            // A record's genesis is the same kind of change, when the caller
+            // leaves it out.
             if qdoc::model::is_schema_genesis(v) || genesis.as_deref() == Some(v.actor.as_str()) {
                 continue;
             }
