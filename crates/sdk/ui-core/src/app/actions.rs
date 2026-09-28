@@ -1055,7 +1055,7 @@ impl App {
                 budget_exhausted: false,
             };
         }
-        let state = previous.unwrap_or_else(|| ActionDirectoryCursor {
+        let mut state = previous.unwrap_or_else(|| ActionDirectoryCursor {
             revision: revision.clone(),
             needle: query.needle.clone(),
             parent_resource: query.parent_resource.clone(),
@@ -1471,7 +1471,41 @@ impl App {
             provider_index += 1;
             provider_cursor = None;
         }
-        let exhausted = !byte_exhausted && provider_index >= providers.len();
+        // Actions an app publishes through its resource tree rather than a
+        // search provider are found by name too, in tree order, resuming at
+        // the offset of the next unreturned match.
+        let mut tree_exhausted = true;
+        if !byte_exhausted && provider_index >= providers.len() {
+            let needle = query.needle.to_lowercase();
+            let mut matches = Vec::new();
+            for resource in self.publication_resources() {
+                collect_named_actions(
+                    &resource,
+                    &needle,
+                    0,
+                    ACTION_DIRECTORY_MAX_DEPTH,
+                    &mut matches,
+                );
+            }
+            let mut offset = state.browse_offset;
+            while let Some((resource, action)) = matches.get(offset) {
+                if rows.len() >= max_results {
+                    break;
+                }
+                if let Some(row) = Self::directory_action_row(resource, action) {
+                    add(row, &mut rows, &mut estimated_bytes);
+                    if estimated_bytes > max_bytes {
+                        rows.pop();
+                        byte_exhausted = true;
+                        break;
+                    }
+                }
+                offset += 1;
+            }
+            tree_exhausted = offset >= matches.len();
+            state.browse_offset = offset;
+        }
+        let exhausted = !byte_exhausted && provider_index >= providers.len() && tree_exhausted;
         // Keep the source cursor *before* an oversized row when earlier rows
         // fitted. A caller that raises maxBytes resumes exactly at that row;
         // dropping it would restart and duplicate the fitted prefix.
@@ -4137,4 +4171,37 @@ pub(crate) fn directory_row_wire_bytes(row: &runtime_collab::ActionDirectoryRow)
         + text(row.visibility_action.as_deref().unwrap_or(""))
         + text(&row.visibility_contract_json)
         + descriptor
+}
+
+/// Every `(resource, action)` in `resource`'s tree, to `max_depth` levels
+/// below it, whose action id or label, description or resource label contains
+/// `needle` (already lowercase). Each matched resource is kept without its
+/// children.
+fn collect_named_actions(
+    resource: &tilo_actions::Resource,
+    needle: &str,
+    depth: u16,
+    max_depth: u16,
+    out: &mut Vec<(tilo_actions::Resource, String)>,
+) {
+    let contains = |text: &str| text.to_lowercase().contains(needle);
+    let mut shallow = None;
+    for action in &resource.actions {
+        if contains(&action.id)
+            || contains(&action.label)
+            || action.description.as_deref().is_some_and(contains)
+            || contains(&resource.label)
+        {
+            let shallow = shallow.get_or_insert_with(|| tilo_actions::Resource {
+                children: Vec::new(),
+                ..resource.clone()
+            });
+            out.push((shallow.clone(), action.id.clone()));
+        }
+    }
+    if depth < max_depth {
+        for child in &resource.children {
+            collect_named_actions(child, needle, depth.saturating_add(1), max_depth, out);
+        }
+    }
 }
