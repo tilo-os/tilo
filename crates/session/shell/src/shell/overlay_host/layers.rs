@@ -33,6 +33,7 @@ use winit::event::{ElementState, WindowEvent};
 
 use settings_store::hardware::ShortcutAction;
 use tilo_desktop::emoji_picker::EmojiPicker;
+use tilo_desktop::window_switcher::{WindowAddress, WindowSwitcher, WindowThumbnails};
 
 use super::tab_menu::{TabMenuLayer, TabMenuTarget};
 use crate::shell::TabMenuAction;
@@ -95,6 +96,7 @@ impl LayerId {
     pub(crate) const fn band(self) -> Option<Band> {
         match self {
             Self::DisplayConfirmation => Some(Band::Session),
+            Self::WindowSwitcher => Some(Band::Chord),
             Self::EmojiPicker => Some(Band::Modal),
             Self::TabContextMenu | Self::PowerMenu => Some(Band::Popover),
             _ => None,
@@ -109,6 +111,9 @@ pub(crate) enum Band {
     /// Answers the whole session waits on, above onboarding, the personal
     /// display and every desktop surface.
     Session,
+    /// Surfaces a held modifier keeps open, above portal dialogs and a drag
+    /// that began inside an app.
+    Chord,
     /// Modal pickers, below portal dialogs and the file chooser.
     Modal,
     /// Menus and flyouts, just above the windows.
@@ -165,6 +170,8 @@ pub(crate) enum LayerIntent {
     /// Start a session lifecycle action through the one session executor
     /// that the typed `session.*` actions also reach.
     Session(os_actions::SessionAction),
+    /// Focus a window on the active workspace, when it still exists.
+    FocusWindow(WindowAddress),
     /// The layer changed what it shows outside a frame the host already
     /// schedules.
     Repaint,
@@ -219,6 +226,9 @@ pub(crate) struct LayerPaint<'a> {
     pub theme: &'a Theme,
     pub presence: &'a PresenceCtx,
     pub geometry: LayerGeometry<'a>,
+    /// Live pictures of the desktop's windows, rendered by the compositor
+    /// while something shows them.
+    pub thumbnails: &'a mut dyn WindowThumbnails,
 }
 
 /// One self-contained shell overlay.
@@ -226,6 +236,12 @@ pub(crate) trait ShellLayer {
     fn id(&self) -> LayerId;
 
     fn is_open(&self) -> bool;
+
+    /// On screen, and so published to assistive technology. A layer may own
+    /// input a moment before it is drawn.
+    fn is_shown(&self) -> bool {
+        self.is_open()
+    }
 
     /// Only called while open. A layer that consumes a press owns its
     /// release: it receives it while still open, and the stack absorbs it
@@ -268,6 +284,7 @@ pub(crate) trait ShellLayer {
 #[derive(Default)]
 pub(crate) struct OverlayStack {
     pub(crate) display_confirm: DisplayConfirmPrompt,
+    pub(crate) window_switcher: WindowSwitcher,
     pub(crate) emoji_picker: EmojiPicker,
     pub(crate) tab_menu: TabMenuLayer,
     pub(crate) power_menu: PowerMenu,
@@ -277,18 +294,20 @@ pub(crate) struct OverlayStack {
 
 impl OverlayStack {
     /// Topmost first; must follow [`LayerId`]'s order.
-    fn layers(&self) -> [&dyn ShellLayer; 4] {
+    fn layers(&self) -> [&dyn ShellLayer; 5] {
         [
             &self.display_confirm,
+            &self.window_switcher,
             &self.emoji_picker,
             &self.tab_menu,
             &self.power_menu,
         ]
     }
 
-    fn layers_mut(&mut self) -> [&mut dyn ShellLayer; 4] {
+    fn layers_mut(&mut self) -> [&mut dyn ShellLayer; 5] {
         [
             &mut self.display_confirm,
+            &mut self.window_switcher,
             &mut self.emoji_picker,
             &mut self.tab_menu,
             &mut self.power_menu,
@@ -491,7 +510,7 @@ mod tests {
             "the press dismissed the flyout"
         );
         assert!(stack.listens(Band::Popover), "its release is still owed");
-        for band in [Band::Session, Band::Modal] {
+        for band in [Band::Session, Band::Chord, Band::Modal] {
             assert!(!stack.listens(band), "{band:?}");
             assert_eq!(
                 route_band(&mut stack, band, &button(ElementState::Released), outside),

@@ -41,6 +41,7 @@ mod now_playing;
 mod shortcut_steps;
 mod shortcut_triggers;
 mod shortcuts;
+mod switcher_layer;
 mod tab_menu;
 
 pub use controller::{ControllerDelivery, ControllerKey};
@@ -769,9 +770,6 @@ pub struct ShellOverlayHost {
     /// Numbered cards painted on every display when Settings asks which
     /// screen is which.
     display_identify: crate::shell::display_identify::DisplayIdentify,
-    /// Alt+Tab: which windows were used most recently, and the switcher
-    /// while Alt is held.
-    window_switcher: tilo_desktop::window_switcher::WindowSwitcher,
     /// Live window previews the switcher and the overview show, rendered
     /// by the compositor only while one of them is up.
     window_previews: crate::shell::window_previews::WindowPreviews,
@@ -1561,6 +1559,7 @@ impl ShellOverlayHost {
                 theme,
                 presence,
                 geometry: self.layer_geometry(&outputs),
+                thumbnails: &mut self.window_previews,
             },
         );
         self.draw_collaborators_dropdown(
@@ -1646,10 +1645,9 @@ impl ShellOverlayHost {
         flags: crate::shell::chrome_state::OverlayFlags,
     ) -> bool {
         if let Some(layer) = self.layers.layer(id) {
-            return layer.is_open();
+            return layer.is_shown();
         }
         match id {
-            LayerId::WindowSwitcher => self.window_switcher.is_revealed(Instant::now()),
             LayerId::DisplayLayouts => flags.projection,
             // The palette has a complete semantic tree (query, result list,
             // and focused result).  It is drawn as a top overlay, so publish
@@ -1681,6 +1679,7 @@ impl ShellOverlayHost {
             LayerId::ShortcutHelp => flags.shortcut_help,
             // Stacked; answered above.
             LayerId::DisplayConfirmation
+            | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
             | LayerId::PowerMenu => false,
@@ -2061,7 +2060,6 @@ impl ShellOverlayHost {
             collaborators_overlay: CollaboratorsOverlay::default(),
             projection_overlay: inputs.projection_overlay,
             display_identify: crate::shell::display_identify::DisplayIdentify::default(),
-            window_switcher: tilo_desktop::window_switcher::WindowSwitcher::default(),
             window_previews: crate::shell::window_previews::WindowPreviews::default(),
             text_caret: None,
             pairing: crate::bluetooth_prompt::PairingOverlay::default(),
@@ -5779,17 +5777,17 @@ impl ShellOverlayHost {
 
     /// The Alt+Tab switcher, for input routing, state readers and tests.
     pub fn window_switcher(&self) -> &tilo_desktop::window_switcher::WindowSwitcher {
-        &self.window_switcher
+        &self.layers.window_switcher
     }
 
     pub fn window_switcher_mut(&mut self) -> &mut tilo_desktop::window_switcher::WindowSwitcher {
-        &mut self.window_switcher
+        &mut self.layers.window_switcher
     }
 
     /// Alt is held after Alt+Tab: the shell owns the keyboard and pointer
     /// until the switcher commits or cancels.
     pub fn window_switcher_active(&self) -> bool {
-        self.window_switcher.is_active()
+        self.layers.window_switcher.is_active()
     }
 
     /// The windows whose live previews chrome is showing or about to show:
@@ -5806,8 +5804,8 @@ impl ShellOverlayHost {
         if state.session_locked() || self.onboarding.is_some() {
             return Vec::new();
         }
-        if self.window_switcher.is_active() {
-            return self.window_switcher.preview_requests();
+        if self.layers.window_switcher.is_active() {
+            return self.layers.window_switcher.preview_requests();
         }
         if state.overlays.overview {
             let tree = state.tree();
@@ -5877,7 +5875,8 @@ impl ShellOverlayHost {
     /// The switcher as `state-dump` reports it: its windows, which is
     /// selected, and whether each card shows a live preview.
     pub fn window_switcher_state_json(&self) -> serde_json::Value {
-        self.window_switcher
+        self.layers
+            .window_switcher
             .state_json(&self.window_previews, Instant::now())
     }
 
@@ -5888,6 +5887,7 @@ impl ShellOverlayHost {
         tree: &crate::shell::state::WorkspaceTree,
     ) -> Vec<tilo_desktop::window_switcher::SwitcherWindow> {
         let mut windows = self
+            .layers
             .window_switcher
             .ordered_windows(&tree.desktop, &crate::shell::window_previews::ShellWindows);
         windows.truncate(OVERVIEW_WINDOWS_MAX);
@@ -5899,7 +5899,7 @@ impl ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref()
             && let Ok(state) = chrome.try_borrow()
         {
-            self.window_switcher.observe(&state.tree().desktop);
+            self.layers.window_switcher.observe(&state.tree().desktop);
         }
     }
 
@@ -5912,11 +5912,11 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        self.window_switcher.set_host_rect(self.rect);
+        self.layers.window_switcher.set_host_rect(self.rect);
         let began = {
             let state = chrome.borrow();
             let tree = state.tree();
-            self.window_switcher.begin(
+            self.layers.window_switcher.begin(
                 &tree.desktop,
                 &crate::shell::window_previews::ShellWindows,
                 scope,
@@ -5934,54 +5934,11 @@ impl ShellOverlayHost {
     /// control socket's modifier command, a backend's `ModifiersChanged`).
     /// A switcher held open by Alt commits once Alt is up.
     pub fn note_modifiers(&mut self, modifiers: winit::keyboard::ModifiersState) -> bool {
-        let outcome = self.window_switcher.modifiers_changed(modifiers);
-        self.apply_window_switcher_outcome(outcome)
-    }
-
-    /// Input while the switcher is open. Keys all belong to it; the pointer
-    /// does once the panel is on screen.
-    fn route_window_switcher_event(
-        &mut self,
-        event: &WindowEvent,
-        modifiers: winit::event::Modifiers,
-        handled: &mut bool,
-    ) -> bool {
-        let outcome = self.window_switcher.route_event(
-            event,
-            modifiers.state(),
-            self.last_cursor,
-            Instant::now(),
-        );
-        let taken = self.apply_window_switcher_outcome(outcome);
-        // A modifier change settles the switcher but still reaches the rest
-        // of the shell.
-        if matches!(event, WindowEvent::ModifiersChanged(_)) {
-            return false;
-        }
-        if taken {
-            *handled = true;
-        }
-        taken
-    }
-
-    fn apply_window_switcher_outcome(
-        &mut self,
-        outcome: tilo_desktop::window_switcher::SwitcherOutcome,
-    ) -> bool {
-        use tilo_desktop::window_switcher::SwitcherOutcome;
-        match outcome {
-            SwitcherOutcome::Ignored => false,
-            SwitcherOutcome::Consumed | SwitcherOutcome::Cancelled => {
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
-                true
-            }
-            SwitcherOutcome::Commit(address) => {
-                let _ = self.focus_switcher_window(address);
-                true
-            }
-        }
+        let outcome = self.layers.window_switcher.modifiers_changed(modifiers);
+        switcher_layer::outcome_intent(outcome).is_some_and(|intent| {
+            self.apply_layer_intent(intent);
+            true
+        })
     }
 
     /// Focus a window the switcher chose, on whichever strip of the active
@@ -9528,7 +9485,7 @@ impl ShellOverlayHost {
     /// them has one; until then (and for a room whose windows all hold
     /// secrets) the app marks beside the room's name say what is open.
     fn overview_shows_windows(&self) -> bool {
-        !self.window_switcher.is_active() && !self.window_previews.is_empty()
+        !self.layers.window_switcher.is_active() && !self.window_previews.is_empty()
     }
 
     /// One preview tile of the overview's window row: `OVERVIEW_WINDOWS_MAX`
@@ -15288,6 +15245,7 @@ impl ShellOverlayHost {
                 self.execute_session_action(action);
                 true
             }
+            LayerIntent::FocusWindow(address) => self.focus_switcher_window(address),
             LayerIntent::Repaint => {
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
@@ -16505,7 +16463,20 @@ impl Widget for ShellOverlayHost {
             return;
         }
 
-        if self.route_window_switcher_event(event, *ctx.modifiers, ctx.handled) {
+        if self.route_layer_band(
+            Band::Chord,
+            event,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state,
+                path: ctx.path,
+                handled: &mut *ctx.handled,
+                focus_target: &mut *ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
+        ) {
             return;
         }
 
@@ -16769,13 +16740,9 @@ impl Widget for ShellOverlayHost {
                 continue;
             }
             match overlay {
-                LayerId::WindowSwitcher => {
-                    if let Some(switcher) = self.window_switcher.accessibility() {
-                        root.children.push(switcher);
-                    }
-                }
                 // Stacked; published above.
                 LayerId::DisplayConfirmation
+                | LayerId::WindowSwitcher
                 | LayerId::EmojiPicker
                 | LayerId::TabContextMenu
                 | LayerId::PowerMenu => {}
@@ -17702,11 +17669,6 @@ impl Widget for ShellOverlayHost {
             return layer.accessibility_rect(self.layer_geometry(&outputs), child_path);
         }
         match overlay {
-            LayerId::WindowSwitcher => match child_path {
-                [] | [0] => Some(self.window_switcher.panel_rect()),
-                [0, index] => self.window_switcher.card_rect(*index),
-                _ => None,
-            },
             LayerId::CommandPalette => match child_path {
                 // The trailing child is the host's filter band (see
                 // `accessibility`); everything before it is the palette's.
@@ -17808,6 +17770,7 @@ impl Widget for ShellOverlayHost {
             | LayerId::DisplayLayouts
             // Stacked; answered above.
             | LayerId::DisplayConfirmation
+            | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
             | LayerId::PowerMenu => None,
@@ -17822,19 +17785,13 @@ impl Widget for ShellOverlayHost {
             return false;
         };
         if let Some(layer) = self.layers.layer_mut(overlay) {
-            return layer.focus_accessibility(child_path);
+            let focused = layer.focus_accessibility(child_path);
+            if focused && let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().bump();
+            }
+            return focused;
         }
         match overlay {
-            LayerId::WindowSwitcher => match child_path {
-                [0, index] => {
-                    let focused = self.window_switcher.focus_index(*index);
-                    if focused && let Some(chrome) = self.chrome.as_ref() {
-                        chrome.borrow_mut().bump();
-                    }
-                    focused
-                }
-                _ => false,
-            },
             LayerId::CommandPalette => {
                 self.palette.focus_synthetic_accessibility(child_path)
             }
@@ -17860,6 +17817,7 @@ impl Widget for ShellOverlayHost {
             | LayerId::DisplayLayouts
             // Stacked; answered above.
             | LayerId::DisplayConfirmation
+            | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
             | LayerId::PowerMenu => false,
@@ -18081,7 +18039,6 @@ impl ShellOverlayHost {
             || markup_frame
             || notification_frame
             || osd_frame
-            || self.window_switcher.needs_frame(now)
             || self.window_previews.changed()
     }
 }
@@ -18758,6 +18715,7 @@ impl ShellOverlayHost {
                 theme,
                 presence,
                 geometry: self.layer_geometry(&outputs),
+                thumbnails: &mut self.window_previews,
             },
         );
 
@@ -18773,6 +18731,7 @@ impl ShellOverlayHost {
                 theme,
                 presence,
                 geometry: self.layer_geometry(&outputs),
+                thumbnails: &mut self.window_previews,
             },
         );
         self.display_identify
@@ -18791,6 +18750,7 @@ impl ShellOverlayHost {
                 theme,
                 presence,
                 geometry: self.layer_geometry(&outputs),
+                thumbnails: &mut self.window_previews,
             },
         );
     }
@@ -20031,14 +19991,18 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
     ) {
         self.draw_top_overlays_below_switcher(scene, transform, text_renderer, theme, presence);
-        self.window_switcher.draw(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.rect,
-            Instant::now(),
-            &mut self.window_previews,
+        let outputs = self.layer_outputs();
+        self.layers.draw(
+            LayerId::WindowSwitcher,
+            &mut LayerPaint {
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                geometry: self.layer_geometry(&outputs),
+                thumbnails: &mut self.window_previews,
+            },
         );
         // The last pass: every preview on hand has now been painted.
         self.window_previews.mark_painted();
@@ -20130,6 +20094,7 @@ impl ShellOverlayHost {
                 theme,
                 presence,
                 geometry: self.layer_geometry(&outputs),
+                thumbnails: &mut self.window_previews,
             },
         );
 
