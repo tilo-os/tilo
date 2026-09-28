@@ -2165,15 +2165,17 @@ impl AppHandler {
                         .flatten()
                     } else {
                         match request {
-                            crate::undo::UndoRequest::Undo => app.state.undo_as(
+                            crate::undo::UndoRequest::Undo => app.state.undo_as_with_registry(
                                 Some(&app.collaboration.local_author),
                                 current_focus_idx,
                                 current_meta,
+                                Some(&app.actions.action_registry),
                             ),
-                            crate::undo::UndoRequest::Redo => app.state.redo_as(
+                            crate::undo::UndoRequest::Redo => app.state.redo_as_with_registry(
                                 Some(&app.collaboration.local_author),
                                 current_focus_idx,
                                 current_meta,
+                                Some(&app.actions.action_registry),
                             ),
                         }
                     };

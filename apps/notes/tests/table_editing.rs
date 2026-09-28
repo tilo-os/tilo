@@ -489,8 +489,8 @@ fn table_focus_is_exclusive_and_survives_shape_changes() {
         crate::component_support::edit_body(
             &mut state.doc,
             page,
-            qdoc_rich_text::RichTextAction::SpliceText {
-                region: qdoc_rich_text::action::RegionKind::Body,
+            tilo_document::RichTextAction::SpliceText {
+                region: tilo_document::action::RegionKind::Body,
                 block: b.editor().blocks()[0].id.clone(),
                 at: current.chars().count(),
                 del: 0,

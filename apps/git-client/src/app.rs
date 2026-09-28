@@ -259,7 +259,7 @@ pub struct GitClientApp {
     /// host brackets the undo boundary, encodes and applies through the executor
     /// (so it replays byte-identically on peers), and remembers the last action
     /// for the affordance == `ActionSpec` covenant test.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 
     /// No repository is bound and none was reachable at launch — the app shows
     /// the honest "open a repository" empty state rather than any placeholder
@@ -500,7 +500,7 @@ impl GitClientApp {
             .with_font_size(14.0)
             .with_mono();
         Self {
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             flap,
             last_flap_tick: Instant::now(),
             hamburger_rect: Rect::ZERO,
@@ -1126,6 +1126,45 @@ impl GitClientApp {
     #[doc(hidden)]
     pub fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
+    }
+
+    /// Show the diff preferences the framework resource already holds.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::settings::Settings) {
+        if self.settings_forced {
+            return;
+        }
+        self.settings = *state;
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::GitClient>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    fn publish_settings(&mut self, doc: &mut AutoCommit) {
+        let actions = [
+            crate::actions::set_diff_layout_action(self.settings.diff_layout),
+            crate::actions::GitClientAction::SetShowWhitespace {
+                on: self.settings.show_whitespace,
+            },
+            crate::actions::GitClientAction::SetSyntaxHighlight {
+                on: self.settings.syntax_highlight,
+            },
+            crate::actions::GitClientAction::SetWrapLines {
+                on: self.settings.wrap_lines,
+            },
+        ];
+        for action in actions {
+            self.actions.dispatch_with_context(
+                doc,
+                crate::actions::GIT_CLIENT_ACTION_TYPE,
+                &action,
+                tilo_actions::ActionContext::for_action("so.tilo.git-client", "Git", &action),
+            );
+        }
     }
 
     // --- Drawing -------------------------------------------------------
@@ -2664,7 +2703,11 @@ impl Widget for GitClientApp {
             if !self.settings_forced {
                 self.settings = Settings::read(state);
             }
-            self.settings.write(state);
+            if self.actions.is_hosted() {
+                self.publish_settings(state);
+            } else {
+                self.settings.write(state);
+            }
             self.settings_seeded = true;
         }
     }
@@ -2927,10 +2970,10 @@ impl Widget for GitClientApp {
     }
 
     /// Publish the open repository and its view-preference actions to the
-    /// shell's Ctrl+K palette (delegates to the `ResourceProvider` impl in
+    /// shell's Ctrl+K palette (delegates to the `` impl in
     /// [`crate::actions`]). Empty when no repository is open.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        Self::publish_resources(self, doc)
     }
 
     fn start_operation(

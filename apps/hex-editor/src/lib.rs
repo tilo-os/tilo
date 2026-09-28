@@ -40,6 +40,7 @@ pub mod actions;
 pub mod app;
 pub mod inspector;
 pub mod model;
+pub mod resource;
 pub mod sample;
 pub mod search;
 pub mod view;
@@ -130,3 +131,4 @@ mod tests {
         }
     }
 }
+pub use resource::{HexEditor, HexEditorShell, launch_spec};

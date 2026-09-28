@@ -3,7 +3,7 @@
 //! Sheets — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default        — run the live winit event loop via `ui::App`.
+//!   * default        — framework [`ResourceApp`] (`SheetsShell`).
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
 //!     (headless screenshot; identical passes to the live app).
 //!
@@ -83,6 +83,26 @@ fn configure(app: &mut ui::App) {
 extern crate runtime_dylib;
 
 pub fn main() {
+    // The live workbook runs on the app framework. Shots, responsive-matrix,
+    // native-audit and explicit headless flags keep the standalone path.
+    let mut args = std::env::args().skip(1);
+    let mut standalone = false;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--data-dir" => {
+                args.next();
+            }
+            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => {
+                standalone = true;
+            }
+            file if !file.starts_with('-') => standalone = true,
+            _ => {}
+        }
+    }
+    if !standalone {
+        ui::framework::run::<sheets::SheetsShell>();
+        return;
+    }
     ui::launch::run_or_exit(
         &LaunchSpec::new(APP_ID, sheets::app_root)
             .shot_handler(render_shot)

@@ -33,8 +33,7 @@ use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
     Action, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
-    ResourceProvider, RetryPolicy,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, RetryPolicy,
 };
 
 use crate::action::SettingFlag;
@@ -1251,8 +1250,9 @@ fn settings_resource(model: &TubeModel) -> Resource {
     settings
 }
 
-impl ResourceProvider for crate::app::TubeApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::TubeApp {
+    pub fn publish_resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut resources = provide_resources(self.model_ref());
         if let Some(app) = resources.first_mut() {
             #[cfg(feature = "grayjay-sync")]

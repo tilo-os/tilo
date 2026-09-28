@@ -10,10 +10,10 @@ fn main() -> Result<()> {
         .document("so.tilo.word-processor", "tab:0000000000000001")
         .context("Writer record missing")?;
     let doc = automerge::AutoCommit::load(&bytes)?;
-    let model = qdoc::model::open(&doc, &automerge::ROOT)?;
-    let text = qdoc::model::blocks_in_order(&doc, &model)
+    let model = tilo_doc::model::open(&doc, &automerge::ROOT)?;
+    let text = tilo_doc::model::blocks_in_order(&doc, &model)
         .iter()
-        .filter_map(|id| qdoc::model::block_text(&doc, &model, id))
+        .filter_map(|id| tilo_doc::model::block_text(&doc, &model, id))
         .collect::<Vec<_>>();
     println!(
         "{}",

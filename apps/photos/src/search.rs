@@ -664,7 +664,7 @@ mod tests {
         PhotoLibrary, PhotoLocation,
     };
     use tilo_actions::ActionAddress;
-    use tilo_actions::ResourceProvider;
+
     use ui::search::SearchProvider;
     use ui::search::testing::assert_late_hit_reachable;
 
@@ -731,7 +731,7 @@ mod tests {
                     .unwrap_or_else(|| panic!("missing canonical search hit for {query}"));
                 let address = hit.action_address().unwrap();
                 let resource = PhotosResources
-                    .resource(&doc, &address.resource)
+                    .publish_resource(&doc, &address.resource)
                     .unwrap_or_else(|| panic!("{query} hit points outside the resource tree"));
                 assert!(
                     resource
@@ -774,7 +774,7 @@ mod tests {
                     .unwrap_or_else(|| panic!("missing timeline search result for {query}"));
                 assert_eq!(address.action, "open");
                 let resource = PhotosResources
-                    .resource(&doc, &address.resource)
+                    .publish_resource(&doc, &address.resource)
                     .expect("search must resolve the exact timeline resource");
                 assert!(resource.actions.iter().any(|action| action.id == "open"));
             }
@@ -840,7 +840,7 @@ mod tests {
         assert_eq!(page.results.len(), 1);
         let address = page.results[0].action_address().unwrap();
         let resource = PhotosResources
-            .resource(&doc, &address.resource)
+            .publish_resource(&doc, &address.resource)
             .expect("search address resolves through the canonical provider");
         assert!(
             resource
@@ -947,7 +947,7 @@ mod tests {
                 "search activation must not mutate membership"
             );
             let resource = PhotosResources
-                .resource(&doc, &address.resource)
+                .publish_resource(&doc, &address.resource)
                 .expect("the late stable album id resolves lazily");
             assert!(resource.actions.iter().any(|action| action.id == "open"));
         }
@@ -1067,7 +1067,7 @@ mod tests {
         let after = open_doc("after.png");
         assert!(
             PhotosResources
-                .resources(&after)
+                .publish_resources(&after)
                 .iter()
                 .all(|resource| resource.id.0 != address.resource)
         );

@@ -2,16 +2,16 @@
 //! door a model, a script or the palette uses — restores the document as it
 //! was, formatting included.
 
-use qdoc_rich_text::RichText;
-use qdoc_rich_text::action::{MarkVal, RegionKind, RichTextAction, Span};
+use tilo_document::RichText;
+use tilo_document::action::{MarkVal, RegionKind, RichTextAction, Span};
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::Invoke;
 use word_processor::framework::WordProcessorApp;
 
-fn snapshot(app: &TestApp<WordProcessorApp>) -> qdoc::DocSnapshot {
+fn snapshot(app: &TestApp<WordProcessorApp>) -> tilo_doc::DocSnapshot {
     app.read_document(|doc| {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::materialize(doc, &c)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &c)
     })
 }
 

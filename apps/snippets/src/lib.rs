@@ -45,6 +45,7 @@ pub mod draw;
 pub mod expand;
 pub mod highlight;
 pub mod model;
+pub mod resource;
 pub mod search_provider;
 pub mod seed;
 
@@ -85,3 +86,4 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
 mod framework_history_tests;
 
 pub mod framework_history;
+pub use resource::{Snippets, SnippetsShell, launch_spec};

@@ -126,6 +126,64 @@ impl PlayerOperation {
     }
 }
 
+/// A publication context with no open media — used by
+/// [`crate::resource::VideoPlayer`] for `local_operations` / `children` when
+/// the live decoder state is not available.
+pub fn empty_resource_ctx() -> PlayerResourceCtx<'static> {
+    PlayerResourceCtx {
+        title: "Video Player",
+        media: MediaAvailability {
+            has_media: false,
+            source_id: None,
+            media_ref: None,
+            can_control_transport: true,
+        },
+        settings: PlaybackSettingsState {
+            autoplay: true,
+            loop_enabled: false,
+            rate: 1.0,
+        },
+        audio_tracks: &[],
+        subtitle_tracks: &[],
+        chapters: &[],
+        library: LocalLibraryState::default(),
+    }
+}
+
+/// Seed a document with `state` so [`resources`] can rebuild the shared
+/// playlist / annotation subtree for `Resource::children`.
+pub fn doc_from_library(state: &crate::shared::SharedLibrary) -> AutoCommit {
+    use tilo_actions::Action;
+    let mut doc = AutoCommit::new();
+    for playlist in &state.playlists {
+        let _ = SharedAction::CreatePlaylist {
+            id: playlist.id.clone(),
+            name: playlist.name.clone(),
+        }
+        .apply(&mut doc);
+    }
+    for item in &state.items {
+        let _ = SharedAction::AddPlaylistItem {
+            id: item.id.clone(),
+            playlist_id: item.playlist_id.clone(),
+            media_ref: item.media_ref.clone(),
+            title: item.title.clone(),
+            position: item.position,
+        }
+        .apply(&mut doc);
+    }
+    for annotation in &state.annotations {
+        let _ = SharedAction::CreateAnnotation {
+            id: annotation.id.clone(),
+            media_ref: annotation.media_ref.clone(),
+            time_ms: annotation.time_ms,
+            text: annotation.text.clone(),
+        }
+        .apply(&mut doc);
+    }
+    doc
+}
+
 /// State captured while publishing the player resource tree.
 ///
 pub struct PlayerResourceCtx<'a> {

@@ -54,7 +54,7 @@ tilo-seal = { path = "../../system/tilo-seal" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 word-processor = {path="../../../apps/word-processor"}
 chat = {path="../../../apps/chat",default-features=false}
-qdoc = {path="../../doc/qdoc"}
+tilo-doc = {path="../../doc/tilo-doc"}
 workspace-hack = { version = "0.1" }
 [dev-dependencies]
 # The browser owner's side of hosted enrollment, driven against the Store.

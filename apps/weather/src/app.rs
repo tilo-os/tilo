@@ -91,7 +91,7 @@ pub struct WeatherApp {
     resource_refresh_invocation: Option<tilo_actions::InvocationId>,
     resource_refresh_failure: Option<String>,
     resource_refresh_tickets: std::collections::HashSet<u64>,
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// Last document state folded into the render model. `ActionHost` updates
     /// this watermark eagerly; palette/agent actions are adopted on sync.
     doc_heads: Vec<ChangeHash>,
@@ -159,6 +159,20 @@ impl WeatherApp {
         self.doc_heads = doc.get_heads();
     }
 
+    /// Show the saved places the framework resource already holds.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::model::WeatherModel) {
+        let mut persisted = state.clone();
+        self.core.borrow_mut().adopt_saved_places(&mut persisted);
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Weather>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
     /// Adopt an action/document change while retaining device-local provider
     /// cache data. Forecasts and air-quality readings are never collaborative
     /// records, but survive a durable location update in this process.
@@ -218,7 +232,7 @@ impl WeatherApp {
             resource_refresh_invocation: None,
             resource_refresh_failure: None,
             resource_refresh_tickets: std::collections::HashSet::new(),
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             doc_heads: Vec::new(),
         }
     }

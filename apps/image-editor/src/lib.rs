@@ -30,6 +30,7 @@ pub mod app;
 pub mod doc;
 pub mod engine;
 pub mod model;
+pub mod resource;
 pub mod search;
 pub use app::ImageEditorApp;
 use ui::widget::Widget;
@@ -66,3 +67,4 @@ pub fn write_shot_image(path: &std::path::Path) -> Result<(), image::ImageError>
     }
     image.save(path)
 }
+pub use resource::{ImageEditor, ImageEditorShell, launch_spec, standalone_launch};

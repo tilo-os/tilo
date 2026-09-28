@@ -68,7 +68,26 @@ fn configure_app(app: &mut ui::App) {
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
+fn wants_standalone(args: impl Iterator<Item = String>) -> bool {
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--data-dir" => {
+                let _ = args.next();
+            }
+            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => return true,
+            flag if flag.starts_with('-') => {}
+            _ => {}
+        }
+    }
+    false
+}
+
 pub fn main() {
+    if !wants_standalone(std::env::args().skip(1)) {
+        ui::framework::run::<logs::LogsShell>();
+        return;
+    }
     ui::launch::run_or_exit(&launch_spec(logs::app_root));
 }
 

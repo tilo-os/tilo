@@ -132,7 +132,7 @@ type ScrollCell = Rc<Cell<(f32, f32)>>;
 pub struct TubeApp {
     model: TubeModel,
     /// Canonical document-operation dispatcher used by visible affordances.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// History has a different replication boundary from collaborative Tube
     /// state: it is owner-local and only crosses an approved device-sync link.
     history_actions: ui::ActionHost,
@@ -292,7 +292,7 @@ impl TubeApp {
         }
         Self {
             model,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             history_actions: ui::ActionHost::new(),
             history_store,
             bus: action::new_bus(),
@@ -788,6 +788,39 @@ impl TubeApp {
             });
         }
         applied
+    }
+
+    /// Show the likes, queue, subscriptions and settings the framework resource holds.
+    /// An empty projection does not wipe a library that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::TubeShared) {
+        let on = |map: &std::collections::BTreeMap<String, bool>| -> Vec<String> {
+            map.iter()
+                .filter(|(_, enabled)| **enabled)
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        let liked = on(&state.likes);
+        let queue = on(&state.queue);
+        let subscriptions = on(&state.subscriptions);
+        if liked.is_empty()
+            && queue.is_empty()
+            && subscriptions.is_empty()
+            && !self.model.liked.is_empty()
+        {
+            return;
+        }
+        self.model.liked = liked;
+        self.model.queue = queue;
+        self.model.subscriptions = subscriptions;
+        self.model.settings = state.settings.clone();
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Tube>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     /// `--shots` builder: start on an EMPTY Home in its loading state, so a still
@@ -2404,10 +2437,10 @@ impl Widget for TubeApp {
 
     /// Publish the open-resource tree (the playing video + its comments) so the
     /// host's Ctrl+K action palette scopes to it. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [``]() impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        Self::publish_resources(self, doc)
     }
 
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
@@ -3034,7 +3067,7 @@ mod tests {
         let intent = app
             .take_control_invocation()
             .expect("custom control emitted an action-native invocation");
-        let resources = <TubeApp as tilo_actions::ResourceProvider>::resources(app, doc);
+        let resources = TubeApp::publish_resources(app, doc);
         let spec = tilo_actions::door::resolve(&resources, &intent.address)
             .expect("fresh resource surface resolves the control address");
         let encoded = spec
@@ -3095,7 +3128,7 @@ mod tests {
                     .is_empty(),
                 "the local field is wiped once its Secret argument is queued"
             );
-            let resources = <TubeApp as tilo_actions::ResourceProvider>::resources(&app, &doc);
+            let resources = TubeApp::publish_resources(&app, &doc);
             let spec = tilo_actions::door::resolve(&resources, &invocation.address)
                 .expect("fresh resource tree resolves Pair");
             assert_eq!(spec.kind, tilo_actions::OperationKind::Effect);

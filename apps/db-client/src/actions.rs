@@ -39,7 +39,9 @@
 //! `Text` at `root["editor"]["sql"]` (see [`crate::doc::EditorDoc`]). Flowing
 //! text takes the toolkit's CRDT-native text path *instead of* the action
 //! executor: the `Text` already replicates and undoes for free, so re-encoding a
-//! keystroke as an action would only duplicate that.
+//! keystroke as an action would only duplicate that. Replacing the whole
+//! buffer — a snippet or an accessibility set-value — is
+//! [`DbAction::ReplaceEditorSql`], which splices that same `Text`.
 //!
 //! ## Presentation is never an action
 //!
@@ -90,6 +92,9 @@ pub enum DbAction {
     },
     /// Hide a saved query while retaining its stable CRDT row as a tombstone.
     RemoveQuery { id: String },
+    /// Replace the shared SQL buffer. Keystrokes stay on the text object;
+    /// this is a snippet load or an accessibility set-value.
+    ReplaceEditorSql { sql: String },
 }
 
 impl Action for DbAction {
@@ -170,6 +175,9 @@ impl Action for DbAction {
                 {
                     put_if_changed(doc, &row, "removed", true);
                 }
+            }
+            DbAction::ReplaceEditorSql { sql } => {
+                crate::doc::EditorDoc::set_sql(doc, sql);
             }
         }
         Ok(())
@@ -302,6 +310,25 @@ pub fn known_engine(engine: &str) -> bool {
     )
 }
 
+// Inherent resource publication (was ResourceProvider). The framework door is
+// `tilo_resource::publish`; these keep Widget::resources / exact-id resolve
+// available to tests and the standalone shot path.
+impl crate::app::DbClientApp {
+    pub fn publish_resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        use ui::widget::Widget;
+        self.resources(doc)
+    }
+
+    pub fn publish_resource(
+        &self,
+        doc: &automerge::AutoCommit,
+        id: &str,
+    ) -> Option<tilo_actions::Resource> {
+        use ui::widget::Widget;
+        self.resource(doc, id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,7 +385,7 @@ mod tests {
             );
         for id in addressed {
             resources.push(
-                app.resource(doc, &id)
+                app.publish_resource(doc, &id)
                     .unwrap_or_else(|| panic!("the app resolves {id}")),
             );
         }

@@ -126,8 +126,8 @@ fn writer_blocks(owner: &RuntimeOwner) -> usize {
         .document(WRITER, RECORD)
         .unwrap();
     let document = ui::automerge::AutoCommit::load(&bytes).unwrap();
-    let model = qdoc::model::open(&document, &ui::automerge::ROOT).unwrap();
-    qdoc::model::blocks_in_order(&document, &model).len()
+    let model = tilo_doc::model::open(&document, &ui::automerge::ROOT).unwrap();
+    tilo_doc::model::blocks_in_order(&document, &model).len()
 }
 
 fn committed_steps(owner: &RuntimeOwner, invocation: uuid::Uuid) -> Vec<String> {

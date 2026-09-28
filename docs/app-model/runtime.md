@@ -124,7 +124,7 @@ respects the workspace ACLs.
 Keep what your app owns as versioned resources: the document your widgets
 bind to, changed only through actions, so its history replays, merges and
 undoes. Files in `.docx`, `.odt` or `.md` are projections of such a resource
-(`qdoc-codecs`), not where it is stored.
+(`tilo-doc-codecs`), not where it is stored.
 
 Some bytes are not a resource: a photograph you imported, an image placed in
 a document, a mail attachment. Treat those as *binary inputs*. Store them in

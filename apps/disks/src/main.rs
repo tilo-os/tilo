@@ -108,7 +108,32 @@ fn live_root() -> Box<dyn Widget> {
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
+fn wants_standalone(args: impl Iterator<Item = String>) -> bool {
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--data-dir" => {
+                let _ = args.next();
+            }
+            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => return true,
+            flag if flag.starts_with('-') => {}
+            _ => {}
+        }
+    }
+    false
+}
+
 pub fn main() {
+    if !wants_standalone(std::env::args().skip(1)) {
+        // Live mode: probe the real system (lsblk + smartctl), same as
+        // [`live_root`]. Set once before the framework host starts threads.
+        // SAFETY: set once at startup before any threads read the environment.
+        unsafe {
+            std::env::set_var("DISKS_LIVE", "1");
+        }
+        ui::framework::run::<disks::DisksShell>();
+        return;
+    }
     ui::launch::run_or_exit(
         &LaunchSpec::new("so.tilo.disks", live_root)
             .shot_handler(shot_handler)

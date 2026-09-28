@@ -40,6 +40,7 @@ pub mod framework_history;
 #[cfg(test)]
 mod framework_history_tests;
 mod preferences;
+pub mod resource;
 pub mod search;
 pub mod shared;
 pub use app::{PlayerApp, source_for_path};
@@ -83,3 +84,4 @@ fn media_handoff_transport_env() -> Option<(u64, bool)> {
 pub fn app_root_for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Box<dyn Widget> {
     Box::new(PlayerApp::for_shot(open, scenario))
 }
+pub use resource::{VideoPlayer, VideoPlayerShell, launch_spec as framework_launch_spec};

@@ -644,7 +644,7 @@ pub(crate) fn capture(make: impl FnOnce() -> Option<CommitCapture>) {
 
 /// Block texts of a Writer document, depth first in document order.
 pub(crate) fn writer_blocks(bytes: &[u8]) -> Vec<(String, String)> {
-    fn walk(blocks: &[qdoc::BlockView], out: &mut Vec<(String, String)>) {
+    fn walk(blocks: &[tilo_doc::BlockView], out: &mut Vec<(String, String)>) {
         for block in blocks {
             out.push((block.id.clone(), block.text.clone()));
             walk(&block.children, out);
@@ -654,11 +654,11 @@ pub(crate) fn writer_blocks(bytes: &[u8]) -> Vec<(String, String)> {
     let Ok(doc) = automerge::AutoCommit::load(bytes) else {
         return out;
     };
-    let Ok(containers) = qdoc::model::open(&doc, &automerge::ROOT) else {
+    let Ok(containers) = tilo_doc::model::open(&doc, &automerge::ROOT) else {
         return out;
     };
     walk(
-        &qdoc::model::materialize(&doc, &containers).blocks,
+        &tilo_doc::model::materialize(&doc, &containers).blocks,
         &mut out,
     );
     out

@@ -18,7 +18,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
-use qdoc_rich_text::{RichText, RichTextAction};
+use tilo_document::{RichText, RichTextAction};
 use ui::doc::{put_if_changed, put_text_diffed};
 use ui::widget::BlockContent;
 use ui::widget::marks::Mark;
@@ -765,7 +765,7 @@ mod tests {
 
     #[test]
     fn a_page_body_is_rich_text_edited_by_rich_text_actions() {
-        use qdoc_rich_text::action::RegionKind;
+        use tilo_document::action::RegionKind;
         let mut doc = AutoCommit::new();
         let id = page(&mut doc, "P");
         assert!(

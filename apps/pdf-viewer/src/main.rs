@@ -99,6 +99,10 @@ fn shot(args: &LaunchArgs) -> Result<(), LaunchError> {
 }
 
 pub fn main() {
+    if !pdf_viewer::standalone_launch() {
+        ui::framework::run::<pdf_viewer::PdfViewerShell>();
+        return;
+    }
     ui::launch::run_or_exit(
         &LaunchSpec::new_with_args(APP_ID, build_widget)
             .shot_root(build_widget)

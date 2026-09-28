@@ -340,7 +340,7 @@ impl SlidesDoc {
         let Ok(body) = doc.put_object(element, "body", ObjType::Map) else {
             return;
         };
-        let written = qdoc_rich_text::RichText::initialize_under(doc, &body).is_ok()
+        let written = tilo_document::RichText::initialize_under(doc, &body).is_ok()
             && tilo_rich_text::fill_under(doc, &body, blocks).is_ok();
         if !written {
             tracing::warn!("text element body could not be written");
@@ -382,9 +382,10 @@ impl SlidesDoc {
         let Some((_, containers)) = Self::element_body_at(doc, slide_idx, elem_id) else {
             return false;
         };
-        let blocks = qdoc::model::materialize_region(doc, &containers, qdoc::model::Region::Body);
-        let mut ids = qdoc::model::IdGen::new(doc.get_actor().to_hex_string());
-        let mut dm = qdoc::model::DocMut {
+        let blocks =
+            tilo_doc::model::materialize_region(doc, &containers, tilo_doc::model::Region::Body);
+        let mut ids = tilo_doc::model::IdGen::new(doc.get_actor().to_hex_string());
+        let mut dm = tilo_doc::model::DocMut {
             doc,
             c: &containers,
             ids: &mut ids,
@@ -685,7 +686,8 @@ impl SlidesDoc {
         let Some((_, containers)) = Self::element_body_at(doc, slide_idx, elem_id) else {
             return;
         };
-        let blocks = qdoc::model::materialize_region(doc, &containers, qdoc::model::Region::Body);
+        let blocks =
+            tilo_doc::model::materialize_region(doc, &containers, tilo_doc::model::Region::Body);
         let mut at = char_pos;
         let Some((block, offset)) = blocks.iter().enumerate().find_map(|(index, block)| {
             let len = block.text.chars().count();
@@ -698,8 +700,8 @@ impl SlidesDoc {
         }) else {
             return;
         };
-        let mut ids = qdoc::model::IdGen::new(doc.get_actor().to_hex_string());
-        let mut dm = qdoc::model::DocMut {
+        let mut ids = tilo_doc::model::IdGen::new(doc.get_actor().to_hex_string());
+        let mut dm = tilo_doc::model::DocMut {
             doc,
             c: &containers,
             ids: &mut ids,
@@ -717,12 +719,12 @@ impl SlidesDoc {
         doc: &AutoCommit,
         slide_idx: usize,
         elem_id: &str,
-    ) -> Option<(ObjId, qdoc::model::Containers)> {
+    ) -> Option<(ObjId, tilo_doc::model::Containers)> {
         let element = Self::element_obj(doc, slide_idx, elem_id)?;
         let Ok(Some((Value::Object(ObjType::Map), body))) = doc.get(&element, "body") else {
             return None;
         };
-        let containers = qdoc::model::open(doc, &body).ok()?;
+        let containers = tilo_doc::model::open(doc, &body).ok()?;
         Some((body, containers))
     }
 
@@ -992,13 +994,13 @@ mod tests {
         SlidesDoc::upgrade(&mut doc);
         doc.commit();
         let body = SlidesDoc::element_body(&doc, "slide-1", "body").unwrap();
-        let state = qdoc_rich_text::RichText::read_under(&doc, &body).unwrap();
+        let state = tilo_document::RichText::read_under(&doc, &body).unwrap();
         let block = state.body().id_at(0).unwrap().to_owned();
         crate::actions::SlidesAction::EditElementText {
             slide_id: "slide-1".into(),
             element_id: "body".into(),
-            edit: qdoc_rich_text::RichTextAction::SpliceText {
-                region: qdoc_rich_text::action::RegionKind::Body,
+            edit: tilo_document::RichTextAction::SpliceText {
+                region: tilo_document::action::RegionKind::Body,
                 block,
                 at: 0,
                 del: 0,
@@ -1015,7 +1017,7 @@ mod tests {
             crate::actions::SlidesAction::EditElementText {
                 slide_id: "slide-1".into(),
                 element_id: "gone".into(),
-                edit: qdoc_rich_text::RichTextAction::AppendParagraph { text: "x".into() },
+                edit: tilo_document::RichTextAction::AppendParagraph { text: "x".into() },
             }
             .apply(&mut doc)
             .is_err()

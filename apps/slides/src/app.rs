@@ -862,6 +862,9 @@ pub struct SlidesApp {
     /// through it as a [`SlidesAction`](crate::actions::SlidesAction); flowing
     /// text edits stay on the native CRDT splice path (see [`crate::actions`]).
     actions: ui::ActionHost,
+    /// Hosted by [`crate::resource::SlidesShell`]: edits go through the
+    /// framework dispatcher. Standalone / shots keep [`Self::actions`].
+    framework: Option<ui::framework::Dispatcher<crate::actions::SlidesDeck>>,
 
     /// Responsive slide-rail flap. On a wide window the rail is docked beside
     /// the canvas; on a narrow window it collapses to an overlay flap behind a
@@ -1078,6 +1081,7 @@ impl SlidesApp {
             text_edit_box: Rect::ZERO,
             needs_commit: false,
             actions: ui::ActionHost::new(),
+            framework: None,
             rail_flap: FlapState::open_when_docked(),
             inspector_flap: FlapState::open_when_docked(),
             inspector_breakpoint: INSPECTOR_BREAKPOINT,
@@ -1597,13 +1601,49 @@ impl SlidesApp {
     /// palette does. The in-memory deck mirror is reconciled from the document on
     /// the next `reload` / `sync`. Callers never also call [`Self::mark`] — that
     /// would double-record the undo boundary the host already records.
+    /// Take part in the framework: submit deck edits through its dispatcher.
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::actions::SlidesDeck>,
+    ) {
+        self.framework = Some(dispatcher);
+    }
+
+    /// Show the deck the framework resource holds.
+    /// An empty projection does not wipe a deck that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::actions::SlidesResourceCtx) {
+        if state.slides.is_empty() && !self.deck.slides.is_empty() {
+            return;
+        }
+        if state.slides.is_empty() {
+            return;
+        }
+        let slides: Vec<_> = state
+            .slides
+            .iter()
+            .map(|slide| slide.data.to_slide())
+            .collect();
+        if self.deck.title == state.deck_title && self.deck.slides == slides {
+            return;
+        }
+        self.deck.title = state.deck_title.clone();
+        self.deck.slides = slides;
+        self.search_provider.refresh(&self.deck);
+        self.bump_deck_revision();
+    }
+
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::SlidesAction) {
-        self.actions.dispatch_with_context(
-            doc,
-            crate::actions::SLIDES_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.slides", "Slides", action),
-        );
+        let context = tilo_actions::ActionContext::for_action("so.tilo.slides", "Slides", action);
+        if let Some(dispatcher) = &self.framework {
+            let _ = dispatcher.apply_now_with(doc, action, context);
+        } else {
+            self.actions.dispatch_with_context(
+                doc,
+                crate::actions::SLIDES_ACTION_TYPE,
+                action,
+                context,
+            );
+        }
         self.canonical_deck = doc
             .get(automerge::ROOT, "deck")
             .ok()
@@ -3883,11 +3923,10 @@ impl SlidesApp {
     /// blur the field.
     fn commit_title_edit(&mut self, doc: &mut AutoCommit) {
         if let Some(t) = self.title_input.take_dirty() {
-            SlidesDoc::set_title(doc, &t);
+            self.perform_action(doc, &crate::actions::set_deck_title_action(t));
         }
         self.editing_title = false;
         Widget::set_focus(&mut self.title_input, false);
-        self.mark();
         self.reload(doc);
     }
 
@@ -6300,14 +6339,14 @@ impl Widget for SlidesApp {
         if !self.canonical_matches(doc) {
             return Vec::new();
         }
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        Self::publish_resources(self, doc)
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         if !self.canonical_matches(doc) {
             return None;
         }
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        Self::publish_resource(self, doc, id)
     }
 
     /// Fold the deck's slides, elements, text and notes into the unified Ctrl+K

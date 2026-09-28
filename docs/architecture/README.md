@@ -11,17 +11,67 @@ CRDT state the system owns.
 
 **Applications own neither their pixels nor their persistent storage.**
 
-An app exports **resources** — a video, an ebook, a note, a file. Resources nest: an ebook
-contains annotations and bookmarks. For each it exports **actions**: CRUD on an
-annotation, turn-page on a book, seek on a video. Files are resources on their own; where
-the format-aware filesystem already understands a type, the app does not handle it.
+There is one resource / action / view model for every app. An app is a `ResourceApp`
+(`crates/sdk/tilo-app`): its state is a `tilo_resource::Resource`, its mutations are that
+resource's `Action` applied through the framework dispatcher, and its pixels are a view
+(`ViewCx` / `ResourceSurface`) that only reads resource state and submits actions. There
+is no second path — no hand-built `tilo_actions::Resource` tree for the same state, no
+private `AutoCommit` the widget mutates, no app-local action vocabulary that is not
+`Resource::Action`.
 
-A resource separately exports **views**: editor, reader, map, grid, calendar, timeline.
-A view has its own stable identity and human label, and names the actions that open or
-mount it. This is an explicit catalogue rather than a convention around an action called
-`open`: ordinary presentation actions such as toggling a sidebar never become composable
-views by accident. The same resource can therefore appear in several honest forms without
-being copied into several app-owned documents.
+### Three layers
+
+- **`tilo-resource`** — a `Resource` type: `read` state, one replayable `Action` type,
+  optional named `declarations()`, nested `children()`, optional named `views()`.
+  `publish()` is the only bridge from a resource type to the `tilo_actions::Resource` tree
+  the palette, agents, scripts and the shell door see.
+- **`tilo-actions`** — the protocol. `OperationKind::Document` replays into the CRDT.
+  `Effect` and `View` do not. The door refuses non-Document operations ("must be handled
+  by the owning application").
+- **`tilo-app`** — `ResourceApp` + `ViewCx`. Sync (Automerge, history, per-author undo,
+  collaboration) is on for every `ResourceApp`; an app does not implement its own sync
+  loop.
+
+### Nested resources
+
+A resource can contain another resource. A rich-text body inside Notes, Chat or Mail is a
+child resource (start with rich text), not a hand-rolled map that calls document mutations
+directly. `children()` and `publish()` expose the child so it has the same actions,
+permissions and history as a root resource.
+
+### Three action surfaces (kept separate)
+
+1. The `Action` enum is the replay format (`RichTextAction::SpliceText` stays an enum
+   variant, not a `#[action]` method).
+2. `declarations()` is the small named catalogue a person or agent invokes (set mark, set
+   style, insert block, new event). Do not declare every positional variant.
+3. `apply` / `group` stay the programmatic path for keystrokes and for grouping edits.
+
+`Effect` is only for work with no document delta: starting a sync job, showing a week,
+revealing a caret, opening a system file picker. Open/save of a file that lives in the
+shared filesystem is a document action on that file resource, not an effect. `View` stays
+local presentation (which week, where the caret is).
+
+### Sync and undo of outside consequences
+
+Collaborators sync the document actions (the CRDT). An external system (CalDAV, the shared
+filesystem) is a **projection** drained by an `Effect` that reads queues the document
+actions wrote. Peers replay those actions and converge; the Effect on each machine drains
+the queue — it is not itself the history, and Effects are not undoable (they have no
+heads).
+
+If an action's `apply` records an outside consequence in the document (outbox,
+`del_outbox`, a filesystem op queue), undo of that action is the **inverse document
+action run through `apply`**, so the compensating queue entry is recorded the same way.
+Inverse Automerge patches remain correct for pure CRDT actions with no outside
+consequence (a text splice). A shared file write and a calendar create are document
+actions, so they are undoable — including the compensating remote queue entry.
+
+### Views
+
+A resource can name more than one view (editor, reader) with a stable id. That catalogue
+is not an action called `open`. Ordinary presentation toggles never become composable
+views by accident.
 
 UI is a suggestion for presenting resources and actions, not the interface itself. An app
 can open a resource it never defined and it opens in the right application: URLs or
@@ -30,8 +80,9 @@ intents for everything, above and below file granularity.
 Displaying a resource is not destructive. Taking an action needs a permission, confirmed
 by the user by default.
 
-Code: `crates/collab/actions` — `resource.rs`, `action.rs`, `registry.rs`, `executor.rs`.
-Apps register; `shell` serves the result into search, the palette and the control socket.
+Code: `crates/sdk/tilo-resource` (`Resource`, `publish`), `crates/collab/actions`
+(protocol), `crates/sdk/tilo-app` (`ResourceApp`, `ViewCx`). Apps register; `shell` serves
+the published tree into search, the palette and the control socket.
 
 ## What follows
 
@@ -41,9 +92,9 @@ Apps register; `shell` serves the result into search, the palette and the contro
 - **Search is a system service.** Apps register a search provider and a renderer per
   resource type, so a hit opens the app at that position. See `search.md`.
 - **Undo, history, device sync and theming are system services.** One implementation, not
-  forty. Undo works from the document's Automerge history: each action records the heads
-  before and after it and who made it, and undo writes the inverse as a new change, so one
-  person's undo reverts their own action and keeps everyone else's concurrent edits.
+  forty. Per-author undo reverts through the inverse document action when the action
+  recorded an outside consequence, otherwise through Automerge inverse patches, so one
+  person's undo keeps everyone else's concurrent edits.
 - **Collaboration reduces to transport.** See `collaboration.md` and `rooms.md`.
 - **Anything reusable belongs in `ui`.** Tabs, presence, text handling. The toolkit sets
   presentation defaults and the user overrides them; the app does not.

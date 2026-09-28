@@ -16,12 +16,11 @@
 //!
 //! ## What is *not* an action
 //!
-//! * **External** — fetching / refreshing a feed over the network and parsing
-//!   its articles. Those are direct writes of network-derived content into the
-//!   store + document cache, not replayable mutations. Adding a subscription is
-//!   split accordingly: [`FeedsAction::AddSubscription`] creates the subscription
-//!   *record* (deterministic), then the app kicks a fetch to populate its real
-//!   title and articles (external).
+//! * **External** — the network fetch itself. The rows it lands in the shared
+//!   document are [`FeedsAction::UpsertFetched`], one batch per frame, so peers
+//!   replay the same articles and history can undo them. Adding a subscription
+//!   stays split: [`FeedsAction::AddSubscription`] creates the record, then the
+//!   fetch fills its title and articles through that batch action.
 //! * **Presentation** — which article is selected, scroll offsets, the active
 //!   filter, the responsive layout, and the add-subscription modal opening /
 //!   the typing inside it. Only the *commit* of the typed URL is the action.
@@ -40,12 +39,11 @@ use uuid::Uuid;
 
 use tilo_actions::{
     Action, ActionAddress, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider,
-    RetryPolicy,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, Resource, RetryPolicy,
 };
 
 use crate::doc::FeedsDoc;
-use crate::model::{Feed, FeedKind, Folder, Id, ReadSettings};
+use crate::model::{Article, Feed, FeedKind, Folder, Id, ReadSettings};
 
 /// Registry `type_id` for every Feeds action.
 pub const FEEDS_ACTION_TYPE: &str = "feeds.action";
@@ -176,6 +174,13 @@ pub enum FeedsAction {
     /// filter / target feed at authoring time and carried here, so `apply`
     /// needs no lookup and two replicas land identically).
     MarkAllRead { ids: Vec<String> },
+    /// One frame of a refresh: the feed and article rows the fetch produced.
+    /// The network job stays outside the document; these rows are the shared
+    /// state, so they replay and undo with the rest of the library.
+    UpsertFetched {
+        articles: Vec<Article>,
+        feeds: Vec<Feed>,
+    },
 }
 
 impl Action for FeedsAction {
@@ -273,6 +278,14 @@ impl Action for FeedsAction {
                     if let Ok(uuid) = id.parse::<Id>() {
                         FeedsDoc::set_read(doc, uuid, true);
                     }
+                }
+            }
+            FeedsAction::UpsertFetched { articles, feeds } => {
+                for feed in feeds {
+                    FeedsDoc::upsert_feed(doc, feed);
+                }
+                for article in articles {
+                    FeedsDoc::upsert_article(doc, article);
                 }
             }
         }
@@ -871,12 +884,13 @@ pub fn resolve_resource(ctx: &FeedsResourceCtx, id: &str) -> Option<Resource> {
     })
 }
 
-impl ResourceProvider for crate::app::FeedsApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::FeedsApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.feeds_resource_ctx(), doc)
     }
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
         resolve_resource(&self.feeds_resource_ctx_for(id)?, id)
     }
 }
@@ -1243,7 +1257,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: seeded().1,
         registry: registry(),
-        resources: |doc| ResourceProvider::resources(&app_for(doc), doc),
+        resources: |doc| app_for(doc).publish_resources(doc),
         palette: ["New folder", "Rename folder", "Unsubscribe"],
         replay: [
             star_article => |doc| {

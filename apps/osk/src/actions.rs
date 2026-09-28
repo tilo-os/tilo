@@ -57,9 +57,9 @@ impl Preference {
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct SetPreference {
-    pub value: Preference,
-    pub draft: Option<String>,
+pub struct SetPreference {
+    pub(crate) value: Preference,
+    pub(crate) draft: Option<String>,
 }
 impl Action for SetPreference {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {

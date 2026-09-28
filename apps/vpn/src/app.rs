@@ -420,7 +420,7 @@ pub struct VpnApp {
     /// through this host, which brackets the undo boundary, encodes it, and
     /// applies it via the executor so it replays byte-identically on peers — the
     /// same path the Ctrl+K palette takes.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// One-shot context supplied by the shell's typed tool service. It is
     /// consumed only after the persisted vault has loaded, so a profile route
     /// can select the real NetworkManager-backed connection by name.
@@ -520,7 +520,7 @@ impl VpnApp {
             local_credentials,
             local_details,
             last_reconcile: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             pending_tool_intent: None,
             demo_mode,
             compact_detail_open: false,
@@ -566,7 +566,11 @@ impl VpnApp {
     fn refresh(&mut self, doc: &mut AutoCommit) {
         if !self.seeded {
             if VpnDoc::is_empty(doc) && !self.vault.connections.is_empty() {
-                VpnDoc::write_vault(doc, &self.vault);
+                if self.actions.is_hosted() {
+                    self.publish_vault(doc);
+                } else {
+                    VpnDoc::write_vault(doc, &self.vault);
+                }
             }
             self.seeded = true;
         }
@@ -1264,6 +1268,53 @@ impl VpnApp {
     #[cfg(test)]
     pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
+    }
+
+    /// Show the saved tunnels the framework resource already holds.
+    /// An empty projection does not wipe tunnels that have not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::model::Vault) {
+        if state.connections.is_empty() && !self.vault.connections.is_empty() {
+            return;
+        }
+        self.vault.connections.clone_from(&state.connections);
+        self.vault.tor_global = state.tor_global;
+        if self
+            .vault
+            .selected
+            .is_some_and(|id| self.vault.get(id).is_none())
+        {
+            self.vault.selected = None;
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Vpn>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    fn publish_vault(&mut self, doc: &mut AutoCommit) {
+        let tor_global = self.vault.tor_global;
+        for connection in self.vault.connections.clone() {
+            let action = actions::add_connection_action(connection);
+            self.actions.dispatch_with_context(
+                doc,
+                VPN_ACTION_TYPE,
+                &action,
+                tilo_actions::ActionContext::for_action("so.tilo.vpn", "VPN", &action),
+            );
+        }
+        if tor_global {
+            let action = actions::set_tor_global_action(true);
+            self.actions.dispatch_with_context(
+                doc,
+                VPN_ACTION_TYPE,
+                &action,
+                tilo_actions::ActionContext::for_action("so.tilo.vpn", "VPN", &action),
+            );
+        }
     }
 
     // ---- layout ------------------------------------------------------

@@ -10,8 +10,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use qdoc_rich_text::{RichText, RichTextAction};
 use serde::{Deserialize, Serialize};
+use tilo_document::{RichText, RichTextAction};
 use tilo_rich_text::RichTextFieldViews;
 use ui::automerge::transaction::Transactable;
 use ui::automerge::{ObjId, ObjType, ROOT, ReadDoc, Value};
@@ -87,8 +87,8 @@ impl ResourceApp for Mail {
 fn text(app: &TestApp<Mail>) -> Vec<String> {
     app.read_document(|doc| {
         let root = body(doc).unwrap();
-        let c = qdoc::model::open(doc, &root).unwrap();
-        qdoc::model::materialize(doc, &c)
+        let c = tilo_doc::model::open(doc, &root).unwrap();
+        tilo_doc::model::materialize(doc, &c)
             .blocks
             .into_iter()
             .map(|block| block.text)

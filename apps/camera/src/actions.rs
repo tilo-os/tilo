@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider,
+    OperationKind, Resource,
 };
 
 use crate::doc;
@@ -834,12 +834,13 @@ pub fn resolve_resource(ctx: &CameraResourceCtx, doc: &AutoCommit, id: &str) -> 
         .and_then(|item| (id == capture_resource_id(item)).then(|| capture_resource(item)))
 }
 
-impl ResourceProvider for crate::app::CameraApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::CameraApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.camera_resource_ctx(), doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         self.resolve_camera_resource(doc, id)
     }
 }

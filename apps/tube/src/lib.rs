@@ -54,6 +54,7 @@ pub mod history_store;
 pub mod images;
 pub mod model;
 pub mod recommend;
+pub mod resource;
 pub mod sample;
 pub mod screens;
 pub mod search_type;
@@ -155,3 +156,4 @@ mod tests {
         }
     }
 }
+pub use resource::{Tube, TubeShared, TubeShell, launch_spec, standalone_launch};

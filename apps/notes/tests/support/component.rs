@@ -180,7 +180,7 @@ pub fn close_driver(driver: &mut ui::headless::Driver) {
 pub fn edit_body(
     doc: &mut automerge::AutoCommit,
     page: notes::PageId,
-    edit: qdoc_rich_text::RichTextAction,
+    edit: tilo_document::RichTextAction,
 ) {
     notes::doc::NotesDoc::edit_page_body(doc, page, &edit).unwrap();
 }
@@ -200,8 +200,8 @@ pub fn replace_block_text(
     edit_body(
         doc,
         page,
-        qdoc_rich_text::RichTextAction::SpliceText {
-            region: qdoc_rich_text::action::RegionKind::Body,
+        tilo_document::RichTextAction::SpliceText {
+            region: tilo_document::action::RegionKind::Body,
             block: block.to_owned(),
             at: 0,
             del: old.chars().count(),
@@ -215,7 +215,7 @@ pub fn remove_block(doc: &mut automerge::AutoCommit, page: notes::PageId, block:
     edit_body(
         doc,
         page,
-        qdoc_rich_text::RichTextAction::RemoveBlocks {
+        tilo_document::RichTextAction::RemoveBlocks {
             blocks: vec![block.to_owned()],
         },
     );

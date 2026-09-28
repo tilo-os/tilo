@@ -60,6 +60,7 @@ pub mod library;
 mod native_blocker;
 mod page_menu;
 pub mod private_window;
+pub mod resource;
 pub mod search_provider;
 pub mod session;
 pub mod settings;
@@ -79,3 +80,4 @@ mod capabilities;
 pub fn app_root() -> BrowserWidget {
     BrowserWidget::new()
 }
+pub use resource::{Browser, BrowserShell, launch_spec as framework_launch_spec};

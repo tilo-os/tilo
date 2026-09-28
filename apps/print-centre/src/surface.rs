@@ -30,7 +30,7 @@ type El = Box<dyn Widget>;
 /// remain local because they talk to CUPS/SANE and portals on this machine;
 /// publishing them still lets the shell, search, and a collaborating agent
 /// discover the real controls and receive an invocation receipt.
-const PRINT_CENTRE_OPERATION: &str = "print-centre.operation";
+pub(crate) const PRINT_CENTRE_OPERATION: &str = "print-centre.operation";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DemoScenario {
@@ -362,7 +362,7 @@ fn centered_page(content: El, max_width: f32) -> El {
 fn scanned_document_pdf(pages: &[ScannedPage]) -> Vec<u8> {
     let pages = pages
         .iter()
-        .map(|page| qdoc_pdf::ScannedPdfPage {
+        .map(|page| tilo_doc_pdf::ScannedPdfPage {
             width: page.width,
             height: page.height,
             rgb: page
@@ -373,7 +373,7 @@ fn scanned_document_pdf(pages: &[ScannedPage]) -> Vec<u8> {
             recognized_text: page.recognized_text.clone().unwrap_or_default(),
         })
         .collect::<Vec<_>>();
-    qdoc_pdf::render_scanned_pdf(&pages)
+    tilo_doc_pdf::render_scanned_pdf(&pages)
 }
 
 fn save_scanned_page(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
@@ -396,7 +396,7 @@ fn action(id: &str, label: &str) -> El {
     )
 }
 
-fn resource_action(
+pub(crate) fn resource_action(
     id: &str,
     label: &str,
     kind: OperationKind,
