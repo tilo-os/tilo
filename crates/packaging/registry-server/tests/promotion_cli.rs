@@ -42,6 +42,7 @@ fn collect_first_party_noop_and_bounds_are_enforced_without_a_signing_key() {
                 pubkey_hex: publisher_hex.clone(),
                 can_add_new: true,
                 note: "first party".into(),
+                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
             }],
         })
         .unwrap();

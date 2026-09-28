@@ -9,6 +9,8 @@
 //!                            # / delete entries whose stored
 //!                            # publisher_pubkey_hex matches theirs
 //! note = "acme software"     # free-form; not signed
+//! namespaces = ["com.acme"]  # verified reverse-DNS prefixes its package
+//!                            # ids must start with; `["so.tilo"]` if absent
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -28,9 +30,25 @@ pub struct PublisherRow {
     /// covered by any signature.
     #[serde(default)]
     pub note: String,
+    /// Verified namespaces (`registry_types::namespace`) this publisher's
+    /// package ids must lie in. Rows written before namespaces existed are
+    /// Tilo's own publishers, so an absent list means `so.tilo`.
+    #[serde(default = "default_namespaces")]
+    pub namespaces: Vec<String>,
+}
+
+fn default_namespaces() -> Vec<String> {
+    vec![registry_types::namespace::TILO_NAMESPACE.to_owned()]
 }
 
 impl PublisherRow {
+    /// Whether this publisher may name a package `package_id`.
+    pub fn owns_package_id(&self, package_id: &str) -> bool {
+        self.namespaces
+            .iter()
+            .any(|namespace| registry_types::namespace::namespace_owns(namespace, package_id))
+    }
+
     /// Parse the hex pubkey into raw bytes.
     ///
     /// # Errors
@@ -157,6 +175,7 @@ mod tests {
                 pubkey_hex: "aa".repeat(32),
                 can_add_new: true,
                 note: "acme".into(),
+                namespaces: vec!["com.acme".into()],
             });
             let s = al.to_toml().unwrap();
             let back = PublisherAllowlist::from_toml(&s).unwrap();
@@ -169,11 +188,13 @@ mod tests {
                 pubkey_hex: "aa".repeat(32),
                 can_add_new: false,
                 note: String::new(),
+                namespaces: default_namespaces(),
             }));
             assert!(al.upsert(PublisherRow {
                 pubkey_hex: "aa".repeat(32),
                 can_add_new: true,
                 note: "later".into(),
+                namespaces: default_namespaces(),
             }));
             assert_eq!(al.publishers.len(), 1);
             assert!(al.publishers[0].can_add_new);
@@ -186,9 +207,29 @@ mod tests {
                 pubkey_hex: "de".repeat(32),
                 can_add_new: true,
                 note: String::new(),
+                namespaces: default_namespaces(),
             });
             assert!(al.get(&[0xde; 32]).is_some());
             assert!(al.get(&[0x00; 32]).is_none());
+        }
+        // phase: rows_without_namespaces_are_tilo_publishers
+        {
+            let al = PublisherAllowlist::from_toml(&format!(
+                "[[publisher]]\npubkey_hex = \"{}\"\ncan_add_new = true\n",
+                "ab".repeat(32)
+            ))
+            .unwrap();
+            let row = &al.publishers[0];
+            assert_eq!(row.namespaces, ["so.tilo"]);
+            assert!(row.owns_package_id("so.tilo.notes"));
+            assert!(!row.owns_package_id("com.acme.notes"));
+            let acme = PublisherRow {
+                namespaces: vec!["com.acme".into(), "io.github.acme".into()],
+                ..row.clone()
+            };
+            assert!(acme.owns_package_id("io.github.acme.notes"));
+            assert!(!acme.owns_package_id("so.tilo.notes"));
+            assert!(!acme.owns_package_id("com.acmes.notes"));
         }
         // phase: all_pubkey_bytes_skips_bad_hex
         {
@@ -201,11 +242,13 @@ mod tests {
                         pubkey_hex: "zzzz".into(),
                         can_add_new: false,
                         note: String::new(),
+                        namespaces: default_namespaces(),
                     },
                     PublisherRow {
                         pubkey_hex: "11".repeat(32),
                         can_add_new: true,
                         note: String::new(),
+                        namespaces: default_namespaces(),
                     },
                 ],
             };
