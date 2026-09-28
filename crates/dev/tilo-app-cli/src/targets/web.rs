@@ -34,6 +34,8 @@ const WASM_TARGET: &str = "wasm32-unknown-unknown";
 const RUNTIME: &str = "crates/browser/tilo-browser-runtime";
 const DESKTOP: &str = "crates/browser/tilo-web-desktop";
 const FONTS: &str = "crates/sdk/ui-core/assets/fonts";
+const MOQ_BROWSER: &str = "scripts/moq-browser";
+const MOQ_LIBRARY: &str = "media-moq-library.mjs";
 
 /// The crate a web build compiles, and how to open the result.
 struct WebCrate {
@@ -81,6 +83,7 @@ pub(super) fn build(project: &Project, request: &TargetRequest) -> Result<BuildO
         std::fs::write(&stamp, &input).context("recording the bundled module")?;
     }
     copy_page_host(&project.sdk_root, &bundle)?;
+    bundle_moq_library(&project.sdk_root, &bundle)?;
     copy_fonts(&project.sdk_root, &bundle)?;
     std::fs::write(bundle.join("apps.json"), &web_crate.apps_json).context("writing apps.json")?;
     let build_json = serde_json::json!({
@@ -621,6 +624,47 @@ fn copy_page_host(sdk_root: &Path, bundle: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The live plane's `MoQ` library, bundled from the `@moq/net` pinned in
+/// `scripts/moq-browser/package-lock.json` as `build.sh` does; it is never
+/// committed. Without it `live-transport.mjs` cannot load and the page keeps
+/// to the relay fallback. Rebuilt only when the lock file is newer.
+fn bundle_moq_library(sdk_root: &Path, bundle: &Path) -> Result<()> {
+    let builder = sdk_root.join(MOQ_BROWSER);
+    let lock = builder.join("package-lock.json");
+    let output = bundle.join(MOQ_LIBRARY);
+    let modified = |path: &Path| std::fs::metadata(path).and_then(|metadata| metadata.modified());
+    if let (Ok(built), Ok(pinned)) = (modified(&output), modified(&lock))
+        && built >= pinned
+    {
+        return Ok(());
+    }
+    if !lock.is_file() {
+        eprintln!(
+            "[tilo-app] {} is missing; the bundle has no live plane",
+            lock.display()
+        );
+        return Ok(());
+    }
+    // A development copy may have been linked from the page host's sources.
+    if output.exists() {
+        std::fs::remove_file(&output)
+            .with_context(|| format!("replacing {}", output.display()))?;
+    }
+    run(
+        ProcessCommand::new("npm")
+            .args(["ci", "--no-audit", "--no-fund", "--silent"])
+            .current_dir(&builder),
+        "npm ci (scripts/moq-browser)",
+    )?;
+    run(
+        ProcessCommand::new("node")
+            .arg("build.mjs")
+            .arg(&output)
+            .current_dir(&builder),
+        "the MoQ library build",
+    )
 }
 
 fn runtime_module(name: &str) -> bool {
