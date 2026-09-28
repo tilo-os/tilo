@@ -1251,13 +1251,19 @@ impl DrmDispatchState {
             self.outputs_changed = true;
             self.push(BackendEvent::OutputsChanged);
         }
+        let (publisher_pid, publisher_start_ticks) =
+            match settings_store::hardware::publisher_identity() {
+                Ok(identity) => identity,
+                Err(error) => {
+                    tracing::debug!(%error, "DRM display: no publisher lease for the snapshot");
+                    return;
+                }
+            };
         let snapshot = settings_store::hardware::DisplayHardwareSnapshot {
             generated_unix_ms: unix_now_ms(),
             backend: "drm-kms-xrgb8888".into(),
-            publisher_pid: std::process::id(),
-            publisher_start_ticks:
-                settings_store::hardware::process_start_ticks(std::process::id())
-                    .unwrap_or_default(),
+            publisher_pid,
+            publisher_start_ticks,
             outputs,
             layout,
         };
@@ -2003,11 +2009,17 @@ impl DrmDispatchState {
     /// only the sections that apply. Failure is benign: no runtime
     /// directory in a test session, and the devices themselves are unaffected.
     fn publish_input_snapshot(&self) {
-        let pid = std::process::id();
+        let (publisher_pid, publisher_start_ticks) =
+            match settings_store::hardware::publisher_identity() {
+                Ok(identity) => identity,
+                Err(error) => {
+                    tracing::debug!(%error, "DRM input: no publisher lease for the snapshot");
+                    return;
+                }
+            };
         let snapshot = settings_store::hardware::InputHardwareSnapshot {
-            publisher_pid: pid,
-            publisher_start_ticks: settings_store::hardware::process_start_ticks(pid)
-                .unwrap_or_default(),
+            publisher_pid,
+            publisher_start_ticks,
             devices: self.devices.iter().map(input_device_snapshot).collect(),
         };
         if let Err(error) = snapshot.save() {
