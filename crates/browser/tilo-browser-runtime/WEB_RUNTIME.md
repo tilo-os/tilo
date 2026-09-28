@@ -392,6 +392,9 @@ agent.invokeAction(replyId, 'set-work', {state: 'done', did: 'Add note',
   `say` supplies the words of a message that has none yet. It writes the
   same `SetAgentWork` a delivered agent task writes, read back as `work`.
 
+`chat.html` in the dev output mounts both side by side; "Agent: answer new
+messages" replies to what the person wrote since the last answer.
+
 ## Loading from a registry
 
 The registry client (`crates/browser/web-registry-client`) verifies the

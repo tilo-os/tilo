@@ -1607,7 +1607,13 @@ impl ChatApp {
             return format!("{agent} \u{b7} agent");
         }
         let named = self.display_name(id);
-        if named != id && !named.trim().is_empty() {
+        // A name that happens to equal the id is still a name when the
+        // document stores it (a browser mount's author is both).
+        let stored = self
+            .users
+            .iter()
+            .any(|u| u.id == id && u.name.trim() == named.trim());
+        if (named != id || stored) && !named.trim().is_empty() {
             return named;
         }
         format!("Someone ({})", Self::unnamed_tag(id))
@@ -2852,7 +2858,10 @@ impl ChatApp {
                     .find(|message| message.id == id)
             })
             .ok_or("message no longer exists")?;
-        let agent = self.agent_authors.contains_key(&message.author)
+        // From the document, not the last projection: a reply this mount
+        // just posted is already the agent's.
+        let agent_name = ChatDoc::agent_authors(doc).remove(&message.author);
+        let agent = agent_name.is_some()
             || self
                 .users
                 .iter()
@@ -2862,7 +2871,7 @@ impl ChatApp {
             "channel": message.channel,
             "parent": message.parent,
             "author": message.author,
-            "authorName": self.display_name(&message.author),
+            "authorName": agent_name.unwrap_or_else(|| self.display_name(&message.author)),
             "agent": agent,
             "mine": self.is_me(&message.author),
             "ts": message.ts,
@@ -3666,8 +3675,14 @@ impl Widget for ChatApp {
 
     fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
         if participant.agent_task().is_some() {
+            let label = label.trim();
             self.participant_labels
-                .insert(participant.as_str().to_owned(), label.trim().to_owned());
+                .insert(participant.as_str().to_owned(), label.to_owned());
+            // A host acting as this agent: it is also the local participant.
+            if participant.as_str() == self.me.id && !label.is_empty() {
+                label.clone_into(&mut self.me.name);
+                self.me.initials = crate::identity::initials_for(label);
+            }
         }
     }
 
