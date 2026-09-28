@@ -1313,6 +1313,73 @@ fn bind_agent_control_socket(headless: bool) -> Option<(UnixListener, UnlinkOnDr
     bind_control_listener(path, "agent_control")
 }
 
+/// Serve the runtime's MCP projection of this session's broker over HTTP
+/// (`TILO_RUNTIME_MCP_HTTP`), with the canonical pixel tools driving this
+/// compositor through its agent-control socket. Apps an agent opens are
+/// launched by this session, so they are its own attested clients.
+#[cfg(feature = "agent-control")]
+fn spawn_agent_mcp(
+    broker: &crate::shell::collab_broker::BrokerHandle,
+    tree_handle: &crate::shell::state::WorkspaceTreeHandle,
+    headless: bool,
+) {
+    let Some(agent_socket) =
+        agent_control_path(true, headless, std::env::var_os(AGENT_CONTROL_ENV))
+    else {
+        return;
+    };
+    let config = match tilo_runtime::mcp_http::Config::from_env() {
+        Ok(Some(config)) => config,
+        Ok(None) => return,
+        Err(error) => {
+            eprintln!("tilo compositor: agent MCP endpoint: {error}");
+            return;
+        }
+    };
+    let Some(action_broker) = broker.app_action_broker() else {
+        eprintln!("tilo compositor: agent MCP endpoint: the action broker is unavailable");
+        return;
+    };
+    let principal = {
+        let tree = tree_handle.read();
+        tree.desktop.active_workspace().map(|workspace| {
+            (
+                workspace.room.to_string(),
+                crate::shell::state::local_user_id_for_room(&workspace.room),
+            )
+        })
+    };
+    let Some((room, actor)) = principal else {
+        eprintln!("tilo compositor: agent MCP endpoint: no active workspace");
+        return;
+    };
+    let scratch = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .map(|cache| cache.join("tilo").join("computer"));
+    let Some(scratch) = scratch.filter(|path| {
+        path.parent()
+            .is_some_and(|parent| std::fs::create_dir_all(parent).is_ok())
+            && tilo_runtime::unix::private_directory(path).is_ok()
+    }) else {
+        eprintln!("tilo compositor: agent MCP endpoint: no private screenshot directory");
+        return;
+    };
+    let computer =
+        std::sync::Arc::new(tilo_runtime::computer::Computer::new(agent_socket, scratch));
+    let endpoint = tilo_runtime::mcp_http::Endpoint::new(
+        crate::shell::remote_actions::BrokerActionHost::new(action_broker),
+        room,
+        actor,
+        config.token.clone(),
+        Some(computer),
+    );
+    match tilo_runtime::mcp_http::spawn(&config, endpoint) {
+        Ok(bound) => eprintln!("tilo compositor agent MCP endpoint listening on {bound}"),
+        Err(error) => eprintln!("tilo compositor: agent MCP endpoint: {error}"),
+    }
+}
+
 fn bind_control_listener(path: PathBuf, label: &str) -> Option<(UnixListener, UnlinkOnDrop)> {
     // Replaces a stale socket; only this user can ever connect.
     match crate::shell::test_control_socket::bind_private(&path) {
@@ -6001,6 +6068,8 @@ pub fn run() {
         .flatten();
     if let Some(broker) = collab_broker.as_ref() {
         attach_collab_broker_bridges(&mut frame_builder, broker);
+        #[cfg(feature = "agent-control")]
+        spawn_agent_mcp(broker, &tree_handle, backend_kind == BackendKind::Headless);
         if let (Some(portal), Some(service)) =
             (portal_backend.as_ref(), broker.native_media_service())
         {
