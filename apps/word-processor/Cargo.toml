@@ -45,9 +45,9 @@ tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["markdown", "html", "rtf", "epub", "docx", "odt"] }
 spellcheck = { path = "../../crates/text/spellcheck" }
 qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
-# Content addressing everywhere; the on-disk and device stores only natively
-# (the browser build keeps content in memory).
-tilo-content = { path = "../../crates/system/content" }
+# Content addressing everywhere; the device store where the launcher hands
+# one over.
+tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
 automerge.workspace = true
 tilo-automerge.workspace = true
 vello.workspace = true
@@ -72,6 +72,5 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }

@@ -2508,7 +2508,7 @@ impl WordProcessorWidget {
         doc: &AutoCommit,
     ) {
         self.participants
-            .set(participant, view, doc, ui::clock::Instant::now());
+            .set(participant, view, doc, ui::time::now());
         self.lifecycle.dirty = true;
     }
 
@@ -3394,7 +3394,9 @@ impl WordProcessorWidget {
             return Err("Resolve the selected file choice before opening another file".into());
         }
         let history = self.read_existing_file(path)?;
-        let bytes = match std::fs::read(path) {
+        let bytes = match tilo_files::file_at(path)
+            .and_then(|(dir, name)| tilo_files::blocking::read(&dir, &name))
+        {
             Ok(b) => b,
             Err(e) => {
                 self.toast = Some((t("toast-open-failed"), ToastKind::Error));
@@ -8731,7 +8733,7 @@ impl WordProcessorWidget {
         let (remote_carets, remote_selections) = self.remote_presence_overlays(presence);
         // A peer's just-typed run glows in their colour, fading; drawn first so it
         // sits under the selection and caret rather than competing with them.
-        for (user, spans) in self.remote_typing_overlays(presence, ui::clock::Instant::now()) {
+        for (user, spans) in self.remote_typing_overlays(presence, ui::time::now()) {
             presence.draw_peer_typing(scene, theme, &user, &spans);
         }
         for sel in &remote_selections {
@@ -8743,7 +8745,7 @@ impl WordProcessorWidget {
         // not fake mouse coordinates. Resolve those anchors through the same
         // shaped layouts as a person's selection and decorate the resulting
         // geometry with the authenticated actor label.
-        let now = ui::clock::Instant::now();
+        let now = ui::time::now();
         for interaction in presence.interactions_for_resource("word-processor.document", now) {
             let ranges = match &interaction.anchor {
                 tilo_actions::InteractionAnchor::Text { ranges, .. } => ranges
@@ -10437,7 +10439,7 @@ impl Widget for WordProcessorWidget {
         self.refresh_blocks(state);
         // Other participants' views follow local and remote edits alike; a
         // participant's own applied edit hands over its next view.
-        let now = ui::clock::Instant::now();
+        let now = ui::time::now();
         self.participants.adopt_outcomes(state, now);
         self.participants.rebase(state);
         self.participants.expire(now);
@@ -11560,9 +11562,7 @@ impl ui::collaboration::participants::Participants for WordProcessorWidget {
     /// An agent task joined: its view is placed at the document end on the
     /// next sync (no document here) and published as presence from then on.
     fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-        let joined = self
-            .participants
-            .join(participant.clone(), ui::clock::Instant::now());
+        let joined = self.participants.join(participant.clone(), ui::time::now());
         self.lifecycle.dirty |= joined;
         joined
     }
