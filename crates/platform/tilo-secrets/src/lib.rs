@@ -763,7 +763,9 @@ mod tests {
             b"pre-existing"
         );
         assert_eq!(lookup(), b"pre-existing", "older builds still read theirs");
-        store.delete_with_legacy_blocking("adopted", &legacy).unwrap();
+        store
+            .delete_with_legacy_blocking("adopted", &legacy)
+            .unwrap();
         assert_eq!(store.get_blocking("adopted").unwrap(), None);
         assert!(lookup().is_empty());
     }

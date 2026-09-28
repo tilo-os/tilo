@@ -62,7 +62,7 @@ pub trait EffectGate: Send + 'static {
 }
 
 use std::fs::File;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(any(unix, windows))]
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -162,6 +162,11 @@ impl LaunchRequest {
     /// path itself.
     pub fn is_reveal(&self) -> bool {
         self.kind == LaunchKind::Reveal
+    }
+
+    /// The name of the worker thread a native launcher runs on.
+    pub fn worker_name(&self) -> &str {
+        &self.thread_name
     }
 }
 
@@ -383,7 +388,7 @@ impl FileFilter {
 
 /// Which chooser to open.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PickKind {
+pub enum PickKind {
     Open { multiple: bool },
     Directory,
     Save { suggested_name: String },
@@ -508,6 +513,11 @@ impl PickRequest {
     /// Whether this chooses a folder rather than files.
     pub fn is_directory(&self) -> bool {
         matches!(self.kind, PickKind::Directory)
+    }
+
+    /// The chooser kind this request opens.
+    pub fn kind(&self) -> &PickKind {
+        &self.kind
     }
 
     /// The name of the worker thread a native picker runs on, when it runs
@@ -739,8 +749,11 @@ fn scoped_pick_worker(
 /// over) is simply dropped: the caller's receiver observes a closed
 /// channel, the same outward signal it must already handle for a worker
 /// that spawned but whose send lost the race with a dropped receiver.
-#[cfg(windows)]
-pub(crate) fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
+///
+/// Windows dialogs and the Android Storage Access Framework answer on a
+/// worker; the Unix XDG portal uses the shared app runtime instead.
+#[cfg(any(windows, target_os = "android"))]
+pub fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
     let _ = std::thread::Builder::new()
         .name(name.to_string())
         .spawn(work);
@@ -885,8 +898,11 @@ fn display_name(path: &Path) -> String {
 /// the resulting descriptor is a regular file. Checking metadata on the open
 /// descriptor, rather than the path, keeps the type check bound to exactly
 /// what is handed to the caller.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) fn open_regular_file(path: &Path) -> std::io::Result<File> {
+///
+/// Android's SAF view path also opens an already-chosen local file this way
+/// before handing the descriptor to the system viewer.
+#[cfg(unix)]
+pub fn open_regular_file(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
 
     let file = OpenOptions::new()
@@ -905,7 +921,7 @@ pub(crate) fn open_regular_file(path: &Path) -> std::io::Result<File> {
 /// Bind the type and reparse checks to the opened Windows handle, so a link
 /// cannot be substituted between validation and opening the selected file.
 #[cfg(windows)]
-pub(crate) fn open_regular_file(path: &Path) -> std::io::Result<File> {
+pub fn open_regular_file(path: &Path) -> std::io::Result<File> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
@@ -1258,7 +1274,7 @@ mod tests {
         assert_eq!(contents, "installer bytes");
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(unix)]
     #[test]
     fn descriptor_open_refuses_a_symlink() {
         use std::os::unix::fs::symlink;
