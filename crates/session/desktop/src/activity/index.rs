@@ -180,6 +180,14 @@ impl WorkspaceSeenFrontier {
             .exceptions
             .insert(ui::widget::history_group::hex16(&id.change));
     }
+
+    pub fn acknowledged(&self, id: &WorkspaceHistoryId) -> bool {
+        self.documents.get(&id.origin.key()).is_some_and(|state| {
+            state
+                .exceptions
+                .contains(&ui::widget::history_group::hex16(&id.change))
+        })
+    }
 }
 
 impl WorkspaceHistoryEntry {
