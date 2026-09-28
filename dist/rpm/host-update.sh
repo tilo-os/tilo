@@ -202,7 +202,19 @@ if [[ $state == staged ]]; then
 WARN
     exit 1
 fi
-copy_trust "$sysroot$deployment"
+# A written deployment's /etc sits on the read-only /sysroot mount. Finalizing
+# merged /etc as it is now, so after --apply-live it already matches; otherwise
+# rewrite it in place (keeping its label) under a private writable remount, as
+# rpm-ostree itself does.
+target=$sysroot$deployment
+if ! cmp -s "$target/usr/$trust" "$target/$trust"; then
+    if [[ -n $sysroot ]]; then
+        copy_trust "$target"
+    else
+        as_root unshare -m sh -c 'mount -o remount,rw /sysroot && cat "$1/usr/$2" >"$1/$2"' \
+            sh "$target" "$trust"
+    fi
+fi
 
 echo
 if (( apply_live )); then
