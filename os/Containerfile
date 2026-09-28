@@ -310,6 +310,7 @@ COPY examples /build/examples
 COPY vendor /build/vendor
 COPY dist /build/dist
 COPY tools/ci/rustc-thin-app-wrapper.sh /build/tools/ci/rustc-thin-app-wrapper.sh
+COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
 COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
 COPY \
     os/scripts/cargo-freshness.sh \
@@ -676,7 +677,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          BROWSER_PKG="-p browser --bin browser --features browser/wpe"; \
        fi \
     && THIN_EXCLUDES="browser" \
-    && APP_FEATURES="music/audio,music/live,video-player/decode,camera/live-capture,tube/live,tube/media,chat/live-media,mail/live,disks/live,video-editor/decode,video-editor/gst" \
+    && APP_FEATURES="music/audio,music/live,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,chat/live-media,mail/live,disks/live,video-editor/decode,video-editor/gst" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
