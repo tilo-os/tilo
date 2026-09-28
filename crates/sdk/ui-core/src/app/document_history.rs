@@ -27,7 +27,10 @@ impl App {
             return self.history_chrome_enabled && self.document_history.has_search();
         }
         if encoded.type_id == HISTORY_OPERATION {
-            return self.history_chrome_enabled;
+            return self.history_chrome_enabled || self.history.is_some();
+        }
+        if encoded.type_id == crate::host_chrome::model::EDIT_OPERATION {
+            return true;
         }
         self.history_local_resources().iter().flat_map(|resource| &resource.actions).any(|action| matches!(&action.input, tilo_actions::ActionInput::Immediate(value) if value == encoded))
     }
@@ -191,12 +194,8 @@ impl App {
                 })
             })
             .collect();
-        crate::widget::controls::refresh_control_action_availability(
-            self.document_history.toolbar_mut(),
-            &allowed,
-        );
-        if let Some(search) = self.document_history.search_mut() {
-            crate::widget::controls::refresh_control_action_availability(search, &allowed);
+        for button in self.document_history.in_window_controls_mut() {
+            crate::widget::controls::refresh_control_action_availability(button, &allowed);
         }
         if let Some(pane) = self.document_history.pane_mut() {
             crate::widget::controls::refresh_control_action_availability(pane, &allowed);
@@ -205,7 +204,9 @@ impl App {
 
     pub(super) fn history_local_resources(&mut self) -> Vec<tilo_actions::Resource> {
         if !self.history_chrome_enabled {
-            return self.close_admission.resources();
+            let mut resources = self.close_admission.resources();
+            resources.extend(self.framework_history_resource());
+            return resources;
         }
         let revision = self.document_history.revision();
         let open = self.document_history.is_open();
@@ -233,7 +234,8 @@ impl App {
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
     ) -> Option<Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>> {
-        let resources = self.history_local_resources();
+        let mut resources = self.history_local_resources();
+        resources.extend(self.edit_resource_for(address));
         tilo_actions::door::resolve(&resources, address)?;
         Some((|| {
             let (arguments, _, _) = crate::bound_dispatch::resolve_resource_invocation(
@@ -269,8 +271,14 @@ impl App {
             self.open_action_palette();
             return Ok(());
         }
+        if encoded.type_id == HISTORY_OPERATION && !self.history_chrome_enabled {
+            return self.invoke_framework_history(encoded);
+        }
         if encoded.type_id == HISTORY_OPERATION {
             return self.invoke_history_local(encoded);
+        }
+        if encoded.type_id == crate::host_chrome::model::EDIT_OPERATION {
+            return self.execute_edit_operation(encoded);
         }
         let pane = self
             .document_history
@@ -394,13 +402,8 @@ impl App {
             return 0;
         }
         let mut pending = Vec::new();
-        while let Some(intent) =
-            crate::widget::controls::take_control_invocation(self.document_history.toolbar_mut())
-        {
-            pending.push(intent);
-        }
-        if let Some(search) = self.document_history.search_mut() {
-            while let Some(intent) = crate::widget::controls::take_control_invocation(search) {
+        for button in self.document_history.in_window_controls_mut() {
+            while let Some(intent) = crate::widget::controls::take_control_invocation(button) {
                 pending.push(intent);
             }
         }
@@ -419,17 +422,8 @@ impl App {
             let result = self
                 .invoke_history_address_local(&intent.address, Some(&argument))
                 .unwrap_or_else(|| Err(tilo_actions::DoorError::Unknown(intent.address.clone())));
-            crate::widget::controls::on_control_invocation_result(
-                self.document_history.toolbar_mut(),
-                &intent.address,
-                &result,
-            );
-            if let Some(search) = self.document_history.search_mut() {
-                crate::widget::controls::on_control_invocation_result(
-                    search,
-                    &intent.address,
-                    &result,
-                );
+            for button in self.document_history.in_window_controls_mut() {
+                crate::widget::controls::on_control_invocation_result(button, &intent.address, &result);
             }
             if let Some(pane) = self.document_history.pane_mut() {
                 crate::widget::controls::on_control_invocation_result(
@@ -572,7 +566,9 @@ impl App {
         let mut roots: Vec<(&dyn Widget, taffy::NodeId)> = vec![(self.root_widget.as_ref(), app)];
         roots.extend(
             chrome.into_iter().zip(
-                std::iter::once(layout.toolbar)
+                layout
+                    .toolbar
+                    .into_iter()
                     .chain(layout.search)
                     .chain(layout.pane)
                     .chain(layout.preview),
@@ -668,8 +664,10 @@ impl App {
             };
             return;
         }
-        if !keyboard || self.focused_node == Some(layout.toolbar) {
-            self.document_history.toolbar_mut().handle_event(
+        if let (Some(toolbar), Some(node)) = (self.document_history.toolbar_mut(), layout.toolbar)
+            && (!keyboard || self.focused_node == Some(node))
+        {
+            toolbar.handle_event(
                 event,
                 &mut crate::widget::EventCtx {
                     scale_factor: scale,
@@ -678,7 +676,7 @@ impl App {
                     path: &self.state.root,
                     handled,
                     focus_target: focus,
-                    node_id: layout.toolbar,
+                    node_id: node,
                     taffy: &self.layout.taffy,
                 },
             );
@@ -703,7 +701,7 @@ impl App {
         }
         let pane_focused = self
             .focused_node
-            .is_some_and(|node| node != layout.toolbar && self.is_history_node(node));
+            .is_some_and(|node| Some(node) != layout.toolbar && self.is_history_node(node));
         if !*handled
             && (!keyboard || pane_focused)
             && let Some(node) = layout.pane
@@ -810,7 +808,7 @@ impl App {
         let Some(layout) = self.history_layout else {
             return false;
         };
-        let mut pending = vec![layout.toolbar];
+        let mut pending: Vec<_> = layout.toolbar.into_iter().collect();
         pending.extend(layout.search);
         pending.extend(layout.pane);
         pending.extend(layout.preview);
@@ -850,12 +848,49 @@ impl App {
 
     /// Apply the native window's default presentation before the event loop
     /// starts: standalone roots get the shared History/Search chrome unless
-    /// they opted out or a framework owner already supplies it.
+    /// they opted out or a framework owner already supplies it. Its buttons
+    /// are drawn in the window only where the host's own chrome (a menu bar,
+    /// the Tilo shell) does not present them.
     #[cfg(any(feature = "native", test))]
-    pub(super) fn prepare_native_presentation(&mut self) {
-        if self.native_document_chrome && self.history.is_none() {
-            self.enable_document_history_chrome();
+    pub(super) fn prepare_native_presentation(&mut self, chrome: crate::host_chrome::HostChrome) {
+        if chrome.draws_in_window() {
+            if self.native_document_chrome && self.history.is_none() {
+                self.enable_document_history_chrome();
+            }
+            return;
         }
+        if let Some(history) = &mut self.history {
+            history.remove_open_button();
+            self.layout.structure_dirty = true;
+        } else if self.native_document_chrome {
+            self.enable_document_history_chrome();
+            self.document_history.remove_in_window_controls();
+        }
+    }
+
+    /// A registered framework History serves the same History door as the
+    /// standalone one, without selecting a change: it has no session rows.
+    fn framework_history_resource(&self) -> Option<tilo_actions::Resource> {
+        let history = self.history.as_ref()?;
+        let mut resource =
+            crate::standalone_history_host::history_resource(true, history.is_open());
+        resource.actions.retain(|action| action.id != "open_at");
+        Some(resource)
+    }
+
+    fn invoke_framework_history(
+        &mut self,
+        encoded: &tilo_actions::EncodedAction,
+    ) -> Result<(), String> {
+        let history = self.history.as_ref().ok_or("History is unavailable")?;
+        match serde_json::from_slice(&encoded.payload) {
+            Ok(HistoryCommand::Open) if history.request_open() => {}
+            Ok(HistoryCommand::Hide) => history.request_close(),
+            _ => return Err("Unsupported History operation".into()),
+        }
+        self.needs_sync = true;
+        self.layout.layout_dirty = true;
+        Ok(())
     }
 
     /// Enable shared standalone services presentation without wrapping the app
@@ -1084,7 +1119,7 @@ mod tests {
             )
             .without_native_document_chrome();
             // Exercise the same preparation used before the live event loop.
-            app.prepare_native_presentation();
+            app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
             app.init_layout();
             layout(&mut app, 1024);
             app.refresh_semantic_tree();
@@ -1111,7 +1146,7 @@ mod tests {
                 crate::State::new(),
                 Box::new(crate::widget::Button::new("document", "Document", None)),
             );
-            app.prepare_native_presentation();
+            app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
             app.init_layout();
             layout(&mut app, 1024);
             assert!(app.history_layout.is_some());
@@ -1121,6 +1156,48 @@ mod tests {
                 "open",
             );
             assert!(!app.action_ui_routes(&open).is_empty());
+        }
+
+        // Case `host_owned_chrome_draws_no_history_button_but_keeps_history`:
+        // the Tilo shell and the macOS menu bar present History themselves.
+        for chrome in [
+            crate::host_chrome::HostChrome::TiloShell,
+            crate::host_chrome::HostChrome::Native,
+        ] {
+            let mut app = App::new_with_controlled_inputs(
+                crate::State::new(),
+                Box::new(crate::widget::Button::new("document", "Document", None)),
+            );
+            app.prepare_native_presentation(chrome);
+            app.init_layout();
+            layout(&mut app, 1024);
+            let layout = app.history_layout.unwrap();
+            assert!(
+                layout.toolbar.is_none() && layout.search.is_none(),
+                "{chrome:?}"
+            );
+            let open = tilo_actions::ActionAddress::new(
+                crate::standalone_history_host::HISTORY_RESOURCE,
+                "open",
+            );
+            assert!(
+                app.action_ui_routes(&open).is_empty(),
+                "no button in the window"
+            );
+            assert!(
+                app.history_local_resources()
+                    .iter()
+                    .any(|resource| resource.id.as_str() == open.resource),
+                "the host chrome's History action stays"
+            );
+            assert!(
+                app.history_action_resources()
+                    .iter()
+                    .any(|resource| resource.id.as_str() == super::super::HISTORY_ACTION_RESOURCE),
+                "the published History door stays"
+            );
+            app.open_document_history().unwrap();
+            assert!(app.document_history.is_open());
         }
 
         // Case `native_history_chrome_stays_local_while_history_is_published_gated`.
@@ -1345,7 +1422,7 @@ mod tests {
             Box::new(crate::widget::Button::new("document", "Document", None)),
         )
         .with_autosave(writer);
-        app.prepare_native_presentation();
+        app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
         app.init_layout();
         layout(&mut app, 1200);
         app
@@ -1459,7 +1536,7 @@ mod tests {
                 crate::permissions::Verb::Read,
             )],
         );
-        app.prepare_native_presentation();
+        app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
         app.init_layout();
         layout(&mut app, 1200);
         app.open_document_history().unwrap();
@@ -1529,7 +1606,7 @@ mod tests {
             layout(&mut app, 1200);
             app.open_document_history().unwrap();
             layout(&mut app, 1200);
-            let toolbar = app.history_layout.unwrap().toolbar;
+            let toolbar = app.history_layout.unwrap().toolbar.unwrap();
             app.set_focused_node(Some(toolbar));
             app.state.doc.put(ROOT, "title", "pending typing").unwrap();
             let pending = app.state.doc.pending_ops();
@@ -1573,11 +1650,12 @@ mod tests {
             app.state.commit_action(None, None);
             app.enable_document_history_chrome();
             app.init_layout();
-            let toolbar = app.history_layout.unwrap().toolbar;
+            let toolbar = app.history_layout.unwrap().toolbar.unwrap();
             let admitted = app.layout.node_map[&toolbar];
             let mut moved = Box::new(app);
-            let retained =
-                std::ptr::from_mut(moved.document_history.toolbar_mut() as &mut dyn Widget);
+            let retained = std::ptr::from_mut(
+                moved.document_history.toolbar_mut().unwrap() as &mut dyn Widget
+            );
             assert!(
                 std::ptr::addr_eq(admitted, retained),
                 "admitted pointer must still name the actual retained toolbar after App moves"

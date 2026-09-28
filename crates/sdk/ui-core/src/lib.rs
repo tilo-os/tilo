@@ -164,6 +164,8 @@ pub mod graph_editor;
 pub mod headless;
 pub mod history_mode;
 pub mod history_source;
+#[cfg(not(target_arch = "wasm32"))]
+mod host_chrome;
 #[cfg(all(windows, feature = "notifications"))]
 pub use native::host_notifications;
 #[cfg(not(all(windows, feature = "notifications")))]

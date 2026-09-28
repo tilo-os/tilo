@@ -89,6 +89,9 @@ pub struct HistoryHost {
     unavailable_node: Option<NodeId>,
     open_requested: Rc<Cell<bool>>,
     open: bool,
+    /// Whether the closed toolbar offers its own History button. Off where
+    /// the host's chrome (a menu bar, the Tilo shell) presents History.
+    open_button: bool,
     commands: Rc<RefCell<VecDeque<Command>>>,
     selected: Vec<crate::HistoryEntryId>,
     before: PreviewCanvas,
@@ -129,6 +132,23 @@ impl HistoryHost {
             self.open_requested.set(true);
         }
         true
+    }
+
+    /// Return to the live app, as the History button does while open.
+    pub(crate) fn request_close(&self) {
+        if self.open {
+            self.open_requested.set(true);
+        }
+    }
+
+    pub(crate) fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// The host's own chrome presents History: drop the toolbar's button.
+    pub(crate) fn remove_open_button(&mut self) {
+        self.open_button = false;
+        self.rebuild_toolbar();
     }
 
     pub(crate) fn new(
@@ -200,6 +220,7 @@ impl HistoryHost {
             timeline: ActivityTimeline::new().with_preview_selection(),
             open_requested: request,
             open: false,
+            open_button: true,
             rect: Rect::ZERO,
             chrome_node: None,
             live_node: None,
@@ -1204,16 +1225,18 @@ impl HistoryHost {
             return;
         }
         if self.selected.is_empty() {
-            let clicked = self.open_requested.clone();
-            toolbar = toolbar.push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Button::new("history-open", "history-mode-title", None)
-                            .fit_content(32.0)
-                            .on_click(move || clicked.set(true)),
-                    ))
-                    .push(Box::new(Text::new(title))),
-            ));
+            if self.open_button || self.open {
+                let clicked = self.open_requested.clone();
+                toolbar = toolbar.push(Box::new(
+                    Row::new()
+                        .push(Box::new(
+                            Button::new("history-open", "history-mode-title", None)
+                                .fit_content(32.0)
+                                .on_click(move || clicked.set(true)),
+                        ))
+                        .push(Box::new(Text::new(title))),
+                ));
+            }
             for review in self.pending_controls.review() {
                 let mut row = Row::new().push(Box::new(Text::new(&I18nManager::format(
                     "history-mode-pending",
