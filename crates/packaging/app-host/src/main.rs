@@ -40,11 +40,6 @@ struct Cli {
     /// the launcher and `tilo-install` use.
     #[arg(long)]
     store: Option<PathBuf>,
-    /// A retired app-host store (blob directory plus unpacked copies) whose
-    /// packages move into the package store at startup. Repeatable; a
-    /// directory with nothing left to move is ignored.
-    #[arg(long = "migrate-from")]
-    migrate_from: Vec<PathBuf>,
     /// Soft cap on distinct payload bytes. When exceeded, unpinned packages
     /// are evicted least recently used first until the total drops below
     /// the cap. Pinned packages are never evicted. Pass `0` to disable the
@@ -75,7 +70,6 @@ fn main() -> anyhow::Result<()> {
     // together with the image's preinstalled packages.
     let store = Arc::new(PackageStore::at(&root));
     let catalog = Arc::new(Catalog::at(&root, SystemStore::from_env()));
-    let migrate_from = cli.migrate_from;
 
     // capnp-rpc + tokio LocalSet (one task per connection, single
     // event-loop Vat). Matches `format-host`'s shape.
@@ -93,13 +87,13 @@ fn main() -> anyhow::Result<()> {
         // Best-effort sd_notify — silently no-op if NOTIFY_SOCKET
         // isn't in env (e.g. when run by hand).
         let _ = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]);
-        // Migration and a cold sweep must not delay the first socket-activated
-        // app. Store mutations are serialised by the store's lock, and every
-        // migration step is idempotent, so accepting requests meanwhile is safe.
+        // A cold sweep must not delay the first socket-activated app. Store
+        // mutations are serialised by the store's lock, so accepting requests
+        // meanwhile is safe.
         let startup_store = Arc::clone(&store);
         let max_store_bytes = cli.max_store_bytes;
         let _startup = tokio::task::spawn_blocking(move || {
-            startup(&startup_store, &migrate_from, max_store_bytes);
+            startup(&startup_store, max_store_bytes);
         });
         transport::serve(listener, store, catalog, cli.max_store_bytes).await
     })
@@ -167,33 +161,8 @@ fn init_tracing() {
         .try_init();
 }
 
-/// Move packages from the layouts that predate the content store, then
-/// enforce the size cap. Failures are logged: they leave the old layout in
-/// place, still launchable, to be retried on the next start.
-fn startup(store: &PackageStore, migrate_from: &[PathBuf], max_store_bytes: u64) {
-    match store.migrate_legacy_layout() {
-        Ok(report) if !report.is_empty() => tracing::info!(
-            migrated = ?report.migrated,
-            kept = ?report.kept,
-            "moved installed packages into the content store"
-        ),
-        Ok(_) => {}
-        Err(error) => tracing::warn!(%error, "moving installed packages failed"),
-    }
-    for old in migrate_from {
-        match store.import_app_host_store(old) {
-            Ok(report) if !report.is_empty() => tracing::info!(
-                from = %old.display(),
-                migrated = ?report.migrated,
-                kept = ?report.kept,
-                "imported the retired app-host store"
-            ),
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!(from = %old.display(), %error, "importing the app-host store failed");
-            }
-        }
-    }
+/// Enforce the size cap. A failure is logged and retried on the next start.
+fn startup(store: &PackageStore, max_store_bytes: u64) {
     if let Err(error) = store.sweep(max_store_bytes) {
         tracing::warn!(%error, "startup sweep failed");
     }

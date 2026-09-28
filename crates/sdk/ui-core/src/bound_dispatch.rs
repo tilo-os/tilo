@@ -1720,6 +1720,22 @@ pub(crate) fn execute_resource_operation_scoped(
             );
         }
         crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+    } else if let Some(readers) =
+        crate::semantic_document_read::registered_in_tree(&*widget, &encoded.type_id)
+    {
+        let refused = |error: crate::semantic_document_read::SemanticReadError| {
+            let (code, reason) = error.describe();
+            tilo_actions::DoorError::Unavailable {
+                code: code.into(),
+                reason: reason.into(),
+            }
+        };
+        let selected = crate::semantic_document_read::select(readers, resource, spec, &encoded)
+            .map_err(refused)?
+            .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
+        crate::widget::ResourceOperationStart::Completed(
+            selected.read(scope, doc).map_err(refused)?,
+        )
     } else {
         let op = match scope {
             Some(scope) => crate::widget::ResourceOperation::scoped(

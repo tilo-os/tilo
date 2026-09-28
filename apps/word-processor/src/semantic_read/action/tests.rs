@@ -69,7 +69,7 @@ fn semantic_read_action_rejects_ambiguous_or_oversized_request_before_projection
 }
 
 #[test]
-fn semantic_read_action_existing_door_refuses_unqualified_read_and_json_contract_decodes() {
+fn semantic_read_action_encodes_and_json_contract_decodes() {
     let resource = resource();
     assert!(
         resource.actions[0]
@@ -78,14 +78,13 @@ fn semantic_read_action_existing_door_refuses_unqualified_read_and_json_contract
             .is_empty()
     );
     let address = tilo_actions::ActionAddress::new("word-processor.document", "read-text");
-    assert!(matches!(
-        tilo_actions::door::encode_json(
-            std::slice::from_ref(&resource),
-            &address,
-            serde_json::json!({"pageSize":2}).as_object().unwrap()
-        ),
-        Err(tilo_actions::DoorError::Unavailable { .. })
-    ));
+    let encoded = tilo_actions::door::encode_json(
+        std::slice::from_ref(&resource),
+        &address,
+        serde_json::json!({"pageSize":2}).as_object().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(encoded.type_id, OPERATION_TYPE);
     let wire = serde_json::to_value(&resource.actions[0].contract).unwrap();
     assert_eq!(wire["permission"], "read");
     assert_eq!(wire["execution"]["mode"], "immediate");
@@ -110,5 +109,31 @@ fn semantic_read_action_existing_door_refuses_unqualified_read_and_json_contract
             })
             .is_err()
     );
-    // JSON schema validation is inert shape validation, never a private SDK stamp.
+}
+
+#[test]
+fn the_registered_projection_pages_body_text_at_the_given_heads() {
+    let mut source = qdoc::Document::new();
+    let first = source.insert_block(None, "heading");
+    source.splice_text(&first, 0, 0, "Q3 Planning");
+    let second = source.insert_block(Some(&first), "paragraph");
+    source.splice_text(&second, 0, 0, "Book the venue");
+    let mut doc = automerge::AutoCommit::load(&source.save()).unwrap();
+    let heads = doc.get_heads();
+    let page = project(&doc, &heads, br#"{"pageSize":1,"cursor":null}"#).unwrap();
+    assert_eq!(page.content["segments"][0]["text"], "Q3 Planning");
+    let cursor = page.next_cursor.expect("a second page");
+    let request = serde_json::json!({"pageSize":8,"cursor":cursor});
+    let rest = project(&doc, &heads, &serde_json::to_vec(&request).unwrap()).unwrap();
+    assert_eq!(rest.content["segments"][0]["text"], "Book the venue");
+    assert!(rest.next_cursor.is_none());
+
+    automerge::transaction::Transactable::put(&mut doc, automerge::ROOT, "touched", true).unwrap();
+    doc.commit();
+    let later = doc.get_heads();
+    assert_eq!(
+        project(&doc, &later, &serde_json::to_vec(&request).unwrap()).err(),
+        Some(SemanticReadError::StaleCursor),
+        "a cursor from an earlier basis is refused"
+    );
 }

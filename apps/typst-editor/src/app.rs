@@ -1965,76 +1965,35 @@ impl Widget for TypstApp {
         crate::actions::resources(doc)
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode(type_id, payload)? else {
-            return Ok(false);
-        };
-        self.perform_resource_operation(operation, doc);
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        use crate::actions::TypstOperation;
-        let Some(operation) = crate::actions::decode(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        if self.resource_invocation.is_some() || self.pending_resource_io.is_some() {
-            return Err("another file operation is already running".into());
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let resource = match operation {
-            TypstOperation::Open { path: Some(path) } => Some(ResourceIo::Open(path.into())),
-            TypstOperation::Save { path: Some(path) } => Some(ResourceIo::Save(path.into())),
-            TypstOperation::ExportPdf { path: Some(path) } => {
-                Some(ResourceIo::ExportPdf(path.into()))
-            }
-            TypstOperation::Open { path: None } => {
-                self.open(doc);
-                None
-            }
-            TypstOperation::Save { path: None } => {
-                self.save(doc);
-                None
-            }
-            TypstOperation::ExportPdf { path: None } => {
-                self.export_pdf(doc);
-                None
-            }
-            other => {
-                return self
-                    .invoke_resource_operation_v2(
-                        kind,
-                        type_id,
-                        &serde_json::to_vec(&other).map_err(|e| e.to_string())?,
-                        doc,
-                        path,
-                    )
-                    .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
-            }
-        };
-        if let Some(resource) = resource {
-            self.pending_resource_io = Some((invocation, resource));
-        } else {
-            self.resource_invocation = Some(invocation);
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -2442,6 +2401,81 @@ impl Widget for TypstApp {
 }
 
 impl TypstApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode(type_id, payload)? else {
+            return Ok(false);
+        };
+        self.perform_resource_operation(operation, doc);
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        use crate::actions::TypstOperation;
+        let Some(operation) = crate::actions::decode(type_id, payload)? else {
+            return Ok(None);
+        };
+        if self.resource_invocation.is_some() || self.pending_resource_io.is_some() {
+            return Err("another file operation is already running".into());
+        }
+        let resource = match operation {
+            TypstOperation::Open { path: Some(path) } => Some(ResourceIo::Open(path.into())),
+            TypstOperation::Save { path: Some(path) } => Some(ResourceIo::Save(path.into())),
+            TypstOperation::ExportPdf { path: Some(path) } => {
+                Some(ResourceIo::ExportPdf(path.into()))
+            }
+            TypstOperation::Open { path: None } => {
+                self.open(doc);
+                None
+            }
+            TypstOperation::Save { path: None } => {
+                self.save(doc);
+                None
+            }
+            TypstOperation::ExportPdf { path: None } => {
+                self.export_pdf(doc);
+                None
+            }
+            other => {
+                return self
+                    .answer_resource_operation(
+                        kind,
+                        type_id,
+                        &serde_json::to_vec(&other).map_err(|e| e.to_string())?,
+                        doc,
+                        path,
+                    )
+                    .map(|handled| handled.then(ui::tilo_actions::ActionOutput::default))
+                    .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
+            }
+        };
+        if let Some(resource) = resource {
+            self.pending_resource_io = Some((invocation, resource));
+        } else {
+            self.resource_invocation = Some(invocation);
+        }
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+}
+
+impl TypstApp {
     /// Application-level keyboard shortcuts for a pressed key. Split out of
     /// `Widget::handle_event` to keep it within the line-count lint; the
     /// caller already matched `event` down to a pressed `KeyEvent` and passes
@@ -2780,13 +2814,15 @@ mod tests {
                 path: Some(destination.display().to_string()),
             })
             .unwrap();
-            let started = Widget::start_resource_operation(
+            let started = Widget::start_operation(
                 &mut app,
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::OPERATION_TYPE,
-                &payload,
-                &doc,
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::OPERATION_TYPE,
+                    &payload,
+                ),
+                &mut doc,
                 &ROOT,
             )
             .unwrap()
