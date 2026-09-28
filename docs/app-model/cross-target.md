@@ -27,13 +27,15 @@ launchers show it as unavailable there.
 |---|---|---|---|---|
 | App files | `cx.files()` / `ui::storage::AppFiles` | `$XDG_DATA_HOME/<id>`, … | `~/Library/Application Support/<id>`, … | origin-private file system |
 | Preferences | `cx.settings()` / `ui::storage::Settings` | desktop `settings.json` section | same | the host's settings source |
-| Secrets | `cx.secrets()` | Secret Service | Keychain | wrapped IndexedDB |
+| Secrets | `cx.secrets()` / `ui::storage::secrets` | Secret Service | Keychain | wrapped IndexedDB |
 | Documents | resources and records (`ui::persist` for one-document apps) | Automerge, synced by the runtime | same | same |
 | Files the user picks | `ui::portal::PickRequest` | portal / GTK | open and save panels | file pickers (by contents) |
 | Network | `tilo_net` (`Client`, `status`, `ws`) | reqwest | reqwest | `fetch`, the host's fetch proxy |
 | Time, threads | `ui::time`, `tilo_rt` / `ui::background` | std | std | the page's clock and executor |
 | Notifications, location, camera, clipboard | `ui::notify`, `ui::location`, `tilo_capture`, `ui::clipboard` | each platform crate's backend | | |
 | The workspace mount, login and host name | `tilo_paths::workspace_root`, `tilo_paths::session` | | | none |
+| Owner-only files (keys, host-key stores) | `tilo_files::native::private` | mode 0600/0700 | same | refused |
+| This process's id, other processes' open files | `tilo_process` (`id`, `open_file_count`, `probe_process_table`) | std, `/proc` | std; no open-file count | `None` |
 
 What a target cannot provide is an `Unsupported` error at run time and a row in
 the crate's `CAPABILITIES` table, never a missing item at compile time. Handle
@@ -66,6 +68,16 @@ process.
 platform code in an app that declares all three platforms (rules R1–R4 and the
 web traps W1–W3 are errors with no allowance). Apps narrowed to fewer
 platforms count their remaining sites against a shrink-only baseline.
+`tools/policy/check_app_capabilities.py` runs the capability check over every
+app in the same lane.
+
+## Toolkit knobs
+
+Debug, capture and benchmark switches are environment variables named
+`TILO_UI_*` (`TILO_UI_DEBUG`, `TILO_UI_PRESENT`, …), read through
+`ui::env`. The pre-rename `QUICK_UI_*` names still work and warn once per
+variable. [`../performance-flags.md`](../performance-flags.md) lists the
+rendering ones.
 
 ## Packaging
 
