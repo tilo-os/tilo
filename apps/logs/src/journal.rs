@@ -616,38 +616,16 @@ pub fn sample_entries() -> Vec<LogEntry> {
     // A handful of records from the previous boot, so the boot filter has
     // two distinct boots to switch between.
     let prev_base = base - 9_000_000_000; // ~2.5h earlier
-    for (off, unit, ident, prio, pid, transport, msg, extra) in prev {
-        entries.push(build(
-            prev_base + off * 1000,
-            unit,
-            ident,
-            *prio,
-            *pid,
-            transport,
-            msg,
-            host,
-            boot_b,
-            extra,
-        ));
+    for row in prev {
+        entries.push(build(row, prev_base, host, boot_b));
     }
 
     // Rows are split across three consts purely to stay under the
     // per-function line-count limit; the boot sequence still reads as one
     // continuous timeline (offsets are relative to the same `base`).
     let rows = ROWS_BOOT.iter().chain(ROWS_SERVICES).chain(ROWS_SESSION);
-    for (off, unit, ident, prio, pid, transport, msg, extra) in rows {
-        entries.push(build(
-            base + off * 1000,
-            unit,
-            ident,
-            *prio,
-            *pid,
-            transport,
-            msg,
-            host,
-            boot_a,
-            extra,
-        ));
+    for row in rows {
+        entries.push(build(row, base, host, boot_a));
     }
 
     entries.sort_by_key(|e| e.realtime_us);
@@ -659,24 +637,12 @@ const fn very(n: u32) -> u32 {
     n
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "test builder: one argument per journal field"
-)]
-fn build(
-    realtime_us: u64,
-    unit: &str,
-    identifier: &str,
-    priority: Priority,
-    pid: Option<u32>,
-    transport: &str,
-    message: &str,
-    hostname: &str,
-    boot_id: &str,
-    extra: &[(&str, &str)],
-) -> LogEntry {
+/// The entry a sample `row` describes, logged on `hostname` during `boot_id`
+/// at its offset from `base_us`.
+fn build(row: &Row, base_us: u64, hostname: &str, boot_id: &str) -> LogEntry {
+    let &(offset_ms, unit, identifier, priority, pid, transport, message, extra) = row;
     LogEntry {
-        realtime_us,
+        realtime_us: base_us + offset_ms * 1000,
         unit: unit.to_string(),
         identifier: identifier.to_string(),
         priority,

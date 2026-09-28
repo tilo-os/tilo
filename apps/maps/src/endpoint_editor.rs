@@ -8,6 +8,7 @@ use winit::event::WindowEvent;
 use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -494,23 +495,17 @@ impl EndpointEditor {
             let distance = geo::fmt_distance(geo::haversine_m(place.pos, distance_anchor));
             let distance_w = draw::measure_w(text, &distance, 11.0) + 8.0;
             draw::text_clip(
-                scene,
-                text,
-                transform,
+                &mut PaintCtx::new(scene, transform, text, theme),
                 &place.name,
-                text_x,
-                name_y,
+                Point::new(text_x, name_y),
                 13.0,
                 theme.text_primary,
                 rect.x1 - text_x - distance_w,
             );
             draw::text_clip(
-                scene,
-                text,
-                transform,
+                &mut PaintCtx::new(scene, transform, text, theme),
                 &place.address,
-                text_x,
-                name_y + name_h,
+                Point::new(text_x, name_y + name_h),
                 11.0,
                 theme.text_dim,
                 rect.x1 - text_x - distance_w,

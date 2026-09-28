@@ -227,28 +227,31 @@ pub fn reveal_result_address(result: &SearchResultRef) -> ActionAddress {
     ActionAddress::new(result_resource_id(result), "reveal")
 }
 
+/// One character-addressed edit against an exact displayed base. The payload
+/// is proportional to the changed region, never the full file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TextEdit {
+    pub file_id: String,
+    pub expected_base_digest: String,
+    pub start_chars: usize,
+    pub delete_chars: usize,
+    pub insert: String,
+    /// Short immutable context makes a stale action safely rebaseable
+    /// when a peer changed a disjoint range. It is deliberately bounded,
+    /// so an action remains proportional to its changed region.
+    #[serde(default)]
+    pub before_context: String,
+    #[serde(default)]
+    pub deleted_text: String,
+    #[serde(default)]
+    pub after_context: String,
+}
+
 /// Every collaborative operation Code exports on the shared document.
 ///
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum CodeEditorAction {
-    /// One character-addressed edit against an exact displayed base. The
-    /// payload is proportional to the changed region, never the full file.
-    EditText {
-        file_id: String,
-        expected_base_digest: String,
-        start_chars: usize,
-        delete_chars: usize,
-        insert: String,
-        /// Short immutable context makes a stale action safely rebaseable
-        /// when a peer changed a disjoint range. It is deliberately bounded,
-        /// so an action remains proportional to its changed region.
-        #[serde(default)]
-        before_context: String,
-        #[serde(default)]
-        deleted_text: String,
-        #[serde(default)]
-        after_context: String,
-    },
+    EditText(TextEdit),
     /// Create a durable file record and its Text body. `id` is a UUID minted at
     /// the command/resource boundary, not during replay.
     CreateFile {
@@ -316,7 +319,7 @@ pub fn history_context(
     let mut context =
         tilo_actions::ActionContext::for_action("so.tilo.code-editor", "Code", action);
     let (id, kind, label) = match action {
-        CodeEditorAction::EditText { file_id, .. } => (file_id.as_str(), "file", "Edit text"),
+        CodeEditorAction::EditText(edit) => (edit.file_id.as_str(), "file", "Edit text"),
         CodeEditorAction::CreateFile { id, .. } => (id.as_str(), "file", "Create file"),
         CodeEditorAction::CreateFolder { id, .. } => (id.as_str(), "folder", "Create folder"),
         CodeEditorAction::RenameFile { id, kind, .. } => (id.as_str(), kind.as_str(), "Rename"),
@@ -349,26 +352,7 @@ pub fn history_context(
 impl Action for CodeEditorAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
-            Self::EditText {
-                file_id,
-                expected_base_digest,
-                start_chars,
-                delete_chars,
-                insert,
-                before_context,
-                deleted_text,
-                after_context,
-            } => apply_text_edit(
-                doc,
-                file_id,
-                expected_base_digest,
-                *start_chars,
-                *delete_chars,
-                insert,
-                before_context,
-                deleted_text,
-                after_context,
-            ),
+            Self::EditText(edit) => edit.apply(doc),
             Self::CreateFile {
                 id,
                 name,
@@ -457,7 +441,7 @@ pub fn text_edit_action(file_id: String, base: &str, next: &str) -> CodeEditorAc
         .take(prefix.min(32))
         .collect();
     let after_context: String = base_chars.iter().skip(end).take(32).collect();
-    CodeEditorAction::EditText {
+    CodeEditorAction::EditText(TextEdit {
         file_id,
         expected_base_digest: text_digest(base),
         start_chars: prefix,
@@ -466,69 +450,68 @@ pub fn text_edit_action(file_id: String, base: &str, next: &str) -> CodeEditorAc
         before_context,
         deleted_text: deleted,
         after_context,
-    }
+    })
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the validated arguments mirror the compact EditText wire payload field-for-field"
-)]
-fn apply_text_edit(
-    doc: &mut Doc,
-    file_id: &str,
-    expected: &str,
-    start: usize,
-    delete: usize,
-    insert: &str,
-    before_context: &str,
-    deleted_text: &str,
-    after_context: &str,
-) -> Result<(), ActionError> {
-    let record = EditorDoc::file(doc, file_id)
-        .ok_or_else(|| ActionError::Refused("file does not exist".to_string()))?;
-    if record.deleted
-        || record.kind != "file"
-        || insert.len() > crate::disk::MAX_TEXT_BYTES as usize
-    {
-        return Err(ActionError::Refused(
-            "invalid text edit target or payload".to_string(),
-        ));
+impl TextEdit {
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        let Self {
+            file_id,
+            expected_base_digest: expected,
+            start_chars: start,
+            delete_chars: delete,
+            insert,
+            before_context,
+            deleted_text,
+            after_context,
+        } = self;
+        let (start, delete) = (*start, *delete);
+        let record = EditorDoc::file(doc, file_id)
+            .ok_or_else(|| ActionError::Refused("file does not exist".to_string()))?;
+        if record.deleted
+            || record.kind != "file"
+            || insert.len() > crate::disk::MAX_TEXT_BYTES as usize
+        {
+            return Err(ActionError::Refused(
+                "invalid text edit target or payload".to_string(),
+            ));
+        }
+        let text = EditorDoc::read_buffer_key(doc, file_id)
+            .ok_or_else(|| ActionError::Refused("file body is unavailable".to_string()))?;
+        let len = text.chars().count();
+        let (start, delete) =
+            if text_digest(&text) == *expected && start <= len && delete <= len - start {
+                (start, delete)
+            } else {
+                rebase_text_edit(&text, before_context, deleted_text, after_context)
+                    .ok_or_else(|| ActionError::Refused("stale text edit".to_string()))?
+            };
+        let start_byte = byte_index(&text, start).ok_or_else(|| {
+            ActionError::Refused("text edit position is outside the buffer".to_string())
+        })?;
+        let end_byte = byte_index(
+            &text,
+            start.checked_add(delete).ok_or_else(|| {
+                ActionError::Refused("text edit range overflows the buffer".to_string())
+            })?,
+        )
+        .ok_or_else(|| ActionError::Refused("text edit range is outside the buffer".to_string()))?;
+        let final_bytes = text
+            .len()
+            .checked_sub(end_byte.saturating_sub(start_byte))
+            .and_then(|remaining| remaining.checked_add(insert.len()))
+            .ok_or_else(|| ActionError::Refused("text edit size overflows".to_string()))?;
+        if final_bytes > crate::disk::MAX_TEXT_BYTES as usize {
+            return Err(ActionError::Refused(format!(
+                "text edit would exceed the {} byte buffer limit",
+                crate::disk::MAX_TEXT_BYTES
+            )));
+        }
+        let object = EditorDoc::buffer_text_key(doc, file_id)
+            .ok_or_else(|| ActionError::Refused("file body is unavailable".to_string()))?;
+        EditorDoc::splice(doc, &object, start, delete, insert);
+        Ok(())
     }
-    let text = EditorDoc::read_buffer_key(doc, file_id)
-        .ok_or_else(|| ActionError::Refused("file body is unavailable".to_string()))?;
-    let len = text.chars().count();
-    let (start, delete) = if text_digest(&text) == expected && start <= len && delete <= len - start
-    {
-        (start, delete)
-    } else {
-        rebase_text_edit(&text, before_context, deleted_text, after_context)
-            .ok_or_else(|| ActionError::Refused("stale text edit".to_string()))?
-    };
-    let start_byte = byte_index(&text, start).ok_or_else(|| {
-        ActionError::Refused("text edit position is outside the buffer".to_string())
-    })?;
-    let end_byte = byte_index(
-        &text,
-        start.checked_add(delete).ok_or_else(|| {
-            ActionError::Refused("text edit range overflows the buffer".to_string())
-        })?,
-    )
-    .ok_or_else(|| ActionError::Refused("text edit range is outside the buffer".to_string()))?;
-    let final_bytes = text
-        .len()
-        .checked_sub(end_byte.saturating_sub(start_byte))
-        .and_then(|remaining| remaining.checked_add(insert.len()))
-        .ok_or_else(|| ActionError::Refused("text edit size overflows".to_string()))?;
-    if final_bytes > crate::disk::MAX_TEXT_BYTES as usize {
-        return Err(ActionError::Refused(format!(
-            "text edit would exceed the {} byte buffer limit",
-            crate::disk::MAX_TEXT_BYTES
-        )));
-    }
-    let object = EditorDoc::buffer_text_key(doc, file_id)
-        .ok_or_else(|| ActionError::Refused("file body is unavailable".to_string()))?;
-    EditorDoc::splice(doc, &object, start, delete, insert);
-    Ok(())
 }
 
 /// Convert a character-addressed Automerge position to a byte boundary without
@@ -1862,7 +1845,7 @@ mod tests {
 
     fn edit_text_is_unicode_safe_and_carries_only_changed_region() {
         let action = text_edit_action("file".into(), "αβγδ", "αβXδ");
-        let CodeEditorAction::EditText {
+        let CodeEditorAction::EditText(TextEdit {
             start_chars,
             delete_chars,
             insert,
@@ -1870,7 +1853,7 @@ mod tests {
             before_context,
             after_context,
             ..
-        } = action
+        }) = action
         else {
             unreachable!("text_edit_action always returns EditText");
         };
@@ -1884,13 +1867,13 @@ mod tests {
     fn large_buffer_edit_payload_is_bounded_to_the_changed_region() {
         let base = format!("{}needle{}", "a".repeat(512 * 1024), "z".repeat(512 * 1024));
         let next = base.replacen("needle", "N", 1);
-        let CodeEditorAction::EditText {
+        let CodeEditorAction::EditText(TextEdit {
             insert,
             deleted_text,
             before_context,
             after_context,
             ..
-        } = text_edit_action("file".into(), &base, &next)
+        }) = text_edit_action("file".into(), &base, &next)
         else {
             unreachable!("text_edit_action always returns EditText");
         };

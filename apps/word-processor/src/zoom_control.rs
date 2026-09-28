@@ -1,6 +1,5 @@
 //! Toolbar zoom control and page-scale transform.
 
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 
@@ -212,32 +211,19 @@ impl ZoomControl {
         chip: Color,
         text_color: Color,
     ) {
-        let scene = &mut *context.scene;
         let transform = context.transform;
-        let text = &mut *context.text;
         self.hits.clear();
-        self.measure(text);
+        self.measure(context.text);
         let metrics = self.metrics;
         let center_y = f64::midpoint(row.y0, row.y1);
         let y = center_y - metrics.height / 2.0;
         let mut x = row.x1 - 14.0 - self.width();
         let out = Rect::new(x, y, x + metrics.button_width, y + metrics.height);
-        draw_button(
-            scene,
-            transform,
-            text,
-            out,
-            chip,
-            text_color,
-            "−",
-            metrics.out_size,
-            metrics.radius,
-        );
-        self.hits.push((Action::Out, out));
+        self.draw_button(context, out, Action::Out, chip, text_color);
         x += metrics.button_width + metrics.gap;
         let value = Rect::new(x, y, x + metrics.value_width, y + metrics.height);
-        text.draw_text(
-            scene,
+        context.text.draw_text(
+            context.scene,
             &self.percent(),
             12.5,
             text_color,
@@ -251,18 +237,45 @@ impl ZoomControl {
         self.hits.push((Action::Reset, value));
         x += metrics.value_width + metrics.gap;
         let increase = Rect::new(x, y, x + metrics.button_width, y + metrics.height);
-        draw_button(
-            scene,
-            transform,
-            text,
-            increase,
+        self.draw_button(context, increase, Action::In, chip, text_color);
+    }
+
+    /// Paint the zoom-out or zoom-in chip in `rect` and record its hit target.
+    fn draw_button(
+        &mut self,
+        context: &mut PaintContext<'_>,
+        rect: Rect,
+        action: Action,
+        chip: Color,
+        text_color: Color,
+    ) {
+        let (label, label_size) = if action == Action::Out {
+            ("−", self.metrics.out_size)
+        } else {
+            ("+", self.metrics.in_size)
+        };
+        // The chip face with its derived rest edge (HIG §9.5): the fill alone is
+        // the bar's own tone and disappeared on the dark preset.
+        ui::surface::card(
+            context.scene,
+            context.transform,
+            rect,
+            self.metrics.radius,
             chip,
-            text_color,
-            "+",
-            metrics.in_size,
-            metrics.radius,
         );
-        self.hits.push((Action::In, increase));
+        context.text.draw_text(
+            context.scene,
+            label,
+            13.0,
+            text_color,
+            context.transform
+                * Affine::translate((
+                    rect.center().x - label_size.0 / 2.0,
+                    rect.center().y - label_size.1 / 2.0,
+                )),
+            None,
+        );
+        self.hits.push((action, rect));
     }
 
     #[cfg(test)]
@@ -271,41 +284,10 @@ impl ZoomControl {
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the button painter takes the paint context, rect, colours, label with its measured size, and corner radius"
-)]
-fn draw_button(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    rect: Rect,
-    chip: Color,
-    text_color: Color,
-    label: &str,
-    label_size: (f64, f64),
-    radius: f64,
-) {
-    // The chip face with its derived rest edge (HIG §9.5): the fill alone is
-    // the bar's own tone and disappeared on the dark preset.
-    ui::surface::card(scene, transform, rect, radius, chip);
-    text.draw_text(
-        scene,
-        label,
-        13.0,
-        text_color,
-        transform
-            * Affine::translate((
-                rect.center().x - label_size.0 / 2.0,
-                rect.center().y - label_size.1 / 2.0,
-            )),
-        None,
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vello::Scene;
 
     /// Scaled zoom labels fit their measured hit targets and scaled targets keep out/reset/in behaviour.
     #[test]

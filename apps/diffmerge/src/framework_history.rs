@@ -10,10 +10,11 @@ use ui::history_mode::{
     HistoryDefinition, HistoryPresentation, HistoryPreview, HistoryScopeDefinition,
     PreviewAccessibility, PreviewInput, PreviewNavigation, PreviewView,
 };
+use ui::paint::PaintCtx;
 use ui::{TextRenderer, Theme};
 use vello::{
     Scene,
-    kurbo::{Affine, Rect, Stroke},
+    kurbo::{Affine, Point, Rect, Stroke},
     peniko::{BlendMode, Fill},
 };
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
@@ -148,12 +149,8 @@ impl HistoryPreview for OutputPreview {
                     None,
                 );
                 crate::highlight::draw_line(
-                    scene,
-                    t,
-                    tr,
-                    theme,
-                    x + gutter,
-                    y,
+                    &mut PaintCtx::new(scene, t, tr, theme),
+                    Point::new(x + gutter, y),
                     line,
                     spans.get(i).map_or(&[][..], Vec::as_slice),
                     crate::merge_view::FONT_SIZE,

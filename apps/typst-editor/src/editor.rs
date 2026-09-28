@@ -359,10 +359,6 @@ impl SourceEditor {
     /// Draw a floating tooltip card near `at` carrying a diagnostic's message
     /// (and its first hint, dimmed). Sizing is measured from the text so the
     /// card hugs the content.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "diagnostic tooltip painting combines scene resources and theme with its anchor and diagnostic message/hint"
-    )]
     fn draw_tooltip(
         &self,
         scene: &mut Scene,

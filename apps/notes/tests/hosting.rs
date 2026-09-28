@@ -275,20 +275,22 @@ fn hosts_share_one_writer_and_validate_record_identity() {
             .unwrap();
         let refused = ui::application::HostContext::prepare_new_record(
             notes::definition(),
-            records.clone(),
-            std::rc::Rc::new(
-                ui::application_view::InstanceViewStore::new(
-                    f.state_root.clone(),
-                    "fixture-device",
-                    canonical::ROOM,
-                )
-                .unwrap(),
-            ),
-            "fixture-device".into(),
-            209,
-            f.authority.clone(),
-            f.author,
-            tilo_actions::ActionContext::default(),
+            ui::application::HostContextInputs {
+                records: records.clone(),
+                views: std::rc::Rc::new(
+                    ui::application_view::InstanceViewStore::new(
+                        f.state_root.clone(),
+                        "fixture-device",
+                        canonical::ROOM,
+                    )
+                    .unwrap(),
+                ),
+                device_id: "fixture-device".into(),
+                instance_id: 209,
+                permissions: f.authority.clone(),
+                author: f.author,
+                action_context: tilo_actions::ActionContext::default(),
+            },
             component.record().id.clone(),
         );
         assert!(matches!(
@@ -331,20 +333,22 @@ fn hosts_share_one_writer_and_validate_record_identity() {
         ));
         let result = ui::application::HostContext::prepare_new_record(
             notes::definition(),
-            owner.records_for(notes::definition()).unwrap(),
-            std::rc::Rc::new(
-                ui::application_view::InstanceViewStore::new(
-                    f.state_root.clone(),
-                    "fixture-device",
-                    canonical::ROOM,
-                )
-                .unwrap(),
-            ),
-            "fixture-device".into(),
-            210,
-            f.authority.clone(),
-            f.author.clone(),
-            tilo_actions::ActionContext::default(),
+            ui::application::HostContextInputs {
+                records: owner.records_for(notes::definition()).unwrap(),
+                views: std::rc::Rc::new(
+                    ui::application_view::InstanceViewStore::new(
+                        f.state_root.clone(),
+                        "fixture-device",
+                        canonical::ROOM,
+                    )
+                    .unwrap(),
+                ),
+                device_id: "fixture-device".into(),
+                instance_id: 210,
+                permissions: f.authority.clone(),
+                author: f.author.clone(),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             invalid,
         );
         assert!(matches!(

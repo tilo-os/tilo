@@ -482,10 +482,6 @@ fn library_vertical_metrics(scale: f64, description_lines: usize) -> (f64, f64, 
 /// helper offset the top by `size` as a hand-rolled baseline and discarded the
 /// weight, which is why the panel title floated 17 px below its rect and
 /// painted Regular.)
-#[allow(
-    clippy::too_many_arguments,
-    reason = "immediate-mode panel text needs its render context and explicit style"
-)]
 fn panel_text(
     scene: &mut Scene,
     text_renderer: &mut TextRenderer,
