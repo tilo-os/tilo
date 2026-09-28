@@ -32,6 +32,7 @@ fn sdk_json(source: &SdkSource) -> Value {
     match source {
         SdkSource::Checkout(root) => json!({"checkout": root}),
         SdkSource::Git { url, rev } => json!({"git": url, "rev": rev}),
+        SdkSource::Registry { version } => json!({"version": version}),
     }
 }
 
