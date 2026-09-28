@@ -5299,121 +5299,33 @@ impl Widget for BrowserWidget {
         vec![Box::new(self.search_index.provider())]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == OperationKind::Document || type_id != BROWSER_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let operation = decode_browser_operation(payload)?;
-        self.perform_browser_operation(operation)?;
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: ui::tilo_actions::InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind == OperationKind::Document || type_id != BROWSER_OPERATION_TYPE {
-            for child in self.children_mut() {
-                if let Some(result) =
-                    child.start_resource_operation(invocation, kind, type_id, payload, doc, path)?
-                {
-                    return Ok(Some(result));
-                }
-            }
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let operation = decode_browser_operation(payload)?;
-        if let BrowserOperation::Page(request) = operation {
-            self.start_page_operation(invocation, request)?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+        )? {
+            return Ok(Some(started));
         }
-        let is_navigation = matches!(
-            &operation,
-            BrowserOperation::Back
-                | BrowserOperation::Forward
-                | BrowserOperation::Reload
-                | BrowserOperation::Navigate { .. }
-        );
-        if matches!(&operation, BrowserOperation::TogglePictureInPicture) {
-            if self.resource_pip_invocation.is_some() || self.resource_pip_result.is_some() {
-                return Err("another Picture in Picture operation is already running".into());
-            }
-            if self.active_pip {
-                self.begin_pip_probe();
-                return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    local_output("Picture in Picture closed."),
-                )));
-            }
-            self.begin_pip_probe();
-            let request_id = self
-                .active_pip_probe
-                .ok_or_else(|| "Picture in Picture probe did not start".to_string())?;
-            self.resource_pip_invocation = Some(invocation);
-            self.resource_pip_request = Some(request_id);
-            self.resource_pip_deadline = Some(std::time::Instant::now() + PIP_OPERATION_TIMEOUT);
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if !is_navigation {
-            let is_history_pause_toggle =
-                matches!(&operation, BrowserOperation::ToggleHistoryPause);
-            let output = match &operation {
-                BrowserOperation::ClearHistory => local_output("Browsing history cleared."),
-                // WebKit exposes no completion event for this command. The
-                // result deliberately says only what the executor can prove:
-                // the request was accepted by the local engine.
-                BrowserOperation::RequestWebsiteDataClear => {
-                    local_output("Website-data clear request sent to the local browser engine.")
-                }
-                BrowserOperation::StartDownload { .. } => {
-                    local_output("Download request sent to the local browser engine.")
-                }
-                BrowserOperation::CancelDownload { .. } => {
-                    local_output("Download cancellation sent to the local browser engine.")
-                }
-                BrowserOperation::RetryDownload { .. } => {
-                    local_output("Download retry sent to the local browser engine.")
-                }
-                BrowserOperation::OpenDownload { .. } => {
-                    local_output("Downloaded file was handed to the desktop open portal.")
-                }
-                BrowserOperation::RevealDownload { .. } => {
-                    local_output("Downloaded file location was handed to the desktop portal.")
-                }
-                _ => ui::tilo_actions::ActionOutput::default(),
-            };
-            self.perform_browser_operation(operation)?;
-            let output = if is_history_pause_toggle {
-                local_output(if self.history_paused() {
-                    "History paused in this window."
-                } else {
-                    "History resumed in this window."
-                })
-            } else {
-                output
-            };
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(output)));
-        }
-        if self.resource_navigation_invocation.is_some()
-            || self.resource_navigation_result.is_some()
-        {
-            return Err("another browser navigation is already running".into());
-        }
-        self.perform_browser_operation(operation)?;
-        self.resource_navigation_invocation = Some(invocation);
-        self.resource_navigation_deadline = Some(std::time::Instant::now() + NAVIGATION_TIMEOUT);
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -6362,6 +6274,116 @@ impl Widget for BrowserWidget {
             && (self.pip_float_page_rect.contains(point)
                 || self.pip_select_area_rect.contains(point)))
         .then_some(winit::window::CursorIcon::Pointer)
+    }
+}
+
+impl BrowserWidget {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == OperationKind::Document || type_id != BROWSER_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let operation = decode_browser_operation(payload)?;
+        self.perform_browser_operation(operation)?;
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: ui::tilo_actions::InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind == OperationKind::Document || type_id != BROWSER_OPERATION_TYPE {
+            return Ok(None);
+        }
+        let operation = decode_browser_operation(payload)?;
+        if let BrowserOperation::Page(request) = operation {
+            self.start_page_operation(invocation, request)?;
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        let is_navigation = matches!(
+            &operation,
+            BrowserOperation::Back
+                | BrowserOperation::Forward
+                | BrowserOperation::Reload
+                | BrowserOperation::Navigate { .. }
+        );
+        if matches!(&operation, BrowserOperation::TogglePictureInPicture) {
+            if self.resource_pip_invocation.is_some() || self.resource_pip_result.is_some() {
+                return Err("another Picture in Picture operation is already running".into());
+            }
+            if self.active_pip {
+                self.begin_pip_probe();
+                return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                    local_output("Picture in Picture closed."),
+                )));
+            }
+            self.begin_pip_probe();
+            let request_id = self
+                .active_pip_probe
+                .ok_or_else(|| "Picture in Picture probe did not start".to_string())?;
+            self.resource_pip_invocation = Some(invocation);
+            self.resource_pip_request = Some(request_id);
+            self.resource_pip_deadline = Some(std::time::Instant::now() + PIP_OPERATION_TIMEOUT);
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if !is_navigation {
+            let is_history_pause_toggle =
+                matches!(&operation, BrowserOperation::ToggleHistoryPause);
+            let output = match &operation {
+                BrowserOperation::ClearHistory => local_output("Browsing history cleared."),
+                // WebKit exposes no completion event for this command. The
+                // result deliberately says only what the executor can prove:
+                // the request was accepted by the local engine.
+                BrowserOperation::RequestWebsiteDataClear => {
+                    local_output("Website-data clear request sent to the local browser engine.")
+                }
+                BrowserOperation::StartDownload { .. } => {
+                    local_output("Download request sent to the local browser engine.")
+                }
+                BrowserOperation::CancelDownload { .. } => {
+                    local_output("Download cancellation sent to the local browser engine.")
+                }
+                BrowserOperation::RetryDownload { .. } => {
+                    local_output("Download retry sent to the local browser engine.")
+                }
+                BrowserOperation::OpenDownload { .. } => {
+                    local_output("Downloaded file was handed to the desktop open portal.")
+                }
+                BrowserOperation::RevealDownload { .. } => {
+                    local_output("Downloaded file location was handed to the desktop portal.")
+                }
+                _ => ui::tilo_actions::ActionOutput::default(),
+            };
+            self.perform_browser_operation(operation)?;
+            let output = if is_history_pause_toggle {
+                local_output(if self.history_paused() {
+                    "History paused in this window."
+                } else {
+                    "History resumed in this window."
+                })
+            } else {
+                output
+            };
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(output)));
+        }
+        if self.resource_navigation_invocation.is_some()
+            || self.resource_navigation_result.is_some()
+        {
+            return Err("another browser navigation is already running".into());
+        }
+        self.perform_browser_operation(operation)?;
+        self.resource_navigation_invocation = Some(invocation);
+        self.resource_navigation_deadline = Some(std::time::Instant::now() + NAVIGATION_TIMEOUT);
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -7563,7 +7585,7 @@ mod tests {
         }
         fn start(
             widget: &mut BrowserWidget,
-            doc: &AutoCommit,
+            doc: &mut AutoCommit,
             root: &ObjId,
             id: &str,
             args: &serde_json::Value,
@@ -7573,11 +7595,13 @@ mod tests {
                 .build_json(args.as_object().ok_or("arguments are an object")?)
                 .map_err(|error| error.to_string())?;
             let invocation = ui::tilo_actions::InvocationId::new();
-            match widget.start_resource_operation(
-                invocation,
-                action.kind,
-                &encoded.type_id,
-                &encoded.payload,
+            match widget.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    action.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
                 doc,
                 root,
             )? {
@@ -7627,7 +7651,7 @@ mod tests {
         {
             let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
             let invocation =
-                start(&mut widget, &doc, &root, "read", &serde_json::json!({})).unwrap();
+                start(&mut widget, &mut doc, &root, "read", &serde_json::json!({})).unwrap();
             assert_eq!(page_requests(&engine), vec![PageRequest::Outline]);
             widget.sync(&mut doc, &root);
             let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
@@ -7650,7 +7674,7 @@ mod tests {
             let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
             widget.set_loading_progress(0.4);
             let invocation =
-                start(&mut widget, &doc, &root, "read", &serde_json::json!({})).unwrap();
+                start(&mut widget, &mut doc, &root, "read", &serde_json::json!({})).unwrap();
             widget.sync(&mut doc, &root);
             assert!(
                 page_requests(&engine).is_empty(),
@@ -7676,7 +7700,7 @@ mod tests {
             let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
             let fill = start(
                 &mut widget,
-                &doc,
+                &mut doc,
                 &root,
                 "fill",
                 &serde_json::json!({"element": "d3e7", "text": ""}),
@@ -7690,7 +7714,7 @@ mod tests {
             );
             let select = start(
                 &mut widget,
-                &doc,
+                &mut doc,
                 &root,
                 "select",
                 &serde_json::json!({"element": "d3e8", "values": ["NL", "Belgium"]}),
@@ -7704,7 +7728,7 @@ mod tests {
             );
             let press = start(
                 &mut widget,
-                &doc,
+                &mut doc,
                 &root,
                 "press",
                 &serde_json::json!({"key": "Shift+Tab"}),
@@ -7738,7 +7762,7 @@ mod tests {
                 ("submit", serde_json::json!({"element": ""})),
                 ("press", serde_json::json!({"key": "Hyper+x"})),
             ] {
-                let refused = start(&mut widget, &doc, &root, id, &args).unwrap_err();
+                let refused = start(&mut widget, &mut doc, &root, id, &args).unwrap_err();
                 assert!(!refused.is_empty(), "{id}");
             }
             assert_eq!(
@@ -7760,7 +7784,7 @@ mod tests {
             }));
             let click = start(
                 &mut widget,
-                &doc,
+                &mut doc,
                 &root,
                 "click",
                 &serde_json::json!({"element": "d1e4"}),
@@ -7774,7 +7798,7 @@ mod tests {
                 "a click that started a navigation waits for it"
             );
             assert!(
-                start(&mut widget, &doc, &root, "read", &serde_json::json!({})).is_err(),
+                start(&mut widget, &mut doc, &root, "read", &serde_json::json!({})).is_err(),
                 "a second page action is refused while one runs"
             );
             engine.send(WebViewCommand::Navigate(
@@ -7801,7 +7825,7 @@ mod tests {
             )));
             let click = start(
                 &mut widget,
-                &doc,
+                &mut doc,
                 &root,
                 "click",
                 &serde_json::json!({"element": "d1e4"}),
@@ -7815,7 +7839,7 @@ mod tests {
             };
             assert_eq!(error.code, "browser.page.stale_element");
             assert!(!error.retryable);
-            assert!(start(&mut widget, &doc, &root, "read", &serde_json::json!({})).is_ok());
+            assert!(start(&mut widget, &mut doc, &root, "read", &serde_json::json!({})).is_ok());
         }
     }
 
