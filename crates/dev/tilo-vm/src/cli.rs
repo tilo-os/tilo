@@ -636,7 +636,7 @@ pub enum VmCommand {
     },
     /// Download the published dev disk (or use a local one), create the VM with the host's hypervisor, and register it.
     #[command(
-        after_help = "Checks the hypervisor and its tools, --image, the published disk and free space\nbefore it downloads or creates anything, and names the missing piece with its fix.\n\nExamples:\n  tilo-vm vm create dev                       # newest published disk (needs FORGEJO_TOKEN, or fgj/tea login)\n  tilo-vm vm create dev --tag main-1a2b3c4\n  tilo-vm vm create dev --image ~/images/tilo-vm.qcow2 --disk ~/vms/dev.qcow2\n  tilo-vm vm create try1 --image os/output/disk/disk.raw   # a raw disk from os/dev/disk-image.sh --raw\n  tilo-vm vm create esp1 --image base.raw --boot-esp override.raw   # boot a candidate ESP (os/dev/make-boot-esp.sh) first\n  tilo-vm vm create mac --hypervisor utm --template 'Tilo Dev'\n  tilo-vm vm create arm --arch aarch64 --emulated --image arm.qcow2 --disk arm-dev.qcow2\n  tilo-vm vm create 5k --heads 2 --resolution 5120x2880   # 5K first monitor, 1080p-capable second"
+        after_help = "Checks the hypervisor and its tools, --image, the published disk and free space\nbefore it downloads or creates anything, and names the missing piece with its fix.\n\nExamples:\n  tilo-vm vm create dev                       # newest published disk (needs FORGEJO_TOKEN, or fgj/tea login)\n  tilo-vm vm create dev --tag main-1a2b3c4\n  tilo-vm vm create dev --image ~/images/tilo-vm.qcow2 --disk ~/vms/dev.qcow2\n  tilo-vm vm create try1 --image os/output/disk/disk.raw   # a raw disk from os/dev/disk-image.sh --raw\n  tilo-vm vm create esp1 --image base.raw --boot-esp override.raw   # boot a candidate ESP (os/dev/make-boot-esp.sh) first\n  tilo-vm vm create mac --hypervisor utm --template 'Tilo Dev'\n  tilo-vm vm create arm --arch aarch64 --emulated --image arm.qcow2 --disk arm-dev.qcow2\n  tilo-vm vm create 5k --heads 2 --resolution 5120x2880   # 5K first monitor, 1080p-capable second\n  tilo-vm vm create gpu --gl                   # virgl: render on the host GPU"
     )]
     Create(CreateArgs),
     /// Boot the VM and wait until SSH answers.
@@ -771,6 +771,10 @@ pub struct CreateArgs {
     /// libvirt only: virtio-gpu outputs, e.g. 2 for a two-monitor layout.
     #[arg(long, value_parser = clap::value_parser!(u8).range(1..=16))]
     pub heads: Option<u8>,
+    /// libvirt only: virgl 3D acceleration on the host GPU, so the desktop
+    /// renders on a GPU instead of in software.
+    #[arg(long)]
+    pub gl: bool,
     /// libvirt only: the first output's preferred mode, `WIDTHxHEIGHT` (e.g. `5120x2880`).
     #[arg(long, value_parser = parse_resolution)]
     pub resolution: Option<String>,
