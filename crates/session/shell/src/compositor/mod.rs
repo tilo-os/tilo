@@ -281,7 +281,8 @@ pub fn parse_firstboot_only_from_args() -> bool {
 /// Pure, testable `--provision-identity` flag parser.
 ///
 /// Unlike `--firstboot`, this is a *separate entry point*: runs the identity ceremony and exits
-/// without starting a compositor. The `tilo-identity.service` **user** unit calls it, putting the key in the user's own home instead of root's.
+/// without starting a compositor. It runs as the user, putting the key in the user's own home
+/// instead of root's.
 pub fn parse_provision_identity(args: &[&str]) -> bool {
     args.contains(&"--provision-identity")
 }

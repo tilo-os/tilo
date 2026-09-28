@@ -31,35 +31,13 @@ for socket in \
   grep -Fqx 'PartOf=tilo-graphical-session.target' "$socket"
   grep -Fqx 'WantedBy=tilo-graphical-session.target' "$socket"
 done
-grep -Fqx 'Before=graphical-session-pre.target' "$identity_unit"
-grep -Fqx 'WantedBy=graphical-session-pre.target' "$identity_unit"
-grep -Fqx 'ExecStart=/usr/bin/shell --provision-identity' "$identity_unit"
-grep -Fqx 'ConditionPathExists=%E/tilo/identity/primary.json' "$identity_unit"
-grep -Fqx 'ConditionPathExists=!%E/tilo/identity/.chain-v1-repaired' "$identity_unit"
-grep -Fqx 'ExecStartPost=/usr/bin/mkdir -p %E/tilo/identity' "$identity_unit"
-grep -Fqx 'ExecStartPost=/usr/bin/touch %E/tilo/identity/.chain-v1-repaired' "$identity_unit"
-grep -Fqx 'LimitCORE=0' "$identity_unit"
 grep -Fqx 'ulimit -c 0' "$wrapper"
-for policy in \
-  'ProtectSystem=strict' \
-  'ProtectHome=read-only' \
-  'ReadWritePaths=-%E/tilo/identity /var/lib/tilo/user-identity /var/lib/tilo/device' \
-  'PrivateDevices=yes' \
-  'PrivateIPC=yes' \
-  'PrivateNetwork=yes' \
-  'RestrictNamespaces=yes' \
-  'MemoryDenyWriteExecute=yes' \
-  'CapabilityBoundingSet=' \
-  'AmbientCapabilities=' \
-  'KeyringMode=private' \
-  'SystemCallFilter=@system-service' \
-  'SystemCallFilter=~@clock @debug @keyring @module @mount @obsolete @raw-io @reboot @resources @swap'; do
-  grep -Fqx "$policy" "$identity_unit"
-done
 grep -Fq 'tilo_session_unit_file_t' "$selinux_policy"
 grep -Fqx '(allow xdm_t tilo_session_unit_file_t (service (start stop status)))' "$selinux_policy"
-if grep -q '^SuccessExitStatus=' "$identity_unit"; then
-  echo 'identity migration must not turn failure into successful enrollment' >&2
+# The compositor verifies and repairs an existing identity on every start;
+# there is no separate pre-session identity unit to order anything after.
+if [ -e "$identity_unit" ] || grep -q 'tilo-identity\.service' "$recipient_unit"; then
+  echo 'a pre-session identity unit is back' >&2
   exit 1
 fi
 # Helper entry points must return before long-lived compositor services bind.

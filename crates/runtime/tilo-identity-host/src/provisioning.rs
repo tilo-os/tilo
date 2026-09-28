@@ -411,12 +411,10 @@ fn ensure_collaboration_identity_in_context(
         class,
     )?;
 
-    // Keep the legacy primary path working while making it the first entry in
-    // the multi-identity registry. A registry write failure is a provisioning
-    // failure: silently creating a key that no workspace can select strands
-    // the identity immediately.
-    let registry =
-        crate::registry::IdentityRegistryStore::at(identity_dir).migrate_legacy_primary()?;
+    // Register the primary record in the multi-identity registry. A registry
+    // write failure is a provisioning failure: silently creating a key that no
+    // workspace can select strands the identity immediately.
+    let registry = crate::registry::IdentityRegistryStore::at(identity_dir).load_reconciled()?;
     if let Some(identity_id) = registry.default_identity {
         crate::device_fleet::DeviceFleetStore::at(identity_dir, paths.clone())
             .register_current_device(&identity_id)?;
