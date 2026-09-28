@@ -47,8 +47,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ui::clock::{SystemTime, UNIX_EPOCH};
 
 use tilo_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, RetryPolicy,
+    Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus, Resource,
 };
 use ui::doc::{put_if_changed, put_text_diffed};
 use ui::tilo_resource::Resource as TiloResource;
@@ -478,7 +477,7 @@ mod tests {
         tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
     }
 
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
+    fn prompted_encode(spec: &tilo_actions::ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
             ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {

@@ -7,7 +7,6 @@
 
 use crate::num;
 use crate::styles::{StyleProps, StyleSheet};
-use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use tilo_doc::model::Region;
 use tilo_doc::{Containers, DocMut, IdGen};
@@ -1188,6 +1187,10 @@ impl WordProcessor {
     /// The tracked-change ids present in the document, sorted by their anchored
     /// `(block-order, start)` body position (earliest first). Falls back to the
     /// canonical id order for changes whose anchoring mark is gone.
+    #[allow(
+        dead_code,
+        reason = "review navigation helper kept beside Accept/Reject until wired"
+    )]
     fn changes_in_doc_order(&self, state: &AutoCommit) -> Vec<String> {
         let Some(c) = self.containers.as_ref() else {
             return Vec::new();
@@ -2223,6 +2226,10 @@ impl WordProcessor {
         }
     }
 
+    #[allow(
+        dead_code,
+        reason = "low-level mark helper kept for region edits not yet on RichTextAction"
+    )]
     fn region_add_mark(
         &mut self,
         state: &mut AutoCommit,
@@ -2269,6 +2276,10 @@ impl WordProcessor {
         }
     }
 
+    #[allow(
+        dead_code,
+        reason = "clear-mark helper kept for region edits not yet on RichTextAction"
+    )]
     fn region_remove_mark(
         &mut self,
         state: &mut AutoCommit,
@@ -2911,6 +2922,7 @@ impl WordProcessor {
 mod tests {
     use super::*;
     use automerge::ReadDoc;
+    use automerge::transaction::Transactable;
     use automerge::{AutoCommit, ROOT};
     use tilo_automerge::ApplyIncoming;
 

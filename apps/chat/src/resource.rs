@@ -196,6 +196,10 @@ impl ActionSink {
         self.local.take_committed()
     }
 
+    #[allow(
+        dead_code,
+        reason = "ChatApp tests read the last dispatch; the hosted path does not"
+    )]
     pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
         if self.framework.is_some() {
             self.last.as_ref()

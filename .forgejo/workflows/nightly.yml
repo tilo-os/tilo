@@ -259,7 +259,7 @@ jobs:
         run: |
           rustup target add wasm32-wasip2
           cargo build --locked --release --target wasm32-wasip2 \
-            --manifest-path crates/doc/qdoc-codec-markdown-wasm/Cargo.toml
+            --manifest-path crates/doc/tilo-doc-codec-markdown-wasm/Cargo.toml
           bash tools/ci/measure.sh "nightly ignored tests" -- \
             bash scripts/ci-run.sh "cargo nextest --run-ignored only" -- \
             bash tools/with-test-environment.sh \

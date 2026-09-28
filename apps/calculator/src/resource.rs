@@ -12,7 +12,7 @@ use ui::widget::Element;
 
 use crate::actions::{
     CALCULATOR_ACTION_TYPE, CALCULATOR_OPERATION_TYPE, CalculatorAction, CalculatorOperation,
-    GraphKind, add_graph_action, clear_history_action, delete_graph_action,
+    GraphKind, add_graph_action, clear_history_ids_action, delete_graph_action,
     delete_history_entry_action, encode, set_graph_expr_action, toggle_graph_visible_action,
 };
 use crate::app::CalculatorApp;
@@ -112,10 +112,25 @@ impl Resource for Calculator {
                 },
             )
             .describe("Add a 3D z = f(x, y) surface."),
-            ActionDecl::new("clear-history", "Clear history", Vec::new(), |_args, _| {
-                Ok(clear_history_action())
-            })
-            .describe("Remove every history entry.")
+        ]
+    }
+
+    fn bound_actions(state: &CalculatorState) -> Vec<ActionSpec> {
+        let ids = state
+            .history
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        vec![
+            ActionSpec::immediate(
+                "clear-history",
+                "Clear history",
+                CALCULATOR_ACTION_TYPE,
+                &clear_history_ids_action(ids),
+            )
+            .expect("ClearHistory encodes")
+            .with_description("Remove every history entry.")
+            .reversible()
             .destructive(),
         ]
     }

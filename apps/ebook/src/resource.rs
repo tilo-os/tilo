@@ -160,6 +160,10 @@ impl ActionSink {
         self.local.take_committed()
     }
 
+    #[allow(
+        dead_code,
+        reason = "BooksApp tests read the last dispatch; the hosted path does not"
+    )]
     pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
         if self.framework.is_some() {
             self.last.as_ref()
@@ -169,6 +173,7 @@ impl ActionSink {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<EbookShell>()
 }
