@@ -12,7 +12,8 @@
 //! the host prepared. Code without one (a model loading its preferences
 //! before the first frame) names the app or section itself. The older
 //! entry points (`settings_store`, `xdg-paths`, `atomic-file`, `app-state`
-//! from an app) are internals of these; apps do not depend on them.
+//! from an app) are internals of these; apps other than Settings, which owns
+//! the settings document, have no use for them.
 //!
 //! [`HostContext`]: crate::application::HostContext
 //! [`HostContext::files`]: crate::application::HostContext::files

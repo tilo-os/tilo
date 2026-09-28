@@ -880,9 +880,15 @@ tilo-app package --target web          # dist/web/<app-id>/versions/<digest>/
 
 `tilo-app.toml` narrows the targets with `platforms = ["linux", "macos"]` and a
 `platform-reason`; the default is all three. `tilo-app check --target <t>` runs
-the portability and capability checks for a target on any host. For
-`package`, a `--target` value other than `linux`, `macos` or `web` is a Rust
-target triple.
+the portability and capability checks for a target on any host. In an app that
+keeps all three targets, platform code (a target `cfg`, `std::os`, a platform
+path or OS tool, a thread or clock that panics in a page) is an error, not a
+baseline entry: move it into the platform crates under `crates/platform/`
+(`tilo-paths`, `tilo-files`, `tilo-process`, `tilo-net`, …), which select a
+backend per target, and call them. See
+[`app-model/cross-target.md`](app-model/cross-target.md) for the service table.
+For `package`, a `--target` value other than `linux`, `macos` or `web` is a
+Rust target triple.
 
 ### Files, preferences and secrets
 
@@ -899,8 +905,11 @@ to the app the host prepared.
 
 Apps do not depend on `settings-store`, `app-state`, `xdg-paths` or
 `atomic-file`: those are the SDK's internals (the last two are deprecated
-shims over `tilo-paths` and `tilo_files::native::atomic`). Desktop-only code
-that must name a native path uses `tilo_paths` and `tilo_files::native`.
+shims over `tilo-paths` and `tilo_files::native::atomic`). The exceptions are
+the Settings app, which owns the settings document, and Notes' capture
+fault-injection scenario, which locates its record on disk. Desktop-only code
+that must name a native path uses `tilo_paths` and `tilo_files::native`
+(`native::private` for owner-only files such as keys).
 
 ### Capabilities
 
@@ -2544,6 +2553,12 @@ headless launch path used by generated projects. Prefer semantic assertions
 over pixel coordinates: inspect roles, names, selected/expanded state, and
 focus after dispatching keyboard or pointer input. Use deterministic rendering
 only for visual behavior that semantics cannot express.
+
+The toolkit's debug and capture switches are `TILO_UI_*` environment
+variables (`TILO_UI_DEBUG`, `TILO_UI_PRESENT`, `TILO_UI_VELLO_CPU`, …); the
+rendering ones are listed in [`performance-flags.md`](performance-flags.md).
+Read one from app or test code with `ui::env::var`. The old `QUICK_UI_*`
+names still work and warn once per variable; new scripts use the new names.
 
 For a post-layout inspection without opening a window, write the widget and
 accessibility tree directly. `inspect` writes `inspect.json` in the app root by
