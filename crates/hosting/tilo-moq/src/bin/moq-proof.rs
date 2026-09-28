@@ -7,7 +7,7 @@ use rustls::pki_types::pem::PemObject as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use tilo_moq::relay::{Denied, Direction, Relay, RelayAuthority, SessionAuthorization, VOICE_PATH};
 
@@ -71,12 +71,7 @@ struct ProofAuthority {
 }
 
 fn now_ms() -> Result<u64, &'static str> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| "invalid system clock")?
-        .as_millis()
-        .try_into()
-        .map_err(|_| "invalid system clock")
+    tilo_clock::try_unix_now_ms().ok_or("invalid system clock")
 }
 
 impl ProofAuthority {
