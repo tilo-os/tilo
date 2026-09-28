@@ -4955,6 +4955,9 @@ impl ui::search::capability::SearchSource for NotesApp {
 
 impl ui::resources::PublishesResources for NotesApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.actions.is_hosted() {
+            return self.pending_import_resource().into_iter().collect();
+        }
         let mut resources = self.publish_resources(doc);
         resources.extend(self.pending_import_resource());
         resources

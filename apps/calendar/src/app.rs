@@ -7364,6 +7364,9 @@ impl ui::search::capability::SearchSource for CalendarApp {
 
 impl ui::resources::PublishesResources for CalendarApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.actions.is_hosted() {
+            return self.pending_launch_resource().into_iter().collect();
+        }
         let mut resources = self.publish_resources(doc);
         resources.extend(self.pending_launch_resource());
         resources
@@ -7434,13 +7437,13 @@ impl ui::undo::CommittedActions for CalendarApp {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         // A notes edit dispatches through the editor's field; everything else
         // through the calendar's own host. One event does one or the other.
-        let notes = self.notes_editor.take_committed_action();
+        let notes = ui::undo::CommittedActions::take_committed_action(&mut self.notes_editor);
         let calendar = self.actions.take_committed();
         notes.or(calendar)
     }
     /// Typing a word in the notes is one undo step.
     fn keeps_undo_step_open(&self) -> bool {
-        self.notes_editor.keeps_undo_step_open()
+        ui::undo::CommittedActions::keeps_undo_step_open(&self.notes_editor)
     }
 }
 

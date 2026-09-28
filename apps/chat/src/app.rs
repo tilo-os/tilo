@@ -3957,6 +3957,9 @@ impl ui::resources::PublishesResources for ChatApp {
     /// impl in [`crate::actions`], the same builder the affordance covenant tests
     /// drive. Recomputed each frame; empty until a workspace is selected.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.actions.is_hosted() {
+            return Vec::new();
+        }
         self.publish_resources(doc)
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {

@@ -4297,6 +4297,9 @@ impl ui::resources::PublishesResources for CodeApp {
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.actions.is_hosted() {
+            return Vec::new();
+        }
         self.publish_resources(doc)
     }
     fn action_directory_resource_page(

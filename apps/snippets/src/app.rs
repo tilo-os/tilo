@@ -1515,6 +1515,9 @@ impl ui::resources::PublishesResources for SnippetsApp {
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.actions.is_hosted() {
+            return Vec::new();
+        }
         crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
     }
     fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
