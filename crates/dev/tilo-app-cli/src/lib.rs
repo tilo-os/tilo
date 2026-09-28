@@ -9395,6 +9395,11 @@ fn cargo_toml(spec: &AppSpec) -> Result<String> {
         }
         AppSdk::Standalone(standalone) => {
             manifest.push_str(&standalone.dependencies());
+            if !spec.links_toolkit_dylib() {
+                manifest.push_str(
+                    "\n# `ui::dev_reload_entry!` expands code for a `thin` build, which this app has not.\n[lints.rust]\nunexpected_cfgs = { level = \"warn\", check-cfg = ['cfg(feature, values(\"thin\"))'] }\n",
+                );
+            }
             manifest.push_str(&standalone.manifest_tail()?);
         }
     }

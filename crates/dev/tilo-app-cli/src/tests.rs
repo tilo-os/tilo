@@ -4865,6 +4865,11 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         assert!(dependencies["ui"].get("path").is_none());
         assert!(manifest.get("patch").is_none());
         assert!(manifest.get("features").is_none());
+        assert!(
+            manifest["lints"]["rust"]["unexpected_cfgs"]["check-cfg"][0]
+                .as_str()
+                .is_some_and(|cfg| cfg.contains("\"thin\""))
+        );
         assert!(manifest.get("profile").is_some());
         assert!(!app.join("Cargo.lock").exists());
         assert!(app.join("rust-toolchain.toml").exists());
