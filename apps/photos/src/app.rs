@@ -2849,7 +2849,7 @@ impl PhotosApp {
                 let payload =
                     serde_json::to_vec(&crate::actions::PhotosOperation::AnalyzePeopleLibrary)
                         .unwrap_or_default();
-                if let Err(error) = self.start_resource_operation_with_document(
+                if let Err(error) = self.admit_resource_operation_with_document(
                     invocation,
                     tilo_actions::OperationKind::Effect,
                     crate::actions::PHOTOS_OPERATION_TYPE,
@@ -14372,319 +14372,37 @@ impl Widget for PhotosApp {
         self.actions.take_committed()
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match operation {
-            crate::actions::PhotosOperation::View => {
-                self.library_mode = false;
-                self.album_editor = false;
-                self.metadata_editor = false;
-            }
-            crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
-            crate::actions::PhotosOperation::ViewAlbums => self.show_albums(),
-            crate::actions::PhotosOperation::ViewTimeline { anchor } => {
-                self.view_timeline(doc, anchor.as_ref())?;
-            }
-            crate::actions::PhotosOperation::ViewPeople => {
-                self.show_library();
-                self.people_mode = true;
-                self.library_destination = LibraryDestination::People;
-                self.notice = Some(
-                    "People recognition is local and opt-in; install a verified face model to begin"
-                        .to_owned(),
-                );
-            }
-            crate::actions::PhotosOperation::ViewLibraryAnalysis => {
-                self.show_library_analysis();
-                self.notice = Some(
-                    "Local analysis makes descriptions, objects, pets, and text searchable"
-                        .to_owned(),
-                );
-            }
-            crate::actions::PhotosOperation::ManagePeopleRecognition => {
-                self.notice = Some(
-                    "Open Settings › Models to install and start a signed local face-recognition model"
-                        .to_owned(),
-                );
-            }
-            crate::actions::PhotosOperation::ViewFavorites => self.view_favorites(doc)?,
-            crate::actions::PhotosOperation::ViewPlaces => {
-                self.show_library();
-                self.library_destination = LibraryDestination::Places;
-                self.places_open_key = None;
-                self.notice = Some("Showing offline Places".to_owned());
-            }
-            crate::actions::PhotosOperation::ViewPlace { place_key } => {
-                self.open_place_collection(doc, &place_key)?;
-            }
-            crate::actions::PhotosOperation::ViewAlbum { album_id } => {
-                self.view_album(doc, &album_id)?;
-            }
-            crate::actions::PhotosOperation::ViewFolder { folder } => {
-                self.view_metadata_filter(doc, Some(folder), None, None)?;
-            }
-            crate::actions::PhotosOperation::ViewPerson { person } => {
-                self.view_metadata_filter(doc, None, Some(person), None)?;
-            }
-            crate::actions::PhotosOperation::ViewTag { tag } => {
-                self.view_metadata_filter(doc, None, None, Some(tag))?;
-            }
-            crate::actions::PhotosOperation::ViewObject { object } => {
-                self.view_analysis_filter(doc, object, false)?;
-            }
-            crate::actions::PhotosOperation::ViewPet { pet } => {
-                self.view_analysis_filter(doc, pet, true)?;
-            }
-            crate::actions::PhotosOperation::Open { path: Some(_) } => {
-                return Err("direct open requires lifecycle dispatch".into());
-            }
-            crate::actions::PhotosOperation::Save { path } => {
-                let open =
-                    PhotosDoc::image(doc).ok_or_else(|| "no photograph is open".to_string())?;
-                let destination = path.unwrap_or_else(|| Self::suggested_save_path(&open));
-                if !self.save_to(&destination) {
-                    return Err(tr("photos-save-failed"));
-                }
-            }
-            other => self.perform_effect(other, doc)?,
-        }
-        Ok(true)
-    }
-
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        if type_id == RETAINED_CONTROL_OPERATION_TYPE {
-            for button in self.retained_buttons_mut() {
-                if let Some(output) =
-                    button.invoke_resource_operation_v2(kind, type_id, payload, doc, path)?
-                {
-                    return Ok(Some(output));
-                }
-            }
-        }
-        self.invoke_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
-        };
-        if let crate::actions::PhotosOperation::ExportEditedContent {
-            resource_id,
-            source_content,
-            edits,
-        } = &operation
-        {
-            let output = crate::actions::export_edited_content(
-                resource_id,
-                source_content,
-                *edits,
-                doc,
-                &self.content,
-            )?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(output)));
-        }
-        if let crate::actions::PhotosOperation::Open { path: Some(file) } = operation {
-            self.import_content = Some(LiveContent::read(doc));
-            self.pending_resource_open = Some((invocation, file));
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        if self.picker.is_some()
-            || self.directory_picker.is_some()
-            || self.directory_import.is_some()
-        {
-            self.resource_invocation = Some(invocation);
-            if let Some(import) = self.directory_import.as_mut() {
-                import.invocation = Some(invocation);
-            }
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else {
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
-        }
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one dispatcher routes every retained-control and Photos operation type with shared validation"
-    )]
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &ui::widget::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if type_id == RETAINED_CONTROL_OPERATION_TYPE {
-            let op = ui::widget::ResourceOperation::local(invocation, kind, type_id, payload);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = self.admit_resource_operation_with_document(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        if request.type_id == RETAINED_CONTROL_OPERATION_TYPE {
             for button in self.retained_buttons_mut() {
-                if let Some(started) = button.start_operation(&op, doc, path)? {
+                if let Some(started) = button.start_operation(op, doc, path)? {
                     return Ok(Some(started));
                 }
             }
         }
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(None);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
-        };
-        match &operation {
-            crate::actions::PhotosOperation::AnalyzeLibrary => {
-                self.begin_library_analysis(invocation, doc, false)?;
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            crate::actions::PhotosOperation::ResumeLibraryAnalysis => {
-                self.resume_library_analysis(invocation, doc)?;
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            crate::actions::PhotosOperation::RetryLibraryAnalysisFailures => {
-                self.begin_library_analysis(invocation, doc, true)?;
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            crate::actions::PhotosOperation::PauseLibraryAnalysis => {
-                if !self.pause_library_analysis() {
-                    return Err("Photo analysis is not running".to_owned());
-                }
-                return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput {
-                        value: Some(serde_json::json!({
-                            "completed": self.library_analysis.completed,
-                            "remaining": self.library_analysis.remaining(),
-                        })),
-                        resources: vec!["photos.library-analysis".to_owned()],
-                    },
-                )));
-            }
-            _ => {}
-        }
-        if let crate::actions::PhotosOperation::AnalyzeText {
-            resource_id,
-            language,
-        } = operation
-        {
-            let photo = PhotosDoc::photo(doc, &resource_id)
-                .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
-            if photo.image.content.is_none() {
-                return Err("This legacy photograph needs a verified content identity before text recognition can be shared".to_owned());
-            }
-            let sender = self
-                .analysis_tx
-                .as_ref()
-                .ok_or_else(|| "local text recognition is unavailable on this device".to_owned())?;
-            sender
-                .try_send(AnalysisJob {
-                    invocation,
-                    photo_id: resource_id,
-                    content: photo.image.content.clone(),
-                    image: photo.image,
-                    kind: AnalysisJobKind::Ocr { language },
-                })
-                .map_err(|_| {
-                    "text recognition is busy; wait for the current photos to finish".to_owned()
-                })?;
-            self.active_analysis.insert(invocation);
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if let crate::actions::PhotosOperation::AnalyzeImage { resource_id } = operation {
-            let photo = PhotosDoc::photo(doc, &resource_id)
-                .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
-            if photo.image.content.is_none() {
-                return Err("This legacy photograph needs a verified content identity before image analysis can be shared".to_owned());
-            }
-            let capability = tilo_vision::discover_local_capability(
-                &agent_provider_config::ProviderConfig::load(),
-            )
-            .ok_or_else(|| {
-                "No verified local image-analysis model is ready. Install and start one in Settings."
-                    .to_owned()
-            })?;
-            let sender = self
-                .analysis_tx
-                .as_ref()
-                .ok_or_else(|| "local image analysis is unavailable on this device".to_owned())?;
-            sender
-                .try_send(AnalysisJob {
-                    invocation,
-                    photo_id: resource_id,
-                    content: photo.image.content.clone(),
-                    image: photo.image,
-                    kind: AnalysisJobKind::Vision { capability },
-                })
-                .map_err(|_| {
-                    "local image analysis is busy; wait for the current photos to finish".to_owned()
-                })?;
-            self.active_analysis.insert(invocation);
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if matches!(
-            operation,
-            crate::actions::PhotosOperation::AnalyzePeopleLibrary
-        ) {
-            self.schedule_people_scan_batch(invocation, doc)?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-
-        let crate::actions::PhotosOperation::ImportCameraMedia { media_id, name } = operation
-        else {
-            return self.start_resource_operation(invocation, kind, type_id, payload, doc, path);
-        };
-
-        // This is deliberately a compound admission boundary: verify the
-        // portable Camera identity and bytes before committing the one
-        // idempotent Photos library/selection update.  A missing local blob
-        // remains a refusal instead of becoming a path-only phantom entry.
-        let photo = crate::camera_import_photo(&media_id, &name, &self.content)?;
-        let id = photo.id.clone();
-        let action = crate::actions::PhotosAction::ImportPhoto { photo };
-        self.actions
-            .try_dispatch_with_context(
-                doc,
-                crate::actions::PHOTOS_ACTION_TYPE,
-                &action,
-                tilo_actions::ActionContext::for_action("so.tilo.photos", "Photos", &action),
-            )
-            .map_err(|error| error.to_string())?;
-        self.notice = Some("Imported Camera photo".to_owned());
-        Ok(Some(ui::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput {
-                value: Some(serde_json::Value::String(id.clone())),
-                resources: vec![id],
-            },
-        )))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            }))
     }
 
     fn poll_resource_operation(
@@ -16442,6 +16160,302 @@ impl Widget for PhotosApp {
 }
 
 impl PhotosApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            crate::actions::PhotosOperation::View => {
+                self.library_mode = false;
+                self.album_editor = false;
+                self.metadata_editor = false;
+            }
+            crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
+            crate::actions::PhotosOperation::ViewAlbums => self.show_albums(),
+            crate::actions::PhotosOperation::ViewTimeline { anchor } => {
+                self.view_timeline(doc, anchor.as_ref())?;
+            }
+            crate::actions::PhotosOperation::ViewPeople => {
+                self.show_library();
+                self.people_mode = true;
+                self.library_destination = LibraryDestination::People;
+                self.notice = Some(
+                    "People recognition is local and opt-in; install a verified face model to begin"
+                        .to_owned(),
+                );
+            }
+            crate::actions::PhotosOperation::ViewLibraryAnalysis => {
+                self.show_library_analysis();
+                self.notice = Some(
+                    "Local analysis makes descriptions, objects, pets, and text searchable"
+                        .to_owned(),
+                );
+            }
+            crate::actions::PhotosOperation::ManagePeopleRecognition => {
+                self.notice = Some(
+                    "Open Settings › Models to install and start a signed local face-recognition model"
+                        .to_owned(),
+                );
+            }
+            crate::actions::PhotosOperation::ViewFavorites => self.view_favorites(doc)?,
+            crate::actions::PhotosOperation::ViewPlaces => {
+                self.show_library();
+                self.library_destination = LibraryDestination::Places;
+                self.places_open_key = None;
+                self.notice = Some("Showing offline Places".to_owned());
+            }
+            crate::actions::PhotosOperation::ViewPlace { place_key } => {
+                self.open_place_collection(doc, &place_key)?;
+            }
+            crate::actions::PhotosOperation::ViewAlbum { album_id } => {
+                self.view_album(doc, &album_id)?;
+            }
+            crate::actions::PhotosOperation::ViewFolder { folder } => {
+                self.view_metadata_filter(doc, Some(folder), None, None)?;
+            }
+            crate::actions::PhotosOperation::ViewPerson { person } => {
+                self.view_metadata_filter(doc, None, Some(person), None)?;
+            }
+            crate::actions::PhotosOperation::ViewTag { tag } => {
+                self.view_metadata_filter(doc, None, None, Some(tag))?;
+            }
+            crate::actions::PhotosOperation::ViewObject { object } => {
+                self.view_analysis_filter(doc, object, false)?;
+            }
+            crate::actions::PhotosOperation::ViewPet { pet } => {
+                self.view_analysis_filter(doc, pet, true)?;
+            }
+            crate::actions::PhotosOperation::Open { path: Some(_) } => {
+                return Err("direct open requires lifecycle dispatch".into());
+            }
+            crate::actions::PhotosOperation::Save { path } => {
+                let open =
+                    PhotosDoc::image(doc).ok_or_else(|| "no photograph is open".to_string())?;
+                let destination = path.unwrap_or_else(|| Self::suggested_save_path(&open));
+                if !self.save_to(&destination) {
+                    return Err(tr("photos-save-failed"));
+                }
+            }
+            other => self.perform_effect(other, doc)?,
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        if let crate::actions::PhotosOperation::ExportEditedContent {
+            resource_id,
+            source_content,
+            edits,
+        } = &operation
+        {
+            let output = crate::actions::export_edited_content(
+                resource_id,
+                source_content,
+                *edits,
+                doc,
+                &self.content,
+            )?;
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(output)));
+        }
+        if let crate::actions::PhotosOperation::Open { path: Some(file) } = operation {
+            self.import_content = Some(LiveContent::read(doc));
+            self.pending_resource_open = Some((invocation, file));
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        if self.picker.is_some()
+            || self.directory_picker.is_some()
+            || self.directory_import.is_some()
+        {
+            self.resource_invocation = Some(invocation);
+            if let Some(import) = self.directory_import.as_mut() {
+                import.invocation = Some(invocation);
+            }
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )))
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one dispatcher routes every retained-control and Photos operation type with shared validation"
+    )]
+    fn admit_resource_operation_with_document(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if type_id == RETAINED_CONTROL_OPERATION_TYPE {
+            let op = ui::widget::ResourceOperation::local(invocation, kind, type_id, payload);
+            for button in self.retained_buttons_mut() {
+                if let Some(started) = button.start_operation(&op, doc, path)? {
+                    return Ok(Some(started));
+                }
+            }
+        }
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(None);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        match &operation {
+            crate::actions::PhotosOperation::AnalyzeLibrary => {
+                self.begin_library_analysis(invocation, doc, false)?;
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::PhotosOperation::ResumeLibraryAnalysis => {
+                self.resume_library_analysis(invocation, doc)?;
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::PhotosOperation::RetryLibraryAnalysisFailures => {
+                self.begin_library_analysis(invocation, doc, true)?;
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::PhotosOperation::PauseLibraryAnalysis => {
+                if !self.pause_library_analysis() {
+                    return Err("Photo analysis is not running".to_owned());
+                }
+                return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput {
+                        value: Some(serde_json::json!({
+                            "completed": self.library_analysis.completed,
+                            "remaining": self.library_analysis.remaining(),
+                        })),
+                        resources: vec!["photos.library-analysis".to_owned()],
+                    },
+                )));
+            }
+            _ => {}
+        }
+        if let crate::actions::PhotosOperation::AnalyzeText {
+            resource_id,
+            language,
+        } = operation
+        {
+            let photo = PhotosDoc::photo(doc, &resource_id)
+                .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
+            if photo.image.content.is_none() {
+                return Err("This legacy photograph needs a verified content identity before text recognition can be shared".to_owned());
+            }
+            let sender = self
+                .analysis_tx
+                .as_ref()
+                .ok_or_else(|| "local text recognition is unavailable on this device".to_owned())?;
+            sender
+                .try_send(AnalysisJob {
+                    invocation,
+                    photo_id: resource_id,
+                    content: photo.image.content.clone(),
+                    image: photo.image,
+                    kind: AnalysisJobKind::Ocr { language },
+                })
+                .map_err(|_| {
+                    "text recognition is busy; wait for the current photos to finish".to_owned()
+                })?;
+            self.active_analysis.insert(invocation);
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if let crate::actions::PhotosOperation::AnalyzeImage { resource_id } = operation {
+            let photo = PhotosDoc::photo(doc, &resource_id)
+                .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
+            if photo.image.content.is_none() {
+                return Err("This legacy photograph needs a verified content identity before image analysis can be shared".to_owned());
+            }
+            let capability = tilo_vision::discover_local_capability(
+                &agent_provider_config::ProviderConfig::load(),
+            )
+            .ok_or_else(|| {
+                "No verified local image-analysis model is ready. Install and start one in Settings."
+                    .to_owned()
+            })?;
+            let sender = self
+                .analysis_tx
+                .as_ref()
+                .ok_or_else(|| "local image analysis is unavailable on this device".to_owned())?;
+            sender
+                .try_send(AnalysisJob {
+                    invocation,
+                    photo_id: resource_id,
+                    content: photo.image.content.clone(),
+                    image: photo.image,
+                    kind: AnalysisJobKind::Vision { capability },
+                })
+                .map_err(|_| {
+                    "local image analysis is busy; wait for the current photos to finish".to_owned()
+                })?;
+            self.active_analysis.insert(invocation);
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if matches!(
+            operation,
+            crate::actions::PhotosOperation::AnalyzePeopleLibrary
+        ) {
+            self.schedule_people_scan_batch(invocation, doc)?;
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+
+        let crate::actions::PhotosOperation::ImportCameraMedia { media_id, name } = operation
+        else {
+            return self.admit_resource_operation(invocation, kind, type_id, payload, doc, path);
+        };
+
+        // This is deliberately a compound admission boundary: verify the
+        // portable Camera identity and bytes before committing the one
+        // idempotent Photos library/selection update.  A missing local blob
+        // remains a refusal instead of becoming a path-only phantom entry.
+        let photo = crate::camera_import_photo(&media_id, &name, &self.content)?;
+        let id = photo.id.clone();
+        let action = crate::actions::PhotosAction::ImportPhoto { photo };
+        self.actions
+            .try_dispatch_with_context(
+                doc,
+                crate::actions::PHOTOS_ACTION_TYPE,
+                &action,
+                tilo_actions::ActionContext::for_action("so.tilo.photos", "Photos", &action),
+            )
+            .map_err(|error| error.to_string())?;
+        self.notice = Some("Imported Camera photo".to_owned());
+        Ok(Some(ui::widget::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput {
+                value: Some(serde_json::Value::String(id.clone())),
+                resources: vec![id],
+            },
+        )))
+    }
+}
+
+impl PhotosApp {
     /// Admit one fresh contiguous People slice plus a bounded, device-local
     /// anchor set from earlier local suggestions. Anchors use ordinary local
     /// pixels only to let the signed runtime bridge disjoint batches; they do
@@ -17043,12 +17057,14 @@ mod history_reconcile_tests {
                 path: Some(path.to_string_lossy().into()),
             })
             .unwrap();
-            app.start_resource_operation(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::PHOTOS_OPERATION_TYPE,
-                &payload,
-                &doc,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::PHOTOS_OPERATION_TYPE,
+                    &payload,
+                ),
+                &mut doc,
                 &ROOT,
             )
             .unwrap();
@@ -17142,12 +17158,14 @@ mod history_reconcile_tests {
                 path: Some(tmp.path().join("absent.png").to_string_lossy().into()),
             })
             .unwrap();
-            app.start_resource_operation(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::PHOTOS_OPERATION_TYPE,
-                &payload,
-                &doc,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::PHOTOS_OPERATION_TYPE,
+                    &payload,
+                ),
+                &mut doc,
                 &ROOT,
             )
             .unwrap();
