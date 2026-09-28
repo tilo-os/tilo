@@ -68,8 +68,6 @@ struct AccessProbe {
 }
 
 impl Widget for AccessProbe {
-    fn sync(&mut self, _: &mut tilo_app::automerge::AutoCommit, _: &tilo_app::automerge::ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -133,10 +133,6 @@ fn surface(title: Option<String>, action: Option<Element>, body: Element) -> Ele
 }
 
 impl Widget for Card {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.inner.sync(state, path);
-    }
-
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
         self.inner.update(state, path)
     }
@@ -437,12 +433,6 @@ impl CardGrid {
 }
 
 impl Widget for CardGrid {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        for card in &mut self.cards {
-            card.sync(state, path);
-        }
-    }
-
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
         let mut changed = false;
         for card in &mut self.cards {

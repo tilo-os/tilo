@@ -1084,8 +1084,6 @@ fn px(v: f64) -> f32 {
 }
 
 impl Widget for ChannelBrowser {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

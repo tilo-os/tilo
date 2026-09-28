@@ -2252,7 +2252,6 @@ fn chip_hover_tint(theme: &Theme, alpha: u8) -> vello::peniko::Color {
 }
 
 impl Widget for TabBar {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

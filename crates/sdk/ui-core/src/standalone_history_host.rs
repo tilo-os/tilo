@@ -918,7 +918,6 @@ struct PresentationRoots<'a> {
 }
 
 impl Widget for PresentationRoots<'_> {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         _taffy: &mut TaffyTree<()>,

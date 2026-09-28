@@ -511,8 +511,6 @@ impl PlacesSidebar {
 }
 
 impl Widget for PlacesSidebar {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn is_layout_dirty(&self) -> bool {
         // This leaf fills its assigned pane on both axes. Favorite and hover
         // changes affect painted rows, never the pane's intrinsic size.

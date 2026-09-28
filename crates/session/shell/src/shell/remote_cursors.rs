@@ -85,8 +85,6 @@ fn peer_color_to_peniko(c: [f32; 4]) -> vello::peniko::Color {
 }
 
 impl ui::widget::Widget for RemoteCursorOverlay {
-    fn sync(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,

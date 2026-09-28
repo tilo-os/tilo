@@ -19,8 +19,6 @@ struct LocalEffectProbe {
 }
 
 impl Widget for LocalEffectProbe {
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -770,11 +770,6 @@ fn split_cache_disabled() -> bool {
 }
 
 impl Widget for NavSplit {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.sidebar.sync(state, path);
-        self.content.sync(state, path);
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1190,7 +1185,6 @@ mod tests {
         rect: Rect,
     }
     impl Widget for Spy {
-        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,

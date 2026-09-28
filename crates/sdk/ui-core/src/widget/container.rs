@@ -271,12 +271,6 @@ impl Widget for Container {
         )
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        if let Some(child) = &mut self.child {
-            child.sync(state, path);
-        }
-    }
-
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
         match &mut self.child {
             Some(child) => child.update(state, path),

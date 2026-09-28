@@ -334,7 +334,6 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
 }
 
 impl Widget for InventoryOnlyPublisher {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -416,7 +415,6 @@ struct FastInventoryPublisher {
 }
 
 impl Widget for FastInventoryPublisher {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

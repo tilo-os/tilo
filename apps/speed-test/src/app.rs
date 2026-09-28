@@ -271,8 +271,6 @@ impl Default for SpeedTestApp {
 }
 
 impl Widget for SpeedTestApp {
-    fn sync(&mut self, _doc: &mut AutoCommit, _path: &ObjId) {}
-
     fn update(&mut self, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
         let mut changed = false;
         if let Some(rx) = &self.worker {

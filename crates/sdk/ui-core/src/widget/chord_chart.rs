@@ -323,7 +323,6 @@ fn ribbon(center: Point, radius: f64, a0: f64, a1: f64, b0: f64, b1: f64) -> Bez
 }
 
 impl Widget for ChordChart {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

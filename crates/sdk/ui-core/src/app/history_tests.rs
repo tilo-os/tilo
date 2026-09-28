@@ -4571,9 +4571,6 @@ impl crate::widget::Widget for ComponentControlSlot {
     fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
         Some(self.binding.clone())
     }
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-        self.live.sync(doc, path);
-    }
     fn build_layout(
         &mut self,
         tree: &mut taffy::TaffyTree<()>,
@@ -6242,9 +6239,6 @@ impl crate::widget::Widget for CustodyControlsRoot {
     }
     fn name(&self) -> &str {
         "Controlled component boundary"
-    }
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-        self.child.sync(doc, path);
     }
     fn build_layout(
         &mut self,

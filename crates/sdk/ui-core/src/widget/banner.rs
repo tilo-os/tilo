@@ -355,8 +355,6 @@ impl Banner {
 }
 
 impl Widget for Banner {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     #[allow(
         clippy::cast_possible_truncation,
         reason = "content_height is a small, bounded pixel value built from theme typography \

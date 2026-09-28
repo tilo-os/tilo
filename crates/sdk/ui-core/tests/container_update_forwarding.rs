@@ -40,8 +40,6 @@ struct Probe {
 }
 
 impl Widget for Probe {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
         self.updates.set(self.updates.get().saturating_add(1));
         true

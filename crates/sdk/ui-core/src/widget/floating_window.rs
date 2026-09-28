@@ -784,10 +784,6 @@ impl<C: Widget> FloatingWindow<C> {
 }
 
 impl<C: Widget + 'static> Widget for FloatingWindow<C> {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.content.sync(state, path);
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1636,7 +1632,6 @@ mod tests {
         rect: Rect,
     }
     impl Widget for Probe {
-        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,

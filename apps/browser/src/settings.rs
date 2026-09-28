@@ -567,12 +567,6 @@ fn button_with_action(button: Button, action: Option<tilo_actions::ActionBinding
 }
 
 impl Widget for SettingsPane {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        if let Some(c) = &mut self.composed {
-            c.sync(state, path);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

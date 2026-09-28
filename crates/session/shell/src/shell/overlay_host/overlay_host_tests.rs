@@ -640,8 +640,6 @@ impl StubContent {
 }
 
 impl Widget for StubContent {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

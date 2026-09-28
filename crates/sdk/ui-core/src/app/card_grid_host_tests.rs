@@ -439,9 +439,6 @@ impl Widget for GrowingBody {
         self.dirty = true;
         true
     }
-    fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-        self.column.sync(state, path);
-    }
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
