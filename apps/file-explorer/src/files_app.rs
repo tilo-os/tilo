@@ -31,8 +31,8 @@ use ui::tilo_actions::{
 };
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{
-    Button, Collaborative, Column, EmptyState, NavShell, ScrollAxis, Scrollable, ShellMode, Spacer,
-    Spinner, Text, TextInput, Widget,
+    Button, Collaborative, Column, EmptyState, NavShell, ResourceOperation, ScrollAxis, Scrollable,
+    ShellMode, Spacer, Spinner, Text, TextInput, Widget,
 };
 use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
@@ -108,29 +108,6 @@ fn build_thumb_service(config_dir: Option<&Path>) -> Option<ThumbnailService> {
 /// v2-only native handler through an arbitrary container.  Keeping this small
 /// recursive router at the app action boundary makes a screen-reader/agent
 /// action reach precisely the same callback as pointer and keyboard input.
-fn invoke_native_control_in_subtree(
-    widget: &mut dyn Widget,
-    kind: OperationKind,
-    type_id: &str,
-    payload: &[u8],
-    doc: &automerge::AutoCommit,
-    path: &automerge::ObjId,
-) -> Result<bool, String> {
-    if widget.resource_operation_handlers().contains(type_id)
-        && widget
-            .invoke_resource_operation_v2(kind, type_id, payload, doc, path)?
-            .is_some()
-    {
-        return Ok(true);
-    }
-    for child in widget.children_mut() {
-        if invoke_native_control_in_subtree(child, kind, type_id, payload, doc, path)? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CollabPanel {
     title: String,
@@ -7971,46 +7948,11 @@ impl Widget for FileExplorerWidget {
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
-        doc: &automerge::AutoCommit,
-        path: &automerge::ObjId,
+        _doc: &automerge::AutoCommit,
+        _path: &automerge::ObjId,
     ) -> Result<bool, String> {
         match (kind, type_id) {
             (OperationKind::Effect, "files.refresh") => self.refresh(),
-            (_, "tilo.ui.control.invoke") => {
-                // A shared Button publishes its own canonical resource.  This
-                // root also publishes the contained toolbar/menu controls, so
-                // intercepting the type here and trying only the error-state
-                // retry button made an external AT-SPI/resource invocation of
-                // every ordinary toolbar button falsely succeed at discovery
-                // and then be refused at execution. Route the exact payload
-                // through the retained tree (including the separately-painted
-                // retry control) just as a pointer/keyboard activation does.
-                let mut handled = invoke_native_control_in_subtree(
-                    &mut self.state_retry,
-                    kind,
-                    type_id,
-                    payload,
-                    doc,
-                    path,
-                )?;
-                if !handled {
-                    for child in self.children_mut() {
-                        if invoke_native_control_in_subtree(
-                            child, kind, type_id, payload, doc, path,
-                        )? {
-                            handled = true;
-                            break;
-                        }
-                    }
-                }
-                if !handled {
-                    return Ok(false);
-                }
-                // Control handlers queue the same commands their painted
-                // counterparts do. Apply them at this resource boundary,
-                // never through a document write or widget-local click flag.
-                self.drain_commands();
-            }
             (OperationKind::Effect, "files.new-folder") => {
                 let name: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
                 fileops::new_folder(&self.current_path, &name)?;
@@ -8376,6 +8318,47 @@ impl Widget for FileExplorerWidget {
         clippy::too_many_lines,
         reason = "the resource dispatcher keeps every typed Files operation at one auditable authorization boundary"
     )]
+    fn start_operation(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if request.type_id == "tilo.ui.control.invoke" {
+            // A shared Button publishes its own canonical resource. This root
+            // also publishes the contained toolbar/menu controls, so route the
+            // exact payload through the retained tree (including the
+            // separately-painted retry control) just as a pointer/keyboard
+            // activation does.
+            if self.state_retry.start_operation(op, doc, path)?.is_none()
+                && ui::widget::start_in_children(self, op, doc, path)?.is_none()
+            {
+                return Ok(None);
+            }
+            // Control handlers queue the same commands their painted
+            // counterparts do. Apply them at this resource boundary,
+            // never through a document write or widget-local click flag.
+            self.drain_commands();
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        self.start_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )
+    }
+
     fn start_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,

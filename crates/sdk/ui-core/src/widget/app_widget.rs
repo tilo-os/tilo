@@ -1573,6 +1573,91 @@ mod component_adapter {
             }
             result
         }
+        // Legacy adapters for apps not yet on `Widget::start_operation`.
+        fn invoke_resource_operation(
+            &mut self,
+            kind: tilo_actions::OperationKind,
+            type_id: &str,
+            payload: &[u8],
+            doc: &AutoCommit,
+            _path: &ObjId,
+        ) -> Result<bool, String> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, record_root| {
+                    let Some(root) = self.component.root.as_deref_mut() else {
+                        return Err("component callback refused".into());
+                    };
+                    root.invoke_resource_operation(kind, type_id, payload, document, record_root)
+                })
+                .unwrap_or_else(|_| Err("component callback refused".into()))
+        }
+        fn invoke_resource_operation_v2(
+            &mut self,
+            kind: tilo_actions::OperationKind,
+            type_id: &str,
+            payload: &[u8],
+            doc: &AutoCommit,
+            _path: &ObjId,
+        ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, record_root| {
+                    let Some(root) = self.component.root.as_deref_mut() else {
+                        return Err("component callback refused".into());
+                    };
+                    root.invoke_resource_operation_v2(kind, type_id, payload, document, record_root)
+                })
+                .unwrap_or_else(|_| Err("component callback refused".into()))
+        }
+        fn start_resource_operation(
+            &mut self,
+            invocation: tilo_actions::InvocationId,
+            kind: tilo_actions::OperationKind,
+            type_id: &str,
+            payload: &[u8],
+            doc: &AutoCommit,
+            _path: &ObjId,
+        ) -> Result<Option<ResourceOperationStart>, String> {
+            let binding = self.component.callback_binding();
+            let result = binding
+                .read_document(doc, |document, record_root| {
+                    let Some(root) = self.component.root.as_deref_mut() else {
+                        return Err("component callback refused".into());
+                    };
+                    root.start_resource_operation(
+                        invocation,
+                        kind,
+                        type_id,
+                        payload,
+                        document,
+                        record_root,
+                    )
+                })
+                .unwrap_or_else(|_| Err("component callback refused".into()));
+            if matches!(result, Ok(Some(ResourceOperationStart::Accepted)))
+                && !self.component.invocations.contains(&invocation)
+            {
+                self.component.invocations.push(invocation);
+            }
+            result
+        }
+        /// Legacy adapter: offered through [`Widget::start_operation`].
+        fn start_resource_operation_with_document(
+            &mut self,
+            invocation: tilo_actions::InvocationId,
+            kind: tilo_actions::OperationKind,
+            type_id: &str,
+            payload: &[u8],
+            doc: &mut AutoCommit,
+            path: &ObjId,
+        ) -> Result<Option<ResourceOperationStart>, String> {
+            self.start_operation(
+                &crate::widget::ResourceOperation::local(invocation, kind, type_id, payload),
+                doc,
+                path,
+            )
+        }
         fn poll_resource_operation(
             &mut self,
             invocation: tilo_actions::InvocationId,

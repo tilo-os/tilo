@@ -6271,7 +6271,7 @@ mod architecture_tests {
             let invocation = ui::tilo_actions::InvocationId::new();
             widget.resource_navigation_invocation = Some(invocation);
             widget.set_loading_progress(0.2);
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let resources = widget.resources(&doc);
             let stop = resources[0]
                 .children
@@ -6284,12 +6284,14 @@ mod architecture_tests {
                 .unwrap();
             let encoded = stop.build_json(&serde_json::Map::new()).unwrap();
             let result = widget
-                .start_resource_operation(
-                    ui::tilo_actions::InvocationId::new(),
-                    stop.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        stop.kind,
+                        &encoded.type_id,
+                        &encoded.payload,
+                    ),
+                    &mut doc,
                     &automerge::ROOT,
                 )
                 .unwrap();
@@ -6423,12 +6425,14 @@ mod architecture_tests {
                 });
             compose(&mut widget);
             let result = widget
-                .start_resource_operation(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec("browser.decision.false.1.true").unwrap(),
-                    &AutoCommit::new(),
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec("browser.decision.false.1.true").unwrap(),
+                    ),
+                    &mut AutoCommit::new(),
                     &automerge::ROOT,
                 )
                 .unwrap();
@@ -7716,7 +7720,7 @@ mod tests {
             let mut widget = BrowserWidget::new_headless();
             widget.credentials =
                 crate::credentials::Credentials::with_address_path(false, Some(path.clone()));
-            let (doc, root) = synced(&mut widget);
+            let (mut doc, root) = synced(&mut widget);
             widget.show_settings = true;
             widget.structure_dirty = true;
             layout_at(&mut widget, 390.0, 700.0);
@@ -7728,12 +7732,14 @@ mod tests {
                 "browser.credentials.close",
             ] {
                 let result = widget
-                    .start_resource_operation(
-                        ui::tilo_actions::InvocationId::new(),
-                        OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec(id).unwrap(),
-                        &doc,
+                    .start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            ui::tilo_actions::InvocationId::new(),
+                            OperationKind::Effect,
+                            "tilo.ui.control.invoke",
+                            &serde_json::to_vec(id).unwrap(),
+                        ),
+                        &mut doc,
                         &root,
                     )
                     .unwrap();
@@ -7777,18 +7783,20 @@ mod tests {
         // Phase `credentials_settings_launcher_and_overlay_actions_work_at_narrow_width`.
         {
             let mut widget = BrowserWidget::new_headless();
-            let (doc, root) = synced(&mut widget);
+            let (mut doc, root) = synced(&mut widget);
             widget.show_settings = true;
             widget.structure_dirty = true;
             layout_at(&mut widget, 390.0, 700.0);
             for id in ["browser.credentials.open", "browser.credentials.close"] {
                 let result = widget
-                    .start_resource_operation(
-                        ui::tilo_actions::InvocationId::new(),
-                        OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec(id).unwrap(),
-                        &doc,
+                    .start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            ui::tilo_actions::InvocationId::new(),
+                            OperationKind::Effect,
+                            "tilo.ui.control.invoke",
+                            &serde_json::to_vec(id).unwrap(),
+                        ),
+                        &mut doc,
                         &root,
                     )
                     .unwrap();
@@ -8028,7 +8036,7 @@ mod tests {
         // Phase `populated_site_panels_render_at_narrow_width`.
         {
             let mut widget = BrowserWidget::new_headless();
-            let (doc, root) = synced(&mut widget);
+            let (mut doc, root) = synced(&mut widget);
             widget.site.navigation("https://example.com");
             widget.site.open = true;
             widget.site.sync(&widget.engine);
@@ -8066,13 +8074,15 @@ mod tests {
                 if information {
                     assert!(
                         widget
-                            .start_resource_operation(
-                                ui::tilo_actions::InvocationId::new(),
-                                OperationKind::Effect,
-                                "tilo.ui.control.invoke",
-                                &serde_json::to_vec("browser.site.connection").unwrap(),
-                                &doc,
-                                &root,
+                            .start_operation(
+                                &ui::widget::ResourceOperation::local(
+                                    ui::tilo_actions::InvocationId::new(),
+                                    OperationKind::Effect,
+                                    "tilo.ui.control.invoke",
+                                    &serde_json::to_vec("browser.site.connection").unwrap()
+                                ),
+                                &mut doc,
+                                &root
                             )
                             .unwrap()
                             .is_some()
@@ -8111,12 +8121,14 @@ mod tests {
             layout_at(&mut widget, 1000.0, 700.0);
             assert!(widget.site_panel.is_some());
             let result = widget
-                .start_resource_operation(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec("browser.site.close").unwrap(),
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec("browser.site.close").unwrap(),
+                    ),
+                    &mut doc,
                     &root,
                 )
                 .unwrap();
@@ -8238,13 +8250,15 @@ mod tests {
             assert!(widget.site_panel.is_some());
             assert!(
                 widget
-                    .start_resource_operation(
-                        ui::tilo_actions::InvocationId::new(),
-                        OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec("browser.site.toggle").unwrap(),
-                        &doc,
-                        &root,
+                    .start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            ui::tilo_actions::InvocationId::new(),
+                            OperationKind::Effect,
+                            "tilo.ui.control.invoke",
+                            &serde_json::to_vec("browser.site.toggle").unwrap()
+                        ),
+                        &mut doc,
+                        &root
                     )
                     .unwrap()
                     .is_some(),
@@ -8741,15 +8755,17 @@ mod tests {
             ));
             let invocation = ui::tilo_actions::InvocationId::new();
             assert_eq!(
-                w.start_resource_operation(
-                    invocation,
-                    pip.kind,
-                    pip.operation_type.as_deref().unwrap(),
-                    &browser_operation_payload(&BrowserOperation::TogglePictureInPicture)
-                        .to_string()
-                        .into_bytes(),
-                    &doc,
-                    &root,
+                w.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        pip.kind,
+                        pip.operation_type.as_deref().unwrap(),
+                        &browser_operation_payload(&BrowserOperation::TogglePictureInPicture)
+                            .to_string()
+                            .into_bytes()
+                    ),
+                    &mut doc,
+                    &root
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -8771,15 +8787,17 @@ mod tests {
             let invocation = ui::tilo_actions::InvocationId::new();
             assert!(matches!(
                 unavailable
-                    .start_resource_operation(
-                        invocation,
-                        pip.kind,
-                        pip.operation_type.as_deref().unwrap(),
-                        &browser_operation_payload(&BrowserOperation::TogglePictureInPicture)
-                            .to_string()
-                            .into_bytes(),
-                        &doc,
-                        &root,
+                    .start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            invocation,
+                            pip.kind,
+                            pip.operation_type.as_deref().unwrap(),
+                            &browser_operation_payload(&BrowserOperation::TogglePictureInPicture)
+                                .to_string()
+                                .into_bytes()
+                        ),
+                        &mut doc,
+                        &root
                     )
                     .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -8898,13 +8916,15 @@ mod tests {
             let encoded = navigate.build_json(&args).unwrap();
             let invocation = ui::tilo_actions::InvocationId::new();
             assert_eq!(
-                w.start_resource_operation(
-                    invocation,
-                    OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
-                    &root,
+                w.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        OperationKind::Effect,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &root
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -8923,12 +8943,14 @@ mod tests {
             filter_args.insert("query".into(), serde_json::json!("tilo example"));
             let encoded = filter.build_json(&filter_args).unwrap();
             let started = w
-                .start_resource_operation(
-                    ui::tilo_actions::InvocationId::new(),
-                    filter.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        filter.kind,
+                        &encoded.type_id,
+                        &encoded.payload,
+                    ),
+                    &mut doc,
                     &root,
                 )
                 .unwrap();
@@ -9020,7 +9042,7 @@ mod tests {
         {
             let engine = TestEngine::new();
             let mut w = BrowserWidget::with_engine(engine.clone(), true);
-            let (doc, root) = synced(&mut w);
+            let (mut doc, root) = synced(&mut w);
             w.history.record_at("https://private.example", "Private", 1);
             let resources = Widget::resources(&w, &doc);
             let browser = &resources[0];
@@ -9057,14 +9079,16 @@ mod tests {
 
             let invocation = ui::tilo_actions::InvocationId::new();
             let started = w
-                .start_resource_operation(
-                    invocation,
-                    clear_history.kind,
-                    clear_history.operation_type.as_deref().unwrap(),
-                    &browser_operation_payload(&BrowserOperation::ClearHistory)
-                        .to_string()
-                        .into_bytes(),
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        clear_history.kind,
+                        clear_history.operation_type.as_deref().unwrap(),
+                        &browser_operation_payload(&BrowserOperation::ClearHistory)
+                            .to_string()
+                            .into_bytes(),
+                    ),
+                    &mut doc,
                     &root,
                 )
                 .unwrap();
@@ -9085,14 +9109,16 @@ mod tests {
                 .find(|action| action.id == "request-site-data-clear")
                 .unwrap();
             let started = w
-                .start_resource_operation(
-                    ui::tilo_actions::InvocationId::new(),
-                    clear_site_data.kind,
-                    clear_site_data.operation_type.as_deref().unwrap(),
-                    &browser_operation_payload(&BrowserOperation::RequestWebsiteDataClear)
-                        .to_string()
-                        .into_bytes(),
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        clear_site_data.kind,
+                        clear_site_data.operation_type.as_deref().unwrap(),
+                        &browser_operation_payload(&BrowserOperation::RequestWebsiteDataClear)
+                            .to_string()
+                            .into_bytes(),
+                    ),
+                    &mut doc,
                     &root,
                 )
                 .unwrap();
@@ -9117,7 +9143,7 @@ mod tests {
         // Phase `history_pause_is_local_and_keeps_existing_history_searchable_and_clearable`.
         {
             let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-            let (doc, root) = synced(&mut w);
+            let (mut doc, root) = synced(&mut w);
             w.history
                 .record_at("https://sensitive.example", "Sensitive", 1);
             let resources = Widget::resources(&w, &doc);
@@ -9145,14 +9171,16 @@ mod tests {
             assert!(toggle.contract.validate_declaration().is_empty());
 
             let started = w
-                .start_resource_operation(
-                    ui::tilo_actions::InvocationId::new(),
-                    toggle.kind,
-                    toggle.operation_type.as_deref().unwrap(),
-                    &browser_operation_payload(&BrowserOperation::ToggleHistoryPause)
-                        .to_string()
-                        .into_bytes(),
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        toggle.kind,
+                        toggle.operation_type.as_deref().unwrap(),
+                        &browser_operation_payload(&BrowserOperation::ToggleHistoryPause)
+                            .to_string()
+                            .into_bytes(),
+                    ),
+                    &mut doc,
                     &root,
                 )
                 .unwrap();
@@ -9220,14 +9248,16 @@ mod tests {
                 .find(|action| action.id == "clear")
                 .unwrap();
             let error = w
-                .start_resource_operation(
-                    ui::tilo_actions::InvocationId::new(),
-                    clear.kind,
-                    clear.operation_type.as_deref().unwrap(),
-                    &browser_operation_payload(&BrowserOperation::ClearHistory)
-                        .to_string()
-                        .into_bytes(),
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        clear.kind,
+                        clear.operation_type.as_deref().unwrap(),
+                        &browser_operation_payload(&BrowserOperation::ClearHistory)
+                            .to_string()
+                            .into_bytes(),
+                    ),
+                    &mut doc,
                     &root,
                 )
                 .expect_err("resource history clear must not complete without durable storage");

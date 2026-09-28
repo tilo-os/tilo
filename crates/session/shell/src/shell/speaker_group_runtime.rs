@@ -30,6 +30,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand_core::Rng;
 
 use crate::shell::device_fabric::{DeviceFabric, FabricStamp, PersonalFabricAction};
+use crate::shell::fabric_clock::{ClockSyncFailure, ClockSyncState};
 use crate::shell::personal_continuity::DeviceId;
 use crate::shell::speaker_group::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState, SpeakerGroup,
@@ -138,6 +139,8 @@ pub struct SpeakerGroupCore {
     consents: BTreeMap<SpeakerGroupId, PendingConsent>,
     outbound: BTreeMap<[u8; 16], GroupSession>,
     inbound: BTreeMap<[u8; 16], MemberSession>,
+    /// Media continuity was turned off; nothing starts until it is back.
+    media_off: bool,
 }
 
 /// A request to edit one member of a group this device leads.
@@ -477,6 +480,9 @@ impl SpeakerGroupCore {
         session_id: [u8; 16],
         now: Instant,
     ) -> Result<Vec<Egress>, String> {
+        if self.media_off {
+            return Err(crate::shell::i18n::t("speaker-error-media-off"));
+        }
         if self.outbound.len().saturating_add(self.inbound.len()) >= MAX_SPEAKER_SESSIONS {
             return Err(crate::shell::i18n::t("speaker-error-too-many-sessions"));
         }
@@ -778,6 +784,7 @@ impl SpeakerGroupCore {
         now: Instant,
     ) -> Vec<Egress> {
         let mut out = Vec::new();
+        self.media_off = !enabled;
         if !enabled {
             out.extend(self.end_inbound(|_| true));
             for session in std::mem::take(&mut self.outbound).into_values() {
@@ -948,13 +955,20 @@ impl SpeakerGroupCore {
         out
     }
 
-    /// Presentation rows for the Devices surface and Settings.
+    /// Presentation rows for the Devices surface and Settings. `playout`
+    /// answers, per member route, whether that member can play in time (see
+    /// [`crate::shell::remote_audio::group_route_playout`]).
     #[must_use]
     #[expect(
         clippy::too_many_lines,
         reason = "one projection keeps every speaker row beside the fabric state it reads"
     )]
-    pub fn view(&self, fabric: &DeviceFabric, local: &DeviceId) -> SpeakerGroupsView {
+    pub fn view(
+        &self,
+        fabric: &DeviceFabric,
+        local: &DeviceId,
+        playout: &dyn Fn([u8; 16]) -> Option<ClockSyncState>,
+    ) -> SpeakerGroupsView {
         let label = |device: &DeviceId| {
             fabric.snapshots().get(device).map_or_else(
                 || device.as_str().to_string(),
@@ -1030,41 +1044,50 @@ impl SpeakerGroupCore {
         let sessions = self
             .outbound
             .iter()
-            .map(|(session_id, session)| SpeakerSessionView {
-                session_id: *session_id,
-                group: session.group,
-                name: name_of(session.group),
-                inbound: false,
-                peer_label: None,
-                playing_members: session
-                    .members
-                    .iter()
-                    .filter(|member| {
-                        matches!(
-                            member.phase,
-                            SessionMemberPhase::Local | SessionMemberPhase::Admitted
-                        )
-                    })
-                    .count(),
-                waiting_members: session
-                    .members
-                    .iter()
-                    .filter(|member| member.phase == SessionMemberPhase::AwaitingAdmission)
-                    .count(),
+            .map(|(session_id, session)| {
+                let mut clocks = SessionClocks::default();
+                for member in &session.members {
+                    match member.phase {
+                        SessionMemberPhase::Local => clocks.count(ClockSyncState::Ready),
+                        SessionMemberPhase::Admitted => {
+                            clocks.count(playout(member.route).unwrap_or(ClockSyncState::Syncing));
+                        }
+                        SessionMemberPhase::AwaitingAdmission | SessionMemberPhase::Refused => {}
+                    }
+                }
+                SpeakerSessionView {
+                    session_id: *session_id,
+                    group: session.group,
+                    name: name_of(session.group),
+                    inbound: false,
+                    peer_label: None,
+                    playing_members: clocks.ready,
+                    waiting_members: session
+                        .members
+                        .iter()
+                        .filter(|member| member.phase == SessionMemberPhase::AwaitingAdmission)
+                        .count(),
+                    syncing_members: clocks.syncing,
+                    failed_members: clocks.failed,
+                    clock_failure: clocks.failure,
+                }
             })
-            .chain(
-                self.inbound
-                    .iter()
-                    .map(|(session_id, session)| SpeakerSessionView {
-                        session_id: *session_id,
-                        group: session.group,
-                        name: name_of(session.group),
-                        inbound: true,
-                        peer_label: Some(label(&session.source)),
-                        playing_members: 1,
-                        waiting_members: 0,
-                    }),
-            )
+            .chain(self.inbound.iter().map(|(session_id, session)| {
+                let mut clocks = SessionClocks::default();
+                clocks.count(playout(*session_id).unwrap_or(ClockSyncState::Syncing));
+                SpeakerSessionView {
+                    session_id: *session_id,
+                    group: session.group,
+                    name: name_of(session.group),
+                    inbound: true,
+                    peer_label: Some(label(&session.source)),
+                    playing_members: clocks.ready,
+                    waiting_members: 0,
+                    syncing_members: clocks.syncing,
+                    failed_members: clocks.failed,
+                    clock_failure: clocks.failure,
+                }
+            }))
             .collect();
         SpeakerGroupsView {
             groups,
@@ -1371,8 +1394,67 @@ pub struct SpeakerSessionView {
     /// This device is a member playing for another device.
     pub inbound: bool,
     pub peer_label: Option<String>,
+    /// Members playing in time.
     pub playing_members: usize,
+    /// Members that have not admitted the session yet.
     pub waiting_members: usize,
+    /// Admitted members that do not have the playing device's clock yet:
+    /// they play nothing until they do.
+    pub syncing_members: usize,
+    /// Admitted members that could not get the clock within its deadline.
+    pub failed_members: usize,
+    /// Why, for the first of them.
+    pub clock_failure: Option<ClockSyncFailure>,
+}
+
+impl SpeakerSessionView {
+    /// What a person should read about this session first.
+    #[must_use]
+    pub const fn status(&self) -> SpeakerSessionStatus {
+        if let Some(reason) = self.clock_failure {
+            SpeakerSessionStatus::ClockFailed(reason)
+        } else if self.syncing_members > 0 {
+            SpeakerSessionStatus::SyncingClocks
+        } else if self.waiting_members > 0 {
+            SpeakerSessionStatus::Connecting
+        } else {
+            SpeakerSessionStatus::Playing
+        }
+    }
+}
+
+/// The one line a session is summarised by, most urgent first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpeakerSessionStatus {
+    /// A member cannot play in time, and why.
+    ClockFailed(ClockSyncFailure),
+    /// A member is still learning the playing device's clock.
+    SyncingClocks,
+    /// A member has not admitted the session yet.
+    Connecting,
+    Playing,
+}
+
+/// Tally of members by whether they can play in time.
+#[derive(Default)]
+struct SessionClocks {
+    ready: usize,
+    syncing: usize,
+    failed: usize,
+    failure: Option<ClockSyncFailure>,
+}
+
+impl SessionClocks {
+    fn count(&mut self, state: ClockSyncState) {
+        match state {
+            ClockSyncState::Ready => self.ready = self.ready.saturating_add(1),
+            ClockSyncState::Syncing => self.syncing = self.syncing.saturating_add(1),
+            ClockSyncState::Failed(reason) => {
+                self.failed = self.failed.saturating_add(1);
+                self.failure.get_or_insert(reason);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1563,7 +1645,7 @@ pub(crate) fn handle_action(
             .ok()
             .and_then(|core| core.sweep_output(&fabric, &local, &envelope.source, group));
         if let Some(output) = output {
-            play_sweep_for_leader(&local, &envelope.source, output, start_ns);
+            play_sweep_at(&local, output, start_ns);
         }
         return true;
     }
@@ -1642,21 +1724,12 @@ fn play_identify_locally(local: &DeviceId, output: EndpointSelector) -> Result<(
         })
 }
 
-/// Play the calibration sweep on `output` when the leader's clock reads
-/// `leader_start_ns`. One sweep at a time; requests too far from now, or
-/// before the leader's clock is known, are ignored.
-fn play_sweep_for_leader(
-    local: &DeviceId,
-    leader: &DeviceId,
-    output: EndpointSelector,
-    leader_start_ns: i64,
-) {
-    use media::sync_playout::ClockMapping as _;
+/// Play the calibration sweep on `output` when this device's clock reads
+/// `start_ns`; the leader already converted its schedule through its
+/// estimate of this clock. One sweep at a time; requests too far from now
+/// are ignored, and the leader's measurement then reports no sweep.
+fn play_sweep_at(local: &DeviceId, output: EndpointSelector, start_ns: i64) {
     static SWEEPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    let Some(clock) = crate::shell::device_fabric_runtime::fabric_peer_clock(leader) else {
-        return;
-    };
-    let start_ns = clock.playout_clock().leader_to_local_ns(leader_start_ns);
     let lead = start_ns.saturating_sub(media::pw_stream::monotonic_now_ns());
     if !(0..=10_000_000_000).contains(&lead) {
         return;
@@ -2094,9 +2167,12 @@ pub fn view(network: &crate::shell::network::ShellNetwork) -> SpeakerGroupsView 
         return SpeakerGroupsView::default();
     };
     let fabric = network.device_fabric();
+    // Read before taking the core: the audio path takes the core while it
+    // holds its own state.
+    let playouts = crate::shell::remote_audio::group_route_playouts();
     core().lock().map_or_else(
         |_| SpeakerGroupsView::default(),
-        |core| core.view(&fabric, &local),
+        |core| core.view(&fabric, &local, &|route| playouts.get(&route).copied()),
     )
 }
 

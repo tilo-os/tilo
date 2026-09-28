@@ -7,9 +7,13 @@ monitor never duplicates workspace content.
 
 ## Physical topology
 
-`display_outputs` in the per-user settings document is typed by
-`settings_store::hardware::DisplayConfig`. A connector keeps its stable DRM
-name (`eDP-1`, `HDMI-A-1`) across unplug/replug. Its `x`/`y` is the viewport's
+`display_profiles` in the per-user settings document remembers one
+`settings_store::hardware::DisplayConfig` per set of attached monitors
+(`settings_store::hardware::profiles`), keyed by each monitor's EDID make,
+model and serial rather than by port, so a dock that enumerates its ports in
+another order still restores the arrangement. Within a layout an output is
+keyed by its DRM connector name (`eDP-1`, `HDMI-A-1`), card-qualified only
+when two cards expose the same name. Its `x`/`y` is the viewport's
 top-left in the physical monitor island; negative authoring coordinates are
 translated as a group for the renderer without changing adjacency.
 
@@ -45,10 +49,15 @@ on the laptop.
   among its display's groups; dropping it on another display moves it there,
   at the gap it was dropped in. Like the chord, that is a move the group
   keeps: a display coming back no longer reclaims it.
-- Unplugging a display moves its groups to the nearest remaining display,
-  in their own order, after that display's focused group. Each remembers the
-  display it came from and returns when that display is plugged back in,
-  unless it was moved to another display in the meantime.
+- Unplugging a display moves its groups to the nearest remaining display.
+  Each remembers the display it came from and returns when that display is
+  plugged back in, unless it was moved to another display in the meantime.
+- A display shows a strip's groups in the strip's order, which is shared
+  with every collaborator. Unplugging, replugging or the move chord only
+  changes which display a group is on, never that order, so they never
+  reorder a collaborator's strip. A moved group takes its place in the
+  strip's order among its new display's groups. Only a deliberate reorder
+  (the reorder chord, or dropping a group at a gap) rewrites the order.
 
 Groups belong to the physical monitor, not to the connector or output number
 it happens to have. The partition keys everything it remembers by the same

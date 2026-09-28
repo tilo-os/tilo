@@ -60,6 +60,19 @@ pub trait RuntimeServices: Sized {
     /// Rejects a profile in use, invalid persisted state or failed provisioning.
     fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self>;
 
+    /// [`Self::start_reporting`] for app development: builds under
+    /// development, which are not installed, are served too. A host without
+    /// such a mode refuses it.
+    /// # Errors
+    /// As [`Self::start_reporting`], and when the host has no dev mode.
+    fn start_in_dev_mode(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
+        let _ = (root, stage);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this host has no dev mode",
+        ))
+    }
+
     /// The workspace room every app of this profile joins.
     fn room(&self) -> &str;
 

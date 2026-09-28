@@ -27,6 +27,44 @@ impl StatePeer {
             now,
         )
     }
+
+    /// Admit `envelope`, a local app's signed write to `record`, as a new
+    /// exact admission: refused unless it is admitted now, completely and
+    /// not as a duplicate, with evidence of it in the exact admission index.
+    /// An owner admits into a candidate and discards it on an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the write is refused, deferred, incomplete or
+    /// a duplicate, or leaves no exact admission evidence.
+    pub fn admit_new_local_document(
+        &mut self,
+        app: &str,
+        record: &str,
+        envelope: SignedOp,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let author = *envelope.author.as_bytes();
+        let before = self.clone();
+        let outcome = self.admit_local_app_document(app, record, envelope, now)?;
+        if outcome.deferred
+            || outcome.incomplete.is_some()
+            || outcome.rejected != 0
+            || outcome.duplicate
+        {
+            return Err("native local document lacks a newly admitted exact receipt".into());
+        }
+        let admissions = self.admissions_since(&before).map_err(|e| e.to_string())?;
+        if !admissions.iter().any(|entry| {
+            entry.room() == self.core.room
+                && entry.app() == app
+                && entry.record() == record
+                && entry.author() == author
+        }) {
+            return Err("native local document has no exact admission evidence".into());
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -54,6 +92,33 @@ mod tests {
             panic!("expected actual signed document publication")
         };
         (peer, *envelope, other, certificate, now)
+    }
+
+    #[test]
+    fn a_new_local_write_is_admitted_once_with_exact_evidence() {
+        let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
+        peer.select_admission_v5().unwrap();
+        let bytes = peer.document("test.app", "tab:1").unwrap();
+        let NeighbourMsg::AppDocument { envelope, .. } = peer
+            .clone()
+            .publish_document("test.app", "tab:1", bytes, &key, now)
+            .unwrap()
+        else {
+            panic!("expected actual signed document publication")
+        };
+        peer.admit_new_local_document("test.app", "tab:1", (*envelope).clone(), now)
+            .unwrap();
+        assert!(
+            peer.lookup_exact_local_document("test.app", "tab:1", &envelope, now)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            peer.clone()
+                .admit_new_local_document("test.app", "tab:1", *envelope, now)
+                .is_err(),
+            "an exact retry is not a new admission"
+        );
     }
 
     #[test]

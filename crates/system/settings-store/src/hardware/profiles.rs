@@ -8,12 +8,16 @@
 //! its connector label when it has no EDID — and the sorted tokens form the
 //! set's key. Two identical monitors (same make, model and serial, or both
 //! reporting no serial) are told apart by their connector.
+//!
+//! Each monitor also keeps the modes and scales it has shown in a layout
+//! that was kept, so a display tool's change to something it has shown
+//! before can apply without asking.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{DisplayConfig, MonitorIdentity, OutputDescriptor};
+use super::{DisplayConfig, MonitorIdentity, OutputDescriptor, OutputMode};
 
 /// One attached sink as set matching sees it.
 #[derive(Clone, Copy, Debug)]
@@ -105,11 +109,55 @@ pub struct DisplayProfile {
     pub config: DisplayConfig,
 }
 
-/// Every remembered layout, keyed by [`DisplaySet::key`].
+/// What one monitor has shown in a layout that was kept.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MonitorHistory {
+    pub modes: Vec<OutputMode>,
+    pub scales: Vec<f64>,
+}
+
+impl MonitorHistory {
+    /// Enough for every scale step and a monitor's usual modes; the oldest
+    /// entry makes room for a new one.
+    const LIMIT: usize = 32;
+
+    pub fn has_mode(&self, mode: OutputMode) -> bool {
+        self.modes.contains(&mode)
+    }
+
+    pub fn has_scale(&self, scale: f64) -> bool {
+        self.scales.iter().any(|known| same_scale(*known, scale))
+    }
+
+    fn note(&mut self, mode: Option<OutputMode>, scale: f64) {
+        if let Some(mode) = mode.filter(|mode| !self.has_mode(*mode)) {
+            if self.modes.len() >= Self::LIMIT {
+                self.modes.remove(0);
+            }
+            self.modes.push(mode);
+        }
+        if scale.is_finite() && scale > 0.0 && !self.has_scale(scale) {
+            if self.scales.len() >= Self::LIMIT {
+                self.scales.remove(0);
+            }
+            self.scales.push(scale);
+        }
+    }
+}
+
+/// Whether two scales are the same step; they travel as 24.8 fixed point.
+pub fn same_scale(a: f64, b: f64) -> bool {
+    (a - b).abs() < 1e-3
+}
+
+/// Every remembered layout, keyed by [`DisplaySet::key`], and what each
+/// monitor has shown, keyed by its identity token.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplayProfiles {
     pub profiles: BTreeMap<String, DisplayProfile>,
+    pub monitors: BTreeMap<String, MonitorHistory>,
 }
 
 impl DisplayProfiles {
@@ -168,14 +216,28 @@ impl DisplayProfiles {
         Some(config)
     }
 
-    /// Remember `config` as the layout for `set`. Entries for outputs that
-    /// are not part of the set are dropped: they describe another set.
+    /// What the monitor attached at `connector` in `set` has shown in a
+    /// kept layout.
+    pub fn history_for(&self, set: &DisplaySet, connector: &str) -> Option<&MonitorHistory> {
+        self.monitors.get(set.members.get(connector)?)
+    }
+
+    /// Remember `config` as the layout for `set`, and each enabled output's
+    /// mode and scale as shown by its monitor. Entries for outputs that are
+    /// not part of the set are dropped: they describe another set.
     pub fn remember(&mut self, set: &DisplaySet, config: &DisplayConfig) {
         let mut kept = DisplayConfig::default();
         for (connector, output) in &config.outputs {
-            if set.members.contains_key(connector) {
-                kept.outputs.insert(connector.clone(), output.clone());
+            let Some(token) = set.members.get(connector) else {
+                continue;
+            };
+            if output.enabled {
+                self.monitors
+                    .entry(token.clone())
+                    .or_default()
+                    .note(output.mode, output.scale);
             }
+            kept.outputs.insert(connector.clone(), output.clone());
         }
         self.profiles.insert(
             set.key.clone(),
@@ -297,6 +359,50 @@ mod tests {
         assert_eq!(restored.outputs["DP-8"].x, 0);
         assert_eq!(restored.outputs["DP-7"].mirror_of.as_deref(), Some("DP-8"));
         assert_eq!(restored.outputs.len(), 3, "a stray entry never follows");
+    }
+
+    #[test]
+    fn a_kept_layout_remembers_what_each_monitor_showed_wherever_it_is_plugged() {
+        let office = monitor("Dell", "DELL U2720Q", "7XK2P13");
+        let panel = monitor("BOE", "NE135FBM-N41", "");
+        let uhd = OutputMode {
+            width: 3840,
+            height: 2160,
+            refresh_mhz: 60_000,
+        };
+        let docked = DisplaySet::of([
+            attached("eDP-1", Some(&panel)),
+            attached("DP-2", Some(&office)),
+        ]);
+        let mut config = DisplayConfig::default();
+        config.outputs.insert(
+            "DP-2".into(),
+            OutputConfig {
+                mode: Some(uhd),
+                scale: 1.5,
+                ..OutputConfig::default()
+            },
+        );
+        config.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                enabled: false,
+                scale: 2.0,
+                ..OutputConfig::default()
+            },
+        );
+        let mut profiles = DisplayProfiles::default();
+        profiles.remember(&docked, &config);
+
+        let alone = DisplaySet::of([attached("HDMI-A-1", Some(&office))]);
+        let history = profiles.history_for(&alone, "HDMI-A-1").expect("known");
+        assert!(history.has_mode(uhd));
+        assert!(history.has_scale(1.5));
+        assert!(!history.has_scale(2.0));
+        assert!(
+            profiles.history_for(&docked, "eDP-1").is_none(),
+            "a screen that was off showed nothing"
+        );
     }
 
     #[test]

@@ -107,6 +107,8 @@ pub enum BundleReviewError {
         expected_id: String,
         expected_version: String,
     },
+    #[error("reading uploaded package {version}: {reason}")]
+    Storage { version: String, reason: String },
 }
 
 /// Fetch and inspect every version. The caller approves the unchanged signed
@@ -144,6 +146,60 @@ pub fn fetch_entry_bytes(
         .iter()
         .map(|version| fetch_version_bytes(entry, version, policy))
         .collect()
+}
+
+/// [`fetch_entry_bytes`], reading each version a publisher uploaded to this
+/// registry from `storage` (see [`review_version_bytes`]).
+///
+/// # Errors
+/// As [`fetch_entry_bytes`], or a storage error reading an upload.
+pub fn review_entry_bytes(
+    storage: &crate::Storage,
+    entry: &RegistryEntry,
+    policy: InspectionPolicy,
+) -> Result<Vec<(InspectedVersion, Vec<u8>)>, BundleReviewError> {
+    if entry.versions.is_empty() {
+        return Err(BundleReviewError::NoVersions);
+    }
+    entry
+        .versions
+        .iter()
+        .map(|version| review_version_bytes(storage, entry, version, policy))
+        .collect()
+}
+
+/// [`fetch_version_bytes`], except that a version whose URL is this
+/// registry's `/artifacts/<blake3>.tapp` and whose bytes a publisher uploaded
+/// (`PUT /uploads`) is read from `storage` instead: approval is what makes
+/// that URL serve them. The bytes pass the same inspection either way.
+///
+/// # Errors
+/// As [`fetch_version_bytes`], or a storage error reading the upload.
+pub fn review_version_bytes(
+    storage: &crate::Storage,
+    entry: &RegistryEntry,
+    version: &RegistryVersion,
+    policy: InspectionPolicy,
+) -> Result<(InspectedVersion, Vec<u8>), BundleReviewError> {
+    let digest = version.tapp_blake3_hex.to_ascii_lowercase();
+    if !version
+        .tapp_url
+        .ends_with(&format!("/artifacts/{digest}.tapp"))
+    {
+        return fetch_version_bytes(entry, version, policy);
+    }
+    let uploaded = storage
+        .load_upload(&digest)
+        .map_err(|error| BundleReviewError::Storage {
+            version: version.version.clone(),
+            reason: error.to_string(),
+        })?;
+    let Some(bytes) = uploaded else {
+        return fetch_version_bytes(entry, version, policy);
+    };
+    check_size(version, bytes.len() as u64, policy.download_limit(version))?;
+    let inspection = inspect_bytes(entry, version, &bytes)?;
+    Ok((inspection, bytes))
 }
 
 /// Fetch and verify one signed version while retaining its exact bytes.
@@ -461,7 +517,7 @@ fn parse_32(value: &str) -> Result<[u8; 32], String> {
         .map_err(|bytes: Vec<u8>| format!("expected 32 bytes, got {}", bytes.len()))
 }
 
-fn public_ip(ip: IpAddr) -> bool {
+pub(crate) fn public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => public_v4(ip),
         IpAddr::V6(ip) => public_v6(ip),

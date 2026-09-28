@@ -66,20 +66,18 @@ impl Capability {
         }
     }
 
-    pub(crate) const fn description(self) -> &'static str {
-        match self {
-            Self::Clipboard => "Share copied text and images with the current certified device.",
-            Self::Notifications => "Mirror notification content and actions to the current device.",
-            Self::WifiSettings => "Offer saved network and compatible personal settings.",
-            Self::Media => "Continue playback and expose media transport controls.",
-            Self::DisplayInput => "Allow this device to extend a display or accept remote input.",
-            Self::FileTransfer => "Accept explicit file sends between your certified devices.",
-            Self::RealtimeSessions => "Hand off active calls and other live app sessions.",
-            Self::TypedGamepad => "Forward typed gamepad events, never an untyped input stream.",
-            Self::AppContinuations => {
-                "Offer app placement and bounded resume state to your certified devices."
-            }
-        }
+    pub(crate) fn description(self) -> String {
+        crate::i18n::t(match self {
+            Self::Clipboard => "continuity-clipboard-description",
+            Self::Notifications => "continuity-notifications-description",
+            Self::WifiSettings => "continuity-wifi-settings-description",
+            Self::Media => "continuity-media-description",
+            Self::DisplayInput => "continuity-display-input-description",
+            Self::FileTransfer => "continuity-file-transfer-description",
+            Self::RealtimeSessions => "continuity-realtime-sessions-description",
+            Self::TypedGamepad => "continuity-typed-gamepad-description",
+            Self::AppContinuations => "continuity-app-continuations-description",
+        })
     }
 }
 

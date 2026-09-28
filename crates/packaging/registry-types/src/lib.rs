@@ -59,6 +59,7 @@
     )
 )]
 
+pub mod application;
 pub mod change;
 pub mod entry;
 pub mod handshake;
@@ -66,6 +67,7 @@ pub mod moderation;
 pub mod namespace;
 pub mod snapshot;
 pub mod target;
+pub mod upload;
 pub mod verify;
 pub mod version;
 

@@ -637,6 +637,23 @@ impl SpeakersPane {
                             StatusTone::Warning
                         },
                     ));
+                    if let Some(playback) = &group.playback {
+                        actions = actions.push(semantic_status_pill(
+                            playback.label(),
+                            match playback {
+                                ui::collaboration::SpeakerPlaybackInfo::Playing => {
+                                    StatusTone::Success
+                                }
+                                ui::collaboration::SpeakerPlaybackInfo::Connecting => {
+                                    StatusTone::Neutral
+                                }
+                                ui::collaboration::SpeakerPlaybackInfo::SyncingClocks
+                                | ui::collaboration::SpeakerPlaybackInfo::ClockFailed { .. } => {
+                                    StatusTone::Warning
+                                }
+                            },
+                        ));
+                    }
                     if group.led_here {
                         let calibrate = group_key("calibrate", &group.id);
                         actions = actions.push(Box::new(Button::new(
@@ -660,15 +677,17 @@ impl SpeakersPane {
                             )));
                         }
                     }
-                    setting_row_described(
-                        &group.name,
-                        &if group.led_here {
-                            summary
-                        } else {
-                            format!("{summary} · set up on {}", group.leader_label)
-                        },
-                        Box::new(actions),
-                    )
+                    let mut description = if group.led_here {
+                        summary
+                    } else {
+                        format!("{summary} · set up on {}", group.leader_label)
+                    };
+                    if let Some(ui::collaboration::SpeakerPlaybackInfo::ClockFailed { reason }) =
+                        &group.playback
+                    {
+                        description = format!("{description} · can't play in time: {reason}");
+                    }
+                    setting_row_described(&group.name, &description, Box::new(actions))
                 })
                 .collect()
         };
@@ -1521,6 +1540,7 @@ mod tests {
                         status: SpeakerMemberStatus::Ready,
                         trim: SpeakerTrimInfo::default(),
                     }],
+                    playback: None,
                 }],
                 calibrations: Vec::new(),
             }),

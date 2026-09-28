@@ -90,8 +90,8 @@ use collab_types::SignedOp;
 pub use runtime_collab::{
     CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationPhaseInfo,
     MAX_SPEAKER_NAME_CHARS, SpeakerCommand, SpeakerDeviceInfo, SpeakerEndpointInfo,
-    SpeakerGroupInfo, SpeakerMemberInfo, SpeakerMemberSpec, SpeakerMemberStatus, SpeakerReply,
-    SpeakerRoleSpec, SpeakerSnapshot, SpeakerTrimInfo,
+    SpeakerGroupInfo, SpeakerMemberInfo, SpeakerMemberSpec, SpeakerMemberStatus,
+    SpeakerPlaybackInfo, SpeakerReply, SpeakerRoleSpec, SpeakerSnapshot, SpeakerTrimInfo,
 };
 pub use runtime_collab::{
     NearbyDestinationHandle, NearbyTargetHandle, NearbyTransferCommand, NearbyTransferDestination,

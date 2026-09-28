@@ -2568,3 +2568,48 @@ fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
     compact_shortcut_help_keeps_content_inside_a_comfortable_footer_inset();
     wide_shortcut_help_remains_a_contextual_card();
 }
+
+#[test]
+fn shortcut_guide_tab_stops_only_land_on_painted_bindings() {
+    let (vw, vh) = (1280.0, 800.0);
+    let mut h = build_harness_sized(vw, vh);
+    h.chrome.borrow_mut().overlays.shortcut_help = true;
+    settle(&mut h, vw, vh);
+    let painted: Vec<settings_store::hardware::ShortcutAction> = h
+        .host
+        .shortcut_binding_rects
+        .iter()
+        .map(|(action, _)| *action)
+        .collect();
+    assert!(!painted.is_empty(), "the guide paints its bindings");
+
+    let mut focused = Vec::new();
+    for _ in 0..64 {
+        let mut handled = false;
+        assert!(h.host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Tab),
+            winit::event::Modifiers::default(),
+            false,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        match h.host.shortcut_guide_focus {
+            Some(ShortcutGuideFocus::Binding(action)) => focused.push(action),
+            Some(ShortcutGuideFocus::Done) => break,
+            _ => {}
+        }
+    }
+    let hidden: Vec<_> = focused
+        .iter()
+        .filter(|action| !painted.contains(action))
+        .collect();
+    assert!(
+        hidden.is_empty(),
+        "Tab must never focus a binding the guide does not draw: {hidden:?}"
+    );
+    assert_eq!(
+        focused, painted,
+        "Tab walks the painted bindings in painted order"
+    );
+}

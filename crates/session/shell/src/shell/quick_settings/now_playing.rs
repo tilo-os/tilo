@@ -338,7 +338,12 @@ impl NowPlayingCard {
         } else {
             0.0
         };
-        2.0 * PANEL_PAD + self.header_height() + RELATED_GAP + seek + ROW_HEIGHT + picker
+        let speakers = if view.speakers.is_some() {
+            self.caption_line() + RELATED_GAP
+        } else {
+            0.0
+        };
+        2.0 * PANEL_PAD + self.header_height() + RELATED_GAP + seek + speakers + ROW_HEIGHT + picker
     }
 
     fn inner(&self) -> Rect {
@@ -386,11 +391,29 @@ impl NowPlayingCard {
         self.caption_line() * 3.0
     }
 
-    fn transport_row(&self, view: &NowPlayingView) -> Rect {
+    /// The speaker-group line under the track, when this device plays to
+    /// one.
+    fn speakers_rect(&self, view: &NowPlayingView) -> Option<Rect> {
+        view.speakers.as_ref()?;
         let inner = self.inner();
         let top = self
             .seek_rect(view)
             .map_or_else(|| self.header_rect().y1, |seek| seek.y1)
+            + RELATED_GAP;
+        Some(Rect::new(
+            inner.x0,
+            top,
+            inner.x1,
+            top + self.caption_line(),
+        ))
+    }
+
+    fn transport_row(&self, view: &NowPlayingView) -> Rect {
+        let inner = self.inner();
+        let top = self
+            .speakers_rect(view)
+            .or_else(|| self.seek_rect(view))
+            .map_or_else(|| self.header_rect().y1, |above| above.y1)
             + RELATED_GAP;
         Rect::new(inner.x0, top, inner.x1, top + ROW_HEIGHT)
     }
@@ -662,6 +685,10 @@ impl NowPlayingCard {
             description.push_str(", ");
             description.push_str(subline);
         }
+        if let Some(speakers) = &view.speakers {
+            description.push_str(". ");
+            description.push_str(&speakers.text());
+        }
         let mut group = AccessNode::new(Role::Group)
             .with_name(tr("now-playing-title"))
             .with_description(description)
@@ -858,6 +885,26 @@ impl NowPlayingCard {
                     .hovered(seekable && cursor.is_some_and(|p| face.contains(p)))
                     .focused(self.focus == Some(CardTarget::Seek))
                     .disabled(!seekable),
+            );
+        }
+
+        if let (Some(band), Some(speakers)) = (self.speakers_rect(view), &view.speakers) {
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "card widths are bounded by the output; f32 is the shaping precision"
+            )]
+            let line = text.elide_to_width(&speakers.text(), caption_size, band.width() as f32);
+            text.draw_text(
+                scene,
+                &line,
+                caption_size,
+                if speakers.failed() {
+                    colors.semantic.danger
+                } else {
+                    colors.text_dim
+                },
+                transform.pre_translate((band.x0, band.y0).into()),
+                None,
             );
         }
 

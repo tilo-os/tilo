@@ -12,9 +12,9 @@ display-identify-row = Show each display's number on it
 
 # Displays pane: layout tools trusted to change displays without asking
 display-tools-title = Display tools
-display-tools-caption = These programs rearrange your displays without asking you to keep each change.
+display-tools-caption = These programs can make risky display changes without asking you to keep them.
 display-tools-forget = Ask again
-display-tools-forgotten = This tool's display changes will ask to be kept again.
+display-tools-forgotten = Risky display changes from this tool will ask to be kept again.
 
 # Displays pane: HDR
 display-hdr = HDR
@@ -198,3 +198,14 @@ settings-shortcut-unassigned = Unassigned
 settings-shortcuts-vim = Vim navigation (H J K L)
 settings-shortcuts-actions = Actions
 settings-shortcuts-actions-caption = A saved shortcut’s keyboard trigger binds its chord here; change or remove it in the shortcut.
+
+# Devices pane: what each Continuity switch shares
+continuity-clipboard-description = Share copied text and images with the current certified device.
+continuity-notifications-description = Mirror notification content and actions to the current device.
+continuity-wifi-settings-description = Offer saved network and compatible personal settings.
+continuity-media-description = Continue playback, expose media transport controls, and keep speaker timing in sync for speaker groups and remote audio.
+continuity-display-input-description = Allow this device to extend a display or accept remote input.
+continuity-file-transfer-description = Accept explicit file sends between your certified devices.
+continuity-realtime-sessions-description = Hand off active calls and other live app sessions.
+continuity-typed-gamepad-description = Forward typed gamepad events, never an untyped input stream.
+continuity-app-continuations-description = Offer app placement and bounded resume state to your certified devices.

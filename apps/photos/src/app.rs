@@ -14537,15 +14537,6 @@ impl Widget for PhotosApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if type_id == RETAINED_CONTROL_OPERATION_TYPE {
-            for button in self.retained_buttons_mut() {
-                if let Some(started) = button
-                    .start_resource_operation(invocation, kind, type_id, payload, doc, path)?
-                {
-                    return Ok(Some(started));
-                }
-            }
-        }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(None);
         };
@@ -14602,10 +14593,9 @@ impl Widget for PhotosApp {
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         if type_id == RETAINED_CONTROL_OPERATION_TYPE {
+            let op = ui::widget::ResourceOperation::local(invocation, kind, type_id, payload);
             for button in self.retained_buttons_mut() {
-                if let Some(started) = button.start_resource_operation_with_document(
-                    invocation, kind, type_id, payload, doc, path,
-                )? {
+                if let Some(started) = button.start_operation(&op, doc, path)? {
                     return Ok(Some(started));
                 }
             }

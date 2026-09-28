@@ -108,6 +108,16 @@ impl Apps {
             .unwrap_or_default()
     }
 
+    /// The resource kinds the installed package `app_id` declared its
+    /// records hold; `None` when it is not installed.
+    #[must_use]
+    pub fn declared_resource_kinds(&self, app_id: &str) -> Option<Vec<String>> {
+        self.installed()
+            .into_iter()
+            .find(|app| app.package_id == app_id)
+            .map(|app| app.declared_resource_kinds())
+    }
+
     /// [`Self::declared_access`] as the broker asks it.
     #[must_use]
     pub fn access_resolver(self: &Arc<Self>) -> AppActionAccessResolver {

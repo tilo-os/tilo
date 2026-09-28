@@ -511,7 +511,17 @@ struct PackageArgs {
     #[arg(long = "static")]
     static_link: bool,
 
-    /// Rust target triple passed to Cargo.
+    /// The system to build for: a thin Tilo OS app, or one self-contained
+    /// Windows or macOS executable with the toolkit linked in.
+    #[arg(long, value_enum, default_value_t = PlatformArg::Tilo)]
+    platform: PlatformArg,
+
+    /// CPU architecture to build for. Defaults to the host's.
+    #[arg(long, value_enum)]
+    arch: Option<ArchArg>,
+
+    /// Rust target triple passed to Cargo; overrides the one --platform and
+    /// --arch pick (for example `x86_64-pc-windows-gnu`).
     #[arg(long)]
     target: Option<String>,
 
@@ -1118,6 +1128,20 @@ fn read_ui_node(source: NodeSourceArgs) -> Result<tilo_ui_graph::UiNode> {
     tilo_app_cli::parse_ui_node(&source)
 }
 
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum PlatformArg {
+    Tilo,
+    Windows,
+    Macos,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ArchArg {
+    #[value(name = "x86_64")]
+    X86_64,
+    Aarch64,
+}
+
 fn run_package(args: PackageArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
     let outcome = tilo_app_cli::package_app(
@@ -1128,6 +1152,15 @@ fn run_package(args: PackageArgs) -> Result<Value> {
             profile: args.profile,
             static_link: args.static_link,
             target: args.target,
+            platform: match args.platform {
+                PlatformArg::Tilo => tilo_app_cli::PackagePlatform::Tilo,
+                PlatformArg::Windows => tilo_app_cli::PackagePlatform::Windows,
+                PlatformArg::Macos => tilo_app_cli::PackagePlatform::Macos,
+            },
+            arch: args.arch.map(|arch| match arch {
+                ArchArg::X86_64 => tilo_app_cli::PackageArch::X86_64,
+                ArchArg::Aarch64 => tilo_app_cli::PackageArch::Aarch64,
+            }),
             features: args.features,
             no_default_features: args.no_default_features,
             force: args.force,
