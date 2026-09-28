@@ -53,7 +53,7 @@ mod tests {
     fn rgba(labels: &[u8]) -> Vec<u8> {
         labels
             .iter()
-            .flat_map(|&n| [n, n + 10, n + 20, 255])
+            .flat_map(|&n| [n, n.wrapping_add(10), n.wrapping_add(20), 255])
             .collect()
     }
 

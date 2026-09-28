@@ -164,6 +164,10 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<Evidence, &'static str> {
     )
 }
 
+// The unit tests below open documents through the isolated Automerge
+// worker; the test harness serves it in place of `main`.
+tilo_automerge_isolate::test_worker!();
+
 fn main() -> std::process::ExitCode {
     let (output, valid) = match run(std::env::args_os().skip(1).collect()) {
         Ok(evidence) => {
@@ -281,7 +285,7 @@ mod tests {
                 serde_json::to_vec(&different).unwrap(),
             )
             .unwrap();
-        doc.merge(&mut other).unwrap();
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut doc, &mut other).unwrap();
         let projection = project(&doc, original());
         assert_eq!(projection.status, "invalid");
         assert_eq!(projection.conflicts, 1);
@@ -295,7 +299,7 @@ mod tests {
         other
             .put_object(ROOT, "effect_receipts_v1", ObjType::Map)
             .unwrap();
-        doc.merge(&mut other).unwrap();
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut doc, &mut other).unwrap();
         assert_eq!(project(&doc, original()).conflicts, 1);
     }
     #[test]
@@ -356,8 +360,8 @@ mod tests {
                 .unwrap()
                 .keys()
                 .map(String::as_str)
-                .collect::<Vec<_>>(),
-            vec![
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([
                 "conflicts",
                 "generation",
                 "key_matches_payload",
@@ -366,8 +370,8 @@ mod tests {
                 "original_invocation",
                 "room",
                 "room_heads",
-                "status"
-            ]
+                "status",
+            ])
         );
         assert!(!output.to_string().contains(source.to_str().unwrap()));
         assert!(destination.join("session.bin").is_file());
