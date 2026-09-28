@@ -15729,6 +15729,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-room-service"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "futures",
+ "hex",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rand 0.10.1",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-rt"
 version = "0.1.0"
 dependencies = [

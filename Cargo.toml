@@ -41,6 +41,7 @@ members = [
     "crates/browser/tilo-browser-runtime",
     "crates/browser/tilo-browser-peer",
     "crates/hosting/tilo-device-host",
+    "crates/hosting/tilo-room-service",
     "crates/hosting/tilo-workspace-host",
     "crates/hosting/tilo-moq",
     "crates/hosting/tilo-cloud-host",
