@@ -64,6 +64,9 @@ mod media_control;
 mod media_ingress;
 
 #[cfg(feature = "media")]
+mod legacy_windows;
+
+#[cfg(feature = "media")]
 pub mod live_service;
 
 mod host_bytes;
