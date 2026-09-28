@@ -7,9 +7,13 @@ monitor never duplicates workspace content.
 
 ## Physical topology
 
-`display_outputs` in the per-user settings document is typed by
-`settings_store::hardware::DisplayConfig`. A connector keeps its stable DRM
-name (`eDP-1`, `HDMI-A-1`) across unplug/replug. Its `x`/`y` is the viewport's
+`display_profiles` in the per-user settings document remembers one
+`settings_store::hardware::DisplayConfig` per set of attached monitors
+(`settings_store::hardware::profiles`), keyed by each monitor's EDID make,
+model and serial rather than by port, so a dock that enumerates its ports in
+another order still restores the arrangement. Within a layout an output is
+keyed by its DRM connector name (`eDP-1`, `HDMI-A-1`), card-qualified only
+when two cards expose the same name. Its `x`/`y` is the viewport's
 top-left in the physical monitor island; negative authoring coordinates are
 translated as a group for the renderer without changing adjacency.
 
