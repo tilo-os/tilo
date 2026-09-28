@@ -4,25 +4,26 @@ use std::sync::mpsc::Receiver;
 
 /// Dispatch one URI effect without blocking the UI thread. The original
 /// admitted caller is rechecked on the worker immediately before the host's
-/// [`crate::host::UriOpener`] runs. Apps retain their own URL policy (for
+/// [`crate::UriOpener`] runs. Apps retain their own URL policy (for
 /// example, allowed link schemes).
 pub fn open_uri_scoped(uri: String, scope: impl EffectGate) -> Receiver<Result<(), String>> {
     let (sender, receiver) = std::sync::mpsc::channel();
     #[cfg(any(test, feature = "test-support"))]
     let backend = SCOPED_URI_FIXTURE.with(|current| current.borrow().clone());
     // Resolve the host on the dispatching thread: services are scoped per thread.
-    let opener = crate::host::current().opener;
+    let opener = crate::current_opener();
     let failed = sender.clone();
-    let spawned = crate::background::Background::current().spawn("ui-scoped-open-uri", move || {
-        let outcome = scope.with_effect(|| {
-            #[cfg(any(test, feature = "test-support"))]
-            if let Some(backend) = backend {
-                return backend(&uri);
-            }
-            opener.open(&uri).map_err(|error| error.to_string())
+    let spawned =
+        tilo_rt::background::Background::current().spawn("ui-scoped-open-uri", move || {
+            let outcome = scope.with_effect(|| {
+                #[cfg(any(test, feature = "test-support"))]
+                if let Some(backend) = backend {
+                    return backend(&uri);
+                }
+                opener.open(&uri).map_err(|error| error.to_string())
+            });
+            let _ = sender.send(outcome);
         });
-        let _ = sender.send(outcome);
-    });
     if spawned.is_err() {
         let _ = failed.send(Err("opening URI unavailable in this host".into()));
     }

@@ -3,7 +3,12 @@
 //! COM objects and their apartment stay on that thread. Only validated file
 //! URIs cross the channel back into the shared outcome/drain implementation.
 
-use super::{LaunchKind, LaunchOutcome, LaunchRequest, PickKind, PickRequest, PortalFailure};
+use crate::PortalFailure;
+use crate::portal::{
+    LaunchChannel, LaunchKind, LaunchOutcome, LaunchRequest, MultiChannel, OpenFileChannel,
+    OpenFileOutcome, PickKind, PickRequest, PortalChannel, map_uri, map_uris, open_selected_uri,
+    spawn_worker,
+};
 use std::path::{Path, PathBuf};
 use windows::Win32::Foundation::ERROR_CANCELLED;
 use windows::Win32::System::Com::{
@@ -17,6 +22,61 @@ use windows::Win32::UI::Shell::{
     IFileDialog, IFileOpenDialog, IFileSaveDialog, IShellItem, SIGDN_FILESYSPATH,
 };
 use windows::core::{HSTRING, Interface, PCWSTR};
+
+/// The Windows [`crate::FilePicker`]: each request on its own worker thread.
+pub(crate) struct WindowsFilePicker;
+
+impl crate::FilePicker for WindowsFilePicker {
+    fn pick(&self, request: PickRequest) -> PortalChannel {
+        let name = request.worker_name().to_owned();
+        on_worker(&name, move || match pick(&request) {
+            Ok(uris) => map_uri(&uris),
+            Err(error) => error.into_single(),
+        })
+    }
+
+    fn pick_multiple(&self, request: PickRequest) -> MultiChannel {
+        let name = request.worker_name().to_owned();
+        on_worker(&name, move || match pick(&request) {
+            Ok(uris) => map_uris(&uris),
+            Err(error) => error.into_multi(),
+        })
+    }
+
+    fn open_file(&self, request: PickRequest) -> OpenFileChannel {
+        let name = request.worker_name().to_owned();
+        on_worker(&name, move || {
+            if !matches!(request.kind, PickKind::Open { multiple: false }) {
+                return OpenFileOutcome::Failed(
+                    "an already-open file request must be a single-file Open chooser".to_string(),
+                );
+            }
+            match pick(&request) {
+                Ok(uris) => match uris.first() {
+                    Some(uri) => open_selected_uri(uri),
+                    None => OpenFileOutcome::Cancelled,
+                },
+                Err(error) => error.into_open_file(),
+            }
+        })
+    }
+
+    fn launch(&self, request: LaunchRequest) -> LaunchChannel {
+        let name = request.thread_name.clone();
+        on_worker(&name, move || launch(request))
+    }
+}
+
+fn on_worker<T: Send + 'static>(
+    name: &str,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> std::sync::mpsc::Receiver<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    spawn_worker(name, move || {
+        let _ = tx.send(work());
+    });
+    rx
+}
 
 struct Apartment;
 
@@ -36,8 +96,8 @@ impl Drop for Apartment {
     }
 }
 
-pub(super) fn pick(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
-    pick_inner(&req).map_err(|error| {
+fn pick(req: &PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
+    pick_inner(req).map_err(|error| {
         if error.code() == ERROR_CANCELLED.to_hresult() {
             PortalFailure::Cancelled
         } else {
@@ -113,7 +173,7 @@ fn configure(dialog: &IFileDialog, req: &PickRequest) -> windows::core::Result<(
     Ok(())
 }
 
-fn filter_pattern(filter: &super::FileFilter) -> String {
+fn filter_pattern(filter: &crate::portal::FileFilter) -> String {
     let mut globs = filter.globs.clone();
     for mime in &filter.mimetypes {
         if let Some(extensions) = mime_guess::get_mime_extensions_str(mime) {
@@ -142,7 +202,7 @@ fn item_uri(item: &IShellItem) -> windows::core::Result<url::Url> {
         PathBuf::from(path?)
     };
     let uri = url::Url::from_file_path(path).map_err(|()| invalid_path())?;
-    super::to_local_path(&uri).ok_or_else(invalid_path)?;
+    crate::portal::to_local_path(&uri).ok_or_else(invalid_path)?;
     Ok(uri)
 }
 
@@ -153,7 +213,7 @@ fn invalid_path() -> windows::core::Error {
     )
 }
 
-pub(super) fn launch(req: LaunchRequest) -> LaunchOutcome {
+fn launch(req: LaunchRequest) -> LaunchOutcome {
     let target = match req.kind {
         LaunchKind::Open => req.path,
         LaunchKind::Reveal => req.path.parent().map(Path::to_path_buf).unwrap_or(req.path),
@@ -161,7 +221,7 @@ pub(super) fn launch(req: LaunchRequest) -> LaunchOutcome {
     let Ok(uri) = url::Url::from_file_path(&target) else {
         return LaunchOutcome::Failed("desktop-open path must be absolute".into());
     };
-    if super::to_local_path(&uri).is_none() {
+    if crate::portal::to_local_path(&uri).is_none() {
         return LaunchOutcome::Failed("desktop-open path must be local".into());
     }
     // Hold the validated handle through dispatch. Refuse delete sharing so

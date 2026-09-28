@@ -1,36 +1,24 @@
-//! The native file-chooser backends behind [`crate::portal`]: the XDG
-//! Desktop Portal (`ashpd`) on Unix and the Common Item Dialogs on Windows,
-//! with the `portal` feature. Without it every request fails cleanly.
+//! The Linux backend: the XDG Desktop Portal (`ashpd`). Its D-Bus
+//! round-trips run on the app runtime; outcomes wake the asking event loop.
+//!
+//! Inside the Tilo sandbox the portal is also where the file-access grant is
+//! made, so pickers never fall back to anything else. Opening a URI falls back
+//! to the desktop's opener only when no portal answers at all.
 
-#[cfg(all(feature = "portal", windows))]
-mod windows;
-
-#[cfg(all(feature = "portal", freedesktop))]
 use std::fs::{File, OpenOptions};
-#[cfg(all(feature = "portal", freedesktop))]
 use std::path::Path;
 
-#[cfg(not(all(feature = "portal", freedesktop)))]
-use crate::portal::spawn_worker;
-#[cfg(feature = "portal")]
-use crate::portal::{FileFilter, PickKind, map_uri, map_uris, open_selected_uri};
+use crate::PortalFailure;
 use crate::portal::{
-    LaunchChannel, LaunchOutcome, LaunchRequest, MultiChannel, MultiOutcome, OpenFileChannel,
-    OpenFileOutcome, PickRequest, PortalChannel, PortalOutcome,
+    FileFilter, LaunchChannel, LaunchKind, LaunchOutcome, LaunchRequest, MultiChannel,
+    OpenFileChannel, OpenFileOutcome, PickKind, PickRequest, PortalChannel, map_uri, map_uris,
+    open_regular_file, open_selected_uri,
 };
-#[cfg(all(feature = "portal", freedesktop))]
-use crate::portal::{LaunchKind, open_regular_file};
-#[cfg(all(feature = "portal", windows))]
-use crate::portal::{LaunchKind, to_local_path};
 
-/// The native [`crate::host::FilePicker`]: the XDG Desktop Portal on Unix,
-/// whose D-Bus round-trips run on the app runtime, and the Common Item
-/// Dialogs on Windows, each on its own worker thread. Without the `portal`
-/// feature every request fails cleanly.
-pub struct DesktopFilePicker;
+/// The portal [`crate::FilePicker`].
+pub(crate) struct PortalFilePicker;
 
-#[cfg(all(feature = "portal", freedesktop))]
-impl crate::host::FilePicker for DesktopFilePicker {
+impl crate::FilePicker for PortalFilePicker {
     fn pick(&self, request: PickRequest) -> PortalChannel {
         deliver(async move {
             match run(request).await {
@@ -80,100 +68,20 @@ impl crate::host::FilePicker for DesktopFilePicker {
 /// Run one portal request on the app runtime and return the channel its
 /// outcome arrives on. Sending it wakes the event loop of the wake scope the
 /// request was made under.
-#[cfg(all(feature = "portal", freedesktop))]
 fn deliver<T: Send + 'static>(
     request: impl std::future::Future<Output = T> + Send + 'static,
 ) -> std::sync::mpsc::Receiver<T> {
-    let (reply, rx) = crate::wake::reply();
-    drop(tilo_rt::app().spawn_then(request, move |outcome| reply.send(outcome)));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let wake = tilo_rt::wake::WakeHandle::new();
+    drop(tilo_rt::app().spawn_then(request, move |outcome| {
+        // The UI may have moved on (window closed); ignore a dead channel.
+        if tx.send(outcome).is_ok() {
+            wake.wake();
+        }
+    }));
     rx
 }
 
-#[cfg(not(all(feature = "portal", freedesktop)))]
-impl crate::host::FilePicker for DesktopFilePicker {
-    fn pick(&self, request: PickRequest) -> PortalChannel {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let name = request.thread_name.clone();
-        spawn_worker(&name, move || {
-            let _ = tx.send(single(request));
-        });
-        rx
-    }
-
-    fn pick_multiple(&self, request: PickRequest) -> MultiChannel {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let name = request.thread_name.clone();
-        spawn_worker(&name, move || {
-            let _ = tx.send(multiple(request));
-        });
-        rx
-    }
-
-    fn open_file(&self, request: PickRequest) -> OpenFileChannel {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let name = request.thread_name.clone();
-        spawn_worker(&name, move || {
-            let _ = tx.send(single_open_file(request));
-        });
-        rx
-    }
-
-    fn launch(&self, request: LaunchRequest) -> LaunchChannel {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let name = request.thread_name.clone();
-        spawn_worker(&name, move || {
-            let _ = tx.send(launch(request));
-        });
-        rx
-    }
-}
-
-// ---------------------------------------------------------------------------
-// The Windows dialog round-trip.
-// ---------------------------------------------------------------------------
-
-#[cfg(all(feature = "portal", windows))]
-fn single(req: PickRequest) -> PortalOutcome {
-    match windows::pick(req) {
-        Ok(uris) => map_uri(&uris),
-        Err(error) => error.into_single(),
-    }
-}
-
-#[cfg(all(feature = "portal", windows))]
-fn single_open_file(req: PickRequest) -> OpenFileOutcome {
-    if !matches!(req.kind, PickKind::Open { multiple: false }) {
-        return OpenFileOutcome::Failed(
-            "an already-open file request must be a single-file Open chooser".to_string(),
-        );
-    }
-    match windows::pick(req) {
-        Ok(uris) => match uris.first() {
-            Some(uri) => open_selected_uri(uri),
-            None => OpenFileOutcome::Cancelled,
-        },
-        Err(error) => error.into_open_file(),
-    }
-}
-
-#[cfg(all(feature = "portal", windows))]
-fn multiple(req: PickRequest) -> MultiOutcome {
-    match windows::pick(req) {
-        Ok(uris) => map_uris(&uris),
-        Err(error) => error.into_multi(),
-    }
-}
-
-#[cfg(all(feature = "portal", windows))]
-fn launch(req: LaunchRequest) -> LaunchOutcome {
-    windows::launch(req)
-}
-
-// ---------------------------------------------------------------------------
-// The ashpd round-trip.
-// ---------------------------------------------------------------------------
-
-#[cfg(all(feature = "portal", freedesktop))]
 async fn launch(req: LaunchRequest) -> LaunchOutcome {
     use std::os::fd::AsFd;
 
@@ -217,7 +125,6 @@ async fn launch(req: LaunchRequest) -> LaunchOutcome {
 
 /// Hand an open picture to the XDG Wallpaper portal; the desktop previews it
 /// and asks the user before applying.
-#[cfg(all(feature = "portal", freedesktop))]
 pub(crate) fn set_wallpaper(
     file: std::fs::File,
     target: crate::portal::WallpaperTarget,
@@ -242,8 +149,8 @@ pub(crate) fn set_wallpaper(
 
 /// Hand `uri` to the XDG `OpenURI` portal, blocking until the desktop has
 /// launched its handler or refused the request.
-#[cfg(all(feature = "portal", freedesktop))]
 pub(crate) fn open_uri(uri: &str) -> std::io::Result<()> {
+    let text = uri;
     let uri = ashpd::Uri::parse(uri).map_err(|error| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -252,7 +159,7 @@ pub(crate) fn open_uri(uri: &str) -> std::io::Result<()> {
     })?;
     // The D-Bus round trip runs on the app runtime; callers are workers,
     // never a thread of that runtime.
-    tilo_rt::try_app()
+    let answered = tilo_rt::try_app()
         .and_then(|runtime| {
             runtime.block_on(async {
                 ashpd::desktop::open_uri::OpenFileRequest::default()
@@ -261,11 +168,22 @@ pub(crate) fn open_uri(uri: &str) -> std::io::Result<()> {
                     .and_then(|request| request.response())
             })
         })
-        .map_err(std::io::Error::other)?
-        .map_err(std::io::Error::other)
+        .map_err(std::io::Error::other)?;
+    match answered {
+        Ok(()) => Ok(()),
+        // The portal answered and the user or its policy refused: final.
+        Err(error @ (ashpd::Error::Response(_) | ashpd::Error::Portal(_))) => {
+            Err(std::io::Error::other(error))
+        }
+        // No portal on this session (an unsandboxed desktop without
+        // xdg-desktop-portal): the desktop's own opener.
+        Err(error) => {
+            tracing::debug!(%error, "no OpenURI portal; using the desktop opener");
+            open::that_detached(text)
+        }
+    }
 }
 
-#[cfg(all(feature = "portal", freedesktop))]
 fn open_directory(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -275,38 +193,6 @@ fn open_directory(path: &Path) -> std::io::Result<File> {
         .open(path)
 }
 
-/// A portal round-trip that did not return URIs.
-#[cfg(feature = "portal")]
-enum PortalFailure {
-    /// The user dismissed the picker. Surfaces from ashpd as a "cancelled"
-    /// response error, not a bug.
-    Cancelled,
-    Failed(String),
-}
-
-#[cfg(feature = "portal")]
-impl PortalFailure {
-    fn into_single(self) -> PortalOutcome {
-        match self {
-            PortalFailure::Cancelled => PortalOutcome::Cancelled,
-            PortalFailure::Failed(e) => PortalOutcome::Failed(e),
-        }
-    }
-    fn into_multi(self) -> MultiOutcome {
-        match self {
-            PortalFailure::Cancelled => MultiOutcome::Cancelled,
-            PortalFailure::Failed(e) => MultiOutcome::Failed(e),
-        }
-    }
-    fn into_open_file(self) -> OpenFileOutcome {
-        match self {
-            PortalFailure::Cancelled => OpenFileOutcome::Cancelled,
-            PortalFailure::Failed(e) => OpenFileOutcome::Failed(e),
-        }
-    }
-}
-
-#[cfg(all(feature = "portal", freedesktop))]
 async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
     use ashpd::desktop::file_chooser::SelectedFiles;
 
@@ -366,38 +252,12 @@ async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
     }
 }
 
-/// Without the `portal` feature there is no picker: report a failure so the
-/// caller still gets exactly one drained outcome and never hangs waiting for a
-/// picker that cannot open.
-#[cfg(not(feature = "portal"))]
-fn single(_req: PickRequest) -> PortalOutcome {
-    PortalOutcome::Failed(NO_PORTAL.to_string())
-}
-
-#[cfg(not(feature = "portal"))]
-fn single_open_file(_req: PickRequest) -> OpenFileOutcome {
-    OpenFileOutcome::Failed(NO_PORTAL.to_string())
-}
-
-#[cfg(not(feature = "portal"))]
-fn multiple(_req: PickRequest) -> MultiOutcome {
-    MultiOutcome::Failed(NO_PORTAL.to_string())
-}
-
-#[cfg(not(feature = "portal"))]
-fn launch(_req: LaunchRequest) -> LaunchOutcome {
-    LaunchOutcome::Failed(NO_PORTAL.to_string())
-}
-
-#[cfg(not(feature = "portal"))]
-const NO_PORTAL: &str = "the file picker needs the real-desktop build (`--features portal`)";
-
-#[cfg(all(test, feature = "portal", freedesktop))]
+#[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "test assertions")]
 
     use super::*;
-    use crate::host::FilePicker;
+    use crate::FilePicker;
 
     /// Portal requests run on the app runtime, never on the thread that asks,
     /// and their outcome wakes the asking event loop. A relative path fails
@@ -408,7 +268,7 @@ mod tests {
             .name("ui-event-loop".into())
             .spawn(|| {
                 tilo_rt::mark_ui_thread();
-                let mut scope = crate::wake::WakeScope::new();
+                let mut scope = tilo_rt::wake::WakeScope::new();
                 let (woke, wakes) = std::sync::mpsc::channel();
                 scope
                     .bind(move |event| {
@@ -416,7 +276,7 @@ mod tests {
                     })
                     .unwrap();
                 let _entry = scope.enter();
-                let outcomes = DesktopFilePicker.launch(LaunchRequest::open("relative/file.txt"));
+                let outcomes = PortalFilePicker.launch(LaunchRequest::open("relative/file.txt"));
                 let event = wakes
                     .recv_timeout(std::time::Duration::from_secs(10))
                     .unwrap();

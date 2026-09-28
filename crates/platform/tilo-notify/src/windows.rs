@@ -4,12 +4,18 @@
 //! Notification settings remain under Windows/user control. Successful submission
 //! does not imply that Windows displayed a banner (e.g. Do Not Disturb).
 
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::arithmetic_side_effects,
+    clippy::needless_pass_by_value,
+    clippy::cmp_owned,
+    clippy::borrow_as_ptr,
+    reason = "moved unchanged from tilo-host's Windows toasts, which no Windows lint lane covers yet"
+)]
+
 use std::{marker::PhantomData, path::Path, rc::Rc, sync::OnceLock};
 
-/// Whether this build delivers and schedules native notifications.
-pub const SUPPORTED: bool = true;
-
-use crate::time::{Duration, SystemTime, UNIX_EPOCH};
+use tilo_clock::{Duration, SystemTime, UNIX_EPOCH};
 use windows::Data::Xml::Dom::XmlDocument;
 use windows::UI::Notifications::{
     NotificationSetting, ScheduledToastNotification, ToastNotification, ToastNotificationManager,
@@ -244,7 +250,7 @@ impl HostNotifications {
                 toast.SetSuppressPopup(true)?;
                 let expiry: windows::Foundation::IReference<windows::Foundation::DateTime> =
                     windows::Foundation::PropertyValue::CreateDateTime(to_windows_time(
-                        crate::time::wall() + Duration::from_secs(15),
+                        tilo_clock::wall() + Duration::from_secs(15),
                     )?)?
                     .cast()?;
                 toast.SetExpirationTime(&expiry)?;
@@ -258,6 +264,77 @@ impl HostNotifications {
             .GetScheduledToastNotifications()?
             .into_iter()
             .collect())
+    }
+}
+
+/// The Windows [`crate::Notifier`]: toasts under the installer-registered
+/// app id. Each call opens its own notifier: the COM apartment it needs is
+/// bound to the calling thread.
+pub(crate) struct Toasts {
+    app_id: String,
+}
+
+impl Toasts {
+    pub(crate) fn new(app_id: &str) -> Self {
+        Self {
+            app_id: app_id.to_owned(),
+        }
+    }
+
+    fn host(&self) -> Result<HostNotifications, crate::NotifyError> {
+        HostNotifications::new(&self.app_id).map_err(failed)
+    }
+}
+
+fn failed(error: windows::core::Error) -> crate::NotifyError {
+    crate::NotifyError::Failed(error.to_string())
+}
+
+impl crate::Notifier for Toasts {
+    fn show(&self, notification: &crate::Notification) -> Result<(), crate::NotifyError> {
+        crate::validate(notification)?;
+        self.host()?
+            .show(&notification.tag, &notification.title, &notification.body)
+            .map_err(failed)
+    }
+
+    fn withdraw(&self, tag: &str) -> Result<(), crate::NotifyError> {
+        crate::validate_tag(tag)?;
+        self.host()?.remove(tag).map_err(failed)
+    }
+
+    fn schedule(
+        &self,
+        notification: &crate::Notification,
+        at: SystemTime,
+    ) -> Result<(), crate::NotifyError> {
+        crate::validate(notification)?;
+        self.host()?
+            .schedule(
+                &notification.tag,
+                &notification.title,
+                &notification.body,
+                at,
+            )
+            .map_err(failed)
+    }
+
+    fn scheduled(&self) -> Result<Vec<crate::Scheduled>, crate::NotifyError> {
+        Ok(self
+            .host()?
+            .scheduled()
+            .map_err(failed)?
+            .into_iter()
+            .map(|notice| crate::Scheduled {
+                tag: notice.id,
+                at: notice.delivery_time,
+            })
+            .collect())
+    }
+
+    fn cancel_scheduled(&self, tag: &str) -> Result<(), crate::NotifyError> {
+        crate::validate_tag(tag)?;
+        self.host()?.cancel_schedule(tag).map_err(failed)
     }
 }
 

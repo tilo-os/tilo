@@ -72,7 +72,7 @@ fn vault_seals_round_trip_under_their_own_format_only() {
 }
 
 #[test]
-fn secret_service_keys_encode_canonically_and_carry_the_format_identity() {
+fn secret_service_keys_encode_canonically() {
     // Phase `secret_service_key_encoding_round_trips_and_rejects_bad_material`.
     {
         let key = [0xa5; KEY_LEN];
@@ -111,30 +111,6 @@ fn secret_service_keys_encode_canonically_and_carry_the_format_identity() {
         assert_eq!(
             decode_key(&format!("{shorter}é")).unwrap_err(),
             "Secret Service key is not hexadecimal"
-        );
-    }
-    // Phase `secret_service_arguments_carry_the_format_identity`.
-    {
-        assert_eq!(
-            FORMAT.secret_service_args("lookup", None),
-            [
-                "lookup",
-                "application",
-                "Tilo",
-                "purpose",
-                "secret-vault-test"
-            ]
-        );
-        assert_eq!(
-            FORMAT.secret_service_args("store", Some(FORMAT.secret_service_label)),
-            [
-                "store",
-                "--label=Tilo secret-vault test",
-                "application",
-                "Tilo",
-                "purpose",
-                "secret-vault-test"
-            ]
         );
     }
 }

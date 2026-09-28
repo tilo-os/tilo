@@ -1,6 +1,6 @@
 //! `wl_data_device` + `zwp_primary_selection_device_v1` on the app's own
 //! Wayland connection — the native clipboard for a Wayland app; see
-//! [`crate::clipboard`] for why this, rather than `arboard`, serves Wayland.
+//! the crate docs for why this, rather than `arboard`, serves Wayland.
 #![allow(
     clippy::disallowed_methods,
     reason = "native host runner: the Wayland clipboard owns its event thread"
@@ -8,28 +8,24 @@
 
 use std::sync::Arc;
 
-use crate::clipboard::{
+use crate::{
     ClipboardBackend, ClipboardTarget, MAX_CLIPBOARD_IMAGE_BYTES, MAX_CLIPBOARD_IMAGE_INPUT_BYTES,
 };
 
-#[cfg(target_os = "linux")]
-const CLIPBOARD_READ_BUDGET: crate::time::Duration = crate::time::Duration::from_millis(40);
-#[cfg(target_os = "linux")]
-const CLIPBOARD_SHUTDOWN_BUDGET: crate::time::Duration = crate::time::Duration::from_millis(250);
+const CLIPBOARD_READ_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(40);
+const CLIPBOARD_SHUTDOWN_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(250);
 
-#[cfg(target_os = "linux")]
 fn recv_bounded<T>(
     receiver: &std::sync::mpsc::Receiver<T>,
-    budget: crate::time::Duration,
+    budget: tilo_clock::Duration,
 ) -> Option<T> {
     receiver.recv_timeout(budget).ok()
 }
 
-#[cfg(target_os = "linux")]
-fn join_bounded(thread: std::thread::JoinHandle<()>, budget: crate::time::Duration) -> bool {
-    let now = crate::time::now();
+fn join_bounded(thread: std::thread::JoinHandle<()>, budget: tilo_clock::Duration) -> bool {
+    let now = tilo_clock::now();
     let deadline = now.checked_add(budget).unwrap_or(now);
-    while !thread.is_finished() && crate::time::now() < deadline {
+    while !thread.is_finished() && tilo_clock::now() < deadline {
         std::thread::yield_now();
     }
     if thread.is_finished() {
@@ -49,7 +45,6 @@ fn join_bounded(thread: std::thread::JoinHandle<()>, budget: crate::time::Durati
 /// focus, and only the connection that owns the focused surface has it. A
 /// second, separate connection would be a different client, would never hold
 /// focus, and every copy from it would be refused.
-#[cfg(target_os = "linux")]
 pub struct WaylandClipboard {
     /// `smithay_clipboard::Clipboard` owns an mpsc receiver, so it is `Send`
     /// but not `Sync`. Each target has its own instance and read thread: a
@@ -65,24 +60,21 @@ pub struct WaylandClipboard {
     primary_refresh_inflight: Arc<std::sync::atomic::AtomicBool>,
     clipboard_refresh_generation: Arc<std::sync::atomic::AtomicU64>,
     primary_refresh_generation: Arc<std::sync::atomic::AtomicU64>,
-    wake: crate::wake::WakeHandle,
+    wake: tilo_rt::wake::WakeHandle,
 }
 
-#[cfg(target_os = "linux")]
 struct PublicationClipboard {
     sender: smithay_client_toolkit::reexports::calloop::channel::Sender<ClipboardCommand>,
     thread: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
     alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-#[cfg(target_os = "linux")]
 enum ClipboardCommand {
     SetText(Vec<u8>, std::sync::mpsc::Sender<bool>),
     SetImage(Vec<u8>, std::sync::mpsc::Sender<bool>),
     Exit,
 }
 
-#[cfg(target_os = "linux")]
 impl WaylandClipboard {
     /// Attach to the `wl_display` behind `display_ptr`.
     ///
@@ -133,7 +125,7 @@ impl WaylandClipboard {
             primary_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             clipboard_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             primary_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            wake: crate::wake::WakeHandle::new(),
+            wake: tilo_rt::wake::WakeHandle::new(),
         }
     }
 
@@ -172,12 +164,11 @@ impl WaylandClipboard {
             primary_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             clipboard_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             primary_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            wake: crate::wake::WakeHandle::new(),
+            wake: tilo_rt::wake::WakeHandle::new(),
         }
     }
 }
 
-#[cfg(target_os = "linux")]
 fn encode_png(width: usize, height: usize, rgba: &[u8]) -> Option<Vec<u8>> {
     if width == 0 || height == 0 || rgba.len() > MAX_CLIPBOARD_IMAGE_INPUT_BYTES {
         return None;
@@ -188,11 +179,16 @@ fn encode_png(width: usize, height: usize, rgba: &[u8]) -> Option<Vec<u8>> {
     if rgba.len() != expected_len {
         return None;
     }
-    let bytes = crate::png::encode_rgba8(width_u32, height_u32, rgba).ok()?;
+    let mut bytes = Vec::new();
+    {
+        use image::ImageEncoder as _;
+        image::codecs::png::PngEncoder::new(&mut bytes)
+            .write_image(rgba, width_u32, height_u32, image::ExtendedColorType::Rgba8)
+            .ok()?;
+    }
     (bytes.len() <= MAX_CLIPBOARD_IMAGE_BYTES).then_some(bytes)
 }
 
-#[cfg(target_os = "linux")]
 mod image_worker_impl {
     const MAX_INFLIGHT_TRANSFERS: usize = 16;
     const MAX_INFLIGHT_BYTES: usize = 32 * 1024 * 1024;
@@ -779,7 +775,6 @@ mod image_worker_impl {
     delegate_touch!(State);
 }
 
-#[cfg(target_os = "linux")]
 fn publication_worker(
     connection: smithay_client_toolkit::reexports::client::Connection,
     commands: smithay_client_toolkit::reexports::calloop::channel::Channel<ClipboardCommand>,
@@ -787,7 +782,6 @@ fn publication_worker(
     image_worker_impl::run(connection, commands);
 }
 
-#[cfg(target_os = "linux")]
 impl ClipboardBackend for WaylandClipboard {
     fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
         match target {
@@ -837,7 +831,6 @@ impl ClipboardBackend for WaylandClipboard {
     }
 }
 
-#[cfg(target_os = "linux")]
 impl WaylandClipboard {
     #[allow(
         clippy::option_option,
@@ -925,7 +918,6 @@ impl WaylandClipboard {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn begin_external_refresh(inflight: &std::sync::atomic::AtomicBool) -> bool {
     use std::sync::atomic::Ordering;
 
@@ -934,7 +926,6 @@ fn begin_external_refresh(inflight: &std::sync::atomic::AtomicBool) -> bool {
         .is_ok()
 }
 
-#[cfg(target_os = "linux")]
 impl Drop for WaylandClipboard {
     fn drop(&mut self) {
         let _ = self.publication.sender.send(ClipboardCommand::Exit);
@@ -950,16 +941,17 @@ impl Drop for WaylandClipboard {
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn clipboard_images_encode_as_bounded_lossless_png() {
         // phase: rgba_image_is_encoded_as_lossless_png
         {
             let rgba = [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40];
             let png = encode_png(2, 1, &rgba).expect("valid RGBA image");
-            let decoded = crate::png::decode_rgba8(&png).expect("complete PNG");
-            assert_eq!((decoded.width, decoded.height), (2, 1));
-            assert_eq!(decoded.rgba, rgba);
+            let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+                .expect("complete PNG")
+                .into_rgba8();
+            assert_eq!(decoded.dimensions(), (2, 1));
+            assert_eq!(decoded.as_raw().as_slice(), rgba);
         }
         // phase: png_encoding_rejects_invalid_dimensions_and_oversized_input
         {
@@ -970,7 +962,6 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn clipboard_transfers_are_single_flight_bounded_and_mime_exact() {
         // phase: external_readers_are_single_flight_but_targets_are_independent
@@ -997,14 +988,14 @@ mod tests {
             });
             request_tx.send(()).unwrap();
             assert_eq!(
-                recv_bounded(&rx, crate::time::Duration::from_secs(30)),
+                recv_bounded(&rx, std::time::Duration::from_secs(30)),
                 Some(Some("fresh".to_string()))
             );
             owner.join().unwrap();
 
             let (_tx, rx) = std::sync::mpsc::channel::<Option<String>>();
             assert_eq!(
-                recv_bounded(&rx, crate::time::Duration::from_millis(1)),
+                recv_bounded(&rx, std::time::Duration::from_millis(1)),
                 None,
                 "a slow external owner must not make paste return an unrelated cached value"
             );
@@ -1017,7 +1008,7 @@ mod tests {
             let worker = std::thread::spawn(move || {
                 let _ = stuck.recv();
             });
-            assert!(!join_bounded(worker, crate::time::Duration::from_millis(2)));
+            assert!(!join_bounded(worker, std::time::Duration::from_millis(2)));
             drop(release);
 
             let finished = std::thread::spawn(|| {});
