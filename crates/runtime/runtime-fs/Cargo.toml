@@ -29,7 +29,7 @@ tokio-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
-wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
+wire-frame = { path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

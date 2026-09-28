@@ -14528,6 +14528,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+ "wire-frame",
  "word-processor",
  "workspace-hack",
 ]
@@ -14877,6 +14878,7 @@ dependencies = [
  "uuid",
  "web-time",
  "web-transport-quinn",
+ "wire-frame",
  "word-processor",
  "workspace-hack",
  "zeroize",
@@ -15530,6 +15532,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "web-time",
+ "wire-frame",
  "word-processor",
  "workspace-hack",
  "zeroize",
