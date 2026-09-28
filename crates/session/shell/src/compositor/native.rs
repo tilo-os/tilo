@@ -108,9 +108,15 @@ use crate::compositor::surface_outputs::{
 /// The legacy windows to encode for viewers: none while nobody watches the
 /// backend, so a headless machine's encoders stop and receivers get
 /// `SurfaceStreamEnd` at once.
+///
+/// `viewer_hosts` are the peer handles of the active room's workspace hosts
+/// when the backend is headless: its viewers watch through that host (which
+/// decides which of them see and control what), so every legacy window of
+/// the active workspace is shared with it, not only the explicitly shared.
 fn desired_legacy_shares(
     tree: &crate::shell::state::WorkspaceTree,
     watched: bool,
+    viewer_hosts: &std::collections::HashSet<u64>,
 ) -> HashMap<u64, (String, std::collections::HashSet<u64>)> {
     if !watched {
         return HashMap::new();
@@ -123,26 +129,27 @@ fn desired_legacy_shares(
     else {
         return HashMap::new();
     };
-    workspace
-        .shared_surfaces
+    let mut desired = HashMap::new();
+    for tab in workspace
+        .strips
         .iter()
-        .filter_map(|(surface, peers)| {
-            let app_id = workspace
-                .strips
-                .iter()
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .find_map(|tab| match &tab.tile {
-                    crate::shell::state::TileContent::Foreign { app_id, surface_id }
-                        if *surface_id == surface =>
-                    {
-                        Some(app_id.clone())
-                    }
-                    _ => None,
-                })?;
-            Some((surface, (app_id, peers.clone())))
-        })
-        .collect()
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+    {
+        let crate::shell::state::TileContent::Foreign { app_id, surface_id } = &tab.tile else {
+            continue;
+        };
+        let mut peers = workspace
+            .shared_surfaces
+            .iter()
+            .find_map(|(surface, peers)| (surface == *surface_id).then(|| peers.clone()))
+            .unwrap_or_default();
+        peers.extend(viewer_hosts);
+        if !peers.is_empty() {
+            desired.insert(*surface_id, (app_id.clone(), peers));
+        }
+    }
+    desired
 }
 use crate::compositor::switch_control::{SwitchAction, SwitchControlRuntime};
 
@@ -8527,9 +8534,14 @@ pub fn run() {
                 }
             );
             let desired = {
+                let viewer_hosts = if backend_kind == BackendKind::Headless {
+                    net.workspace_hosts(net.active_ws_for_publish())
+                } else {
+                    std::collections::HashSet::new()
+                };
                 let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
                 let tree = tree_handle.read();
-                desired_legacy_shares(&tree, backend.watched())
+                desired_legacy_shares(&tree, backend.watched(), &viewer_hosts)
             };
             pump_phase!(
                 "legacy-share-reconcile",
@@ -10899,15 +10911,48 @@ mod tests {
             width: WindowWidth::Normal,
             maximized: false,
         });
+        workspace.strips[0].window_groups.push(WindowGroup {
+            id: 13,
+            tabs: vec![Tab {
+                id: 14,
+                title: "Chromium".into(),
+                tile: TileContent::Foreign {
+                    app_id: "org.chromium.Chromium".into(),
+                    surface_id: 8,
+                },
+            }],
+            active_tab: 14,
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
         workspace.shared_surfaces.share(7, 9);
+        let none = std::collections::HashSet::new();
 
-        let watched = desired_legacy_shares(&tree, true);
+        let watched = desired_legacy_shares(&tree, true, &none);
         assert_eq!(
             watched.get(&7),
             Some(&("org.gimp.GIMP".to_string(), [9].into_iter().collect()))
         );
         assert!(
-            desired_legacy_shares(&tree, false).is_empty(),
+            !watched.contains_key(&8),
+            "without a viewer host only explicit shares stream"
+        );
+        let hosts = [42].into_iter().collect();
+        let through_host = desired_legacy_shares(&tree, true, &hosts);
+        assert_eq!(
+            through_host.get(&7),
+            Some(&("org.gimp.GIMP".to_string(), [9, 42].into_iter().collect()))
+        );
+        assert_eq!(
+            through_host.get(&8),
+            Some(&(
+                "org.chromium.Chromium".to_string(),
+                [42].into_iter().collect()
+            )),
+            "a viewer host receives every legacy window of the active workspace"
+        );
+        assert!(
+            desired_legacy_shares(&tree, false, &hosts).is_empty(),
             "unwatched, every encoder stops"
         );
     }

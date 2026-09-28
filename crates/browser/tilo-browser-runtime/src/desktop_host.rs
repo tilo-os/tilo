@@ -742,6 +742,27 @@ impl DesktopRoot {
             covered: self.activity.is_some(),
             ..Default::default()
         };
+        // Tabs of an app this build cannot run: a legacy window, which the
+        // live overlay fills with the session's video of it.
+        let legacy_apps: BTreeMap<u64, String> = self
+            .handle
+            .tree
+            .try_borrow()
+            .map(|tree| {
+                tree.workspaces
+                    .iter()
+                    .flat_map(|workspace| &workspace.strips)
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .filter_map(|tab| {
+                        let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile)?;
+                        crate::desktop::definition(&app)
+                            .is_none()
+                            .then_some((tab.id, app))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         for strip in self.surface.strip_ids() {
             let Some(row) = self.surface.row(strip) else {
                 continue;
@@ -751,12 +772,16 @@ impl DesktopRoot {
                 if group.focused {
                     layout.focused_group = Some(group.id);
                 }
+                let tab = group.active_tab_id();
                 layout.groups.push(crate::live_view::LiveGroup {
                     id: group.id,
                     rect: group.get_rect(),
-                    tab: group.active_tab_id(),
+                    tab,
                     scroll: ui::Widget::primary_vertical_scroll(group)
                         .map(|region| region.metrics.offset),
+                    legacy: legacy_apps
+                        .get(&tab)
+                        .and_then(|app| Some((app.clone(), group.content_rect_for_tab(tab)?))),
                 });
             }
             if layout.drag.is_none() {

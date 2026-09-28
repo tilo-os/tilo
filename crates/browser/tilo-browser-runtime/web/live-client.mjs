@@ -176,7 +176,7 @@ export function createLiveClient({
   const remotes = new Map();
   // key -> {record, count}. Agent activity is received from every member for
   // as long as the client lives.
-  const watched = new Map([[recordKey(AGENT_ACTIVITY_RECORD), {record: AGENT_ACTIVITY_RECORD, count: 1}]]);
+  const watched = new Map([[recordKey(AGENT_ACTIVITY_RECORD), {record: AGENT_ACTIVITY_RECORD, count: 1, raw: new Set()}]]);
   const agents = new Map(); // publisher -> {agentId, name, state, label, tool, atMs, receivedAtMs}
   const agentPublishers = new Map(); // agent id -> expected publisher hex
   let agentTimer;
@@ -485,7 +485,12 @@ export function createLiveClient({
     for (const [key, record] of desired) {
       if (remote.ops.has(key)) continue;
       try {
-        remote.ops.set(key, session.subscribeOps(remote.id, trackFor(record), (bytes, receivedAtMs) => { remote.failures.delete(key); onOps(remote, bytes, receivedAtMs); }, () => {
+        remote.ops.set(key, session.subscribeOps(remote.id, trackFor(record), (bytes, receivedAtMs) => {
+          remote.failures.delete(key);
+          const raw = watched.get(key)?.raw;
+          if (raw?.size) { for (const onFrame of [...raw]) { try { onFrame(remote.id, bytes, receivedAtMs); } catch (error) { report(error); } } return; }
+          onOps(remote, bytes, receivedAtMs);
+        }, () => {
           // Egress withdrawn or reset: resubscribe if the record is still wanted.
           remote.ops.delete(key);
           later(remote, () => { if (remotes.get(remote.id) === remote) syncOps(remote); }, retryDelay(remote, key));
@@ -793,18 +798,25 @@ export function createLiveClient({
       previewQueues.delete(recordKey(value));
       try { session?.closeOps(trackFor(value)); } catch {}
     },
-    /** Receive ops (previews, early signed changes) for a record from every member. */
-    watchRecord(record) {
+    /**
+     * Receive ops (previews, early signed changes) for a record from every
+     * member. With `onFrame(publisher, bytes, receivedAtMs)` the record's
+     * frames are not ops: they go to it undecoded (host-published streams
+     * such as legacy windows, which no member can publish).
+     */
+    watchRecord(record, onFrame) {
       const value = validRecord(record);
       const key = recordKey(value);
-      const entry = watched.get(key) ?? {record: value, count: 0};
+      const entry = watched.get(key) ?? {record: value, count: 0, raw: new Set()};
       entry.count++;
+      if (typeof onFrame === 'function') entry.raw.add(onFrame);
       watched.set(key, entry);
       for (const remote of remotes.values()) syncOps(remote);
       let active = true;
       return () => {
         if (!active) return;
         active = false;
+        entry.raw.delete(onFrame);
         if (--entry.count === 0) watched.delete(key);
         for (const remote of remotes.values()) syncOps(remote);
       };
