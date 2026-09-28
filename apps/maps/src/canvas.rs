@@ -67,7 +67,7 @@ impl MapPalette {
     /// and dark tiles (the reported light-centre/dark-edge bug). The style
     /// decision is the *same* one the raster layer uses
     /// ([`crate::tiles::TileStyle::from_theme`]), so the drawn colours and the
-    /// fetched CARTO tiles always agree.
+    /// tone the tiles are decoded in always agree.
     pub fn from_theme(theme: &Theme) -> Self {
         use crate::tiles::TileStyle;
         if TileStyle::from_theme(theme) == TileStyle::Dark {
@@ -77,8 +77,8 @@ impl MapPalette {
         }
     }
 
-    /// The light cartography: a warm near-white paper land, matching the CARTO
-    /// `light_nolabels` basemap it underlays. Hues track the theme (water = info,
+    /// The light cartography: a warm near-white paper land, matching the OSM
+    /// Standard raster it underlays. Hues track the theme (water = info,
     /// parks = success); the route/markers track the accent.
     fn light(theme: &Theme) -> Self {
         let sem = &theme.tokens.colors.semantic;
@@ -112,8 +112,8 @@ impl MapPalette {
         }
     }
 
-    /// The dark cartography: a deep neutral land matching the CARTO
-    /// `dark_nolabels` basemap, with light-grey road ribbons and dark-tinted
+    /// The dark cartography: a deep neutral land matching the dark re-tone of
+    /// the OSM raster, with light-grey road ribbons and dark-tinted
     /// water/parks so the map reads coherently dark — not a light map dimmed.
     fn dark(theme: &Theme) -> Self {
         let sem = &theme.tokens.colors.semantic;
@@ -1265,10 +1265,8 @@ fn draw_pin(
 }
 
 /// Draw the bottom-right scale bar into `clip`, its right end at `right_x`
-/// (kept left of the ⋯ overflow button). Attribution + licenses now live behind
-/// that overflow menu — OSM's attribution requirement is met by being reachable,
-/// not by pasting a permanent copyright line across the scale bar — so the scale
-/// bar no longer shares its row with a fixed credit that overlapped it.
+/// (kept left of the ⋯ overflow button). Returns the left edge of its backing
+/// pill, where [`draw_attribution`] ends.
 pub fn draw_scale_bar(
     scene: &mut Scene,
     t: Affine,
@@ -1277,7 +1275,7 @@ pub fn draw_scale_bar(
     right_x: f64,
     model: &MapModel,
     theme: &Theme,
-) {
+) -> f64 {
     let (label, px) = geo::scale_bar(model.center, model.zoom, 110.0);
     let y = clip.y1 - 26.0;
     let x1 = right_x;
@@ -1315,6 +1313,49 @@ pub fn draw_scale_bar(
         theme.text_primary,
     );
     draw::text_center(scene, tr, t, &label, x0, x1, y + 2.0, 10.0, theme.text_dim);
+    x0 - 8.0
+}
+
+/// Draw the tile licence credit on the map: left of the scale bar on its row
+/// (the bar spans `scale_x0..scale_x1`), or right-aligned above the bar when
+/// the map is too narrow for both. The OSM tile policy requires it visible on
+/// the map itself, not behind a menu.
+pub fn draw_attribution(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    clip: Rect,
+    scale_x0: f64,
+    scale_x1: f64,
+    theme: &Theme,
+) {
+    let size = theme.tokens.typography.scale.xs;
+    let w = draw::measure_w(tr, crate::tiles::TILE_ATTRIBUTION, size);
+    let row_y = clip.y1 - 26.0;
+    let beside = scale_x0 - 14.0;
+    let (x1, y) = if beside - w - 8.0 >= clip.x0 + 8.0 {
+        (beside, row_y)
+    } else {
+        (scale_x1, row_y - 24.0)
+    };
+    let x0 = x1 - w;
+    draw::fill_round(
+        scene,
+        t,
+        Rect::new(x0 - 8.0, y - 4.0, x1 + 8.0, y + 14.0),
+        4.0,
+        draw::alpha(theme.tokens.colors.surfaces.base, 0.7),
+    );
+    draw::text_right(
+        scene,
+        tr,
+        t,
+        crate::tiles::TILE_ATTRIBUTION,
+        x1,
+        y + 1.0,
+        size,
+        theme.text_dim,
+    );
 }
 
 #[cfg(test)]
@@ -1397,7 +1438,7 @@ mod tests {
         // The cartography follows the theme: a light map under a light theme, a
         // dark map under a dark theme — never a light map forced under dark chrome
         // (which read as a mixed light/dark view). This is the fix for the tile-tone
-        // bug: the drawn colours agree with the CARTO style the raster layer fetches.
+        // bug: the drawn colours agree with the tone the raster layer decodes in.
         {
             let lum = |c: Color| {
                 let c = c.to_rgba8();

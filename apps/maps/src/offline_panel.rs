@@ -25,6 +25,11 @@ use crate::net::RegionHit;
 use crate::tiles::{DownloadProgress, GeoBounds, TileLayer};
 
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(280);
+
+/// Why the Download button is inert: the OpenStreetMap tile server's usage
+/// policy forbids fetching tiles nobody is viewing.
+pub(crate) const OFFLINE_AREAS_REFUSED: &str =
+    "OpenStreetMap's tile server doesn't allow saving areas";
 const MAX_EXTRA_ZOOM: u8 = 6;
 
 /// Effect requested by a pointer interaction inside the panel.
@@ -55,6 +60,9 @@ pub(crate) struct OfflineFrame<'a> {
     pub viewport_zoom: u8,
     pub regions: &'a [DownloadedRegion],
     pub progress: DownloadProgress,
+    /// Whether the tile server permits saving areas; the Download button is
+    /// inert and says why when it does not.
+    pub downloads_allowed: bool,
 }
 
 /// Transient state for the offline-map overlay.
@@ -644,7 +652,9 @@ impl OfflinePanel {
         y += stepper_h + s2;
 
         let estimate = TileLayer::estimate_download(request.bounds, request.z0, request.z1);
-        let readout = if frame.progress.is_active() {
+        let readout = if !frame.downloads_allowed {
+            OFFLINE_AREAS_REFUSED.to_string()
+        } else if frame.progress.is_active() {
             format!(
                 "Downloading {}/{} tiles…",
                 frame.progress.done, frame.progress.total
@@ -662,6 +672,7 @@ impl OfflinePanel {
                 ui::format::bytes_si(u64::from(estimate) * 18_000)
             )
         };
+        let readout = text.elide_to_width(&readout, 12.0, ui::num::f32_of_f64(right - left));
         draw::text(
             scene,
             text,
@@ -815,10 +826,18 @@ impl OfflinePanel {
             theme,
             &ButtonFace::new(download, &label)
                 .primary()
+                .disabled(!frame.downloads_allowed)
                 .radius(9.0)
                 .text_size(13.0),
         );
-        self.targets.push((download, OfflineAction::Download));
+        self.targets.push((
+            download,
+            if frame.downloads_allowed {
+                OfflineAction::Download
+            } else {
+                OfflineAction::Consume
+            },
+        ));
         Button::paint(
             scene,
             transform,
