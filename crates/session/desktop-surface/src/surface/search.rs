@@ -247,7 +247,7 @@ impl DesktopSurface {
                 }
             }
             // Runs through the palette's control invocation instead.
-            Target::Action(_) => None,
+            Target::Action(_) | Target::Unavailable { .. } => None,
         };
         if let Some(admitted) = admitted {
             shared.queue.push(admitted);

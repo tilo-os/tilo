@@ -10,6 +10,8 @@
 //!   registry, open windows, application actions and content, recent
 //!   choices, host commands).
 //! - [`palette`]: the toolkit's command palette over those sources.
+//! - [`availability`]: the manifest registry's apps a desktop cannot run,
+//!   with the reason shown for each.
 #![cfg_attr(
     test,
     allow(
@@ -21,6 +23,7 @@
     )
 )]
 
+pub mod availability;
 pub mod kind;
 pub mod model;
 pub mod palette;

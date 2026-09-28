@@ -22,6 +22,8 @@ pub enum Target {
     Action(Box<ActionTarget>),
     /// A host command, by id.
     Command { id: String },
+    /// An application this desktop cannot run; choosing it opens nothing.
+    Unavailable { app: String, reason: String },
 }
 
 /// An application action as the palette offers it.

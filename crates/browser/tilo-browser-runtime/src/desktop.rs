@@ -236,7 +236,9 @@ impl TileSource for Tiles {
                 title: definition.title.into(),
                 category: None,
                 description: None,
+                unavailable: None,
             })
+            .chain(tilo_desktop_search::availability::unavailable_on(&["web"]))
             .collect()
     }
 }

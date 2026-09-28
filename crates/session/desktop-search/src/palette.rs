@@ -253,12 +253,14 @@ mod tests {
                     title: "Sheets".into(),
                     category: Some("Office".into()),
                     description: None,
+                    unavailable: None,
                 },
                 AppEntry {
                     id: "so.tilo.notes".into(),
                     title: "Notes".into(),
                     category: None,
                     description: None,
+                    unavailable: None,
                 },
             ],
             windows: vec![WindowEntry {

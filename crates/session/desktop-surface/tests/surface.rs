@@ -48,7 +48,15 @@ impl TileSource for Notices {
                 title: title.into(),
                 category: Some("Office".into()),
                 description: None,
+                unavailable: None,
             })
+            .chain([tilo_desktop_search::providers::AppEntry {
+                id: "so.tilo.imager".into(),
+                title: "Imager".into(),
+                category: Some("System".into()),
+                description: None,
+                unavailable: Some("Linux and macOS only".into()),
+            }])
             .collect()
     }
 }
@@ -1003,4 +1011,48 @@ fn assistive_technology_and_agents_search_through_the_palette_semantics() {
     driver.relayout();
     assert!(!handle.search_open());
     assert!(labels(&handle.snapshot("g", vec![])).contains(&"writer".into()));
+}
+
+#[test]
+fn search_lists_an_app_this_desktop_cannot_run_with_why_and_opens_nothing() {
+    use ui::a11y::Action;
+    let (mut driver, handle, _) = mount();
+    let before = labels(&handle.snapshot("g", vec![]));
+    handle.toggle_search();
+    driver.relayout();
+    driver
+        .perform_semantic_named(
+            "command_palette_input",
+            Some("command-palette:query"),
+            &Action::SetValue("imager".into()),
+        )
+        .unwrap();
+    driver.relayout();
+    let palette = find(&driver.inspection().root, "CommandPalette")
+        .unwrap()
+        .semantics
+        .clone()
+        .unwrap();
+    let first = palette.children[1]
+        .children
+        .first()
+        .expect("the unavailable app is listed");
+    assert_eq!(first.name.as_deref(), Some("Imager"));
+    assert!(
+        format!("{first:?}").contains("Linux and macOS only"),
+        "the row says why: {first:?}"
+    );
+    driver
+        .perform_semantic_named(
+            "command_palette_input",
+            first.action_target.as_deref(),
+            &Action::Activate,
+        )
+        .unwrap();
+    driver.relayout();
+    assert_eq!(
+        labels(&handle.snapshot("g", vec![])),
+        before,
+        "nothing opened"
+    );
 }

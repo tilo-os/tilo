@@ -61,7 +61,8 @@ pub trait TileSource {
     }
 
     /// The applications desktop search offers to open, each an id
-    /// [`Self::launch`] accepts.
+    /// [`Self::launch`] accepts, followed by those this desktop cannot run
+    /// (`unavailable` set), which search lists with their reason.
     fn search_applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
         Vec::new()
     }

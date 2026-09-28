@@ -16,9 +16,12 @@ pub struct AppEntry {
     pub title: String,
     pub category: Option<String>,
     pub description: Option<String>,
+    /// Why this desktop cannot open it ("Tilo OS only"); listed, not launched.
+    pub unavailable: Option<String>,
 }
 
-/// Applications from the manifest registry, offered as `Open <App>`.
+/// Applications from the manifest registry, offered as `Open <App>`, and
+/// those this desktop cannot run, listed with their reason below them.
 pub struct Applications(pub Vec<AppEntry>);
 
 impl Source for Applications {
@@ -38,6 +41,29 @@ impl Source for Applications {
                     app.description.as_deref(),
                 )?;
                 let (section, presented) = rank::empty_palette_presentation(&app.id);
+                if let Some(reason) = &app.unavailable {
+                    let score = if needle.trim().is_empty() {
+                        presented
+                    } else {
+                        matched
+                    } / 4;
+                    let subtitle = app.category.as_deref().map_or_else(
+                        || reason.clone(),
+                        |category| format!("{reason} · {category}"),
+                    );
+                    return Some(Hit {
+                        kind: ResourceKind::Application,
+                        provider: self.id().into(),
+                        id: app.id.clone(),
+                        title: app.title.clone(),
+                        subtitle: Some(subtitle),
+                        score,
+                        target: Target::Unavailable {
+                            app: app.id.clone(),
+                            reason: reason.clone(),
+                        },
+                    });
+                }
                 let (score, subtitle) = if needle.trim().is_empty() {
                     (presented, format!("{section} · {}", app.id))
                 } else {
@@ -381,14 +407,47 @@ mod tests {
                 title: "Sheets".into(),
                 category: Some("Office".into()),
                 description: None,
+                unavailable: None,
             },
             AppEntry {
                 id: "so.tilo.notes".into(),
                 title: "Notes".into(),
                 category: Some("Office".into()),
                 description: None,
+                unavailable: None,
             },
         ])
+    }
+
+    #[test]
+    fn an_app_this_desktop_cannot_run_is_listed_with_its_reason_below_those_it_can() {
+        let mut entries = apps().0;
+        entries.push(AppEntry {
+            id: "so.tilo.sheets-server".into(),
+            title: "Sheets Server".into(),
+            category: Some("System".into()),
+            description: None,
+            unavailable: Some("Tilo OS only".into()),
+        });
+        let hits = Applications(entries).query("sheets");
+        let server = hits
+            .iter()
+            .find(|hit| hit.id == "so.tilo.sheets-server")
+            .expect("the unavailable app is still found");
+        assert_eq!(
+            server.title, "Sheets Server",
+            "no \"Open\" for an app that cannot open"
+        );
+        assert_eq!(server.subtitle.as_deref(), Some("Tilo OS only · System"));
+        assert_eq!(
+            server.target,
+            Target::Unavailable {
+                app: "so.tilo.sheets-server".into(),
+                reason: "Tilo OS only".into()
+            }
+        );
+        let sheets = hits.iter().find(|hit| hit.id == "so.tilo.sheets").unwrap();
+        assert!(sheets.score > server.score);
     }
 
     fn resource_with_action(id: &str, label: &str, action: &str, action_label: &str) -> Resource {
