@@ -1082,10 +1082,6 @@ impl DrmDispatchState {
     /// starts at its zero value; [`Self::finalize_startup_scanouts`] is
     /// what actually populates `live`/`output_meta`/`pointer`. Extracted
     /// from that constructor to keep it a readable top-level sequence.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "startup inputs are independently acquired resources; bundling them would obscure their ownership transfer into the dispatch loop"
-    )]
     fn new(
         session_state: SessionState,
         cards: BTreeMap<u64, CardHandle>,

@@ -2412,10 +2412,6 @@ impl VelloDrmBridge {
         Ok(true)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The diagnostic owns paired targets, destination slices, and same-frame geometry."
-    )]
     fn read_shared_coarse_geometry_diagnostic_outputs(
         &mut self,
         device: &wgpu::Device,

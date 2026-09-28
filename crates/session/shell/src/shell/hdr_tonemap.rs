@@ -88,10 +88,6 @@ impl HdrTonemapConfig {
 /// (`y.len() >= y_stride * height`); a shorter buffer never panics —
 /// pixels whose sample would fall outside `y`/`uv` are left as
 /// transparent black instead.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "two planes, their strides, the frame size and the colour inputs are all independent"
-)]
 pub fn tonemap_p010_to_rgba8(
     y: &[u16],
     uv: &[u16],

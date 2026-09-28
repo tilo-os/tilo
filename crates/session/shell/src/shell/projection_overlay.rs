@@ -567,10 +567,6 @@ impl ProjectionOverlay {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "TextInput event context passes through unchanged"
-    )]
     fn handle_credential_event(
         &mut self,
         event: &WindowEvent,
@@ -909,10 +905,6 @@ impl ProjectionOverlay {
     }
 
     /// Paint the complete sheet and return whether worker polling changed state.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw context passes through unchanged"
-    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -942,10 +934,6 @@ impl ProjectionOverlay {
         changed
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw context passes through unchanged"
-    )]
     fn draw_at_theme_scale(
         &mut self,
         scene: &mut Scene,

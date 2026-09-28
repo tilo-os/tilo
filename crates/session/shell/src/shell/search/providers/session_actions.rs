@@ -344,8 +344,7 @@ mod tests {
         let state = chrome.borrow();
         ActionCatalog::build_exact(
             &registry,
-            PROVIDER_ID,
-            id,
+            &ResourceRef::new(PROVIDER_ID, id),
             SearchScope::All,
             None,
             &state,
@@ -509,8 +508,7 @@ mod tests {
             let state = chrome.borrow();
             let catalog = ActionCatalog::build_exact(
                 &registry,
-                PROVIDER_ID,
-                LOGOUT_ID,
+                &ResourceRef::new(PROVIDER_ID, LOGOUT_ID),
                 SearchScope::All,
                 None,
                 &state,
