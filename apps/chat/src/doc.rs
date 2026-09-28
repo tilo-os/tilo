@@ -334,8 +334,19 @@ impl ChatDoc {
         if Self::is_seeded(doc) {
             return;
         }
-        let _ = tilo_automerge::ApplyIncoming::apply_incoming(doc, Self::starter_scaffold());
+        Self::seed_shared(doc);
         Self::put_user(doc, me_id, me_name, me_initials, 0, Presence::Online);
+    }
+
+    /// The starter workspace alone, with nobody in it: what a host that
+    /// is no member's own Chat lays out for a new room. Each member's Chat
+    /// adds its own person entry when it joins. Idempotent like
+    /// [`Self::seed_starter`], and the same shared change.
+    pub fn seed_shared(doc: &mut AutoCommit) {
+        if Self::is_seeded(doc) {
+            return;
+        }
+        let _ = tilo_automerge::ApplyIncoming::apply_incoming(doc, Self::starter_scaffold());
     }
 
     /// The starter workspace as the one change every member writes: a fixed
@@ -1958,7 +1969,8 @@ impl ChatDoc {
             let _ = doc.put(&u, "initials", initials);
             wrote = true;
         }
-        if read_i64_coerced(doc, &u, "color_idx").unwrap_or(0) != color as i64 {
+        // Absent is not colour 0: a person always carries their colour.
+        if read_i64_coerced(doc, &u, "color_idx") != Some(color as i64) {
             let _ = doc.put(&u, "color_idx", color as i64);
             wrote = true;
         }
@@ -2933,6 +2945,29 @@ mod tests {
     use super::*;
     use crate::model;
     use tilo_automerge::ApplyIncoming;
+
+    /// A person joining with the first colour still carries it: the entry
+    /// is complete whatever colour they have.
+    #[test]
+    fn a_new_person_carries_their_colour_even_the_first() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_shared(&mut doc);
+        assert!(ChatDoc::ensure_user(
+            &mut doc,
+            "u_7f3a",
+            "Robin Vale",
+            "RV",
+            0,
+            Presence::Online
+        ));
+        let users = doc.get(ROOT, "users").unwrap().unwrap().1;
+        let person = doc.get(&users, "u_7f3a").unwrap().unwrap().1;
+        assert_eq!(read_i64_coerced(&doc, &person, "color_idx"), Some(0));
+        assert!(
+            !ChatDoc::ensure_user(&mut doc, "u_7f3a", "Robin Vale", "RV", 0, Presence::Online),
+            "an unchanged person writes nothing"
+        );
+    }
 
     /// Two writers each scaffold the room's conversation before the other's
     /// copy arrives, and one then adds a channel: once their documents meet,

@@ -184,7 +184,8 @@ fn reopening_chat_reuses_its_empty_primary_record() {
     let before = owner.peer().document("so.tilo.chat", "").unwrap();
     let doc = ui::automerge::AutoCommit::load(&before).unwrap();
     assert!(chat::doc::ChatDoc::list_messages(&doc, "c_general").is_empty());
-    assert_eq!(chat::doc::ChatDoc::list_users(&doc).len(), 1);
+    // The host invents no person for the room: each member's Chat adds its own.
+    assert!(chat::doc::ChatDoc::list_users(&doc).is_empty());
     drop(owner);
     let mut owner = SessionOwner::open(&path).unwrap();
     let strip =

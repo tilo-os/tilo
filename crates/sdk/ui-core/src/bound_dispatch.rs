@@ -477,7 +477,7 @@ pub(crate) fn validate_bound_resources(
         valid = tilo_actions::validate_surface(
             resources,
             registry,
-            &widget.resource_operation_handlers(),
+            &crate::app::with_host_operation_handlers(widget.resource_operation_handlers()),
         )
         .is_empty();
         None
