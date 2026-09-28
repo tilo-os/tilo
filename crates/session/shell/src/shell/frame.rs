@@ -1724,6 +1724,19 @@ impl FrameBuilder {
         self.peer_presence.as_ref()
     }
 
+    /// Tell the peer-presence relay where this session's pointer is: scene
+    /// point `at`, anchored to the tile under it so collaborators can place
+    /// it on their own desks (see [`crate::shell::peer_presence::PointerAnchor`]).
+    /// `None` — a pointer that has never moved — stays silent.
+    pub fn note_local_pointer(&self, at: Option<(f64, f64)>) {
+        let Some(relay) = self.peer_presence.as_ref() else {
+            return;
+        };
+        let tiles = self.host.tab_tiles();
+        relay
+            .set_pointer(at.and_then(|at| crate::shell::peer_presence::anchor_pointer(&tiles, at)));
+    }
+
     /// Fold everything peers sent since the last frame into the presence the
     /// next paint reads, then restate who is in the room. Returns whether
     /// either changed. The roster refresh runs regardless of whether the
@@ -1733,7 +1746,8 @@ impl FrameBuilder {
         let Some(relay) = self.peer_presence.as_ref() else {
             return false;
         };
-        let moved = relay.pump(&mut self.presence);
+        let tiles = self.host.tab_tiles();
+        let moved = relay.pump(&mut self.presence, &tiles);
         let roster_changed = relay.refresh_roster(&self.presence);
         moved || roster_changed
     }

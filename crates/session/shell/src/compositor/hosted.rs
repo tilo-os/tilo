@@ -514,6 +514,16 @@ fn install_presence_pump(
         let received = !drained.is_empty();
         let now = std::time::Instant::now();
         for entry in drained {
+            // A pointer anchored to a tab's tile is placed by the native frame loop over its own
+            // tiles; this window has no tile map to place it with, and its offset is no desktop point.
+            if matches!(
+                serde_json::from_str::<ui::presence::PresenceKey>(&entry.key)
+                    .ok()
+                    .and_then(|key| key.pointer_space()),
+                Some(ui::presence::PointerSpace::Tile { .. })
+            ) {
+                continue;
+            }
             // A frame addressed to a room is this session learning a named person is in it; putting them on
             // that room's roster is what the avatar stack, wheel-disc dots, and collaborators overlay render from.
             if let Ok(ui::presence::PresenceKey::Workspace { id }) =
