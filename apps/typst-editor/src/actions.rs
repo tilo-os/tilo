@@ -419,7 +419,7 @@ mod tests {
         // The source remains native text while effects/views are discoverable.
         {
             let (mut app, doc) = synced();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1);
             assert_eq!(resources[0].kind, "typst.workspace");
             assert_eq!(

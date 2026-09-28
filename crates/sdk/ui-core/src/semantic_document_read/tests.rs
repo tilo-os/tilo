@@ -14,7 +14,7 @@ fn schema() -> &'static serde_json::Value {
         serde_json::json!({"type":"object","required":["version","record","basis","content","nextCursor"],"additionalProperties":false,"properties":{
             "version":{"type":"integer","enum":[1]},
             "record":{"type":"object","required":["roomId","appId","recordId"],"additionalProperties":false,"properties":{
-                "roomId":{"type":"string"},"appId":{"type":"string"},"recordId":{"type":"string"}
+                "roomId":{"type":["string","null"]},"appId":{"type":"string"},"recordId":{"type":"string"}
             }},
             "basis":{"type":"object","required":["heads"],"additionalProperties":false,"properties":{
                 "heads":{"type":"array","items":{"type":"string","pattern":"^[0-9a-f]{64}$"}}
@@ -230,6 +230,35 @@ fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
     fixture
         .store
         .with_checked(&fixture.checkout.id, |document| {
+            document.put(ROOT, "text", "local record").unwrap();
+            document.commit();
+            let local = crate::invocation_scope::with_loaned_record(
+                &fixture.store,
+                &fixture.checkout,
+                "fixture.app",
+                None,
+                document,
+                |doc| selected.read(None, doc).unwrap().value.unwrap(),
+            );
+            assert_eq!(local["content"]["text"], "local record");
+            assert!(local["record"]["roomId"].is_null());
+            assert_eq!(local["record"]["appId"], "fixture.app");
+            assert_eq!(local["record"]["recordId"], fixture.checkout.id.as_str());
+            let mut copy = document.clone();
+            crate::invocation_scope::with_loaned_record(
+                &fixture.store,
+                &fixture.checkout,
+                "fixture.app",
+                None,
+                &mut copy,
+                |doc| {
+                    assert_eq!(
+                        selected.read(None, doc).unwrap_err(),
+                        SemanticReadError::MissingQualifiedOwner,
+                        "a copy is not the store's loan"
+                    );
+                },
+            );
             document.put(ROOT, "text", "committed content").unwrap();
             document.commit();
             let heads = document.base_heads();

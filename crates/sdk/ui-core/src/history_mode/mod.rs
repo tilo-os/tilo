@@ -6,6 +6,7 @@
 
 pub mod adapter;
 mod assets;
+pub mod capability;
 pub mod checked_files;
 mod files_session;
 pub mod preview;

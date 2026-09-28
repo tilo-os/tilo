@@ -1220,7 +1220,11 @@ impl CalculatorApp {
 }
 
 impl Widget for CalculatorApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::resources::PublishesResources
+    );
 
     fn is_focusable(&self) -> bool {
         true
@@ -1249,10 +1253,6 @@ impl Widget for CalculatorApp {
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         self.host_focused
             .then_some(winit::window::ImePurpose::Normal)
-    }
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -1880,13 +1880,6 @@ impl Widget for CalculatorApp {
         self.last_edit_time = None;
     }
 
-    /// Publish the calculator's Ctrl+K resource tree (history entries + saved
-    /// graph formulas), via the [`ResourceProvider`](tilo_actions::ResourceProvider)
-    /// impl in [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
     fn test_id(&self) -> Option<&str> {
         Some("calculator_app")
     }
@@ -1899,6 +1892,21 @@ impl Widget for CalculatorApp {
     /// change.
     fn is_layout_dirty(&self) -> bool {
         self.area == Rect::ZERO
+    }
+}
+
+impl ui::resources::PublishesResources for CalculatorApp {
+    /// Publish the calculator's Ctrl+K resource tree (history entries + saved
+    /// graph formulas), via the [`ResourceProvider`](tilo_actions::ResourceProvider)
+    /// impl in [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for CalculatorApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 
@@ -2420,7 +2428,7 @@ mod tests {
             let expression = crate::doc::load(&state.doc).unwrap().history[1]
                 .expr
                 .clone();
-            let resources = app.resources(&state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             let row = resources[0]
                 .children
                 .iter()
@@ -2466,7 +2474,7 @@ mod tests {
             let expression = crate::doc::load(&state.doc).unwrap().history[1]
                 .expr
                 .clone();
-            let resources = app.resources(&state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             let row = resources[0]
                 .children
                 .iter()

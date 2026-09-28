@@ -1152,7 +1152,7 @@ mod tests {
 
             // The palette's DND flip spec, read at the pre-flip state (DND off).
             let app = config.app();
-            let res = Widget::resources(&app, &doc);
+            let res = ui::resources::resources(&app, &doc);
             let notif = res[0]
                 .children
                 .iter()

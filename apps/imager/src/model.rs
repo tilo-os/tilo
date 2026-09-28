@@ -668,7 +668,6 @@ pub struct InstallProfile {
     pub locale: String,
     pub keyboard: String,
     pub timezone: String,
-    #[serde(default)]
     pub filesystem: Filesystem,
     pub encrypt: bool,
     /// Host-session draft value only; never serialized into installation media.

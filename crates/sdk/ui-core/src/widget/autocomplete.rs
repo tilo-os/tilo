@@ -644,13 +644,7 @@ impl Autocomplete {
 }
 
 impl Widget for Autocomplete {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        self.input.install_control_custody(domain, attachment);
-    }
+    crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn build_layout(
         &mut self,
@@ -972,6 +966,16 @@ impl Widget for Autocomplete {
         };
         self.accept(value);
         true
+    }
+}
+
+impl crate::widget::controls::ActionControls for Autocomplete {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        self.input.install_control_custody(domain, attachment);
     }
 }
 

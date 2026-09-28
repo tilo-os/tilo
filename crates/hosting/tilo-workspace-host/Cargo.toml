@@ -9,6 +9,7 @@ publish.workspace = true
 test-support = ["tilo-action-broker/test-support", "tilo-relay/test-support"]
 media = ["dep:tilo-moq", "dep:url", "dep:quinn", "dep:web-transport-quinn"]
 [dependencies]
+tilo-clock = { path = "../../system/tilo-clock" }
 tempfile.workspace = true
 anyhow.workspace = true
 serde.workspace = true

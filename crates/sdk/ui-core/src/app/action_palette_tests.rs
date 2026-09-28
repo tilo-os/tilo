@@ -96,6 +96,8 @@ impl Widget for ConsumingKeyboardRoot {
     }
 }
 impl Widget for Publisher {
+    crate::provides!(dyn crate::resources::PublishesResources);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -122,6 +124,17 @@ impl Widget for Publisher {
     fn get_rect(&self) -> KurboRect {
         KurboRect::ZERO
     }
+    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        vec![Box::new(PeopleProvider), Box::new(LazyProvider)]
+    }
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, p: &ModelPath) {
+        let (doc, _) = crate::doc::document(doc, p);
+        doc.put(&ROOT, "navigated", ScalarValue::Str(action_id.into()))
+            .unwrap();
+    }
+}
+
+impl crate::resources::PublishesResources for Publisher {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         vec![
             Resource::new("test.obj:1", "test.obj", "Widget Object").with_action(
@@ -153,19 +166,13 @@ impl Widget for Publisher {
             )
         })
     }
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        vec![Box::new(PeopleProvider), Box::new(LazyProvider)]
-    }
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, p: &ModelPath) {
-        let (doc, _) = crate::doc::document(doc, p);
-        doc.put(&ROOT, "navigated", ScalarValue::Str(action_id.into()))
-            .unwrap();
-    }
 }
 
 struct CountingPublisher(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
 impl Widget for CountingPublisher {
+    crate::provides!(dyn crate::resources::PublishesResources);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -192,6 +199,9 @@ impl Widget for CountingPublisher {
     fn get_rect(&self) -> KurboRect {
         KurboRect::ZERO
     }
+}
+
+impl crate::resources::PublishesResources for CountingPublisher {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         vec![Resource::new("test.cache:1", "test.cache", "Cached")]

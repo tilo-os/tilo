@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn live_launch_accepts_the_published_resource_surface() {
         let surface = windows::app_root_offline();
-        let resources = surface.resources(&automerge::AutoCommit::new());
+        let resources = ui::resources::resources(surface.as_ref(), &automerge::AutoCommit::new());
         assert!(
             !resources.is_empty(),
             "Windows publishes a resource surface"

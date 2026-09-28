@@ -174,7 +174,8 @@ fn production_library_persisted_restore_and_fresh_reopen() {
                 before,
                 "production startup must retain saved source"
             );
-            let def = root.document_history_definition().unwrap();
+            let def =
+                ui::history_mode::capability::document_history_definition(root.as_ref()).unwrap();
             let reg = HistoryRegistration::new(
                 def,
                 vec![HistorySourceRegistration::HostDocument {

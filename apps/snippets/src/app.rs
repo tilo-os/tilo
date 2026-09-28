@@ -1018,11 +1018,12 @@ impl SnippetsApp {
 }
 
 impl ui::widget::Widget for SnippetsApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::SNIPPETS_OPERATION_TYPE]
@@ -1057,33 +1058,6 @@ impl ui::widget::Widget for SnippetsApp {
 
     fn needs_idle_sync(&self) -> bool {
         !self.seeded
-    }
-
-    /// Publish the library + its snippets so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
-    }
-
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if id == "snippets.library" {
-            return crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
-                .pop();
-        }
-        if let Some(raw_id) = id.strip_prefix("snippets.snippet:") {
-            let snippet_id = uuid::Uuid::parse_str(raw_id).ok()?;
-            return self
-                .library
-                .get(snippet_id)
-                .map(crate::actions::provide_snippet_resource);
-        }
-        self.library
-            .tags()
-            .into_iter()
-            .find(|(tag, _)| crate::actions::tag_resource_id(tag) == id)
-            .map(|(tag, _)| crate::actions::provide_tag_resource(tag))
     }
 
     /// Fold the library into the unified Ctrl+K palette. The provider is an
@@ -1394,24 +1368,6 @@ impl ui::widget::Widget for SnippetsApp {
         )
     }
 
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut seen = std::collections::HashSet::new();
-        self.hit
-            .iter()
-            .filter_map(|(_, action)| {
-                let control_id = action.semantic_id();
-                seen.insert(control_id.clone())
-                    .then(|| ui::widget::ControlBindingMetadata {
-                        control_id: control_id.clone(),
-                        kind: action.canonical_address().map_or_else(
-                            || ui::widget::ControlBindingKind::SemanticAction(control_id),
-                            ui::widget::ControlBindingKind::Action,
-                        ),
-                    })
-            })
-            .collect()
-    }
-
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -1525,6 +1481,60 @@ impl ui::widget::Widget for SnippetsApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::resources::PublishesResources for SnippetsApp {
+    /// Publish the library + its snippets so the host's Ctrl+K action palette
+    /// scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
+    }
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if id == "snippets.library" {
+            return crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
+                .pop();
+        }
+        if let Some(raw_id) = id.strip_prefix("snippets.snippet:") {
+            let snippet_id = uuid::Uuid::parse_str(raw_id).ok()?;
+            return self
+                .library
+                .get(snippet_id)
+                .map(crate::actions::provide_snippet_resource);
+        }
+        self.library
+            .tags()
+            .into_iter()
+            .find(|(tag, _)| crate::actions::tag_resource_id(tag) == id)
+            .map(|(tag, _)| crate::actions::provide_tag_resource(tag))
+    }
+}
+
+impl ui::widget::controls::ActionControls for SnippetsApp {
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut seen = std::collections::HashSet::new();
+        self.hit
+            .iter()
+            .filter_map(|(_, action)| {
+                let control_id = action.semantic_id();
+                seen.insert(control_id.clone())
+                    .then(|| ui::widget::ControlBindingMetadata {
+                        control_id: control_id.clone(),
+                        kind: action.canonical_address().map_or_else(
+                            || ui::widget::ControlBindingKind::SemanticAction(control_id),
+                            ui::widget::ControlBindingKind::Action,
+                        ),
+                    })
+            })
+            .collect()
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for SnippetsApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 
@@ -3192,7 +3202,7 @@ mod tests {
             ));
             assert_eq!(SnippetsDoc::get(&doc, id).unwrap().body, body);
 
-            let resource = Widget::resource(&app, &doc, &actions::snippet_resource_id(id))
+            let resource = ui::resources::resource(&app, &doc, &actions::snippet_resource_id(id))
                 .expect("the edited snippet is an addressable resource");
             let edit = resource
                 .actions
@@ -3584,7 +3594,7 @@ mod tests {
 
             // What the palette would dispatch for this snippet's "delete".
             let resource_id = format!("snippets.snippet:{id}");
-            let snip = Widget::resource(&app, &doc, &resource_id)
+            let snip = ui::resources::resource(&app, &doc, &resource_id)
                 .expect("a resource for the target snippet");
             let spec = snip.actions.iter().find(|a| a.id == "delete").unwrap();
             let spec_encoded = match &spec.input {
@@ -3629,7 +3639,7 @@ mod tests {
                 .expect("an unstarred seeded snippet");
 
             let resource_id = format!("snippets.snippet:{id}");
-            let snip = Widget::resource(&app, &doc, &resource_id).unwrap();
+            let snip = ui::resources::resource(&app, &doc, &resource_id).unwrap();
             let spec = snip
                 .actions
                 .iter()

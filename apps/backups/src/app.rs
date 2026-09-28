@@ -4771,7 +4771,10 @@ impl BackupsApp {
 }
 
 impl Widget for BackupsApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::BACKUPS_OPERATION_TYPE]
@@ -4945,16 +4948,6 @@ impl Widget for BackupsApp {
 
     fn test_id(&self) -> Option<&str> {
         Some("backups_app")
-    }
-
-    /// Publish the retention-policy resource tree to the shell's Ctrl+K palette
-    /// (see [`crate::actions`]).
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
@@ -5138,6 +5131,17 @@ impl Widget for BackupsApp {
             || self.job.is_some()
             || self.drawer.is_animating()
             || self.status_bubble.needs_frame(Instant::now())
+    }
+}
+
+impl ui::resources::PublishesResources for BackupsApp {
+    /// Publish the retention-policy resource tree to the shell's Ctrl+K palette
+    /// (see [`crate::actions`]).
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 }
 
@@ -6094,7 +6098,7 @@ mod tests {
             !names.iter().any(|name| name.contains("Choose files")),
             "screen readers receive the same whole-snapshot contract as sighted users"
         );
-        let resources = Widget::resources(&f.app, &f.state.doc);
+        let resources = ui::resources::resources(&f.app, &f.state.doc);
         assert_eq!(resources.len(), 2, "policy and catalog are driveable");
         assert!(
             resources

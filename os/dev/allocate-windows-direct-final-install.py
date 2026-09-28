@@ -189,7 +189,14 @@ def classify(request, snapshot):
         return "pre-shrink", []
     existing = {r["partuuid"]: r for r in rows}
     require(len(existing) == len(rows), "physical partition IDs are not unique")
-    require(all(existing.get(r["partuuid"]) == r for r in preserve),
+    require(len({r["number"] for r in rows}) == len(rows),
+            "physical partition numbers are not unique")
+    # Windows numbers partitions by offset. Inserting Tilo before WinRE can
+    # move WinRE from number 4 to 7 without changing its GPT identity/extent.
+    preserved_keys = ("partuuid", "type_guid", "offset_bytes", "size_bytes")
+    require(all(existing.get(r["partuuid"]) is not None and
+                all(existing[r["partuuid"]][key] == r[key] for key in preserved_keys)
+                for r in preserve),
             "preserved Windows partition differs from reviewed post-shrink map")
     additions = [r for r in rows if r["partuuid"] not in {p["partuuid"] for p in preserve}]
     additions.sort(key=lambda r: r["offset_bytes"])

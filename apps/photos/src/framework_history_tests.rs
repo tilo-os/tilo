@@ -11,7 +11,10 @@ use ui::widget::Widget;
 fn production_history_root_and_sync_preserve_the_exact_graph() {
     eprintln!("phase production_root_declares_framework_history");
     {
-        assert!(crate::app_root().document_history_definition().is_some());
+        assert!(
+            ui::history_mode::capability::document_history_definition(crate::app_root().as_ref())
+                .is_some()
+        );
     }
 
     eprintln!("phase blank_production_sync_preserves_exact_graph");

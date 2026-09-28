@@ -38,25 +38,8 @@ struct Owner {
     sibling: Option<Box<Owner>>,
 }
 impl Widget for Owner {
-    fn document_action_applied(
-        &mut self,
-        action: &tilo_actions::EncodedAction,
-        before: &[ChangeHash],
-        doc: &AutoCommit,
-        _: &ObjId,
-    ) {
-        self.receipts.push((
-            action.clone(),
-            before.to_vec(),
-            doc.get(ROOT, "body")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str()
-                .unwrap()
-                .into(),
-        ));
-    }
+    crate::provides!(dyn crate::history_mode::capability::DocumentHistory);
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -100,6 +83,28 @@ impl Widget for Owner {
         self.sibling
             .as_mut()
             .map_or_else(Vec::new, |s| vec![s.as_mut() as &mut dyn Widget])
+    }
+}
+
+impl crate::history_mode::capability::DocumentHistory for Owner {
+    fn document_action_applied(
+        &mut self,
+        action: &tilo_actions::EncodedAction,
+        before: &[ChangeHash],
+        doc: &AutoCommit,
+        _: &ObjId,
+    ) {
+        self.receipts.push((
+            action.clone(),
+            before.to_vec(),
+            doc.get(ROOT, "body")
+                .unwrap()
+                .unwrap()
+                .0
+                .as_str()
+                .unwrap()
+                .into(),
+        ));
     }
 }
 struct Host;

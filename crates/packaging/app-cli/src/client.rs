@@ -20,7 +20,7 @@
 //! rank them — see [`crate::available`].
 
 use std::io::Read as _;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use registry_types::{RegistryEntry, RegistryHandshake, SignedRegistrySnapshot};
 use serde::{Deserialize, Serialize};
@@ -150,10 +150,7 @@ pub fn fetch_handshake(reg: &RegistryConfig) -> Result<RegistryHandshake, Regist
 /// the durable checkpoint.
 pub fn fetch_entries(reg: &RegistryConfig) -> Result<Vec<VerifiedEntry>, RegistryError> {
     let snapshot = fetch_snapshot(reg)?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = tilo_clock::unix_now();
     classify_snapshot(&snapshot, &reg.owner_pubkey_hex, now)
 }
 
@@ -196,10 +193,7 @@ pub fn fetch_snapshot(reg: &RegistryConfig) -> Result<SignedRegistrySnapshot, Re
     }
     let snapshot: SignedRegistrySnapshot =
         serde_json::from_slice(&bytes).map_err(|e| RegistryError::Decode(e.to_string()))?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = tilo_clock::unix_now();
     let _ = classify_snapshot(&snapshot, &reg.owner_pubkey_hex, now)?;
     persist_checkpoint(reg, &snapshot)?;
     Ok(snapshot)

@@ -3,8 +3,9 @@
 #
 # Prefer the values the runner injected. When that set is incomplete, use this
 # repository's cache secret. That bucket is the one existing CI objects live
-# in. A publication bind must exit before sourcing this script: the shared
-# credential can write every object, so a signed build never receives it.
+# in. The shared credential can write every object; a publication may still
+# compile through it because its uncached reproduction lane must match the
+# result byte for byte.
 set -euo pipefail
 
 ready=1

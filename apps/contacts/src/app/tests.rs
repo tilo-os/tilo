@@ -273,7 +273,7 @@ fn resource_and_search_providers_bound_large_books() {
             .id;
         let mut doc = AutoCommit::new();
         let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&Widget::resources(&app, &doc));
+        palette.load_open_resources(&ui::resources::resources(&app, &doc));
         palette.set_providers(Widget::search_providers(&app));
         palette.open();
         palette.set_query("navy");
@@ -352,7 +352,7 @@ fn resource_and_search_providers_bound_large_books() {
         );
 
         let mut doc = AutoCommit::new();
-        let resources = Widget::resources(&app, &doc);
+        let resources = ui::resources::resources(&app, &doc);
         let address = crate::actions::open_contact_address(id);
         let spec = tilo_actions::door::resolve(&resources, &address)
             .expect("the search address resolves in the agent-visible tree");
@@ -3373,7 +3373,7 @@ fn imports_recognise_identities_without_duplicating() {
         let result = app.import_paths(&mut doc, &[malicious_file]);
         assert_eq!(result.conflicts, 1);
         assert!(result.failure_message().contains("review"));
-        let resources = Widget::resources(&app, &doc);
+        let resources = ui::resources::resources(&app, &doc);
         let review = resources[0]
             .children
             .iter()

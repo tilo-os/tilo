@@ -914,6 +914,7 @@ fn validate_bound_version(
                 )
         ),
         registry_types::WEB_PLATFORM
+        | registry_types::LINUX_PLATFORM
         | registry_types::WINDOWS_PLATFORM
         | registry_types::MACOS_PLATFORM => target.validate().is_ok(),
         _ => false,

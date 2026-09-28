@@ -3269,7 +3269,7 @@ mod tests {
         // Drives the real resource hook.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "one calendar root");
             let cal = &resources[0];
             assert_eq!(cal.kind, "calendar.calendar");
@@ -3340,7 +3340,7 @@ mod tests {
             }
             app.sync(&mut doc, &ROOT);
 
-            let root = Widget::resources(&app, &doc).remove(0);
+            let root = ui::resources::resources(&app, &doc).remove(0);
             assert!(
                 root.children.len() <= EAGER_RESOURCE_SNAPSHOT_LIMIT,
                 "the open-resource snapshot must stay bounded"
@@ -3537,7 +3537,7 @@ mod tests {
         {
             let (mut app, mut doc) = seeded();
 
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let all_hits = Widget::search_providers(&app)[0].search("");
             assert!(
                 all_hits.iter().all(|hit| {
@@ -3552,7 +3552,7 @@ mod tests {
                 ("bright smiles", "Dentist", "calendar.event"),
                 ("renew passport", "Renew passport", "calendar.task"),
             ] {
-                let resources = Widget::resources(&app, &doc);
+                let resources = ui::resources::resources(&app, &doc);
                 let mut palette = ui::ActionPalette::new();
                 palette.load_open_resources(&resources);
                 palette.set_providers(Widget::search_providers(&app));
@@ -3641,7 +3641,7 @@ mod tests {
         // Case `projects_are_searchable_and_project_actions_preserve_relationships`.
         {
             let (app, mut doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let linked_id = app
                 .calendar_resource_ctx()
                 .projects
@@ -3773,7 +3773,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: seeded().1,
         registry: registry(),
-        resources: |doc| Widget::resources(&synced_app(doc), doc),
+        resources: |doc| ui::resources::resources(&synced_app(doc), doc),
         // The neutral action list is deliberately display-capped; filtering
         // must still bring every deeper event action into the same palette.
         palette: ["New event", "New task", "Set reminder", "Delete event"],
@@ -3838,7 +3838,7 @@ mod tests {
         // Case `rename_event_refuses_a_blank_title`.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let event = find_kind(&resources[0].children, "calendar.event").expect("an event");
             let edit_spec = event.actions.iter().find(|a| a.id == "edit").unwrap();
             assert_eq!(
@@ -4102,7 +4102,7 @@ mod tests {
         // document with the committed title.
         {
             let (app, mut doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let spec = resources[0]
                 .actions
                 .iter()
@@ -4128,7 +4128,7 @@ mod tests {
         // replayable field patches as direct editing.
         {
             let (app, mut doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let event = find_kind(&resources, "calendar.event").expect("seeded event resource");
             let id = event
                 .id
@@ -4232,7 +4232,7 @@ mod tests {
         // Case `new_task_action_creates_a_collaborative_task`.
         {
             let (app, mut doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let spec = resources[0]
                 .actions
                 .iter()
@@ -4262,7 +4262,7 @@ mod tests {
         // Case `task_field_actions_are_sparse_and_reject_hostile_priority_values`.
         {
             let (app, mut doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let task = find_kind(&resources, "calendar.task").expect("seeded task resource");
             let id = task
                 .id

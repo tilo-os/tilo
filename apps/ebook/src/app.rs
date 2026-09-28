@@ -4847,7 +4847,11 @@ impl Continuable for BooksApp {
 }
 
 impl Widget for BooksApp {
-    ui::provides!(dyn ui::widget::Continuable, dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::widget::Continuable,
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::EBOOK_OPERATION_TYPE]
@@ -4919,54 +4923,6 @@ impl Widget for BooksApp {
             return self.completed_resource_invocation.take();
         }
         None
-    }
-
-    /// Publish the open book + its annotations so the host's Ctrl+K action
-    /// palette scopes to them, via [`crate::actions`]'s
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let offset = match cursor {
-            [] => 0,
-            [offset] => usize::from(*offset),
-            _ => return None,
-        };
-        let roots = ["ebook.library", "ebook.settings"];
-        if offset > roots.len() {
-            return None;
-        }
-        let take = max_results.min(roots.len().saturating_sub(offset));
-        let next_offset = offset.saturating_add(take);
-        let resources = roots
-            .get(offset..next_offset)?
-            .iter()
-            .filter_map(|id| <Self as tilo_actions::ResourceProvider>::resource(self, doc, id))
-            .collect();
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: if next_offset < roots.len() {
-                vec![next_offset as u8]
-            } else {
-                Vec::new()
-            },
-            exhausted: next_offset >= roots.len(),
-        })
-    }
-
-    fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
-        Some(format!("ebook-search:{}", self.search_revision))
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     /// Make books, chapters and annotations findable through canonical
@@ -5844,6 +5800,53 @@ impl Widget for BooksApp {
 
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
+    }
+}
+
+impl ui::resources::PublishesResources for BooksApp {
+    /// Publish the open book + its annotations so the host's Ctrl+K action
+    /// palette scopes to them, via [`crate::actions`]'s
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl.
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        let offset = match cursor {
+            [] => 0,
+            [offset] => usize::from(*offset),
+            _ => return None,
+        };
+        let roots = ["ebook.library", "ebook.settings"];
+        if offset > roots.len() {
+            return None;
+        }
+        let take = max_results.min(roots.len().saturating_sub(offset));
+        let next_offset = offset.saturating_add(take);
+        let resources = roots
+            .get(offset..next_offset)?
+            .iter()
+            .filter_map(|id| <Self as tilo_actions::ResourceProvider>::resource(self, doc, id))
+            .collect();
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: if next_offset < roots.len() {
+                vec![next_offset as u8]
+            } else {
+                Vec::new()
+            },
+            exhausted: next_offset >= roots.len(),
+        })
+    }
+    fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
+        Some(format!("ebook-search:{}", self.search_revision))
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 }
 

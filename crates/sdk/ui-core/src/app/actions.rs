@@ -310,7 +310,7 @@ impl App {
         // Only ActionEmitter controls consume this address projection. Semantic,
         // document and legacy controls still use their normal invocation doors.
         // Recheck presence: widget-local changes can add/remove emitters.
-        if !self.root_widget.has_action_control_bindings() {
+        if !crate::widget::controls::has_action_control_bindings(self.root_widget.as_ref()) {
             // A replacement emitter must not inherit a prior refresh stamp.
             self.actions.last_control_availability = None;
             return;
@@ -333,8 +333,10 @@ impl App {
             .map_or_else(std::collections::HashSet::new, |cache| {
                 cache.allowed.clone()
             });
-        self.root_widget
-            .refresh_control_action_availability(&allowed);
+        crate::widget::controls::refresh_control_action_availability(
+            self.root_widget.as_mut(),
+            &allowed,
+        );
         self.actions.last_control_availability = Some(cache_key);
         trace.finish(CacheResult::NotApplicable);
     }
@@ -397,7 +399,9 @@ impl App {
         self.refresh_semantic_tree();
         let mut routes = Vec::new();
         let bindings = self
-            .with_native_presentation(|root, _, _, _, _| root.control_action_bindings())
+            .with_native_presentation(|root, _, _, _, _| {
+                crate::widget::controls::control_action_bindings(root)
+            })
             .unwrap_or_default();
         for binding in bindings {
             for path in self
@@ -465,8 +469,7 @@ impl App {
         resources: &[tilo_actions::Resource],
     ) -> Vec<ControlBindingCoverage> {
         let mut seen = std::collections::HashSet::new();
-        self.root_widget
-            .control_action_bindings()
+        crate::widget::controls::control_action_bindings(self.root_widget.as_ref())
             .into_iter()
             .map(|binding| {
                 let status = match &binding.kind {
@@ -802,16 +805,20 @@ impl App {
                 .collect();
             let witness = action_directory_snapshot::DirectoryWitness {
                 registry_generation: self.actions.action_registry_generation,
-                root_domain: self
-                    .root_widget
-                    .action_directory_invocation_domain(&self.state.doc),
+                root_domain: crate::resources::action_directory_invocation_domain(
+                    self.root_widget.as_ref(),
+                    &self.state.doc,
+                ),
                 provider_domains,
                 key: self.resource_cache_key(),
                 permissions,
                 permission_generation: self.actions.permission_generation.get(),
                 route: self.bound_broker_route().cloned(),
                 owners,
-                root_revision: self.root_widget.action_directory_revision(&self.state.doc),
+                root_revision: crate::resources::action_directory_revision(
+                    self.root_widget.as_ref(),
+                    &self.state.doc,
+                ),
                 providers: directory_providers
                     .into_iter()
                     .map(|provider| {
@@ -3056,7 +3063,7 @@ impl App {
         while let Some(intent) = registered
             .outer
             .pop_front()
-            .or_else(|| self.root_widget.take_control_invocation())
+            .or_else(|| crate::widget::controls::take_control_invocation(self.root_widget.as_mut()))
         {
             let (key, generation) = self.ensure_local_resource_cache();
             let local_resources = self
@@ -3074,7 +3081,8 @@ impl App {
                     action = %intent.address.action,
                     "action-bound control is unavailable to the local actor"
                 );
-                self.root_widget.on_control_invocation_result(
+                crate::widget::controls::on_control_invocation_result(
+                    self.root_widget.as_mut(),
                     &intent.address,
                     &Err(tilo_actions::DoorError::Unknown(intent.address.clone())),
                 );
@@ -3087,7 +3095,8 @@ impl App {
                 // A bound control never manufactures confirmation. Hand the
                 // exact address to the standard palette flow, which owns the
                 // explicit confirm/phrase UI and only then enters the door.
-                self.root_widget.on_control_invocation_result(
+                crate::widget::controls::on_control_invocation_result(
+                    self.root_widget.as_mut(),
                     &intent.address,
                     &Err(tilo_actions::DoorError::ConfirmationRequired),
                 );
@@ -3112,8 +3121,11 @@ impl App {
                 &ResourceInvocation::new(&intent.address, &actor).argument(Some(&json)),
                 None,
             );
-            self.root_widget
-                .on_control_invocation_result(&intent.address, &result);
+            crate::widget::controls::on_control_invocation_result(
+                self.root_widget.as_mut(),
+                &intent.address,
+                &result,
+            );
             match result {
                 Ok(_) => dispatched = dispatched.saturating_add(1),
                 Err(error) => {

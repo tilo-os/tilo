@@ -99,9 +99,7 @@ impl RegistryClient {
     /// When the registry cannot be reached or refuses the read.
     pub fn pending(&self, key: &SigningKey, package_id: &str) -> Result<Option<RegistryEntry>> {
         let url = format!("{}/entries/{package_id}/pending", self.base);
-        let signed_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_secs());
+        let signed_at = tilo_clock::unix_now();
         let response = self
             .http
             .get(&url)

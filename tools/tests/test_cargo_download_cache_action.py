@@ -9,11 +9,11 @@ ACTION_PATH = ".forgejo/actions/restore-cargo-downloads"
 PREPARE_ACTION_PATH = ".forgejo/actions/prepare-rust-build"
 DIRECT_CONSUMERS = {
     "build-builder-image.yml": 2,
-    "canonical-verifier-bundle.yml": 1,
     "lint.yml": 1,
     "release-apps.yml": 1,
 }
 PREPARED_CONSUMERS = {
+    "canonical-verifier-bundle.yml": 1,
     "check.yml": 7,
     "legacy-app-e2e.yml": 1,
     "nightly.yml": 1,

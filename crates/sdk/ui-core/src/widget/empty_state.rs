@@ -568,6 +568,8 @@ impl EmptyState {
 }
 
 impl Widget for EmptyState {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -787,16 +789,9 @@ impl Widget for EmptyState {
             false
         }
     }
+}
 
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-    }
-
+impl crate::widget::controls::ActionControls for EmptyState {
     fn install_control_custody(
         &mut self,
         domain: &crate::ControlDomain,
@@ -809,7 +804,6 @@ impl Widget for EmptyState {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
-
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         if let Some(action) = &self.action {
             return vec![
@@ -838,6 +832,14 @@ impl Widget for EmptyState {
                 }]
             },
         )
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
     }
 }
 
@@ -1255,8 +1257,8 @@ mod tests {
             let target = es.action_rect().center();
             dispatch(&mut es, &cursor(target));
             assert!(dispatch(&mut es, &press()));
-            let invocation =
-                Widget::take_control_invocation(&mut es).expect("canonical invocation");
+            let invocation = crate::widget::controls::take_control_invocation(&mut es)
+                .expect("canonical invocation");
             assert_eq!(
                 invocation.address,
                 tilo_actions::ActionAddress::new("catalog", "refresh")
@@ -1266,7 +1268,7 @@ mod tests {
                 "action-bound activation cannot also fire the legacy drain channel"
             );
             assert!(matches!(
-                Widget::control_action_bindings(&es).as_slice(),
+                crate::widget::controls::control_action_bindings(&es).as_slice(),
                 [crate::widget::ControlBindingMetadata {
                     control_id,
                     kind: crate::widget::ControlBindingKind::Action(address),

@@ -584,10 +584,12 @@ impl WorkspaceHistoryIndex {
             };
             let origin = record.origin();
             documents.insert(origin.key(), doc.get_heads());
+            // What people did: a record's genesis names no one.
             let rows = HistorySource::new()
                 .with_authors(self.authors.clone())
                 .with_artifact_kind(artifact_kind(&record.checkout.kind))
                 .with_max_entries(limit)
+                .without_record_genesis()
                 .entries(&mut doc);
             insert_rows(&mut by_id, &origin, rows);
             coverage.indexed_records = coverage.indexed_records.saturating_add(1);

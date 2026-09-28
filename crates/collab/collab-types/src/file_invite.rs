@@ -4,8 +4,6 @@
 //! stores only its domain-separated hash. Redemption limits are enforced by an
 //! online authority, never by this self-contained token.
 
-use web_time::{SystemTime, UNIX_EPOCH};
-
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -138,7 +136,7 @@ impl BearerFileInvite {
     ///
     /// Returns the same validation errors as [`Self::decode_link_at`].
     pub fn decode_link(link: &str) -> Result<Self, FileInviteError> {
-        Self::decode_link_at(link, now_ms())
+        Self::decode_link_at(link, tilo_clock::unix_now_ms())
     }
 }
 
@@ -197,7 +195,7 @@ impl FileInviteV1 {
     ///
     /// Returns the same validation errors as [`Self::verify_at`].
     pub fn verify_now(&self) -> Result<(), FileInviteError> {
-        self.verify_at(now_ms())
+        self.verify_at(tilo_clock::unix_now_ms())
     }
 
     /// Verify an unrestricted bearer invite and its presented secret.
@@ -280,14 +278,6 @@ pub fn bearer_secret_hash(secret: &[u8; 32]) -> [u8; 32] {
     hasher.update(BEARER_HASH_DOMAIN);
     hasher.update(secret);
     hasher.finalize().into()
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 #[derive(Debug, Error)]

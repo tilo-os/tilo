@@ -2357,7 +2357,7 @@ impl App {
     ) {
         (
             self.controlled_installed_history_definition,
-            self.root_widget.document_history_definition(),
+            crate::history_mode::capability::document_history_definition(self.root_widget.as_ref()),
         )
     }
 
@@ -3350,6 +3350,11 @@ pub(crate) mod ordinary_confirmation_tests {
         output: Rc<RefCell<Option<crate::ControlOutbox>>>,
     }
     impl Widget for Fixture {
+        crate::provides!(
+            dyn crate::widget::controls::ActionControls,
+            dyn crate::resources::PublishesResources
+        );
+
         crate::testing::delegate_widget_methods!(
             child: sync,
             build_layout,
@@ -3358,17 +3363,6 @@ pub(crate) mod ordinary_confirmation_tests {
             handle_event,
             get_rect
         );
-        fn install_control_custody(
-            &mut self,
-            domain: &crate::ControlDomain,
-            attachment: crate::control_custody::CustodyAttachment,
-        ) {
-            self.child.install_control_custody(domain, attachment);
-            if self.output.borrow().is_none() {
-                *self.output.borrow_mut() =
-                    Some(domain.producer(crate::ControlProducerDiscipline::Fifo { limit: 64 }));
-            }
-        }
         fn name(&self) -> &str {
             "Ordinary confirmation fixture"
         }
@@ -3377,9 +3371,6 @@ pub(crate) mod ordinary_confirmation_tests {
         }
         fn children_mut(&mut self) -> Vec<&mut (dyn crate::widget::Widget + '_)> {
             vec![self.child.as_mut()]
-        }
-        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-            self.resources.borrow().clone()
         }
         fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
             let mut handlers = self.child.resource_operation_handlers();
@@ -3404,6 +3395,30 @@ pub(crate) mod ordinary_confirmation_tests {
             Ok(Some(crate::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             )))
+        }
+    }
+
+    impl crate::resources::PublishesResources for Fixture {
+        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+            self.resources.borrow().clone()
+        }
+    }
+
+    impl crate::widget::controls::ActionControls for Fixture {
+        fn install_control_custody(
+            &mut self,
+            domain: &crate::ControlDomain,
+            attachment: crate::control_custody::CustodyAttachment,
+        ) {
+            crate::widget::controls::install_control_custody(
+                self.child.as_mut(),
+                domain,
+                attachment,
+            );
+            if self.output.borrow().is_none() {
+                *self.output.borrow_mut() =
+                    Some(domain.producer(crate::ControlProducerDiscipline::Fifo { limit: 64 }));
+            }
         }
     }
     static HISTORY: HistoryDefinition = HistoryDefinition {

@@ -422,6 +422,26 @@ pub fn dev_web(start: &Path, request: &DevRequest, options: &WebDevOptions) -> R
     Ok(())
 }
 
+/// `tilo-app run --platform web`: build once and serve the page until the
+/// process is interrupted. Nothing is watched or rebuilt.
+///
+/// # Errors
+///
+/// When the build fails or the address cannot be bound.
+pub fn run_web(start: &Path, options: &WebDevOptions) -> Result<()> {
+    let build = build_web(start, &WebBuildRequest::default())?;
+    report_build(&build, "built");
+    let listener =
+        TcpListener::bind(&options.bind).with_context(|| format!("binding {}", options.bind))?;
+    let address = listener.local_addr()?;
+    eprintln!(
+        "[tilo-app] serving {} at http://{address}/ (open it in a browser with WebGPU; Ctrl-C stops)",
+        build.app_id
+    );
+    serve(&listener, &build.output, 0, &Arc::new(AtomicU64::new(1)));
+    Ok(())
+}
+
 fn report_build(build: &WebBuild, what: &str) {
     eprintln!(
         "[tilo-app] {} {what} in {:.1} s: module {} bytes, core {} bytes, runtime {}",

@@ -105,12 +105,12 @@ impl LiveFixture {
     }
 }
 impl Widget for LiveFixture {
-    fn document_history_definition(&self) -> Option<&'static HistoryDefinition> {
-        self.keyboard.borrow().document_history_definition()
-    }
-    fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
-        self.keyboard.borrow().history_restore_readiness(scope)
-    }
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
+
     fn sync(&mut self, d: &mut AppModel, p: &ModelPath) {
         self.keyboard.borrow_mut().sync(d, p);
     }
@@ -122,9 +122,6 @@ impl Widget for LiveFixture {
         }
         false
     }
-    fn resources(&self, d: &AutoCommit) -> Vec<Resource> {
-        self.keyboard.borrow().resources(d)
-    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["osk.suggestions"]
     }
@@ -135,48 +132,6 @@ impl Widget for LiveFixture {
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         self.keyboard.borrow_mut().start_operation(op, doc, path)
-    }
-    fn document_action_applied(
-        &mut self,
-        a: &EncodedAction,
-        b: &[automerge::ChangeHash],
-        d: &AutoCommit,
-        p: &ObjId,
-    ) {
-        self.acknowledgements.set(self.acknowledgements.get() + 1);
-        let mut keyboard = self.keyboard.borrow_mut();
-        if let Some(probe) = &self.reentrant {
-            let mut probe = probe.borrow_mut();
-            probe
-                .envelopes
-                .push((a.clone(), b.to_vec(), d.base_heads()));
-            if probe.supersede && probe.envelopes.len() == 1 {
-                assert_no_reentrant_offer(&mut keyboard, d);
-                assert!(keyboard.select_text_layout("qwerty"));
-                keyboard.set_suggestions_enabled(true);
-                assert_no_reentrant_offer(&mut keyboard, d);
-            }
-            keyboard.document_action_applied(a, b, d, p);
-            assert_no_reentrant_offer(&mut keyboard, d);
-            if probe.supersede && probe.envelopes.len() <= 3 {
-                assert!(
-                    keyboard.drafts.has(0),
-                    "newer same-field draft survives old ack"
-                );
-                assert!(
-                    keyboard.drafts.has(1),
-                    "unrelated newer draft survives old batch"
-                );
-            }
-        } else {
-            keyboard.document_action_applied(a, b, d, p);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.queue
-            .borrow_mut()
-            .pop_front()
-            .or_else(|| self.keyboard.borrow_mut().take_control_invocation())
     }
     fn build_layout(
         &mut self,
@@ -217,6 +172,66 @@ impl Widget for LiveFixture {
         self.keyboard.borrow_mut().take_structure_dirty()
     }
 }
+
+impl ui::resources::PublishesResources for LiveFixture {
+    fn resources(&self, d: &AutoCommit) -> Vec<Resource> {
+        self.keyboard.borrow().resources(d)
+    }
+}
+
+impl ui::widget::controls::ActionControls for LiveFixture {
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.queue
+            .borrow_mut()
+            .pop_front()
+            .or_else(|| self.keyboard.borrow_mut().take_control_invocation())
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for LiveFixture {
+    fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
+        self.keyboard.borrow().history_restore_readiness(scope)
+    }
+    fn document_history_definition(&self) -> Option<&'static HistoryDefinition> {
+        self.keyboard.borrow().document_history_definition()
+    }
+    fn document_action_applied(
+        &mut self,
+        a: &EncodedAction,
+        b: &[automerge::ChangeHash],
+        d: &AutoCommit,
+        p: &ObjId,
+    ) {
+        self.acknowledgements.set(self.acknowledgements.get() + 1);
+        let mut keyboard = self.keyboard.borrow_mut();
+        if let Some(probe) = &self.reentrant {
+            let mut probe = probe.borrow_mut();
+            probe
+                .envelopes
+                .push((a.clone(), b.to_vec(), d.base_heads()));
+            if probe.supersede && probe.envelopes.len() == 1 {
+                assert_no_reentrant_offer(&mut keyboard, d);
+                assert!(keyboard.select_text_layout("qwerty"));
+                keyboard.set_suggestions_enabled(true);
+                assert_no_reentrant_offer(&mut keyboard, d);
+            }
+            keyboard.document_action_applied(a, b, d, p);
+            assert_no_reentrant_offer(&mut keyboard, d);
+            if probe.supersede && probe.envelopes.len() <= 3 {
+                assert!(
+                    keyboard.drafts.has(0),
+                    "newer same-field draft survives old ack"
+                );
+                assert!(
+                    keyboard.drafts.has(1),
+                    "unrelated newer draft survives old batch"
+                );
+            }
+        } else {
+            keyboard.document_action_applied(a, b, d, p);
+        }
+    }
+}
 struct Fixture {
     driver: ui::headless::Driver,
     keyboard: Rc<RefCell<OskWidget>>,
@@ -226,7 +241,7 @@ struct Fixture {
     acknowledgements: Rc<Cell<usize>>,
 }
 fn driver(doc: AutoCommit, keyboard: OskWidget) -> Fixture {
-    let definition = keyboard.document_history_definition().unwrap();
+    let definition = ui::history_mode::capability::document_history_definition(&keyboard).unwrap();
     let keyboard = Rc::new(RefCell::new(keyboard));
     let acknowledgements = Rc::new(Cell::new(0));
     let root = LiveFixture::new(keyboard.clone(), acknowledgements.clone());
@@ -415,39 +430,57 @@ fn framework_history_finite_drain_stale_lifetime_and_newer_field_survive_old_ack
     root.set_personalization_enabled(false);
     root.sync(&mut doc, &automerge::ROOT);
     let mut offers = Vec::new();
-    while let Some(offer) = root.take_control_invocation() {
+    while let Some(offer) = ui::widget::controls::take_control_invocation(&mut root) {
         offers.push(offer);
         assert!(offers.len() <= 3);
     }
     assert_eq!(offers.len(), 3);
     assert!(root.drafts.pending());
-    root.refresh_control_action_availability(&std::collections::HashSet::default());
+    ui::widget::controls::refresh_control_action_availability(
+        &mut root,
+        &std::collections::HashSet::default(),
+    );
     root.set_suggestions_enabled(true);
     assert!(
-        root.take_control_invocation().is_none(),
+        ui::widget::controls::take_control_invocation(&mut root).is_none(),
         "availability and reentrant setter never rearm consumed offers"
     );
     let old = &offers[1];
-    let encoded =
-        ui::tilo_actions::door::encode_json(&root.resources(&doc), &old.address, &old.arguments)
-            .unwrap();
+    let encoded = ui::tilo_actions::door::encode_json(
+        &ui::resources::resources(&root, &doc),
+        &old.address,
+        &old.arguments,
+    )
+    .unwrap();
     let mut registry = ui::tilo_actions::ActionRegistry::new();
     crate::actions::register(&mut registry);
     registry.decode(&encoded).unwrap().apply(&mut doc).unwrap();
-    root.document_action_applied(&encoded, &[], &doc, &automerge::ROOT);
+    ui::history_mode::capability::document_action_applied(
+        &mut root,
+        &encoded,
+        &[],
+        &doc,
+        &automerge::ROOT,
+    );
     assert!(root.suggestions_enabled);
     assert!(root.drafts.has(1));
     assert!(root.drafts.has(0));
     assert!(root.drafts.has(2));
     let mut replacement = keyboard();
     replacement.set_suggestions_enabled(false);
-    replacement.document_action_applied(&encoded, &[], &doc, &automerge::ROOT);
+    ui::history_mode::capability::document_action_applied(
+        &mut replacement,
+        &encoded,
+        &[],
+        &doc,
+        &automerge::ROOT,
+    );
     assert!(
         replacement.drafts.pending(),
         "old lifetime acknowledgement cannot settle replacement root"
     );
     root.sync(&mut doc, &automerge::ROOT);
-    assert!(root.take_control_invocation().is_some());
+    assert!(ui::widget::controls::take_control_invocation(&mut root).is_some());
 }
 #[test]
 fn framework_history_shared_host_restore_undo_and_absence_preserve_unrelated_roots() {
@@ -534,7 +567,9 @@ fn frozen_preview(
             &[ui::history_source::entry_id_from_hash(&hash.to_string())],
         )
         .unwrap();
-    root.document_history_definition().unwrap().scopes[0]
+    ui::history_mode::capability::document_history_definition(root)
+        .unwrap()
+        .scopes[0]
         .presentation
         .preview_factory()
         .unwrap()(PreviewInput {
@@ -554,7 +589,7 @@ fn framework_history_four_layout_masks_validate_preview_current_target_and_resul
                 root = root.with_layout(layout);
             }
         }
-        let definition = root.document_history_definition().unwrap();
+        let definition = ui::history_mode::capability::document_history_definition(&root).unwrap();
         let schema = definition.scopes[0].content_schema.unwrap();
         for saved in [
             None,
@@ -605,14 +640,14 @@ fn framework_history_four_layout_masks_validate_preview_current_target_and_resul
         ] {
             root.set_purpose(purpose);
             assert!(std::ptr::eq(
-                root.document_history_definition().unwrap(),
+                ui::history_mode::capability::document_history_definition(&root).unwrap(),
                 definition
             ));
         }
     }
     let canonical = keyboard().with_layout(KeyboardLayout::qwerty());
     assert!(std::ptr::eq(
-        canonical.document_history_definition().unwrap(),
+        ui::history_mode::capability::document_history_definition(&canonical).unwrap(),
         std::ptr::from_ref(&crate::framework_history::HISTORY)
     ));
     let mut collision = KeyboardLayout::qwerty();
@@ -621,7 +656,7 @@ fn framework_history_four_layout_masks_validate_preview_current_target_and_resul
         .with_layout(collision)
         .with_layout(KeyboardLayout::qwerty());
     assert!(std::ptr::eq(
-        recovered.document_history_definition().unwrap(),
+        ui::history_mode::capability::document_history_definition(&recovered).unwrap(),
         std::ptr::from_ref(&crate::framework_history::HISTORY)
     ));
     let mut custom = KeyboardLayout::qwerty();
@@ -1080,14 +1115,14 @@ struct ReentrantAck {
     )>,
 }
 fn assert_no_reentrant_offer(root: &mut OskWidget, doc: &AutoCommit) {
-    let allowed = ui::tilo_actions::door::survey(&root.resources(doc))
+    let allowed = ui::tilo_actions::door::survey(&ui::resources::resources(root, doc))
         .into_iter()
         .filter(|door| door.contract.availability.is_available())
         .map(|door| door.address)
         .collect();
-    root.refresh_control_action_availability(&allowed);
+    ui::widget::controls::refresh_control_action_availability(root, &allowed);
     assert!(
-        root.take_control_invocation().is_none(),
+        ui::widget::controls::take_control_invocation(root).is_none(),
         "in-flight enumeration/availability cannot reoffer"
     );
 }

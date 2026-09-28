@@ -559,11 +559,13 @@ struct CustodyDeniedContainersRoot {
 }
 
 impl Widget for CustodyDeniedContainersRoot {
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls
+    );
+
     fn name(&self) -> &'static str {
         "CustodyDeniedContainersRoot"
-    }
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        self.child.document_history_definition()
     }
     fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         self.child.sync(doc, path);
@@ -614,12 +616,21 @@ impl Widget for CustodyDeniedContainersRoot {
             vec![self.child.as_mut()]
         }
     }
+}
+
+impl ui::widget::controls::ActionControls for CustodyDeniedContainersRoot {
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         if self.denied.get() {
             None
         } else {
-            self.child.take_control_invocation()
+            ui::widget::controls::take_control_invocation(self.child.as_mut())
         }
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for CustodyDeniedContainersRoot {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        ui::history_mode::capability::document_history_definition(self.child.as_ref())
     }
 }
 
