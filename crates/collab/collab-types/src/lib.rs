@@ -63,6 +63,7 @@ pub mod caps;
 pub mod channel;
 pub mod compaction;
 pub mod crypto;
+pub mod document_import;
 pub mod document_transfer;
 pub mod event;
 pub mod file_invite;

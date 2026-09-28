@@ -12,6 +12,7 @@ use std::rc::Rc;
 use automerge::transaction::Transactable as _;
 use automerge::{ROOT, ReadDoc as _, Value};
 use shell::shell::chrome_state::{Chrome, ChromeState};
+use shell::shell::document_import::{Awaiting, HostedRooms, ProposalStatus};
 use shell::shell::personal_continuity::AppInstanceId;
 use shell::shell::personal_continuity_registry::global_registry;
 use shell::shell::portal_dialog::{PortalDialogController, PortalDialogQueue};
@@ -23,6 +24,9 @@ use shell::shell::state::{
 use shell::shell::window_actions::{MoveOutcome, transfer_tab_to_workspace};
 use shell::shell::window_transfer::{
     HandoffLink, TransferLauncher, TransferMode, report_handoff, tick,
+};
+use tilo_peer_state::document_import::{
+    DocumentImportProposalV1, DocumentImportTerms, ImportState,
 };
 use ui::application::NativeProfile;
 use ui::application_view::SavedInstanceView;
@@ -1060,4 +1064,285 @@ fn a_collaborators_window_follows_a_moved_document_into_the_workspace_it_went_to
     let kept = read_record(here.store(), APP, here.workspace_id(), &successor).unwrap();
     assert_eq!(body(&kept).as_deref(), Some("Groceries: milk, eggs"));
     assert!(!f.chrome.borrow().window_transfers.is_pending());
+}
+
+/// A workspace governed by its owner, as this desktop reaches it: what it
+/// was asked, and what the test says its owner answered.
+#[derive(Default)]
+struct Governed {
+    room: Option<RoomId>,
+    proposed: Vec<(RoomId, RecordId, Vec<u8>)>,
+    status: Option<ProposalStatus>,
+    awaiting: Vec<Awaiting>,
+    decided: Vec<([u8; 32], bool)>,
+    /// The committed document the owner holds, for reads out of the room.
+    committed: Option<Vec<u8>>,
+}
+
+struct GovernedRooms(Rc<RefCell<Governed>>);
+
+const PROPOSAL: [u8; 32] = [9; 32];
+
+impl HostedRooms for GovernedRooms {
+    fn hosts(&self, room: RoomId) -> bool {
+        self.0.borrow().room == Some(room)
+    }
+    fn read(&self, room: RoomId, _: &str, _: &RecordId) -> Result<Vec<u8>, String> {
+        let governed = self.0.borrow();
+        governed
+            .committed
+            .clone()
+            .filter(|_| governed.room == Some(room))
+            .ok_or_else(|| "the room does not hold that document".into())
+    }
+    fn propose(
+        &self,
+        room: RoomId,
+        _: &str,
+        record: &RecordId,
+        _: &str,
+        document: &[u8],
+    ) -> tilo_actions::remote::Pending<Result<[u8; 32], String>> {
+        self.0
+            .borrow_mut()
+            .proposed
+            .push((room, record.clone(), document.to_vec()));
+        tilo_actions::remote::Pending::ready(Ok(PROPOSAL))
+    }
+    fn proposal(&self, _: RoomId, id: &[u8; 32]) -> Option<ProposalStatus> {
+        (*id == PROPOSAL).then(|| self.0.borrow().status).flatten()
+    }
+    fn awaiting_me(&self, room: RoomId) -> Option<Vec<Awaiting>> {
+        let governed = self.0.borrow();
+        (governed.room == Some(room)).then(|| governed.awaiting.clone())
+    }
+    fn decide(
+        &self,
+        _: RoomId,
+        proposal: &DocumentImportProposalV1,
+        accepted: bool,
+    ) -> tilo_actions::remote::Pending<Result<(), String>> {
+        self.0
+            .borrow_mut()
+            .decided
+            .push((proposal.proposal_id, accepted));
+        tilo_actions::remote::Pending::ready(Ok(()))
+    }
+}
+
+fn governed(f: &Fixture) -> Rc<RefCell<Governed>> {
+    let governed = Rc::new(RefCell::new(Governed {
+        room: Some(f.elsewhere_room),
+        ..Governed::default()
+    }));
+    f.chrome
+        .borrow_mut()
+        .window_transfers
+        .set_hosted_rooms(Box::new(GovernedRooms(Rc::clone(&governed))));
+    governed
+}
+
+const fn status(state: ImportState, record_present: bool) -> ProposalStatus {
+    ProposalStatus {
+        state,
+        record_present,
+    }
+}
+
+fn card_note(f: &Fixture) -> Option<String> {
+    f.tabs_in(f.elsewhere)
+        .into_iter()
+        .find_map(|(_, tile)| match tile {
+            TileContent::LocalApp { note, .. } => Some(note),
+            _ => None,
+        })
+}
+
+#[test]
+fn a_window_moved_into_a_governed_workspace_opens_there_only_once_its_owner_accepts() {
+    let (f, old) = Fixture::new(true, false);
+    let old = old.unwrap();
+    let governed = governed(&f);
+    f.ask(TransferMode::Move);
+    let sheet = f.answer("Move");
+    assert!(
+        sheet.detail().contains("has to accept"),
+        "the sheet says the owner decides: {}",
+        sheet.detail()
+    );
+
+    // The document is proposed, whole and scoped to the governed room, and
+    // nothing opens there yet.
+    let (room, record, bytes) = governed.borrow().proposed[0].clone();
+    assert_eq!(room, f.elsewhere_room);
+    let (arriving, _) = transfer::validate_import(&bytes, &room.to_string(), &record, bytes.len())
+        .expect("the governor would take exactly this record");
+    assert_eq!(body(&arriving).as_deref(), Some("Groceries: milk"));
+    assert!(f.launched.borrow().is_empty());
+    assert!(
+        card_note(&f).is_some_and(|note| note.contains("Waiting for the owner")),
+        "the destination says what it waits for: {:?}",
+        card_note(&f)
+    );
+    for waiting in [
+        status(ImportState::Pending, false),
+        status(ImportState::Accepted, false),
+    ] {
+        governed.borrow_mut().status = Some(waiting);
+        tick(&mut f.chrome.borrow_mut());
+        assert!(
+            f.launched.borrow().is_empty(),
+            "nothing opens before the accepted record is here"
+        );
+    }
+    assert!(f.close_requests().is_empty());
+
+    // Accepted and arrived: the instance reopens on the accepted record there.
+    governed.borrow_mut().status = Some(status(ImportState::Accepted, true));
+    tick(&mut f.chrome.borrow_mut());
+    assert_eq!(f.launched.borrow().len(), 1);
+    let (_, view, _) = f.arrived(INSTANCE);
+    assert_eq!(view.record_id, record.as_str());
+
+    // Only now does the old window close and the original retire.
+    f.bind(NEW_SURFACE);
+    tick(&mut f.chrome.borrow_mut());
+    assert_eq!(f.close_requests(), [SURFACE]);
+    f.destroy(SURFACE);
+    drop(old);
+    tick(&mut f.chrome.borrow_mut());
+    assert!(!f.chrome.borrow().window_transfers.is_pending());
+    let home = f.profile(f.home_room);
+    assert!(matches!(
+        read_record(home.store(), APP, home.workspace_id(), &f.record),
+        Err(TransferError::Open(RecordOpenError::Retired))
+    ));
+}
+
+#[test]
+fn a_declined_or_unanswered_proposal_creates_nothing_and_keeps_the_window() {
+    for (answer, told) in [
+        (status(ImportState::Declined, false), "declined"),
+        (status(ImportState::Expired, false), "didn't answer in time"),
+    ] {
+        let (f, old) = Fixture::new(true, false);
+        let governed = governed(&f);
+        f.ask(TransferMode::Move);
+        f.answer("Move");
+        assert_eq!(governed.borrow().proposed.len(), 1);
+        governed.borrow_mut().status = Some(answer);
+        tick(&mut f.chrome.borrow_mut());
+        assert!(f.launched.borrow().is_empty(), "nothing was started");
+        assert!(f.tabs_in(f.elsewhere).is_empty(), "the waiting card goes");
+        assert!(f.close_requests().is_empty(), "the window stays");
+        assert!(
+            f.tabs_in(f.home)
+                .iter()
+                .any(|(tab, tile)| *tab == TAB && matches!(tile, TileContent::Foreign { .. }))
+        );
+        assert!(
+            f.notifications().iter().any(|n| n.contains(told)),
+            "the person is told: {:?}",
+            f.notifications()
+        );
+        let home = f.profile(f.home_room);
+        assert!(
+            read_record(home.store(), APP, home.workspace_id(), &f.record).is_ok(),
+            "the original stays live"
+        );
+        assert!(!f.chrome.borrow().window_transfers.is_pending());
+        drop(old);
+    }
+}
+
+#[test]
+fn an_owner_answers_each_proposal_for_their_workspace_on_a_sheet() {
+    let (f, _) = Fixture::new(false, false);
+    let governed = governed(&f);
+    let proposal = |id: u8, title: &str| {
+        DocumentImportProposalV1::new(
+            &DocumentImportTerms {
+                room: f.elsewhere_room.to_string(),
+                proposal_id: [id; 32],
+                app: APP.into(),
+                record: RecordId::minted().as_str().into(),
+                title: title.into(),
+                document: b"document".to_vec(),
+                issued_unix: 1,
+                expires_unix: 3_000,
+            },
+            &ed25519_dalek::SigningKey::from_bytes(&[id; 32]),
+        )
+        .unwrap()
+    };
+    governed.borrow_mut().awaiting = vec![
+        Awaiting {
+            proposal: proposal(1, "Groceries"),
+            proposer: None,
+        },
+        Awaiting {
+            proposal: proposal(2, "Taxes"),
+            proposer: None,
+        },
+    ];
+    tick(&mut f.chrome.borrow_mut());
+    let mut sheet = PortalDialogController::new(f.queue.clone());
+    for (choice, title) in [(0, "Groceries"), (1, "Taxes")] {
+        assert!(sheet.pump(), "the owner is asked about “{title}”");
+        let view = sheet.view().unwrap();
+        assert!(view.title().contains(title) && view.title().contains("Elsewhere"));
+        assert_eq!(view.choices()[0], "Accept it into Elsewhere");
+        assert_eq!(view.choices()[1], "Decline");
+        while sheet.selected() != choice {
+            assert!(sheet.select_next(false));
+        }
+        assert!(sheet.confirm());
+    }
+    tick(&mut f.chrome.borrow_mut());
+    assert_eq!(
+        governed.borrow().decided,
+        [([1; 32], true), ([2; 32], false)],
+        "each answer is sent for its own proposal"
+    );
+    assert!(!f.chrome.borrow().window_transfers.is_busy());
+}
+
+#[test]
+fn a_window_leaving_a_governed_workspace_carries_the_document_its_owner_committed() {
+    let (f, old) = Fixture::new(true, false);
+    let old = old.unwrap();
+    // What the owner committed is newer than this device's app cache.
+    let mut committed = old.read(&f.record.id, Clone::clone).unwrap();
+    committed
+        .put(ROOT, "body", "Groceries: milk, bread")
+        .unwrap();
+    let governed = Rc::new(RefCell::new(Governed {
+        room: Some(f.home_room),
+        committed: Some(committed.save()),
+        ..Governed::default()
+    }));
+    f.chrome
+        .borrow_mut()
+        .window_transfers
+        .set_hosted_rooms(Box::new(GovernedRooms(Rc::clone(&governed))));
+    f.ask(TransferMode::Copy);
+    f.answer("Copy");
+    f.bind(NEW_SURFACE);
+    tick(&mut f.chrome.borrow_mut());
+    let beside = f.launched.borrow()[0].record_instance;
+    let (destination, _, carried) = f.arrived(beside);
+    let arrived = read_record(
+        destination.store(),
+        APP,
+        destination.workspace_id(),
+        &carried,
+    )
+    .unwrap();
+    assert_eq!(
+        body(&arrived).as_deref(),
+        Some("Groceries: milk, bread"),
+        "the copy comes from the owner's committed document"
+    );
+    assert!(f.close_requests().is_empty(), "a copy leaves the window");
+    drop(old);
 }
