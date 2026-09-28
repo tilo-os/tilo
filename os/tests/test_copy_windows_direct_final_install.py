@@ -179,6 +179,22 @@ class DirectFinalTests(unittest.TestCase):
                     for row in rows:
                         self.assertEqual(copy.hash_range(source, row["offset_bytes"], row["size_bytes"]),
                                          copy.hash_range(target, row["offset_bytes"], row["size_bytes"]))
+                # After reboot Windows numbers by offset, although the saved
+                # plan, source receipt and raw GPT retain original entry slots.
+                renumbered = [dict(row) for row in rows]
+                for row in renumbered:
+                    if row["partuuid"] == plan["preserve_partitions"][3]["partuuid"]:
+                        row["number"] = 7
+                    elif row["partuuid"] in {item["partuuid"] for item in final}:
+                        row["number"] -= 1
+                current = {"partitions": renumbered, **plan["windows_disk"]}
+                physical_rows, physical_final = copy.expected_rows(plan, None, renumbered)
+                self.assertEqual([row["number"] for row in physical_final], [4, 5, 6])
+                self.assertEqual(copy.source_preflight(source_path, receipt, physical_rows,
+                                                        physical_final, disk_size), hashes)
+                with target_path.open("rb") as target:
+                    self.assertEqual(copy.validate_physical(plan, None, current, target),
+                                     (physical_rows, physical_final))
                 changed = json.loads(json.dumps(plan))
                 changed["target_partitions"][2]["size_bytes"] -= MIB
                 plan_path.write_text(json.dumps(changed))
