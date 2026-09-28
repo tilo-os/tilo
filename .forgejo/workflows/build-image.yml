@@ -1030,11 +1030,11 @@ jobs:
       # Prefer the runner's compiler cache. When that set is incomplete, use
       # this repository's cache secret. A missing cache compiles without it.
       #
-      # A publication never uses it. That credential can write every object
-      # in the bucket, and every CI job and agent sandbox holds it, so any of
-      # them could plant compiler output in a signed image, and the
-      # independent rebuild would agree with it. Publications compile with
-      # the cache off and receive no cache settings or credentials.
+      # A publication's primary lane uses it too. Any CI job can write that
+      # cache, but the reproduction lane compiles with no cache at all and
+      # the publication must match it byte for byte, so a planted object
+      # fails the gate instead of reaching a signed image. A publication
+      # does not require the cache: an outage compiles uncached.
       - name: Bind the runner compiler cache
         id: compiler-cache
         env:
@@ -1085,21 +1085,6 @@ jobs:
             echo "::notice::publication: compiling through the publication-only cache $PUBLICATION_CACHE_BUCKET"
             exit 0
           fi
-          if [[ $PUBLISH == true ]]; then
-            {
-              echo 'mode=off'
-              echo 'required=0'
-              echo 'bucket='
-              echo 'endpoint='
-              # The Containerfile's own defaults, as the independent rebuild uses.
-              echo 'region=auto'
-              echo 'use_ssl=false'
-              echo 'prefix=tilo/image/v1'
-              echo 'secret-envs='
-            } >> "$GITHUB_OUTPUT"
-            echo '::notice::publication: compiling without the shared compiler cache'
-            exit 0
-          fi
           # shellcheck disable=SC1091
           source tools/ci/compiler_cache_env.sh
           for name in SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
@@ -1121,7 +1106,7 @@ jobs:
           done
           {
             echo 'mode=shared'
-            echo 'required=1'
+            if [[ $PUBLISH == true ]]; then echo 'required=0'; else echo 'required=1'; fi
             printf 'bucket=%s\n' "$SCCACHE_BUCKET"
             printf 'endpoint=%s\n' "$SCCACHE_ENDPOINT"
             printf 'region=%s\n' "$SCCACHE_REGION"
