@@ -238,8 +238,17 @@ fn ragged_metrics(
 /// once a paragraph needs a looser pass, a line stretched to ratio 9 must
 /// still cost more than one stretched to ratio 5, or the composer trades a
 /// barely-loose line for a gaping one to tighten its neighbour.
+///
+/// Shrinking past the glue's capacity (`r < -1`, emergency pass only) makes
+/// the line wider than the measure, so it costs more than any line the
+/// emergency pass could stretch instead.
 fn stretch_badness(ratio: f32) -> f64 {
-    100.0 * f64::from(ratio.abs()).powi(3)
+    let badness = 100.0 * f64::from(ratio.abs()).powi(3);
+    if ratio < -1.0 {
+        stretch_badness(EMERGENCY_TOLERANCE) + badness
+    } else {
+        badness
+    }
 }
 
 /// Metrics when neither stretch nor shrink is available at this boundary.
@@ -707,6 +716,22 @@ mod tests {
             let lines = compose_paragraph(&boxes, ParagraphOptions::new(150.0));
             assert_eq!(lines[0].end, 1, "only the emergency pass strands the word");
             assert!(lines.iter().all(|line| line.glue_scale >= 0.2));
+        }
+
+        // Case `an_overfull_line_is_the_last_resort_of_the_emergency_pass`.
+        {
+            let mut options = ParagraphOptions::new(100.0);
+            options.tolerance = EMERGENCY_TOLERANCE;
+            options.max_glyph_expansion = 0.0;
+            let overfull = expansion_search(110.0, 10.0, 5.0, 90.0, -10.0, options)
+                .expect("the emergency pass may shrink past capacity");
+            let gaping = expansion_search(50.0, 1.0, 1.0, 45.0, 50.0, options)
+                .expect("and stretch to its tolerance");
+            assert!(overfull.ratio < -1.0 && gaping.ratio >= 49.0);
+            assert!(
+                overfull.badness > gaping.badness,
+                "a line wider than the measure loses to any loose line"
+            );
         }
 
         // Case `closing_punctuation_can_protrude_past_the_measure`.
