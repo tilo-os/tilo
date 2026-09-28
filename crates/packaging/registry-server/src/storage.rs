@@ -26,6 +26,8 @@
 //!         <package-root>.tapp        # reviewed thin tapps, by package root
 //!     artifacts/
 //!         <blake3>.tapp              # operator-imported full tapps, by content
+//!     uploads/
+//!         <blake3>.tapp              # publisher uploads awaiting review; private
 //! ```
 //!
 //! Writes go through atomic rename (`.tmp` → target path) so a
@@ -78,6 +80,7 @@ impl Storage {
             "payload-blobs",
             "thin-packages",
             "artifacts",
+            "uploads",
         ] {
             std::fs::create_dir_all(root.join(name))
                 .map_err(|e| StorageError::Io(format!("mkdir {name}: {e}")))?;
@@ -284,6 +287,54 @@ impl Storage {
             atomic_write(&path, tapp_bytes)?;
         }
         Ok(digest)
+    }
+
+    fn upload_path(&self, blake3_hex: &str) -> Option<PathBuf> {
+        is_hex_digest(blake3_hex).then(|| {
+            self.root
+                .join("uploads")
+                .join(format!("{}.tapp", blake3_hex.to_ascii_lowercase()))
+        })
+    }
+
+    /// Keep a publisher's upload, which the caller has authenticated, under
+    /// its BLAKE3. Uploads are never served; review reads them, and approval
+    /// imports the ones a version binds as artifacts.
+    ///
+    /// # Errors
+    /// Returns an error if the bytes cannot be written durably.
+    pub fn save_upload(&self, tapp_bytes: &[u8]) -> Result<String, StorageError> {
+        let digest = blake3::hash(tapp_bytes).to_hex().to_string();
+        let path = self
+            .upload_path(&digest)
+            .ok_or_else(|| StorageError::Encode("invalid upload digest".into()))?;
+        if !path.exists() {
+            atomic_write(&path, tapp_bytes)?;
+        }
+        Ok(digest)
+    }
+
+    /// A publisher upload, re-checked against its digest, or `None`.
+    ///
+    /// # Errors
+    /// Returns an error when a stored upload cannot be read or no longer
+    /// matches its name.
+    pub fn load_upload(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        let Some(path) = self.upload_path(blake3_hex) else {
+            return Ok(None);
+        };
+        let Some(bytes) = read_if_exists(&path, "upload")? else {
+            return Ok(None);
+        };
+        if !blake3::hash(&bytes)
+            .to_hex()
+            .eq_ignore_ascii_case(blake3_hex)
+        {
+            return Err(StorageError::Parse(
+                "upload content does not match its name".into(),
+            ));
+        }
+        Ok(Some(bytes))
     }
 
     /// An imported artifact, re-checked against its digest.

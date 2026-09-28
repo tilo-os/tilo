@@ -66,6 +66,7 @@ pub mod moderation;
 pub mod namespace;
 pub mod snapshot;
 pub mod target;
+pub mod upload;
 pub mod verify;
 pub mod version;
 
