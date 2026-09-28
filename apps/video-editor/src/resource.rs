@@ -140,63 +140,6 @@ impl ResourceApp for VideoEditor {
     }
 }
 
-/// The editor's launch: the framework's, plus the capture flags. Every mode
-/// — the live window, `--shots`, `--responsive-matrix`, `--native-audit`,
-/// `--headless` — runs the framework-hosted editor:
-///
-/// * `--shots [--scenario NAME]` loads the demo project and stages the
-///   scenario's view state;
-/// * `--empty` captures the live app on a blank project;
-/// * `--narrow` captures the collapsed media bin at a narrow width;
-/// * `--import PATH` imports a real file, places it and waits for its frame.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn launch_spec() -> ui::launch::LaunchSpec {
-    ui::framework::launch_spec::<VideoEditor>()
-        .capture_scenario(capture)
-        .shot_viewport(shot_viewport)
-        .allowed_flags(&["--empty", "--narrow"])
-        .allowed_options(&["--data-dir", "--import"])
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn shot_viewport(args: &ui::launch::LaunchArgs) -> (u32, u32) {
-    const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
-    /// Narrow capture viewport: below the bin's collapse breakpoint, so
-    /// `--shots --narrow` shows the overlay-flap layout.
-    const NARROW_SHOTS_VIEWPORT: (u32, u32) = (720, 820);
-    if args.has("--narrow") {
-        NARROW_SHOTS_VIEWPORT
-    } else {
-        DEFAULT_SHOTS_VIEWPORT
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn capture(
-    harness: &mut ui::headless::FrameHarness,
-    args: &ui::launch::LaunchArgs,
-) -> Result<(), ui::launch::LaunchError> {
-    let import = args
-        .value("--import")
-        .map(|path| format!("{IMPORT_CAPTURE}{path}"));
-    let scenario = if let Some(import) = &import {
-        Some(import.as_str())
-    } else if args.has("--empty") {
-        Some(EMPTY_CAPTURE)
-    } else if args.has("--narrow") {
-        Some(crate::app::NARROW_CAPTURE)
-    } else {
-        args.scenario.as_deref()
-    };
-    ui::framework::stage::<VideoEditor>(harness, scenario)?;
-    if import.is_some() {
-        // A clip that never decodes (no `decode` feature, an unreadable file)
-        // is still captured, showing what the editor shows for it.
-        let _ = harness.wait_for_visuals(std::time::Duration::from_secs(6));
-    }
-    Ok(())
-}
-
 /// Where the editor's edits go: the framework's dispatcher when the editor is
 /// a hosted surface, or the toolkit's local action host when it runs as a
 /// standalone widget (its unit tests and benchmarks).
