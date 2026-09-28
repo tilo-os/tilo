@@ -15,7 +15,7 @@ identity = "ed25519:000000000000000000000000000000000000000000000000000000000000
 signature = ""
 
 [sandbox]
-namespaces = ["user", "pid", "uts", "ipc", "mount"]
+namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
 seccomp = "tilo-default"
 landlock = "strict"
 
