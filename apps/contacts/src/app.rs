@@ -6822,11 +6822,10 @@ impl ContactsApp {
 }
 
 impl Widget for ContactsApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::CONTACTS_OPERATION_TYPE]
@@ -8242,6 +8241,12 @@ impl Widget for ContactsApp {
         _permissions: &PermissionContext,
     ) {
         self.render(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for ContactsApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 

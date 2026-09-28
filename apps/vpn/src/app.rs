@@ -4200,13 +4200,10 @@ mod tests {
     }
 
     impl Widget for CustodyVpnRoot {
+        ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
+
         fn name(&self) -> &'static str {
             "CustodyVpnRoot"
-        }
-        fn document_history_definition(
-            &self,
-        ) -> Option<&'static ui::history_mode::HistoryDefinition> {
-            Some(&CUSTODY_HISTORY)
         }
         fn sync(&mut self, doc: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
             self.child.sync(doc, path);
@@ -4254,6 +4251,14 @@ mod tests {
             } else {
                 self.child.take_control_invocation()
             }
+        }
+    }
+
+    impl ui::history_mode::capability::DocumentHistory for CustodyVpnRoot {
+        fn document_history_definition(
+            &self,
+        ) -> Option<&'static ui::history_mode::HistoryDefinition> {
+            Some(&CUSTODY_HISTORY)
         }
     }
 

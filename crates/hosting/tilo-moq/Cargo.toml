@@ -10,6 +10,7 @@ default = []
 relay = ["dep:moq-net", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:hex", "dep:bytes", "dep:tokio", "dep:url", "dep:serde", "dep:serde_json"]
 
 [dependencies]
+tilo-clock = { path = "../../system/tilo-clock" }
 thiserror.workspace = true
 bytes = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }

@@ -3508,12 +3508,9 @@ impl Widget for PlayerApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::FloatingSurfaceProvider,
-        dyn ui::undo::CommittedActions
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory
     );
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
@@ -4222,6 +4219,12 @@ impl Widget for PlayerApp {
         // A follower must keep syncing even with no local input so it applies
         // the host's incoming transport.
         self.collab.is_some()
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for PlayerApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 

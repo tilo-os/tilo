@@ -7398,16 +7398,10 @@ impl Collaborative for FileExplorerWidget {
 }
 
 impl Widget for FileExplorerWidget {
-    ui::provides!(dyn ui::widget::Collaborative);
-
-    fn history_registration(
-        &self,
-    ) -> Result<
-        Option<ui::history_mode::HistoryRegistration>,
-        ui::history_mode::HistoryRegistrationError,
-    > {
-        self.history_registration_impl()
-    }
+    ui::provides!(
+        dyn ui::widget::Collaborative,
+        dyn ui::history_mode::capability::DocumentHistory
+    );
 
     fn has_action_control_bindings(&self) -> bool {
         self.has_action_control_bindings_impl()
@@ -8586,6 +8580,17 @@ impl Widget for FileExplorerWidget {
             return false;
         }
         false
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for FileExplorerWidget {
+    fn history_registration(
+        &self,
+    ) -> Result<
+        Option<ui::history_mode::HistoryRegistration>,
+        ui::history_mode::HistoryRegistrationError,
+    > {
+        self.history_registration_impl()
     }
 }
 

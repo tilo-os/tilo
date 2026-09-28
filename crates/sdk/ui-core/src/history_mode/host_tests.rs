@@ -1352,6 +1352,8 @@ struct CheckedCompositionRoot {
 }
 
 impl Widget for CheckedCompositionRoot {
+    crate::provides!(dyn crate::history_mode::capability::DocumentHistory);
+
     crate::testing::delegate_widget_methods!(
         inner: sync,
         build_layout,
@@ -1360,6 +1362,21 @@ impl Widget for CheckedCompositionRoot {
         handle_event,
         get_rect
     );
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.inner.children()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.inner.children_mut()
+    }
+
+    fn name(&self) -> &str {
+        "checked-composition-root"
+    }
+}
+
+impl crate::history_mode::capability::DocumentHistory for CheckedCompositionRoot {
     fn history_registration(
         &self,
     ) -> Result<Option<HistoryRegistration>, HistoryRegistrationError> {
@@ -1372,21 +1389,8 @@ impl Widget for CheckedCompositionRoot {
         )
         .map(Some)
     }
-
     fn document_history_definition(&self) -> Option<&'static HistoryDefinition> {
         Some(&CHECKED_COMPOSITION)
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.inner.children()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.inner.children_mut()
-    }
-
-    fn name(&self) -> &str {
-        "checked-composition-root"
     }
 }
 

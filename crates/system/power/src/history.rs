@@ -74,11 +74,7 @@ pub fn record_power_history(
     health: Option<u32>,
     on_ac: bool,
 ) -> Result<bool, String> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        / 60;
+    let now = tilo_clock::unix_now() / 60;
     let path = history_path(kind).ok_or("no private per-user state directory is available")?;
     record_power_history_at(
         &path,

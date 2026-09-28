@@ -5,7 +5,6 @@
 //! so these functions are pure views.
 
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::widget::{IconWidget, ScrollAxis, Scrollable, TextInput};
@@ -2766,9 +2765,7 @@ fn active_device_row(theme: &Theme, bus: &ActionBus, peer: &crate::sync::PeerRec
 }
 
 fn relative_sync_time(time: i64) -> String {
-    let current = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs() as i64);
+    let current = tilo_clock::unix_now_i64();
     format!("Last synced {}", ui::format::relative(current - time))
 }
 

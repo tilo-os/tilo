@@ -21,6 +21,9 @@ pub enum Platform {
     TiloOs,
     /// WebAssembly side module for the browser toolkit core (`wasm32`).
     Web,
+    /// Self-contained executable for Linux desktops other than Tilo OS
+    /// (`x86_64` or `aarch64`).
+    Linux,
     /// Self-contained Windows executable (`x86_64` or `aarch64`).
     Windows,
     /// Self-contained macOS executable (`x86_64` or `aarch64`).
@@ -34,6 +37,7 @@ impl Platform {
         match self {
             Self::TiloOs => registry_types::TILO_OS_PLATFORM,
             Self::Web => registry_types::WEB_PLATFORM,
+            Self::Linux => registry_types::LINUX_PLATFORM,
             Self::Windows => registry_types::WINDOWS_PLATFORM,
             Self::Macos => registry_types::MACOS_PLATFORM,
         }
@@ -46,7 +50,7 @@ impl Platform {
         let Some(target) = &manifest.target else {
             return Some(Self::TiloOs);
         };
-        [Self::Web, Self::Windows, Self::Macos]
+        [Self::Web, Self::Linux, Self::Windows, Self::Macos]
             .into_iter()
             .find(|platform| platform.wire() == target.platform)
     }
@@ -152,7 +156,7 @@ pub fn build_entry(
     let checked = check_package(tapp_bytes, signer.verifying_key().to_bytes())?;
     let binding = match platform {
         Platform::TiloOs => native_binding(tapp_bytes, &checked, arch)?,
-        Platform::Web | Platform::Windows | Platform::Macos => {
+        Platform::Web | Platform::Linux | Platform::Windows | Platform::Macos => {
             signed_target_binding(tapp_bytes, &checked, platform, arch)?
         }
     };
@@ -160,11 +164,7 @@ pub fn build_entry(
     let now = std::env::var("SOURCE_DATE_EPOCH")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_secs())
-        });
+        .unwrap_or_else(tilo_clock::unix_now);
     let version = registry_types::RegistryVersion {
         version: package.version.clone(),
         tapp_url: url.to_string(),
@@ -223,7 +223,7 @@ pub fn build_entry(
                 Platform::TiloOs => {
                     format!("{display_name} is a native Tilo OS application.").into()
                 }
-                Platform::Web | Platform::Windows | Platform::Macos => {
+                Platform::Web | Platform::Linux | Platform::Windows | Platform::Macos => {
                     format!("{display_name} is a Tilo application.").into()
                 }
             },
@@ -233,6 +233,7 @@ pub fn build_entry(
             || match platform {
                 Platform::TiloOs => format!("{display_name} for Tilo OS").into(),
                 Platform::Web => format!("{display_name} on Tilo").into(),
+                Platform::Linux => format!("{display_name} for Linux").into(),
                 Platform::Windows => format!("{display_name} for Windows").into(),
                 Platform::Macos => format!("{display_name} for macOS").into(),
             },
@@ -324,7 +325,7 @@ fn arch_wire(arch: Arch) -> &'static str {
     }
 }
 
-/// A web, Windows or macOS build binds the `[target]` its signed manifest
+/// A web, Linux, Windows or macOS build binds the `[target]` its signed manifest
 /// records; the tapp passes the same verification a native one does before
 /// anything is signed.
 fn signed_target_binding(

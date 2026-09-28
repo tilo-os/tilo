@@ -69,8 +69,10 @@ export function createDesktopNavigation({snapshot,revision,dispatch,search,globa
     if(command.kind==='open'){
      if(!value.capabilities.open)throw Error('Open unavailable');
      if(typeof command.app!=='string'||!command.app)throw Error('Invalid application');
+     if(command.record!==undefined&&(typeof command.record!=='string'||!command.record))throw Error('Invalid record');
+     const record=command.record===undefined?{}:{record:command.record};
      // An app the core lacks is linked first (its resolver, as a standalone mount's).
-     return Promise.resolve(install(command.app)).then(app=>{check();if(command.generation!==value.generation)throw Error('Stale desktop surface');dispatch(JSON.stringify({kind:'open',generation:command.generation,app}));refresh();});
+     return Promise.resolve(install(command.app)).then(app=>{check();if(command.generation!==value.generation)throw Error('Stale desktop surface');dispatch(JSON.stringify({kind:'open',generation:command.generation,app,...record}));refresh();});
     }
     const beforeSelect=command.kind==='select'?captureSelect():undefined;
     if(command.kind==='global-search'){openGlobalSearch(command.generation,command.query??'');}else if(command.kind==='commands'){if(!search)throw Error('Command search unavailable');search(command.generation,command.query);}else dispatch(JSON.stringify(command));refresh();return command.kind==='select'?Promise.resolve(completeSelect(beforeSelect)).then(()=>{}):Promise.resolve();

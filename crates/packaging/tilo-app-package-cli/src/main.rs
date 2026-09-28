@@ -59,6 +59,8 @@ enum TargetPlatform {
     TiloOs,
     /// WebAssembly side module for the browser toolkit core (`wasm32`).
     Web,
+    /// Self-contained executable for other Linux desktops (`x86_64` or `aarch64`).
+    Linux,
     /// Self-contained Windows executable (`x86_64` or `aarch64`).
     Windows,
     /// Self-contained macOS executable (`x86_64` or `aarch64`).
@@ -77,6 +79,7 @@ impl From<TargetPlatform> for registry_client::Platform {
         match value {
             TargetPlatform::TiloOs => Self::TiloOs,
             TargetPlatform::Web => Self::Web,
+            TargetPlatform::Linux => Self::Linux,
             TargetPlatform::Windows => Self::Windows,
             TargetPlatform::Macos => Self::Macos,
         }
@@ -116,7 +119,7 @@ enum Command {
         #[arg(long)]
         thin: bool,
     },
-    /// Pack the Windows or macOS build of an app: one self-contained
+    /// Pack the Linux, Windows or macOS build of an app: one self-contained
     /// executable with the toolkit linked in, shipped as `bin/<file name>`
     /// under a signed `[target]`.
     PackDesktop {
@@ -506,6 +509,7 @@ fn cmd_pack_web(args: &PackWebArgs<'_>) -> Result<()> {
 /// The desktop systems `pack-desktop` builds for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum DesktopPlatform {
+    Linux,
     Windows,
     Macos,
 }
@@ -541,6 +545,7 @@ fn cmd_pack_desktop(args: &PackDesktopArgs<'_>) -> Result<()> {
         })?;
     let module = format!("bin/{name}");
     let platform = match args.platform {
+        DesktopPlatform::Linux => registry_types::LINUX_PLATFORM,
         DesktopPlatform::Windows => registry_types::WINDOWS_PLATFORM,
         DesktopPlatform::Macos => registry_types::MACOS_PLATFORM,
     };

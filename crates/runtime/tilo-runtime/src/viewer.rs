@@ -16,7 +16,7 @@ use std::{
     net::TcpStream,
     path::{Path, PathBuf},
     sync::Mutex,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 /// The public HTTPS origin browsers open, e.g. `https://c1.viewer.example`.
@@ -541,11 +541,7 @@ pub fn spawn_sweeper(viewer: std::sync::Arc<Viewer>) -> io::Result<()> {
 /// Milliseconds since the epoch.
 #[must_use]
 pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
+    tilo_clock::unix_now_ms()
 }
 
 /// `YYYY-MM-DDTHH:MM:SSZ` for milliseconds since the epoch.

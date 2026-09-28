@@ -58,9 +58,7 @@ pub(crate) fn analyze_health(items: &[SecretItem]) -> VaultHealth {
                 || !password.chars().any(|character| character.is_ascii_digit())
         })
         .count();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs());
+    let now = tilo_clock::unix_now();
     let one_year = 365 * 24 * 60 * 60;
     VaultHealth {
         total: candidates.len(),

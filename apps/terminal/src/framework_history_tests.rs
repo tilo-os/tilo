@@ -14,8 +14,7 @@ const EXPECTED_LIMITATION: &str = "Terminal History cannot reconstruct or restor
 #[test]
 fn real_terminal_root_declares_truthful_external_process_output_history() {
     let (widget, _writes, _output) = crate::tests::build_test_widget_io();
-    let definition = widget
-        .document_history_definition()
+    let definition = ui::history_mode::capability::document_history_definition(&widget)
         .expect("the real Terminal root must declare framework History");
     assert_eq!(definition.app_id, "so.tilo.terminal");
     assert_eq!(definition.scopes.len(), 1);
