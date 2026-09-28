@@ -4722,6 +4722,10 @@ async fn handle_live_join(
 }
 
 /// Handle `LiveLeave`.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the guard only lives for the lookup; the value kept is a clone"
+)]
 async fn handle_live_leave(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,

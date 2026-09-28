@@ -143,6 +143,10 @@ impl LiveGrants {
 
 /// Whether `device` of `user` may be in `workspace_id`'s live plane now:
 /// not revoked and admitted exactly as a subscribe would be.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the guard only lives for the lookup; the value kept is a clone"
+)]
 async fn admitted(
     sessions: &Sessions,
     device: [u8; 32],

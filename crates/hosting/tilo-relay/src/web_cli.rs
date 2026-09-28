@@ -293,6 +293,10 @@ fn announce(web: &WebHandle, user: &[u8; 32], allowed: &[String], state: &Path) 
 ///
 /// # Errors
 /// The state directory, relay or listener cannot be set up.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the guard only lives for the lookup; the value kept is a clone"
+)]
 pub async fn dev(
     args: DevArgs,
     shutdown: impl std::future::Future<Output = anyhow::Result<()>>,

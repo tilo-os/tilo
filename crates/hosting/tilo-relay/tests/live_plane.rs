@@ -3,6 +3,10 @@
 //! it as a plain delta, and live frames reach only live members, stamped
 //! with the authenticated sender and validated by the host.
 
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "a test holds its fixtures' locks for the length of a step"
+)]
 use std::time::Duration;
 
 use tilo_relay::live::{LiveFrame, LiveRecord, PresenceFrame};
