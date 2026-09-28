@@ -994,6 +994,10 @@ COPY --from=fluxcast-builder /src/src /usr/libexec/tilo-fluxcast-src
 COPY --from=joycond-builder /out/usr/bin/joycond /usr/bin/joycond
 COPY --from=joycond-builder /out/usr/lib/systemd/system/joycond.service /usr/lib/systemd/system/joycond.service
 COPY --from=joycond-builder /out/usr/lib/modules-load.d/joycond.conf /usr/lib/modules-load.d/joycond.conf
+# tilo-session records each login through the flight recorder; the report
+# summarises those records. The host package installs the same two files.
+COPY dist/session/tilo-flight-recorder.py /usr/libexec/tilo-flight-recorder
+COPY dist/session/tilo-session-report.py /usr/libexec/tilo-session-report
 
 FROM scratch AS remote-capture-files
 COPY os/etc/tilo/desktop.toml /etc/tilo/desktop.toml
