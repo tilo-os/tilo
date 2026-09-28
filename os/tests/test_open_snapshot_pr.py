@@ -33,6 +33,14 @@ def run_main(argv, created=None):
     return result, request
 
 
+def print_pins(kind, x86_ref, arm_ref):
+    out = io.StringIO()
+    argv = [str(SCRIPT), "pins", kind, "--x86-ref", x86_ref, "--arm-ref", arm_ref]
+    with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(out):
+        assert MODULE.main() == 0
+    return out.getvalue()
+
+
 def restart_fixture(test):
     """Give the next subTest phase of a merged test the fresh fixture it had
     as its own test: tear down, run cleanups, reset instance state, set up."""
@@ -216,13 +224,12 @@ class WpeSnapshotPullRequestTests(unittest.TestCase):
             self.assertEqual(payload["title"], "build(os): refresh native WPE buildroot snapshots")
             self.assertIn(self.digest, payload["body"])
         restart_fixture(self)
-        with self.subTest(phase="workflow_writes_the_canonical_pin_file"):
-            workflow = (REPO / ".forgejo/workflows/snapshot-wpe-buildroot.yml").read_text()
-            for line in MODULE.wpe_contents("$WPE_BUILDROOT_X86_64_REF",
-                                            "$WPE_BUILDROOT_AARCH64_REF").splitlines()[:2]:
-                self.assertIn(f"'{line}'", workflow)
-            self.assertIn('"WPE_BUILDROOT_X86_64_REF=$WPE_BUILDROOT_X86_64_REF"', workflow)
-            self.assertIn('"WPE_BUILDROOT_AARCH64_REF=$WPE_BUILDROOT_AARCH64_REF"', workflow)
+        with self.subTest(phase="promotion_writes_the_canonical_pin_file"):
+            self.assertEqual(print_pins("wpe", self.x86_ref, self.arm_ref),
+                             MODULE.wpe_contents(self.x86_ref, self.arm_ref))
+            script = (REPO / "os/dev/buildroot-snapshot.sh").read_text()
+            self.assertIn('open-snapshot-pr.py pins "$promote_kind"', script)
+            self.assertIn("wpe) key=WPE_BUILDROOT label=WPE promote_kind=wpe", script)
         restart_fixture(self)
         with self.subTest(phase="committed_pins_use_the_canonical_names"):
             committed = (REPO / "os/wpe-buildroot-snapshot.env").read_text()
@@ -283,14 +290,14 @@ class KernelBuildrootSnapshotPullRequestTests(unittest.TestCase):
                              "build(os): refresh native kernel buildroot snapshots")
             self.assertIn(self.digest, payload["body"])
         restart_fixture(self)
-        with self.subTest(phase="workflow_writes_the_canonical_pin_file"):
-            workflow = (REPO / ".forgejo/workflows/snapshot-kernel-buildroot.yml").read_text()
-            for line in MODULE.kernel_buildroot_contents("$X", "$Y").splitlines()[:2]:
-                self.assertIn(f"'{line}'", workflow)
-            self.assertIn('"KERNEL_BUILDROOT_X86_64_REF=$KERNEL_BUILDROOT_X86_64_REF"', workflow)
-            self.assertIn('"KERNEL_BUILDROOT_AARCH64_REF=$KERNEL_BUILDROOT_AARCH64_REF"', workflow)
-            self.assertIn('branch="automation/kernel-buildroot-snapshot-${snapshot_digest:0:16}"',
-                          workflow)
+        with self.subTest(phase="promotion_writes_the_canonical_pin_file"):
+            self.assertEqual(print_pins("kernel-buildroot", self.x86_ref, self.arm_ref),
+                             MODULE.kernel_buildroot_contents(self.x86_ref, self.arm_ref))
+            script = (REPO / "os/dev/buildroot-snapshot.sh").read_text()
+            self.assertIn("kernel) key=KERNEL_BUILDROOT label=kernel promote_kind=kernel-buildroot",
+                          script)
+            self.assertIn('branch="automation/$kind-buildroot-snapshot-${snapshot_digest:0:16}"',
+                          script)
         restart_fixture(self)
         with self.subTest(phase="committed_pins_use_the_canonical_names"):
             committed = (REPO / "os/kernel-buildroot-snapshot.env").read_text()
