@@ -74,6 +74,7 @@ tilo-app package                                   # Tilo OS, this machine's CPU
 tilo-app package --arch aarch64                    # Tilo OS on ARM
 tilo-app package --platform macos --arch aarch64   # macOS
 tilo-app package --platform windows --arch x86_64  # Windows
+tilo-app package --platform web                    # the browser
 tilo-app publish
 ```
 
@@ -90,7 +91,16 @@ A Tilo OS package declares the one architecture it carries: the level
 `[package.isa]` names for it, else `v3` on x86_64 and `aarch64` (ARMv8-A) on
 ARM, the floor the scaffolded `.cargo/config.toml` builds at.
 
-Web builds are not yet produced by `tilo-app package`.
+A web package, `dist/<package>-web-wasm32.tapp`, carries the app as a
+WebAssembly side module of the browser's toolkit core
+([The web](app-development.md#the-web)). Its signed `[target]` names the
+`web` platform, `wasm32`, the WebAssembly features the module uses and the
+core's runtime ABI id (`tilo-runtime/2026.07+wasm.<id>`). The registry lists
+it beside the app's other builds, and a page installs it only into a core with
+that id, so a module built against another core is refused before it links.
+The core itself is Tilo's to publish (`so.tilo.runtime.web`); an app never
+ships one. That core exports what Tilo's own web apps import, so a module
+that needs more of a shared crate than they do does not link in it yet.
 
 ## From CI
 
@@ -112,12 +122,13 @@ signed with a throwaway key and are never published. Set the variable
 `TILO_REGISTRY` to publish to another registry.
 
 On GitHub the matrix covers Tilo OS, Windows and macOS, each on x86_64 and
-aarch64, using GitHub's hosted runners. Forgejo and Gitea hosts provide Linux
-runners, so their workflow builds Tilo OS for x86_64 and lists the other
-builds commented out: enable each one you have a runner for. The Tilo OS jobs
-run in `registry.tilo.so/tilo/tilo-builder`, the image Tilo itself builds in,
-so a package built in CI links the same system libraries and CPU floor as the
-OS it runs on. Each job installs `tilo-app` from the Tilo revision your
+aarch64, and the web, using GitHub's hosted runners. Forgejo and Gitea hosts
+provide Linux runners, so their workflow builds Tilo OS for x86_64 and the web
+and lists the other builds commented out: enable each one you have a runner
+for. The Tilo OS and web jobs run in `registry.tilo.so/tilo/tilo-builder`, the
+image Tilo itself builds in, so a package built in CI links the same system
+libraries and CPU floor as the OS it runs on, and the web job finds the web
+toolchain there. Each job installs `tilo-app` from the Tilo revision your
 `Cargo.lock` pins and caches it.
 
 ## Decisions
