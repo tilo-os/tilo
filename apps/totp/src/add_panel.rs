@@ -33,6 +33,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::color_compat::ColorCompat;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -1249,41 +1250,9 @@ impl AddAccountPanel {
         // follows the text scale so 200% text picks the short form instead of
         // running under the chevron.
         let tight = self.modal.width() < 400.0 * self.metrics().scale;
-        let t = crate::i18n::t;
-        let img_hover = self.image_card_rect.contains(self.last_mouse);
-        Self::draw_method_card(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.image_card_rect,
-            Glyph::Image,
-            &t("totp-add-card-scan-title"),
-            &t(if tight {
-                "totp-add-card-scan-short"
-            } else {
-                "totp-add-card-scan-long"
-            }),
-            img_hover,
-            true,
-        );
-        let link_hover = self.link_card_rect.contains(self.last_mouse);
-        Self::draw_method_card(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.link_card_rect,
-            Glyph::Link,
-            &t("totp-add-card-link-title"),
-            &t(if tight {
-                "totp-add-card-link-short"
-            } else {
-                "totp-add-card-link-long"
-            }),
-            link_hover,
-            false,
-        );
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+        self.draw_method_card(&mut ctx, ImportMethod::Image, tight);
+        self.draw_method_card(&mut ctx, ImportMethod::Link, tight);
 
         // Paste-link field (disclosed).
         if self.uri_expanded {
@@ -1498,24 +1467,21 @@ impl AddAccountPanel {
     }
 
     /// One big, tappable method row: an icon tile, a bold title, and a calm
-    /// one-line description. The primary card (QR) gets the accent tint so
-    /// the recommended path reads first.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a card is glyph + title + subtitle + hover/primary state; grouping into a struct would only move the fields, not reduce them"
-    )]
-    fn draw_method_card(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        glyph: Glyph,
-        title: &str,
-        subtitle: &str,
-        hovered: bool,
-        primary: bool,
-    ) {
+    /// one-line description (the short one when `tight`). The primary card
+    /// (QR) gets the accent tint so the recommended path reads first.
+    fn draw_method_card(&self, ctx: &mut PaintCtx<'_>, method: ImportMethod, tight: bool) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let (rect, primary) = match method {
+            ImportMethod::Image => (self.image_card_rect, true),
+            ImportMethod::Link => (self.link_card_rect, false),
+        };
+        let hovered = rect.contains(self.last_mouse);
+        let (title, subtitle) = method.copy(tight);
         let radius = f64::from(theme.tokens.radii.lg);
         let bg = if primary {
             if hovered {
@@ -1585,7 +1551,7 @@ impl AddAccountPanel {
             None,
             &RoundedRect::from_rect(icon_tile, f64::from(theme.tokens.radii.md)),
         );
-        draw_glyph(scene, transform, icon_tile, glyph, icon_color);
+        draw_glyph(scene, transform, icon_tile, method, icon_color);
 
         // Title + description as one block centred on the card, from their
         // measured line boxes, so at a larger text scale the description sits
@@ -1596,8 +1562,8 @@ impl AddAccountPanel {
         // description when the scaled text is tight).
         let text_x = icon_tile.x1 + 14.0;
         let text_w = (rect.x1 - text_x - 28.0).max(20.0) as f32;
-        let title = text_renderer.elide_to_width(title, CARD_TITLE_SIZE, text_w);
-        let subtitle = text_renderer.elide_to_width(subtitle, CARD_SUB_SIZE, text_w);
+        let title = text_renderer.elide_to_width(&title, CARD_TITLE_SIZE, text_w);
+        let subtitle = text_renderer.elide_to_width(&subtitle, CARD_SUB_SIZE, text_w);
         let (_, th) =
             text_renderer.measure_weighted(&title, CARD_TITLE_SIZE, None, TextWeight::Semibold);
         let (_, sh) = text_renderer.measure(&subtitle, CARD_SUB_SIZE, None);
@@ -1619,20 +1585,7 @@ impl AddAccountPanel {
             transform * Affine::translate((text_x, title_y + f64::from(th))),
             None,
         );
-
-        // Chevron affordance on the right.
-        let cx = rect.x1 - 22.0;
-        let cy = rect.center().y;
-        let mut chev = BezPath::new();
-        chev.move_to((cx - 4.0, cy - 6.0));
-        chev.line_to((cx + 4.0, cy));
-        chev.line_to((cx - 4.0, cy + 6.0));
-        let chev_color = if on_primary {
-            Color::WHITE.with_alpha_factor(0.8)
-        } else {
-            theme.tokens.colors.text_dim
-        };
-        scene.stroke(&Stroke::new(2.0), transform, chev_color, None, &chev);
+        draw_card_chevron(scene, transform, theme, rect, on_primary);
     }
 
     /// A subtle downward chevron at the bottom of the scroll body, shown
@@ -1772,10 +1725,6 @@ impl AddAccountPanel {
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "thin positional wrapper over ButtonFace's builder; grouping into a struct would only move the fields, not reduce them"
-    )]
     fn draw_button(
         scene: &mut Scene,
         transform: Affine,
@@ -1797,10 +1746,6 @@ impl AddAccountPanel {
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "thin positional wrapper over ButtonFace's builder; grouping into a struct would only move the fields, not reduce them"
-    )]
     fn draw_primary_button(
         scene: &mut Scene,
         transform: Affine,
@@ -2122,20 +2067,58 @@ impl AddAccountPanel {
     }
 }
 
-/// The small set of glyphs the method cards draw, rendered as vector paths
-/// (no font/icon dependency) so they track the accent colour the theme
-/// hands us.
+/// The two ways to add an account, each drawn as a method card. Their glyphs
+/// are vector paths (no font/icon dependency) so they track the accent colour
+/// the theme hands us.
 #[derive(Clone, Copy)]
-enum Glyph {
+enum ImportMethod {
+    /// Scan a QR image — the recommended path, so its card is accented.
     Image,
+    /// Paste a setup link.
     Link,
 }
 
+impl ImportMethod {
+    /// The card's title and description; `tight` picks the short description.
+    fn copy(self, tight: bool) -> (String, String) {
+        let (title, description) = match (self, tight) {
+            (Self::Image, false) => ("totp-add-card-scan-title", "totp-add-card-scan-long"),
+            (Self::Image, true) => ("totp-add-card-scan-title", "totp-add-card-scan-short"),
+            (Self::Link, false) => ("totp-add-card-link-title", "totp-add-card-link-long"),
+            (Self::Link, true) => ("totp-add-card-link-title", "totp-add-card-link-short"),
+        };
+        (crate::i18n::t(title), crate::i18n::t(description))
+    }
+}
+
+/// The chevron affordance at the right of a method card; `on_primary` inks it
+/// for the accent card.
+fn draw_card_chevron(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    rect: Rect,
+    on_primary: bool,
+) {
+    let cx = rect.x1 - 22.0;
+    let cy = rect.center().y;
+    let mut chev = BezPath::new();
+    chev.move_to((cx - 4.0, cy - 6.0));
+    chev.line_to((cx + 4.0, cy));
+    chev.line_to((cx - 4.0, cy + 6.0));
+    let chev_color = if on_primary {
+        Color::WHITE.with_alpha_factor(0.8)
+    } else {
+        theme.tokens.colors.text_dim
+    };
+    scene.stroke(&Stroke::new(2.0), transform, chev_color, None, &chev);
+}
+
 /// Draw a method-card glyph centred in `tile`, in `color`.
-fn draw_glyph(scene: &mut Scene, transform: Affine, tile: Rect, glyph: Glyph, color: Color) {
+fn draw_glyph(scene: &mut Scene, transform: Affine, tile: Rect, glyph: ImportMethod, color: Color) {
     let c = tile.center();
     match glyph {
-        Glyph::Image => {
+        ImportMethod::Image => {
             // Picture frame + sun + mountain.
             let frame = RoundedRect::new(c.x - 8.0, c.y - 7.0, c.x + 8.0, c.y + 7.0, 2.0);
             scene.stroke(&Stroke::new(1.6), transform, color, None, &frame);
@@ -2149,7 +2132,7 @@ fn draw_glyph(scene: &mut Scene, transform: Affine, tile: Rect, glyph: Glyph, co
             mtn.line_to((c.x + 7.0, c.y + 6.0));
             scene.stroke(&Stroke::new(1.6), transform, color, None, &mtn);
         }
-        Glyph::Link => {
+        ImportMethod::Link => {
             // Two interlocking link halves.
             let stroke = Stroke::new(1.8);
             let mut a = BezPath::new();

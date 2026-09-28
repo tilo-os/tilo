@@ -25,8 +25,9 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_actions::EncodedAction;
 use ui::color_compat::ColorCompat;
 use ui::icons::Icon;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::{Metrics, Spacing};
 use ui::widget::toggle_group::Segment;
@@ -1731,19 +1732,13 @@ impl Widget for ThemesApp {
             let fill = theme.tokens.colors.semantic.success;
             draw::fill_rrect(scene, t, pill, 13.0, fill);
             draw::text_center(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &self.status,
-                12.0,
+                &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                 // Ink measured against the pill, not a literal white: a light
                 // preset's success green needs dark ink to stay legible.
                 theme.on_surface(fill).ink,
-                pill.x0,
-                pill.x1,
-                pill.y0,
-                pill.y1,
-                TextWeight::Semibold,
+                pill,
             );
         }
     }

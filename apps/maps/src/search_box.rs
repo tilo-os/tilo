@@ -13,6 +13,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, NamedKey};
 
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -382,23 +383,17 @@ impl SearchBox {
             let distance = geo::fmt_distance(geo::haversine_m(place.pos, overlay.anchor));
             let distance_w = draw::measure_w(text_renderer, &distance, 11.0) + 8.0;
             draw::text_clip(
-                scene,
-                text_renderer,
-                transform,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 &place.name,
-                text_x,
-                name_y,
+                Point::new(text_x, name_y),
                 13.0,
                 theme.text_primary,
                 r.x1 - text_x - distance_w,
             );
             draw::text_clip(
-                scene,
-                text_renderer,
-                transform,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 &place.address,
-                text_x,
-                name_y + name_h,
+                Point::new(text_x, name_y + name_h),
                 11.0,
                 theme.text_dim,
                 r.x1 - text_x - distance_w,

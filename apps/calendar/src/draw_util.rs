@@ -14,7 +14,6 @@ use vello::peniko::{Color, Fill};
 use ui::chrome::{GLOW_ALPHA, panel_border, panel_ground};
 pub(crate) use ui::paint::{fill_rect, fill_round, stroke_round};
 use ui::surface::{edge_on, edge_outline, shadow};
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::colors::{Colors, over};
 
@@ -85,10 +84,6 @@ pub(crate) fn row_ground(theme: &Theme, ground: Color, active: bool, hover: bool
 /// `ground` it sits on — fill, derived hairline and inner glow — never an
 /// accent wash. Hover alone is the quiet half-lift; an idle row paints
 /// nothing.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Selection painting needs the scene transform, theme and ground color, row geometry, and active/hover states."
-)]
 pub(crate) fn selected_row(
     scene: &mut Scene,
     transform: Affine,
@@ -148,16 +143,6 @@ pub(crate) fn hairline(scene: &mut Scene, transform: Affine, surface: Color, p0:
         Rect::new(p0.x.min(p1.x), y, p0.x.max(p1.x), y + 1.0)
     };
     scene.fill(Fill::NonZero, transform, color, None, &rect);
-}
-
-/// Mutable paint resources shared by Calendar's immediate-mode view
-/// components. Geometry and domain state stay explicit at each call site;
-/// renderer plumbing travels as one coherent capability.
-pub(crate) struct PaintContext<'a> {
-    pub(crate) scene: &'a mut Scene,
-    pub(crate) transform: Affine,
-    pub(crate) text: &'a mut TextRenderer,
-    pub(crate) theme: &'a Theme,
 }
 
 pub(crate) fn stroke_line(

@@ -18,8 +18,9 @@ use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::LocalState;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::{Metrics, Spacing, TypeScale};
 use ui::widget::{Button, ColorPicker, Dropdown, Slider, Widget};
@@ -677,16 +678,12 @@ impl Customizer {
         let scale = self.scale();
         let title_size = Self::renderer_size(tr, theme.tokens.typography.scale.lg);
         let small_size = Self::renderer_size(tr, theme.tokens.typography.scale.sm);
-        draw::text_w(
-            tr,
-            scene,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             "Customize",
-            title_size,
+            &TextStyle::new(title_size).with_weight(TextWeight::Bold),
             theme.text_primary,
-            self.grid_rect.x0,
-            self.grid_rect.y0 + 2.0 * scale,
-            TextWeight::Bold,
+            Point::new(self.grid_rect.x0, self.grid_rect.y0 + 2.0 * scale),
+            None,
         );
         draw::text(
             tr,
@@ -699,16 +696,12 @@ impl Customizer {
             self.grid_rect.y0 + 22.0 * scale,
         );
 
-        draw::text_w(
-            tr,
-            scene,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             "COLORS",
-            small_size,
+            &TextStyle::new(small_size).with_weight(TextWeight::Semibold),
             theme.text_dim,
-            self.grid_rect.x0,
-            self.grid_rect.y0 + 40.0 * scale,
-            TextWeight::Semibold,
+            Point::new(self.grid_rect.x0, self.grid_rect.y0 + 40.0 * scale),
+            None,
         );
     }
 
@@ -726,16 +719,17 @@ impl Customizer {
         if let Some(spec) = &self.spec {
             let hex = model::hex(spec.token(self.edit_token));
             let cap = format!("{} · {}", self.edit_token.label(), hex);
-            draw::text_w(
-                tr,
-                scene,
-                t,
+            let style = TextStyle::new(Self::renderer_size(tr, theme.tokens.typography.scale.sm))
+                .with_weight(TextWeight::Medium);
+            PaintCtx::new(scene, t, tr, theme).text(
                 &cap,
-                Self::renderer_size(tr, theme.tokens.typography.scale.sm),
+                &style,
                 theme.text_primary,
-                self.grid_rect.x0,
-                self.grid_rect.y1 - CHIP_CAPTION_H * self.scale(),
-                TextWeight::Medium,
+                Point::new(
+                    self.grid_rect.x0,
+                    self.grid_rect.y1 - CHIP_CAPTION_H * self.scale(),
+                ),
+                None,
             );
         }
     }
@@ -822,17 +816,16 @@ impl Customizer {
         );
         draw::fill_rect(scene, t, veil, theme.bg_app.multiply_alpha(0.55));
         draw::text_center(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "Preset — Duplicate to edit",
-            12.0,
+            &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
             theme.text_dim,
-            veil.x0,
-            veil.x1,
-            veil.center().y - 8.0,
-            veil.center().y + 8.0,
-            TextWeight::Semibold,
+            Rect::new(
+                veil.x0,
+                veil.center().y - 8.0,
+                veil.x1,
+                veil.center().y + 8.0,
+            ),
         );
     }
 

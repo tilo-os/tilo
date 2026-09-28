@@ -28,6 +28,7 @@ use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::chrome::{
     PANEL_BORDER_ALPHA, SelectionState, chrome_hairline, panel_border, panel_ground, selection_tier,
 };
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -2688,20 +2689,15 @@ impl FirewallApp {
         let card = Rect::new(cx, cy, cx + cw, cy + ch);
         paint::card(scene, t, card, CARD_R, theme.tokens.colors.surfaces.raised);
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "firewalld unavailable",
             18.0,
             theme.text_primary,
-            card.x0 + 24.0,
-            card.y0 + 26.0,
+            Point::new(card.x0 + 24.0, card.y0 + 26.0),
             cw - 48.0,
         );
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             if self.status.is_empty() {
                 "The firewalld service is not installed or not running."
             } else {
@@ -2713,30 +2709,23 @@ impl FirewallApp {
             } else {
                 theme.tokens.colors.semantic.danger
             },
-            card.x0 + 24.0,
-            card.y0 + 62.0,
+            Point::new(card.x0 + 24.0, card.y0 + 62.0),
             cw - 48.0,
         );
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "No live firewall is displayed, and no rules have been changed.",
             13.0,
             theme.text_dim,
-            card.x0 + 24.0,
-            card.y0 + 106.0,
+            Point::new(card.x0 + 24.0, card.y0 + 106.0),
             cw - 48.0,
         );
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "Start or authorize firewalld, then retry (keyboard: R).",
             12.0,
             theme.text_dim,
-            card.x0 + 24.0,
-            card.y0 + 132.0,
+            Point::new(card.x0 + 24.0, card.y0 + 132.0),
             cw - 48.0,
         );
         Button::paint(
@@ -2830,16 +2819,15 @@ impl FirewallApp {
             let sub_max = (ctrl_left - sub_x).max(80.0);
             let shown = tr.elide_to_width(&sub, 13.0, sub_max as f32);
             paint::label_v(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &shown,
                 13.0,
                 sub_color,
-                sub_x,
-                h.y0,
-                h.height(),
-                sub_max,
+                Rect {
+                    x0: sub_x,
+                    x1: sub_x + sub_max,
+                    ..h
+                },
             );
         }
     }
@@ -2866,15 +2854,14 @@ impl FirewallApp {
                 Mode::DryRun => "dry-run",
             };
             paint::label_right_v(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 mode_txt,
                 11.0,
                 theme.text_dim,
-                l.enable_pill.x0 - 10.0,
-                h.y0,
-                h.height(),
+                Rect {
+                    x1: l.enable_pill.x0 - 10.0,
+                    ..h
+                },
             );
         }
 
@@ -2904,16 +2891,15 @@ impl FirewallApp {
         );
         let w = paint::text_width(tr, pill_txt, 12.0);
         paint::label_v(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             pill_txt,
             12.0,
             pill_fg,
-            l.enable_pill.x0 + (l.enable_pill.width() - w) / 2.0,
-            l.enable_pill.y0,
-            l.enable_pill.height(),
-            w + 2.0,
+            Rect {
+                x0: l.enable_pill.x0 + (l.enable_pill.width() - w) / 2.0,
+                x1: l.enable_pill.x0 + (l.enable_pill.width() - w) / 2.0 + w + 2.0,
+                ..l.enable_pill
+            },
         );
 
         // Panic and Apply are the shared button face: rest edge, hover and
@@ -2992,14 +2978,11 @@ impl FirewallApp {
             ),
         );
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "ZONES",
             11.0,
             theme.text_dim,
-            rail.x0 + 18.0,
-            rail.y0 + 18.0,
+            Point::new(rail.x0 + 18.0, rail.y0 + 18.0),
             120.0,
         );
 
@@ -3013,10 +2996,6 @@ impl FirewallApp {
     /// edge, HIG §9.3 — the accent stays for the *live* default zone's chip),
     /// the trust dot, the name and the active chip or rule count. Split out
     /// of [`Self::draw_rail`] to keep it under the line budget.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the fixed draw-call boilerplate; the rest is this row's zone, rect and the rail's selected face"
-    )]
     fn draw_rail_zone_row(
         &self,
         scene: &mut Scene,
@@ -3058,48 +3037,45 @@ impl FirewallApp {
             theme.text_dim
         };
         paint::label_v(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             kind.name(),
             14.0,
             name_color,
-            rect.x0 + 30.0,
-            rect.y0,
-            rect.height(),
-            120.0,
+            Rect {
+                x0: rect.x0 + 30.0,
+                x1: rect.x0 + 30.0 + 120.0,
+                ..rect
+            },
         );
 
         // Active marker chip.
         if is_default {
             let _ = paint::chip(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "active",
-                9.0,
-                theme.tokens.colors.on_surface(theme.accent_primary).ink,
-                theme.accent_primary,
-                rect.x1 - 52.0,
-                cy,
-                6.0,
-                16.0,
-                8.0,
+                &paint::ChipStyle {
+                    size: 9.0,
+                    ink: theme.tokens.colors.on_surface(theme.accent_primary).ink,
+                    fill: theme.accent_primary,
+                    pad_x: 6.0,
+                    height: 16.0,
+                    radius: 8.0,
+                },
+                Point::new(rect.x1 - 52.0, cy),
             );
         } else if let Some(z) = self.config.zone(kind) {
             // Rule + service count.
             let n = z.rules.len() + z.services.len();
             if n > 0 {
                 paint::label_right_v(
-                    tr,
-                    scene,
-                    t,
+                    &mut PaintCtx::new(scene, t, tr, theme),
                     &n.to_string(),
                     11.0,
                     theme.text_dim,
-                    rect.x1 - 8.0,
-                    rect.y0,
-                    rect.height(),
+                    Rect {
+                        x1: rect.x1 - 8.0,
+                        ..rect
+                    },
                 );
             }
         }
@@ -3147,14 +3123,11 @@ impl FirewallApp {
         inset_x: f64,
     ) {
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             self.selected_zone.name(),
             22.0,
             theme.text_primary,
-            inset_x,
-            card.y0 + PAD,
+            Point::new(inset_x, card.y0 + PAD),
             260.0,
         );
         let (title_w, title_h) = tr.measure(self.selected_zone.name(), 22.0, None);
@@ -3162,18 +3135,20 @@ impl FirewallApp {
             // The chip rides the title's measured centre line rather than a
             // nominal offset, so it stays beside the name at every text scale.
             let _ = paint::chip(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "ACTIVE ZONE",
-                9.0,
-                theme.tokens.colors.on_surface(theme.accent_primary).ink,
-                theme.accent_primary,
-                inset_x + f64::from(title_w) + S3,
-                card.y0 + PAD + f64::from(title_h) / 2.0,
-                7.0,
-                16.0,
-                8.0,
+                &paint::ChipStyle {
+                    size: 9.0,
+                    ink: theme.tokens.colors.on_surface(theme.accent_primary).ink,
+                    fill: theme.accent_primary,
+                    pad_x: 7.0,
+                    height: 16.0,
+                    radius: 8.0,
+                },
+                Point::new(
+                    inset_x + f64::from(title_w) + S3,
+                    card.y0 + PAD + f64::from(title_h) / 2.0,
+                ),
             );
         }
         // The description follows the title's measured line, the chips
@@ -3184,14 +3159,11 @@ impl FirewallApp {
             (card.width() - 2.0 * PAD) as f32,
         );
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &shown,
             12.0,
             theme.text_dim,
-            inset_x,
-            card.y0 + self.metrics.desc_top(),
+            Point::new(inset_x, card.y0 + self.metrics.desc_top()),
             card.width() - 2.0 * PAD,
         );
     }
@@ -3247,11 +3219,6 @@ impl FirewallApp {
     /// A two-tier stat: a dim caption with a coloured value beneath, framed
     /// in a soft chip filling `rect` (sized by `Metrics::measure` from the
     /// same caption/value).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a single-call-site draw primitive; bundling position/color/text into a \
-                  struct would only add construction boilerplate for no real readability gain"
-    )]
     fn stat_chip(
         scene: &mut Scene,
         t: Affine,
@@ -3273,25 +3240,19 @@ impl FirewallApp {
         let stack_h = f64::from(cap_h) + f64::from(val_h);
         let cap_top = rect.y0 + (rect.height() - stack_h) / 2.0;
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             caption,
             9.0,
             theme.text_dim,
-            rect.x0 + 10.0,
-            cap_top,
+            Point::new(rect.x0 + 10.0, cap_top),
             inner + 2.0,
         );
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             value,
             13.0,
             value_color,
-            rect.x0 + 10.0,
-            cap_top + f64::from(cap_h),
+            Point::new(rect.x0 + 10.0, cap_top + f64::from(cap_h)),
             inner + 2.0,
         );
     }
@@ -3322,16 +3283,16 @@ impl FirewallApp {
         // control at phone widths.
         if l.content_seg.is_empty() {
             paint::label_v(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "Rules",
                 15.0,
                 theme.text_primary,
-                l.summary.x0,
-                y0,
-                first_seg.height(),
-                120.0,
+                Rect::new(
+                    l.summary.x0,
+                    y0,
+                    l.summary.x0 + 120.0,
+                    y0 + first_seg.height(),
+                ),
             );
         }
         let labels = [
@@ -3409,14 +3370,11 @@ impl FirewallApp {
 
         if l.rule_rows.is_empty() {
             paint::label(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "No rules match this filter.",
                 13.0,
                 theme.text_dim,
-                cols.text,
-                table.y0 + head_h + PAD,
+                Point::new(cols.text, table.y0 + head_h + PAD),
                 300.0,
             );
             return;
@@ -3429,17 +3387,12 @@ impl FirewallApp {
             let Some(rule) = z.rules.iter().find(|r| r.id == row.id) else {
                 continue;
             };
-            self.draw_table_row(scene, t, tr, theme, l, cols, row, rule);
+            self.draw_table_row(&mut PaintCtx::new(scene, t, tr, theme), l, cols, row, rule);
         }
     }
 
     /// Column headers — five columns collapse to two labels when narrow —
     /// and the separator line beneath them.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one call site; the caption band height comes from the measured metrics \
-                  the row layout was built with"
-    )]
     fn draw_table_header(
         scene: &mut Scene,
         t: Affine,
@@ -3458,25 +3411,56 @@ impl FirewallApp {
         let hh = head_h;
         let hc = theme.text_dim;
         if l.narrow {
-            paint::label_v(tr, scene, t, "RULE", 10.0, hc, cols.text, hy0, hh, 200.0);
-            paint::label_v(tr, scene, t, "ON", 10.0, hc, cols.ctrl, hy0, hh, 60.0);
-        } else {
-            paint::label_v(tr, scene, t, "TARGET", 10.0, hc, cols.text, hy0, hh, 200.0);
-            paint::label_v(tr, scene, t, "PROTO", 10.0, hc, cols.proto, hy0, hh, 80.0);
-            paint::label_v(tr, scene, t, "ACTION", 10.0, hc, cols.action, hy0, hh, 80.0);
             paint::label_v(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
+                "RULE",
+                10.0,
+                hc,
+                Rect::new(cols.text, hy0, cols.text + 200.0, hy0 + hh),
+            );
+            paint::label_v(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                "ON",
+                10.0,
+                hc,
+                Rect::new(cols.ctrl, hy0, cols.ctrl + 60.0, hy0 + hh),
+            );
+        } else {
+            paint::label_v(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                "TARGET",
+                10.0,
+                hc,
+                Rect::new(cols.text, hy0, cols.text + 200.0, hy0 + hh),
+            );
+            paint::label_v(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                "PROTO",
+                10.0,
+                hc,
+                Rect::new(cols.proto, hy0, cols.proto + 80.0, hy0 + hh),
+            );
+            paint::label_v(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                "ACTION",
+                10.0,
+                hc,
+                Rect::new(cols.action, hy0, cols.action + 80.0, hy0 + hh),
+            );
+            paint::label_v(
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "SOURCE",
                 10.0,
                 hc,
-                cols.source,
-                hy0,
-                hh,
-                160.0,
+                Rect::new(cols.source, hy0, cols.source + 160.0, hy0 + hh),
             );
-            paint::label_v(tr, scene, t, "ON", 10.0, hc, cols.ctrl, hy0, hh, 60.0);
+            paint::label_v(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                "ON",
+                10.0,
+                hc,
+                Rect::new(cols.ctrl, hy0, cols.ctrl + 60.0, hy0 + hh),
+            );
         }
         // The caption rule is derived against the table it sits in and inset
         // `S3` from the card edge (HIG §9.5), never run into the radius.
@@ -3493,50 +3477,40 @@ impl FirewallApp {
 
     /// One rule row: selection highlight, narrow/wide content, then the
     /// shared toggle + delete controls and row separator.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "per-row paint orchestrator threading the shared scene/transform/theme plus \
-                  this row's own geometry and data; a single call site, so bundling further \
-                  would only add boilerplate"
-    )]
     fn draw_table_row(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         l: &Layout,
         cols: RuleColumns,
         row: &RuleRow,
         rule: &Rule,
     ) {
+        let theme = ctx.theme;
         let selected = self.selected_rule == Some(row.id);
         if selected {
             // Selected row: a step measured against the raised table card it
             // sits on, with a derived ring — not an accent ring, and not
             // `selection_tier`'s lift, which is the card's own colour on light.
             let (fill, edge) = selected_on(theme.tokens.colors.surfaces.raised);
-            paint::fill_round(scene, t, row.rect, 8.0, fill);
-            scene.stroke(
+            paint::fill_round(ctx.scene, ctx.transform, row.rect, 8.0, fill);
+            ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(1.0),
-                t,
+                ctx.transform,
                 edge,
                 None,
                 &ui::surface::edge_outline(row.rect, 8.0),
             );
         }
         let style = RowStyle::for_rule(theme, rule);
-        let src = rule.source_label();
-
         if l.narrow {
-            Self::draw_table_row_narrow(scene, t, tr, &self.metrics, cols, row, rule, &style, src);
+            self.draw_table_row_narrow(ctx, cols, row, rule, &style);
         } else {
-            Self::draw_table_row_wide(scene, t, tr, cols, row, rule, &style, src);
+            Self::draw_table_row_wide(ctx, cols, row, rule, &style);
         }
 
         Self::draw_table_row_controls(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             theme,
             row,
             rule.enabled,
@@ -3546,29 +3520,21 @@ impl FirewallApp {
 
     /// Two-line row: target + action on top, proto · source beneath. Used
     /// when the table is too narrow for five columns abreast.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "per-row paint helper threading the shared scene/transform plus this row's \
-                  own geometry and precomputed style; a single call site, so bundling further \
-                  would only add boilerplate"
-    )]
     fn draw_table_row_narrow(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        m: &Metrics,
+        &self,
+        ctx: &mut PaintCtx<'_>,
         cols: RuleColumns,
         row: &RuleRow,
         rule: &Rule,
         style: &RowStyle,
-        src: &str,
     ) {
+        let (m, src) = (&self.metrics, rule.source_label());
         // First-line centre and second-line top follow the measured 14px
         // label, as the row height the layout built does.
         let dot_y = row.rect.y0 + m.rule_dot_y;
         paint::dot(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             Point::new(cols.dot, dot_y),
             3.0,
             if style.dim {
@@ -3580,33 +3546,29 @@ impl FirewallApp {
         // Action chip on the top line, right-aligned 8px before the toggle
         // (a fixed left edge ran under the toggle once the label doubled);
         // the target label elides against the chip.
-        let chip_w = paint::text_width(tr, style.action_text, 11.0) + 16.0;
+        let chip_w = paint::text_width(ctx.text, style.action_text, 11.0) + 16.0;
         let chip_x = row.toggle.x0 - 8.0 - chip_w;
         let label_max = chip_x - cols.text - 8.0;
         paint::label(
-            tr,
-            scene,
-            t,
+            ctx,
             &rule.matcher.label(),
             14.0,
             style.primary,
-            cols.text,
-            row.rect.y0 + 10.0,
+            Point::new(cols.text, row.rect.y0 + 10.0),
             label_max.max(40.0),
         );
         let _ = paint::chip(
-            tr,
-            scene,
-            t,
+            ctx,
             style.action_text,
-            11.0,
-            style.action_color,
-            alpha(style.action_color, 40),
-            chip_x,
-            dot_y,
-            8.0,
-            20.0,
-            6.0,
+            &paint::ChipStyle {
+                size: 11.0,
+                ink: style.action_color,
+                fill: alpha(style.action_color, 40),
+                pad_x: 8.0,
+                height: 20.0,
+                radius: 6.0,
+            },
+            Point::new(chip_x, dot_y),
         );
         // Second line: proto · source.
         let sub = if src == "anywhere" {
@@ -3615,35 +3577,24 @@ impl FirewallApp {
             format!("{} · {}", rule.matcher.proto_label(), src)
         };
         paint::label(
-            tr,
-            scene,
-            t,
+            ctx,
             &sub,
             12.0,
             style.secondary,
-            cols.text,
-            row.rect.y0 + m.rule_sub_top,
+            Point::new(cols.text, row.rect.y0 + m.rule_sub_top),
             row.rect.width() - 30.0,
         );
     }
 
     /// Five columns abreast: target, proto, action chip, source.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "per-row paint helper threading the shared scene/transform plus this row's \
-                  own geometry and precomputed style; a single call site, so bundling further \
-                  would only add boilerplate"
-    )]
     fn draw_table_row_wide(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
+        ctx: &mut PaintCtx<'_>,
         cols: RuleColumns,
         row: &RuleRow,
         rule: &Rule,
         style: &RowStyle,
-        src: &str,
     ) {
+        let src = rule.source_label();
         let RuleColumns {
             dot: cx_dot,
             text: cx_text,
@@ -3654,8 +3605,8 @@ impl FirewallApp {
         } = cols;
         let cy = f64::midpoint(row.rect.y0, row.rect.y1);
         paint::dot(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             Point::new(cx_dot, cy),
             3.0,
             if style.dim {
@@ -3665,42 +3616,39 @@ impl FirewallApp {
             },
         );
         paint::label_v(
-            tr,
-            scene,
-            t,
+            ctx,
             &rule.matcher.label(),
             14.0,
             style.primary,
-            cx_text,
-            row.rect.y0,
-            row.rect.height(),
-            cx_proto - cx_text - 4.0,
+            Rect {
+                x0: cx_text,
+                x1: cx_proto - 4.0,
+                ..row.rect
+            },
         );
         paint::label_v(
-            tr,
-            scene,
-            t,
+            ctx,
             &rule.matcher.proto_label(),
             12.0,
             style.secondary,
-            cx_proto,
-            row.rect.y0,
-            row.rect.height(),
-            60.0,
+            Rect {
+                x0: cx_proto,
+                x1: cx_proto + 60.0,
+                ..row.rect
+            },
         );
         let _ = paint::chip(
-            tr,
-            scene,
-            t,
+            ctx,
             style.action_text,
-            11.0,
-            style.action_color,
-            alpha(style.action_color, 40),
-            cx_action,
-            cy,
-            8.0,
-            20.0,
-            6.0,
+            &paint::ChipStyle {
+                size: 11.0,
+                ink: style.action_color,
+                fill: alpha(style.action_color, 40),
+                pad_x: 8.0,
+                height: 20.0,
+                radius: 6.0,
+            },
+            Point::new(cx_action, cy),
         );
         let src_color = if src == "anywhere" {
             style.secondary
@@ -3708,16 +3656,15 @@ impl FirewallApp {
             style.primary
         };
         paint::label_v(
-            tr,
-            scene,
-            t,
+            ctx,
             src,
             12.0,
             src_color,
-            cx_source,
-            row.rect.y0,
-            row.rect.height(),
-            cx_ctrl - cx_source - 8.0,
+            Rect {
+                x0: cx_source,
+                x1: cx_ctrl - 8.0,
+                ..row.rect
+            },
         );
     }
 
@@ -3822,27 +3769,23 @@ impl FirewallApp {
         // same offsets `layout_center` uses for `svc_top`).
         let header_h = if l.compact_services { 38.0 } else { 48.0 };
         paint::label_v(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "SERVICES",
             11.0,
             theme.text_dim,
-            panel.x0 + 16.0,
-            panel.y0,
-            header_h,
-            120.0,
+            Rect::new(
+                panel.x0 + 16.0,
+                panel.y0,
+                panel.x0 + 16.0 + 120.0,
+                panel.y0 + header_h,
+            ),
         );
         paint::label_right_v(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &format!("{on_count} enabled"),
             11.0,
             theme.accent_primary,
-            panel.x1 - 16.0,
-            panel.y0,
-            header_h,
+            Rect::new(panel.x0, panel.y0, panel.x1 - 16.0, panel.y0 + header_h),
         );
 
         let Some(z) = self.config.zone(self.selected_zone) else {
@@ -3858,35 +3801,32 @@ impl FirewallApp {
             }
             let compact = l.compact_services;
             paint::label(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 def.name,
                 if compact { 13.0 } else { 14.0 },
                 theme.text_primary,
-                row.x0 + 10.0,
-                row.y0 + if compact { 3.0 } else { 5.0 },
+                Point::new(row.x0 + 10.0, row.y0 + if compact { 3.0 } else { 5.0 }),
                 row.width() - 60.0,
             );
             let detail = format!("{}/{}", def.ports, def.proto);
             paint::label(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &detail,
                 10.0,
                 theme.text_dim,
-                if compact {
-                    row.x0 + 118.0
-                } else {
-                    row.x0 + 10.0
-                },
-                row.y0
-                    + if compact {
-                        5.0
+                Point::new(
+                    if compact {
+                        row.x0 + 118.0
                     } else {
-                        self.metrics.svc_detail_top
+                        row.x0 + 10.0
                     },
+                    row.y0
+                        + if compact {
+                            5.0
+                        } else {
+                            self.metrics.svc_detail_top
+                        },
+                ),
                 if compact {
                     row.width() - 180.0
                 } else {
@@ -3911,14 +3851,11 @@ impl FirewallApp {
 
         let title = format!("Add rule to {}", self.selected_zone.name());
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &title,
             13.0,
             theme.accent_primary,
-            card.x0 + PAD,
-            card.y0 + S3,
+            Point::new(card.x0 + PAD, card.y0 + S3),
             300.0,
         );
 
@@ -3985,14 +3922,11 @@ impl FirewallApp {
             };
             let shown = tr.elide_to_width(&self.status, 11.0, (card.width() - 32.0) as f32);
             paint::label(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &shown,
                 11.0,
                 status_color,
-                card.x0 + 16.0,
-                status_y,
+                Point::new(card.x0 + 16.0, status_y),
                 card.width() - 32.0,
             );
         }
@@ -4034,16 +3968,15 @@ impl FirewallApp {
         paint::card(scene, t, well, 7.0, theme.tokens.colors.surfaces.base);
         let w = paint::text_width(tr, name, 13.0);
         paint::label_v(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             name,
             13.0,
             theme.text_primary,
-            well.x0 + (well.width() - w) / 2.0,
-            well.y0,
-            well.height(),
-            w + 2.0,
+            Rect {
+                x0: well.x0 + (well.width() - w) / 2.0,
+                x1: well.x0 + (well.width() - w) / 2.0 + w + 2.0,
+                ..well
+            },
         );
     }
 
@@ -4063,28 +3996,27 @@ impl FirewallApp {
             // The caption sits in the gap the layout left above the field
             // (`form_source_gap`), ending 2px above the field's top edge.
             paint::label(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "Source",
                 11.0,
                 theme.text_dim,
-                l.source_field.x0,
-                l.source_field.y0 - self.metrics.form_source_gap + 10.0,
+                Point::new(
+                    l.source_field.x0,
+                    l.source_field.y0 - self.metrics.form_source_gap + 10.0,
+                ),
                 120.0,
             );
         } else {
             paint::label_v(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "Source",
                 12.0,
                 theme.text_dim,
-                card.x0 + 16.0,
-                l.source_field.y0,
-                l.source_field.height(),
-                60.0,
+                Rect {
+                    x0: card.x0 + 16.0,
+                    x1: card.x0 + 16.0 + 60.0,
+                    ..l.source_field
+                },
             );
         }
         self.form.source.draw(scene, t, tr, theme, presence);

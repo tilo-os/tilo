@@ -3419,10 +3419,6 @@ impl MailApp {
 
     /// The autoconfig/validation hint line and the Save / Cancel / Remove
     /// buttons at the bottom of the sheet. Part of [`Self::draw_setup`].
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the footer forwards the paint context, label column, pointer and sheet rect to its hint and button painters"
-    )]
     fn draw_setup_footer(
         &self,
         scene: &mut Scene,

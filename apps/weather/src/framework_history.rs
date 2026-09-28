@@ -10,7 +10,7 @@ use ui::history_mode::{
     HistoryDefinition, HistoryPresentation, HistoryPreview, HistoryScopeDefinition,
     PreviewAccessibility, PreviewInput, PreviewNavigation, PreviewView,
 };
-use ui::{TextRenderer, Theme};
+use ui::{TextRenderer, Theme, paint::PaintCtx};
 use vello::{
     Scene,
     kurbo::{Affine, Rect},
@@ -302,17 +302,16 @@ impl HistoryPreview for PlacesPreview {
         let mut content = Scene::new();
         for (l, r) in self.places.iter().zip(&self.row_rects) {
             crate::presentation::draw_saved_place(
-                &mut content,
-                Affine::IDENTITY,
-                tr,
-                theme,
-                *r,
-                l,
-                None,
-                self.units,
-                self.view.page.as_ref() == Some(&l.id.to_string()),
-                false,
-                theme.tokens.colors.accent[5],
+                &mut PaintCtx::new(&mut content, Affine::IDENTITY, tr, theme),
+                &crate::presentation::SavedPlaceFace {
+                    chip: *r,
+                    loc: l,
+                    snapshot: None,
+                    units: self.units,
+                    selected: self.view.page.as_ref() == Some(&l.id.to_string()),
+                    hovered: false,
+                    accent: theme.tokens.colors.accent[5],
+                },
             );
         }
         let mut y = self.detail.y0 + 20.;

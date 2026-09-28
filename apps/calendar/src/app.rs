@@ -39,6 +39,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -55,24 +56,25 @@ use ui::{
 use tilo_rich_text::{RichTextField, RichTextSurface};
 
 use crate::account::AccountStore;
-use crate::agenda::{AgendaAction, AgendaMetrics, AgendaView};
+use crate::agenda::{AgendaAction, AgendaMetrics, AgendaSource, AgendaView};
 use crate::caldav::{self, SyncOutcome};
 use crate::date;
 use crate::doc::CalDoc;
-use crate::draw_util::PaintContext;
 use crate::draw_util::{
     fill_rect, fill_round, hairline, panel, row_ground, selected_row, selection_fill, stroke_line,
     stroke_round,
 };
 use crate::event_popovers::{
-    EventPopovers, PopoverAnchors, PopoverEdit, PopoverKind as FormPopover,
+    CalendarChoices, EventPopovers, PopoverAnchors, PopoverEdit, PopoverKind as FormPopover,
 };
 use crate::ics;
 use crate::input_context::InputContext;
 use crate::metrics;
 use crate::mini_month::{MiniMonth, Outcome as MiniMonthOutcome};
 use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View, seed_demo};
-use crate::sidebar::{Action as SidebarAction, Mode as SidebarMode, Sidebar};
+use crate::sidebar::{
+    Action as SidebarAction, Mode as SidebarMode, Panes as SidebarPanes, Sidebar,
+};
 use crate::timeline_interaction::{
     TIMELINE_SNAP_MIN, TimelineEffect, TimelineInteraction, TimelineRenderEvent,
     TimelineRenderModel, TimelineSpan,
@@ -165,6 +167,15 @@ struct MonthMetrics {
     chip_pitch: f64,
     /// Line height of a chip label.
     chip_text_h: f64,
+}
+
+/// One month-grid paint pass: the paint context, the grid's metrics and row
+/// height, and the hit rects its cells push.
+struct MonthGridPaint<'a> {
+    ctx: PaintCtx<'a>,
+    m: &'a MonthMetrics,
+    cell_h: f64,
+    hits: &'a mut Vec<(Rect, Action)>,
 }
 
 impl MonthMetrics {
@@ -3280,10 +3291,12 @@ impl CalendarApp {
                     let hidden = self.hidden_calendar_ids();
                     self.agenda.layout(
                         area,
-                        &self.model,
-                        self.anchor,
-                        &hidden,
-                        self.calendar_filter.as_deref(),
+                        &AgendaSource {
+                            model: &self.model,
+                            anchor: self.anchor,
+                            hidden_calendars: &hidden,
+                            calendar_filter: self.calendar_filter.as_deref(),
+                        },
                         &AgendaMetrics::new(&self.spacing, self.text_scale),
                     );
                 }
@@ -4270,16 +4283,15 @@ impl CalendarApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) -> Vec<(Rect, Action)> {
+        let ctx = &mut PaintCtx::new(scene, t, tr, theme);
         let Some(chrome) = self.sidebar.draw_chrome(
-            scene,
-            t,
-            tr,
-            theme,
-            self.rect,
-            self.content_rect,
-            self.detail_rect,
-            self.topbar.switcher_visible(),
-            self.view,
+            ctx,
+            SidebarPanes {
+                window: self.rect,
+                content: self.content_rect,
+                detail: self.detail_rect,
+            },
+            (!self.topbar.switcher_visible()).then_some(self.view),
             self.last_mouse,
         ) else {
             return Vec::new();
@@ -4298,11 +4310,11 @@ impl CalendarApp {
                 (rect, action)
             })
             .collect();
-        let r = self.sidebar.rect();
+        // Inset of the sidebar's section headings from its edges.
         let pad = 18.0;
-        let y = self.draw_sidebar_lists(scene, t, tr, theme, r, pad, chrome.body_y, &mut hits);
-        let y = self.draw_sidebar_calendars(scene, t, tr, theme, r, pad, y, &mut hits);
-        self.draw_sidebar_footer(scene, t, tr, theme, r, pad, y, &mut hits);
+        let y = self.draw_sidebar_lists(ctx, chrome.body_y, pad, &mut hits);
+        let y = self.draw_sidebar_calendars(ctx, y, pad, &mut hits);
+        self.draw_sidebar_footer(ctx, y, pad, &mut hits);
 
         hits
     }
@@ -4310,21 +4322,15 @@ impl CalendarApp {
         clippy::too_many_lines,
         reason = "the smart lists and project lists are painted in one top-to-bottom pass sharing the running y cursor"
     )]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "sidebar list painting threads the paint context, sidebar bounds, running y and hit output through each section"
-    )]
     fn draw_sidebar_lists(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-        pad: f64,
+        ctx: &mut PaintCtx<'_>,
         mut y: f64,
+        pad: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) -> f64 {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let r = self.sidebar.rect();
         let c = &theme.tokens.colors;
         // Smart lists.
         let smart = [
@@ -4455,21 +4461,15 @@ impl CalendarApp {
     /// calendars are listed with a visibility checkbox; a Sync affordance in
     /// the heading pulls events from every visible calendar (part of
     /// [`Self::draw_sidebar`]). Returns the `y` the footer should start at.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "sidebar calendar painting threads the paint context, sidebar bounds, running y and hit output through each section"
-    )]
     fn draw_sidebar_calendars(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-        pad: f64,
+        ctx: &mut PaintCtx<'_>,
         mut y: f64,
+        pad: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) -> f64 {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let r = self.sidebar.rect();
         let c = &theme.tokens.colors;
         if !self.accounts.is_empty() {
             y += 14.0;
@@ -4573,40 +4573,25 @@ impl CalendarApp {
     /// The footer: the mini upcoming-task rail (when there's room for it
     /// above the reserved mini-month band) followed by the mini-month
     /// navigator itself (part of [`Self::draw_sidebar`]).
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the sidebar footer threads the paint context, sidebar bounds, running y and hit output into the task rail and mini-month"
-    )]
     fn draw_sidebar_footer(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-        pad: f64,
+        ctx: &mut PaintCtx<'_>,
         y: f64,
+        pad: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) {
-        // Reserve the bottom of the sidebar for the mini-month navigator.
-        let mini_top = MiniMonth::content_limit(r);
-        let y = self.draw_sidebar_task_rail(scene, t, tr, theme, r, pad, y, mini_top, hits);
+        let y = self.draw_sidebar_task_rail(ctx, y, pad, hits);
         let event_dates = self.mini_month_event_dates();
+        let mini_month = MiniMonth {
+            anchor: self.anchor,
+            today: self.today,
+            event_dates: &event_dates,
+        };
         hits.extend(
-            MiniMonth::draw(
-                scene,
-                t,
-                tr,
-                theme,
-                r,
-                y,
-                self.anchor,
-                self.today,
-                &event_dates,
-                self.last_mouse,
-            )
-            .into_iter()
-            .map(|(rect, outcome)| (rect, Action::MiniMonth(outcome))),
+            mini_month
+                .draw(ctx, self.sidebar.rect(), y, self.last_mouse)
+                .into_iter()
+                .map(|(rect, outcome)| (rect, Action::MiniMonth(outcome))),
         );
     }
 
@@ -4614,22 +4599,17 @@ impl CalendarApp {
     /// there's vertical room left above the mini-month (the CALENDARS
     /// section above may have used it up; the agenda/day views still list
     /// the tasks in full either way) (part of [`Self::draw_sidebar_footer`]).
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the task rail needs the paint context, sidebar bounds, running y, the mini-month limit and hit output"
-    )]
     fn draw_sidebar_task_rail(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-        pad: f64,
+        ctx: &mut PaintCtx<'_>,
         mut y: f64,
-        mini_top: f64,
+        pad: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) -> f64 {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let r = self.sidebar.rect();
+        // Reserve the bottom of the sidebar for the mini-month navigator.
+        let mini_top = MiniMonth::content_limit(r);
         let c = &theme.tokens.colors;
         let rail_tasks = self.model.tasks_for(&self.list_sel, self.today);
         if !rail_tasks.is_empty() && y + 56.0 < mini_top {
@@ -4749,6 +4729,12 @@ impl CalendarApp {
         Self::draw_month_header(scene, t, tr, theme, area, cell_w, &m);
 
         let grid = date::month_grid(self.anchor);
+        let mut grid_paint = MonthGridPaint {
+            ctx: PaintCtx::new(scene, t, tr, theme),
+            m: &m,
+            cell_h,
+            hits: &mut hits,
+        };
         for (idx, day) in grid.iter().enumerate() {
             let row = idx / cols;
             let col = idx % cols;
@@ -4758,7 +4744,7 @@ impl CalendarApp {
                 area.x0 + cell_w * (col as f64 + 1.0),
                 grid_top + cell_h * (row as f64 + 1.0),
             );
-            self.draw_month_cell(scene, t, tr, theme, cell, cell_h, *day, &m, &mut hits);
+            self.draw_month_cell(&mut grid_paint, cell, *day);
         }
         // Grid rules once, on top of the cell tints, derived against the
         // month's own ground (HIG §9.5) — a half-alpha `border_standard` at
@@ -4833,26 +4819,14 @@ impl CalendarApp {
     /// One day cell: grid line, hit targets, background tint, and the date
     /// number (with a today pill) (part of [`Self::draw_month`]).
     #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    #[allow(
         clippy::many_single_char_names,
         reason = "t is the paint transform, c the colour set and m the month metrics — \
                   conventional short names for this draw step"
     )]
-    fn draw_month_cell(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        cell: Rect,
-        cell_h: f64,
-        day: NaiveDate,
-        m: &MonthMetrics,
-        hits: &mut Vec<(Rect, Action)>,
-    ) {
+    fn draw_month_cell(&self, grid: &mut MonthGridPaint<'_>, cell: Rect, day: NaiveDate) {
+        let ctx = &mut grid.ctx;
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let (m, hits) = (grid.m, &mut *grid.hits);
         let c = &theme.tokens.colors;
 
         // Cell-level click targets are pushed FIRST so the event chips
@@ -4928,7 +4902,7 @@ impl CalendarApp {
             );
         }
 
-        self.draw_month_cell_chips(scene, t, tr, theme, cell, cell_fill, cell_h, day, m, hits);
+        self.draw_month_cell_chips(grid, cell, cell_fill, day);
     }
 
     /// The visible events of one month cell as the chip painter needs them:
@@ -4953,27 +4927,20 @@ impl CalendarApp {
     /// was painted with (base, or its weekend / anchor lift), which a timed
     /// chip's translucent wash is composited onto.
     #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    #[allow(
         clippy::many_single_char_names,
         reason = "t is the paint transform, c the colour set and m the month metrics — \
                   conventional short names for this draw step"
     )]
     fn draw_month_cell_chips(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        grid: &mut MonthGridPaint<'_>,
         cell: Rect,
         cell_fill: Color,
-        cell_h: f64,
         day: NaiveDate,
-        m: &MonthMetrics,
-        hits: &mut Vec<(Rect, Action)>,
     ) {
+        let ctx = &mut grid.ctx;
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let (m, cell_h, hits) = (grid.m, grid.cell_h, &mut *grid.hits);
         let c = &theme.tokens.colors;
         let sp = &theme.tokens.spacing;
         scene.push_layer(
@@ -5183,7 +5150,11 @@ impl CalendarApp {
         // item, plus a Close (X) on the modal (the full-screen page uses Back).
         self.draw_detail_header_controls(scene, t, theme, r, modal, &mut hits);
 
-        self.draw_detail_selection(scene, t, tr, theme, x, y, w, &mut hits);
+        self.draw_detail_selection(
+            &mut PaintCtx::new(scene, t, tr, theme),
+            Rect::new(x, y, x + w, r.y1),
+            &mut hits,
+        );
 
         // Notes header (the editor itself is drawn separately in draw()). For
         // an event the notes sit below the form; a task uses the fixed offset.
@@ -5329,25 +5300,19 @@ impl CalendarApp {
                   and c is the theme's colour set — conventional short names for this \
                   draw step"
     )]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the detail body combines the paint context with its column geometry and hit output"
-    )]
     fn draw_detail_selection(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        x: f64,
-        y: f64,
-        w: f64,
+        ctx: &mut PaintCtx<'_>,
+        body: Rect,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         match self.selection {
             Some(Sel::Event(id)) => {
                 if let Some(e) = self.model.event(id) {
+                    let (scene, t, tr) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text);
+                    let (x, y) = (body.x0, body.y0);
                     // Dot and kind label share the header row's centre line,
                     // whatever height the measured label gives that row.
                     let header_h = self.detail_header_h();
@@ -5371,7 +5336,7 @@ impl CalendarApp {
                     );
                 }
             }
-            Some(Sel::Task(id)) => self.draw_detail_task(scene, t, tr, theme, x, y, w, id, hits),
+            Some(Sel::Task(id)) => self.draw_detail_task(ctx, body, id, hits),
             None => {}
         }
     }
@@ -5388,22 +5353,15 @@ impl CalendarApp {
         clippy::too_many_lines,
         reason = "the task card keeps its direct editable fields, subtasks, and hit targets co-located for responsive layout correctness"
     )]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the task card combines the paint context with its column geometry, task id and hit output"
-    )]
     fn draw_detail_task(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        x: f64,
-        mut y: f64,
-        w: f64,
+        ctx: &mut PaintCtx<'_>,
+        body: Rect,
         id: Id,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let (x, mut y, w) = (body.x0, body.y0, body.width());
         let c = &theme.tokens.colors;
         let Some(tk) = self.model.task(id) else {
             return;
@@ -5520,10 +5478,6 @@ impl CalendarApp {
                   position/width, and c is the theme's colour set — conventional short \
                   names for this draw step"
     )]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the notes header combines the paint context with the detail rect and its column geometry"
-    )]
     fn draw_detail_notes_header(
         &self,
         scene: &mut Scene,
@@ -5617,15 +5571,10 @@ impl CalendarApp {
         );
         hits.push((f.allday, Action::ToggleAllDay));
 
-        self.draw_event_form_dates(scene, t, tr, theme, &f, &e, mouse, label_x, &mut hits);
+        self.draw_event_form_dates(&mut PaintCtx::new(scene, t, tr, theme), &f, &e, &mut hits);
         if f.conflict.area() > 0.0 {
             Self::draw_event_conflict_notice(
-                &mut PaintContext {
-                    scene,
-                    transform: t,
-                    text: tr,
-                    theme,
-                },
+                &mut PaintCtx::new(scene, t, tr, theme),
                 f.conflict,
                 self.local_schedule_conflicts(&e).len(),
             );
@@ -5635,7 +5584,7 @@ impl CalendarApp {
         self.location_input.draw(scene, t, tr, theme, presence);
         hits.push((f.location, Action::FocusField(FormField::Location)));
 
-        self.draw_event_form_calendar(scene, t, tr, theme, &f, &e, mouse, &mut hits);
+        self.draw_event_form_calendar(&mut PaintCtx::new(scene, t, tr, theme), &f, &e, &mut hits);
         Self::draw_event_form_chips(scene, t, tr, theme, &f, &e, label_x, &mut hits);
 
         hits
@@ -5649,22 +5598,15 @@ impl CalendarApp {
                   edited, and c is the theme's colour set — conventional short names for \
                   this draw step"
     )]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "date rows combine the paint context with form geometry, the edited event, pointer and hit output"
-    )]
     fn draw_event_form_dates(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         f: &FormRects,
         e: &Event,
-        mouse: Point,
-        label_x: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let (mouse, label_x) = (self.last_mouse, f.title.x0);
         let c = &theme.tokens.colors;
         let row = |scene: &mut Scene,
                    tr: &mut TextRenderer,
@@ -5727,7 +5669,7 @@ impl CalendarApp {
     /// model. The count is intentionally kept short enough to remain legible
     /// in the 200% form; the complete event names are exposed in the matching
     /// accessibility status node.
-    fn draw_event_conflict_notice(paint: &mut PaintContext<'_>, rect: Rect, conflict_count: usize) {
+    fn draw_event_conflict_notice(paint: &mut PaintCtx<'_>, rect: Rect, conflict_count: usize) {
         let scene = &mut *paint.scene;
         let t = paint.transform;
         let tr = &mut *paint.text;
@@ -5790,21 +5732,15 @@ impl CalendarApp {
                   edited, and c is the theme's colour set — conventional short names for \
                   this draw step"
     )]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the calendar row combines the paint context with form geometry, the edited event, pointer and hit output"
-    )]
     fn draw_event_form_calendar(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         f: &FormRects,
         e: &Event,
-        mouse: Point,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let mouse = self.last_mouse;
         let c = &theme.tokens.colors;
         let cal_active =
             f.calendar.contains(mouse) || self.event_popovers.active() == FormPopover::Calendar;
@@ -5859,10 +5795,6 @@ impl CalendarApp {
     #[allow(
         clippy::many_single_char_names,
         reason = "t/f/e and x/y are conventional paint, form, event, and flow geometry names"
-    )]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the chip row combines the paint context with form geometry, the edited event and hit output"
     )]
     fn draw_event_form_chips(
         scene: &mut Scene,
@@ -5946,22 +5878,21 @@ impl CalendarApp {
             _ => None,
         };
         self.event_popovers.draw(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             presence,
-            self.detail_rect,
             PopoverAnchors {
                 start_date: self.form.start_date,
                 end_date: self.form.end_date,
                 start_time: self.form.start_time,
                 end_time: self.form.end_time,
                 calendar: self.form.calendar,
+                panel: self.detail_rect,
             },
             self.last_mouse,
-            &options,
-            current,
+            CalendarChoices {
+                options: &options,
+                current,
+            },
         );
         Vec::new()
     }
@@ -7096,7 +7027,11 @@ impl Widget for CalendarApp {
                     };
                     hits.extend(
                         self.timeline
-                            .draw_timeline(scene, t, text_renderer, theme, area, &model)
+                            .draw_timeline(
+                                &mut PaintCtx::new(scene, t, text_renderer, theme),
+                                area,
+                                &model,
+                            )
                             .into_iter()
                             .filter_map(|(rect, effect)| match effect {
                                 TimelineEffect::Select(id) => Some((rect, Action::OpenEvent(id))),
@@ -7110,16 +7045,15 @@ impl Widget for CalendarApp {
                     hits.extend(
                         self.agenda
                             .draw(
-                                scene,
-                                t,
-                                text_renderer,
-                                theme,
+                                &mut PaintCtx::new(scene, t, text_renderer, theme),
                                 area,
-                                &self.model,
-                                self.anchor,
+                                &AgendaSource {
+                                    model: &self.model,
+                                    anchor: self.anchor,
+                                    hidden_calendars: &hidden,
+                                    calendar_filter: self.calendar_filter.as_deref(),
+                                },
                                 self.today,
-                                &hidden,
-                                self.calendar_filter.as_deref(),
                                 self.last_mouse,
                             )
                             .into_iter()
@@ -8146,10 +8080,6 @@ pub(crate) fn draw_upload(scene: &mut Scene, t: Affine, color: Color, center: Po
 /// value and an optional trailing disclosure caret. Backs the date/time/
 /// calendar fields, mirroring the `TextInput` chrome so the whole form looks
 /// uniformly editable.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "The field-button painter combines scene, transform, text, and theme with bounds, label, active state, and optional caret."
-)]
 fn draw_field_button(
     scene: &mut Scene,
     t: Affine,

@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming;
 
 use automerge::AutoCommit;
-use tilo_actions::{Resource, ResourceProvider};
+use tilo_actions::{ActionAddress, Resource, ResourceProvider};
 use tilo_agent::{Config, Session};
 use tilo_content::ContentStore;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
@@ -201,12 +201,13 @@ fn run(
                     &mut replica,
                     &resources,
                     word_processor::actions::register,
-                    id,
-                    resource,
-                    action,
-                    argument.as_deref(),
-                    &actor,
-                    context.as_deref(),
+                    typed_peer::DocumentInvocation {
+                        id,
+                        address: ActionAddress::new(resource, action),
+                        argument: argument.as_deref(),
+                        actor: &actor,
+                        context: context.as_deref(),
+                    },
                 );
                 send(&mut peer, &CollabRequest::UpdateInvocation { id, update }).unwrap();
                 invocation_actor = Some(actor);
@@ -788,12 +789,13 @@ fn drive_photo_peer(
                         &mut photo_replica,
                         &resources,
                         photos::actions::register,
-                        id,
-                        resource,
-                        action,
-                        argument.as_deref(),
-                        &actor,
-                        context.as_deref(),
+                        typed_peer::DocumentInvocation {
+                            id,
+                            address: ActionAddress::new(resource, action),
+                            argument: argument.as_deref(),
+                            actor: &actor,
+                            context: context.as_deref(),
+                        },
                     )
                 };
                 send(
@@ -883,12 +885,13 @@ fn drive_word_processor_peer(
                     &mut wp_replica,
                     &resources,
                     word_processor::actions::register,
-                    id,
-                    resource,
-                    action,
-                    argument.as_deref(),
-                    &actor,
-                    context.as_deref(),
+                    typed_peer::DocumentInvocation {
+                        id,
+                        address: ActionAddress::new(resource, action),
+                        argument: argument.as_deref(),
+                        actor: &actor,
+                        context: context.as_deref(),
+                    },
                 );
                 send(
                     &mut wp_peer,

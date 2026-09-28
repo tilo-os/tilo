@@ -508,10 +508,6 @@ fn send(
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "snapshot emission keeps the complete worker state transition explicit at each call site"
-)]
 fn send_tracked(
     snapshots: &mpsc::Sender<Snapshot>,
     state: &State,

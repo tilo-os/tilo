@@ -4,8 +4,9 @@ use ui::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::icons::Icon;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::scrollbar::{ScrollMetrics, Scrollbar};
 use ui::widget::{
@@ -2184,31 +2185,6 @@ impl PasswordsSurface {
         false
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "thin wrapper that forwards every text drawing parameter"
-    )]
-    fn text(
-        tr: &mut TextRenderer,
-        scene: &mut Scene,
-        text: &str,
-        size: f32,
-        color: vello::peniko::Color,
-        transform: Affine,
-        x: f64,
-        y: f64,
-        weight: TextWeight,
-    ) {
-        tr.draw_text_weighted(
-            scene,
-            text,
-            size,
-            color,
-            transform.pre_translate((x, y).into()),
-            None,
-            weight,
-        );
-    }
     fn card(
         scene: &mut Scene,
         transform: Affine,
@@ -2224,19 +2200,12 @@ impl PasswordsSurface {
             &RoundedRect::from_rect(rect, radius),
         );
     }
-    fn pill(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        transform: Affine,
-        theme: &Theme,
-        rect: Rect,
-        label: &str,
-        active: bool,
-    ) {
+    fn pill(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, active: bool) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         Self::card(
-            scene,
-            transform,
+            ctx.scene,
+            ctx.transform,
             if active {
                 c.accent.stops.get(5).copied().unwrap_or(c.text_primary)
             } else {
@@ -2245,20 +2214,16 @@ impl PasswordsSurface {
             rect,
             17.0,
         );
-        Self::text(
-            tr,
-            scene,
+        ctx.text(
             label,
-            12.0,
+            &TextStyle::new(12.0).with_weight(TextWeight::Medium),
             if active {
                 c.surfaces.base
             } else {
                 c.text_primary
             },
-            transform,
-            rect.x0 + 14.0,
-            rect.y0 + 9.0,
-            TextWeight::Medium,
+            Point::new(rect.x0 + 14.0, rect.y0 + 9.0),
+            None,
         );
     }
 
@@ -2388,74 +2353,59 @@ impl PasswordsSurface {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         let Some(dialog) = &self.transfer_dialog else {
             return;
         };
         let c = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, transform, c.surfaces.scrim, None, &self.rect);
+        ctx.scene
+            .fill(Fill::NonZero, transform, c.surfaces.scrim, None, &self.rect);
         let rect = self.transfer_rect();
-        Self::card(scene, transform, c.surfaces.overlay, rect, 18.0);
+        Self::card(ctx.scene, transform, c.surfaces.overlay, rect, 18.0);
         let x = rect.x0 + 28.0;
         let compact = rect.width() < 420.0;
         match dialog {
             TransferDialog::ImportPreview { rows, conflicts } => {
-                Self::text(
-                    tr,
-                    scene,
+                ctx.text(
                     "Review import",
-                    24.0,
+                    &TextStyle::new(24.0).with_weight(TextWeight::Bold),
                     c.text_primary,
-                    transform,
-                    x,
-                    rect.y0 + 28.0,
-                    TextWeight::Bold,
+                    Point::new(x, rect.y0 + 28.0),
+                    None,
                 );
-                Self::text(
-                    tr,
-                    scene,
+                ctx.text(
                     &format!("{} logins found", rows.len()),
-                    14.0,
+                    &TextStyle::new(14.0).with_weight(TextWeight::Medium),
                     c.text_primary,
-                    transform,
-                    x,
-                    rect.y0 + 72.0,
-                    TextWeight::Medium,
+                    Point::new(x, rect.y0 + 72.0),
+                    None,
                 );
-                Self::text(
-                    tr,
-                    scene,
+                ctx.text(
                     &format!("{conflicts} matching logins will be skipped"),
-                    13.0,
+                    &TextStyle::new(13.0),
                     c.text_dim,
-                    transform,
-                    x,
-                    rect.y0 + 100.0,
-                    TextWeight::Regular,
+                    Point::new(x, rect.y0 + 100.0),
+                    None,
                 );
                 for (index, row) in rows.iter().take(3).enumerate() {
                     let step = if compact { 44.0 } else { 34.0 };
                     let y = rect.y0 + 138.0 + f64::from(u32::try_from(index).unwrap_or(0)) * step;
-                    Self::text(
-                        tr,
-                        scene,
+                    ctx.text(
                         &row.title,
-                        13.0,
+                        &TextStyle::new(13.0).with_weight(TextWeight::Medium),
                         c.text_primary,
-                        transform,
-                        x,
-                        y,
-                        TextWeight::Medium,
+                        Point::new(x, y),
+                        None,
                     );
-                    Self::text(
-                        tr,
-                        scene,
+                    ctx.text(
                         &row.username,
-                        12.0,
+                        &TextStyle::new(12.0),
                         c.text_dim,
-                        transform,
-                        if compact { x } else { x + 190.0 },
-                        if compact { y + 20.0 } else { y },
-                        TextWeight::Regular,
+                        Point::new(
+                            if compact { x } else { x + 190.0 },
+                            if compact { y + 20.0 } else { y },
+                        ),
+                        None,
                     );
                 }
                 let cancel = ui::widget::ButtonFace::new(
@@ -2467,7 +2417,7 @@ impl PasswordsSurface {
                     ),
                     "Cancel",
                 );
-                ui::widget::Button::paint(scene, transform, tr, theme, &cancel);
+                ui::widget::Button::paint(ctx.scene, transform, ctx.text, theme, &cancel);
                 let import = ui::widget::ButtonFace::new(
                     Rect::new(
                         rect.x1 - 116.0,
@@ -2478,19 +2428,15 @@ impl PasswordsSurface {
                     "Import",
                 )
                 .style(ui::widget::ButtonStyle::Primary);
-                ui::widget::Button::paint(scene, transform, tr, theme, &import);
+                ui::widget::Button::paint(ctx.scene, transform, ctx.text, theme, &import);
             }
             TransferDialog::ExportPlaintext { acknowledged } => {
-                Self::text(
-                    tr,
-                    scene,
+                ctx.text(
                     "Export as plaintext CSV",
-                    24.0,
+                    &TextStyle::new(24.0).with_weight(TextWeight::Bold),
                     c.text_primary,
-                    transform,
-                    x,
-                    rect.y0 + 28.0,
-                    TextWeight::Bold,
+                    Point::new(x, rect.y0 + 28.0),
+                    None,
                 );
                 let body_lines: &[(&str, f64, vello::peniko::Color)] = if compact {
                     &[
@@ -2514,16 +2460,12 @@ impl PasswordsSurface {
                     ]
                 };
                 for (line, y, color) in body_lines {
-                    Self::text(
-                        tr,
-                        scene,
+                    ctx.text(
                         line,
-                        if *color == c.text_primary { 14.0 } else { 13.0 },
+                        &TextStyle::new(if *color == c.text_primary { 14.0 } else { 13.0 }),
                         *color,
-                        transform,
-                        x,
-                        rect.y0 + y,
-                        TextWeight::Regular,
+                        Point::new(x, rect.y0 + y),
+                        None,
                     );
                 }
                 let check_y = if compact { 182.0 } else { 152.0 };
@@ -2533,28 +2475,24 @@ impl PasswordsSurface {
                     rect.x1 - 28.0,
                     rect.y0 + check_y + 52.0,
                 );
-                Self::card(scene, transform, c.surfaces.base, check, 10.0);
+                Self::card(ctx.scene, transform, c.surfaces.base, check, 10.0);
                 let check_icon = if *acknowledged {
                     Icon::Check
                 } else {
                     Icon::Square
                 };
                 check_icon.draw(
-                    scene,
+                    ctx.scene,
                     transform,
                     Rect::new(x + 13.0, check.y0 + 17.0, x + 31.0, check.y0 + 35.0),
                     c.text_primary,
                 );
-                Self::text(
-                    tr,
-                    scene,
+                ctx.text(
                     "I understand this file is plaintext",
-                    13.0,
+                    &TextStyle::new(13.0).with_weight(TextWeight::Medium),
                     c.text_primary,
-                    transform,
-                    x + 48.0,
-                    check.y0 + 17.0,
-                    TextWeight::Medium,
+                    Point::new(x + 48.0, check.y0 + 17.0),
+                    None,
                 );
                 let cancel = ui::widget::ButtonFace::new(
                     Rect::new(
@@ -2565,7 +2503,7 @@ impl PasswordsSurface {
                     ),
                     "Cancel",
                 );
-                ui::widget::Button::paint(scene, transform, tr, theme, &cancel);
+                ui::widget::Button::paint(ctx.scene, transform, ctx.text, theme, &cancel);
                 let export = ui::widget::ButtonFace::new(
                     Rect::new(
                         rect.x1 - 132.0,
@@ -2577,24 +2515,20 @@ impl PasswordsSurface {
                 )
                 .style(ui::widget::ButtonStyle::Primary)
                 .disabled(!acknowledged);
-                ui::widget::Button::paint(scene, transform, tr, theme, &export);
+                ui::widget::Button::paint(ctx.scene, transform, ctx.text, theme, &export);
             }
             TransferDialog::Backup | TransferDialog::Restore { .. } => {
                 let restoring = matches!(dialog, TransferDialog::Restore { .. });
-                Self::text(
-                    tr,
-                    scene,
+                ctx.text(
                     if restoring {
                         "Unlock backup"
                     } else {
                         "Back up your vault"
                     },
-                    24.0,
+                    &TextStyle::new(24.0).with_weight(TextWeight::Bold),
                     c.text_primary,
-                    transform,
-                    x,
-                    rect.y0 + 28.0,
-                    TextWeight::Bold,
+                    Point::new(x, rect.y0 + 28.0),
+                    None,
                 );
                 let description: &[(&str, f64)] = if compact && restoring {
                     &[
@@ -2618,25 +2552,21 @@ impl PasswordsSurface {
                     )]
                 };
                 for (line, y) in description {
-                    Self::text(
-                        tr,
-                        scene,
+                    ctx.text(
                         line,
-                        13.0,
+                        &TextStyle::new(13.0),
                         c.text_dim,
-                        transform,
-                        x,
-                        rect.y0 + y,
-                        TextWeight::Regular,
+                        Point::new(x, rect.y0 + y),
+                        None,
                     );
                 }
                 let first = Rect::new(x, rect.y0 + 106.0, rect.x1 - 28.0, rect.y0 + 154.0);
                 self.backup_password.apply_layout_external(first);
                 Widget::draw(
                     &mut self.backup_password,
-                    scene,
+                    ctx.scene,
                     transform,
-                    tr,
+                    ctx.text,
                     theme,
                     presence,
                 );
@@ -2645,24 +2575,20 @@ impl PasswordsSurface {
                     self.backup_confirmation.apply_layout_external(second);
                     Widget::draw(
                         &mut self.backup_confirmation,
-                        scene,
+                        ctx.scene,
                         transform,
-                        tr,
+                        ctx.text,
                         theme,
                         presence,
                     );
                 }
                 if let Some(error) = self.backup_form_error(!restoring) {
-                    Self::text(
-                        tr,
-                        scene,
+                    ctx.text(
                         error,
-                        12.0,
+                        &TextStyle::new(12.0).with_weight(TextWeight::Medium),
                         c.semantic.danger,
-                        transform,
-                        x,
-                        rect.y0 + if restoring { 166.0 } else { 226.0 },
-                        TextWeight::Medium,
+                        Point::new(x, rect.y0 + if restoring { 166.0 } else { 226.0 }),
+                        None,
                     );
                 }
                 let cancel = ButtonFace::new(
@@ -2674,7 +2600,7 @@ impl PasswordsSurface {
                     ),
                     "Cancel",
                 );
-                Button::paint(scene, transform, tr, theme, &cancel);
+                Button::paint(ctx.scene, transform, ctx.text, theme, &cancel);
                 let action = ButtonFace::new(
                     Rect::new(
                         rect.x1 - 132.0,
@@ -2686,30 +2612,22 @@ impl PasswordsSurface {
                 )
                 .style(ui::widget::ButtonStyle::Primary)
                 .disabled(self.backup_form_error(!restoring).is_some());
-                Button::paint(scene, transform, tr, theme, &action);
+                Button::paint(ctx.scene, transform, ctx.text, theme, &action);
             }
             TransferDialog::DeleteConfirm { title, .. } => {
-                Self::text(
-                    tr,
-                    scene,
+                ctx.text(
                     "Delete item?",
-                    24.0,
+                    &TextStyle::new(24.0).with_weight(TextWeight::Bold),
                     c.text_primary,
-                    transform,
-                    x,
-                    rect.y0 + 28.0,
-                    TextWeight::Bold,
+                    Point::new(x, rect.y0 + 28.0),
+                    None,
                 );
-                Self::text(
-                    tr,
-                    scene,
+                ctx.text(
                     title,
-                    15.0,
+                    &TextStyle::new(15.0).with_weight(TextWeight::Medium),
                     c.text_primary,
-                    transform,
-                    x,
-                    rect.y0 + 82.0,
-                    TextWeight::Medium,
+                    Point::new(x, rect.y0 + 82.0),
+                    None,
                 );
                 let body: &[(&str, f64)] = if compact {
                     &[
@@ -2723,16 +2641,12 @@ impl PasswordsSurface {
                     )]
                 };
                 for (line, y) in body {
-                    Self::text(
-                        tr,
-                        scene,
+                    ctx.text(
                         line,
-                        13.0,
+                        &TextStyle::new(13.0),
                         c.text_dim,
-                        transform,
-                        x,
-                        rect.y0 + y,
-                        TextWeight::Regular,
+                        Point::new(x, rect.y0 + y),
+                        None,
                     );
                 }
                 let cancel = ButtonFace::new(
@@ -2744,7 +2658,7 @@ impl PasswordsSurface {
                     ),
                     "Keep item",
                 );
-                Button::paint(scene, transform, tr, theme, &cancel);
+                Button::paint(ctx.scene, transform, ctx.text, theme, &cancel);
                 let delete = ButtonFace::new(
                     Rect::new(
                         rect.x1 - 132.0,
@@ -2755,7 +2669,7 @@ impl PasswordsSurface {
                     "Delete",
                 )
                 .style(ui::widget::ButtonStyle::Danger);
-                Button::paint(scene, transform, tr, theme, &delete);
+                Button::paint(ctx.scene, transform, ctx.text, theme, &delete);
             }
         }
     }
@@ -2773,22 +2687,19 @@ impl PasswordsSurface {
         rect: Rect,
         compact: bool,
     ) {
+        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         let c = &theme.tokens.colors;
-        Self::text(
-            tr,
-            scene,
+        ctx.text(
             "Passwords",
-            if compact { 25.0 } else { 28.0 },
+            &TextStyle::new(if compact { 25.0 } else { 28.0 }).with_weight(TextWeight::Bold),
             c.text_primary,
-            transform,
-            rect.x0,
-            rect.y0,
-            TextWeight::Bold,
+            Point::new(rect.x0, rect.y0),
+            None,
         );
         Button::paint(
-            scene,
+            ctx.scene,
             transform,
-            tr,
+            ctx.text,
             theme,
             &ButtonFace::new(
                 Rect::new(rect.x1 - 112.0, rect.y0 - 4.0, rect.x1, rect.y0 + 40.0),
@@ -2798,24 +2709,25 @@ impl PasswordsSurface {
         );
         let search = Rect::new(rect.x0, rect.y0 + 54.0, rect.x1, rect.y0 + 98.0);
         self.search_input.apply_layout_external(search);
-        self.search_input
-            .draw(scene, transform, tr, theme, &PresenceCtx::default());
+        self.search_input.draw(
+            ctx.scene,
+            transform,
+            ctx.text,
+            theme,
+            &PresenceCtx::default(),
+        );
         let tabs_y = rect.y0 + 116.0;
         let visible = self.visible_indices();
         let count_label = self.custody_notice().map_or_else(
             || format!("{} items", visible.len()),
             |notice| format!("{} items · {notice}", visible.len()),
         );
-        Self::text(
-            tr,
-            scene,
+        ctx.text(
             &count_label,
-            12.0,
+            &TextStyle::new(12.0).with_weight(TextWeight::Medium),
             c.text_dim,
-            transform,
-            rect.x0,
-            tabs_y + 9.0,
-            TextWeight::Medium,
+            Point::new(rect.x0, tabs_y + 9.0),
+            None,
         );
         let shown = Self::list_capacity(rect);
         let total = visible.len();
@@ -2828,7 +2740,7 @@ impl PasswordsSurface {
             let y = tabs_y + 52.0 + ui::num::f64_of_usize(display_index) * 76.0;
             let row = Rect::new(rect.x0, y, rect.x1, y + 66.0);
             Self::card(
-                scene,
+                ctx.scene,
                 transform,
                 if item_index == self.selected && !compact {
                     c.surfaces.raised
@@ -2845,57 +2757,45 @@ impl PasswordsSurface {
                 .copied()
                 .unwrap_or(c.text_primary);
             Self::card(
-                scene,
+                ctx.scene,
                 transform,
                 accent,
                 Rect::new(row.x0 + 10.0, row.y0 + 10.0, row.x0 + 54.0, row.y0 + 54.0),
                 12.0,
             );
             let initial = item.title.chars().next().unwrap_or('•').to_string();
-            Self::text(
-                tr,
-                scene,
+            ctx.text(
                 &initial,
-                18.0,
+                &TextStyle::new(18.0).with_weight(TextWeight::Bold),
                 c.surfaces.base,
-                transform,
-                row.x0 + 25.0,
-                row.y0 + 20.0,
-                TextWeight::Bold,
+                Point::new(row.x0 + 25.0, row.y0 + 20.0),
+                None,
             );
-            Self::text(
-                tr,
-                scene,
+            ctx.text(
                 &item.title,
-                15.0,
+                &TextStyle::new(15.0).with_weight(TextWeight::Bold),
                 c.text_primary,
-                transform,
-                row.x0 + 68.0,
-                row.y0 + 12.0,
-                TextWeight::Bold,
+                Point::new(row.x0 + 68.0, row.y0 + 12.0),
+                None,
             );
             let sub = Self::item_summary(item);
-            Self::text(
-                tr,
-                scene,
+            ctx.text(
                 &sub,
-                12.0,
+                &TextStyle::new(12.0),
                 c.text_dim,
-                transform,
-                row.x0 + 68.0,
-                row.y0 + 37.0,
-                TextWeight::Regular,
+                Point::new(row.x0 + 68.0, row.y0 + 37.0),
+                None,
             );
             let star = Rect::new(row.x1 - 42.0, row.y0 + 11.0, row.x1 - 10.0, row.y0 + 43.0);
             if Self::is_favorite(item) {
                 Icon::Star.draw_filled(
-                    scene,
+                    ctx.scene,
                     transform,
                     star,
                     c.accent.stops.get(5).copied().unwrap_or(c.text_primary),
                 );
             } else {
-                Icon::Star.draw(scene, transform, star, c.text_dim);
+                Icon::Star.draw(ctx.scene, transform, star, c.text_dim);
             }
         }
         if total > shown && shown > 0 {
@@ -2911,7 +2811,7 @@ impl PasswordsSurface {
                 ui::num::f64_of_usize(scroll),
             );
             if let Some(thumb) = Scrollbar::vertical().thumb_rect(track, metrics) {
-                scene.fill(
+                ctx.scene.fill(
                     Fill::NonZero,
                     transform,
                     theme.border_standard,
@@ -2934,6 +2834,7 @@ impl PasswordsSurface {
         theme: &Theme,
         rect: Rect,
     ) {
+        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         let c = &theme.tokens.colors;
         let Some(item) = self.items.get(self.selected) else {
             return;
@@ -2956,53 +2857,38 @@ impl PasswordsSurface {
             rect.x1,
             rect.y1.min(rect.y0 + content_height),
         );
-        Self::card(scene, transform, c.surfaces.raised, rect, 18.0);
+        Self::card(ctx.scene, transform, c.surfaces.raised, rect, 18.0);
         let x = rect.x0 + 28.0;
         Self::card(
-            scene,
+            ctx.scene,
             transform,
             c.accent.stops.get(5).copied().unwrap_or(c.text_primary),
             Rect::new(x, rect.y0 + 28.0, x + 58.0, rect.y0 + 86.0),
             16.0,
         );
-        Self::text(
-            tr,
-            scene,
+        ctx.text(
             &item.title.chars().next().unwrap_or('•').to_string(),
-            24.0,
+            &TextStyle::new(24.0).with_weight(TextWeight::Bold),
             c.surfaces.base,
-            transform,
-            x + 20.0,
-            rect.y0 + 43.0,
-            TextWeight::Bold,
+            Point::new(x + 20.0, rect.y0 + 43.0),
+            None,
         );
-        Self::text(
-            tr,
-            scene,
+        ctx.text(
             &item.title,
-            23.0,
+            &TextStyle::new(23.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            transform,
-            x + 76.0,
-            rect.y0 + 31.0,
-            TextWeight::Bold,
+            Point::new(x + 76.0, rect.y0 + 31.0),
+            None,
         );
-        Self::text(
-            tr,
-            scene,
+        ctx.text(
             Self::kind_label(item.kind),
-            12.0,
+            &TextStyle::new(12.0).with_weight(TextWeight::Medium),
             c.text_dim,
-            transform,
-            x + 76.0,
-            rect.y0 + 64.0,
-            TextWeight::Medium,
+            Point::new(x + 76.0, rect.y0 + 64.0),
+            None,
         );
         Self::pill(
-            scene,
-            tr,
-            transform,
-            theme,
+            &mut ctx,
             Rect::new(
                 rect.x1 - 94.0,
                 rect.y0 + 34.0,
@@ -3069,7 +2955,7 @@ impl PasswordsSurface {
         let detail_x = x + 12.0;
         let field_count = f64::from(u32::try_from(fields.len()).unwrap_or(0));
         Self::card(
-            scene,
+            ctx.scene,
             transform,
             c.surfaces.base,
             Rect::new(
@@ -3081,33 +2967,25 @@ impl PasswordsSurface {
             14.0,
         );
         for (row, (label, value, action)) in fields.into_iter().enumerate() {
-            Self::text(
-                tr,
-                scene,
+            ctx.text(
                 label,
-                10.0,
+                &TextStyle::new(10.0).with_weight(TextWeight::Bold),
                 c.text_dim,
-                transform,
-                detail_x,
-                y,
-                TextWeight::Bold,
+                Point::new(detail_x, y),
+                None,
             );
-            Self::text(
-                tr,
-                scene,
+            ctx.text(
                 value,
-                14.0,
+                &TextStyle::new(14.0).with_weight(TextWeight::Medium),
                 c.text_primary,
-                transform,
-                detail_x,
-                y + 25.0,
-                TextWeight::Medium,
+                Point::new(detail_x, y + 25.0),
+                None,
             );
             if self.detail_row_is_secret(row) {
                 Button::paint(
-                    scene,
+                    ctx.scene,
                     transform,
-                    tr,
+                    ctx.text,
                     theme,
                     &ButtonFace::new(
                         Rect::new(rect.x1 - 120.0, y + 10.0, rect.x1 - 76.0, y + 54.0),
@@ -3117,9 +2995,9 @@ impl PasswordsSurface {
                     .accessible_name("Copy secret"),
                 );
                 Button::paint(
-                    scene,
+                    ctx.scene,
                     transform,
-                    tr,
+                    ctx.text,
                     theme,
                     &ButtonFace::new(
                         Rect::new(rect.x1 - 68.0, y + 10.0, rect.x1 - 24.0, y + 54.0),
@@ -3133,50 +3011,38 @@ impl PasswordsSurface {
                     Rect::new(rect.x1 - 150.0, y + 10.0, rect.x1 - 24.0, y + 54.0),
                     action,
                 );
-                Button::paint(scene, transform, tr, theme, &action_face);
+                Button::paint(ctx.scene, transform, ctx.text, theme, &action_face);
             }
             y += 78.0;
         }
         if !self.status.is_empty() {
-            Self::text(
-                tr,
-                scene,
+            ctx.text(
                 &self.status,
-                11.0,
+                &TextStyle::new(11.0).with_weight(TextWeight::Medium),
                 c.text_dim,
-                transform,
-                x,
-                rect.y1 - 16.0,
-                TextWeight::Medium,
+                Point::new(x, rect.y1 - 16.0),
+                None,
             );
         }
         if item.kind != SecretItemKind::SecureNote {
             y += 20.0;
-            Self::text(
-                tr,
-                scene,
+            ctx.text(
                 "NOTES",
-                10.0,
+                &TextStyle::new(10.0).with_weight(TextWeight::Bold),
                 c.text_dim,
-                transform,
-                x,
-                y,
-                TextWeight::Bold,
+                Point::new(x, y),
+                None,
             );
-            Self::text(
-                tr,
-                scene,
+            ctx.text(
                 if self.has_private_note(item) {
                     "Private note available — edit to view"
                 } else {
                     "No notes"
                 },
-                13.0,
+                &TextStyle::new(13.0),
                 c.text_primary,
-                transform,
-                x,
-                y + 25.0,
-                TextWeight::Regular,
+                Point::new(x, y + 25.0),
+                None,
             );
         }
         let now = std::time::SystemTime::now()
@@ -3185,16 +3051,12 @@ impl PasswordsSurface {
         let updated = ui::format::relative(
             i64::try_from(now.saturating_sub(item.updated_unix)).unwrap_or(i64::MAX),
         );
-        Self::text(
-            tr,
-            scene,
+        ctx.text(
             &format!("Updated {updated}"),
-            11.0,
+            &TextStyle::new(11.0),
             c.text_dim,
-            transform,
-            x,
-            rect.y1 - 34.0,
-            TextWeight::Regular,
+            Point::new(x, rect.y1 - 34.0),
+            None,
         );
     }
 
@@ -3210,8 +3072,9 @@ impl PasswordsSurface {
         theme: &Theme,
         rect: Rect,
     ) {
+        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         let c = &theme.tokens.colors;
-        Self::card(scene, transform, c.surfaces.raised, rect, 18.0);
+        Self::card(ctx.scene, transform, c.surfaces.raised, rect, 18.0);
         let x = rect.x0 + 36.0;
         let title_x = if self.drawer.is_overlay() {
             rect.x0 + 60.0
@@ -3219,41 +3082,34 @@ impl PasswordsSurface {
             x
         };
         let w = rect.width() - 72.0;
-        Self::text(
-            tr,
-            scene,
+        ctx.text(
             if self.editing.is_some() {
                 "Edit item"
             } else {
                 "New item"
             },
-            25.0,
+            &TextStyle::new(25.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            transform,
-            title_x,
-            rect.y0 + 30.0,
-            TextWeight::Bold,
+            Point::new(title_x, rect.y0 + 30.0),
+            None,
         );
         if !Self::editor_is_compact(rect) {
-            Self::text(
-                tr,
-                scene,
+            ctx.text(
                 if self.draft_title.is_empty() {
                     Self::kind_label(self.draft_kind)
                 } else {
                     &self.draft_title
                 },
-                13.0,
+                &TextStyle::new(13.0),
                 c.text_dim,
-                transform,
-                x,
-                rect.y0 + 65.0,
-                TextWeight::Regular,
+                Point::new(x, rect.y0 + 65.0),
+                None,
             );
         }
         self.editor_scroll = self.editor_scroll.clamp(0.0, self.max_editor_scroll(rect));
         let body_viewport = self.editor_body_viewport(rect);
-        scene.push_clip_layer(Fill::NonZero, transform, &body_viewport);
+        ctx.scene
+            .push_clip_layer(Fill::NonZero, transform, &body_viewport);
         let kinds = [
             SecretItemKind::Login,
             SecretItemKind::ApiKey,
@@ -3268,9 +3124,9 @@ impl PasswordsSurface {
             .position(|kind| *kind == self.draft_kind)
             .unwrap_or(0);
         ToggleGroup::paint(
-            scene,
+            ctx.scene,
             transform,
-            tr,
+            ctx.text,
             theme,
             &SegmentedFace::new(&segments, &labels, selected)
                 .style(SegmentedStyle::Pill)
@@ -3329,22 +3185,18 @@ impl PasswordsSurface {
                 | ActiveField::Tags
                 | ActiveField::CustomFields => "",
             };
-            Self::text(
-                tr,
-                scene,
+            ctx.text(
                 label,
-                10.0,
+                &TextStyle::new(10.0).with_weight(TextWeight::Bold),
                 c.text_dim,
-                transform,
-                x,
-                y,
-                TextWeight::Bold,
+                Point::new(x, y),
+                None,
             );
             if let Some(input) = self.editor_inputs.get_mut(field) {
                 input.set_placeholder(placeholder);
                 input.apply_layout_external(Rect::new(x, y + 20.0, x + w, y + 64.0));
                 Widget::set_focus(input, self.active_field == Some(field));
-                input.draw(scene, transform, tr, theme, &input_presence);
+                input.draw(ctx.scene, transform, ctx.text, theme, &input_presence);
             }
             y += field_step;
         }
@@ -3369,41 +3221,33 @@ impl PasswordsSurface {
                 y + 44.0,
             );
             Button::paint(
-                scene,
+                ctx.scene,
                 transform,
-                tr,
+                ctx.text,
                 theme,
                 &ButtonFace::new(generate_rect, generate_label),
             );
             if !Self::editor_is_compact(rect) {
-                Self::text(
-                    tr,
-                    scene,
+                ctx.text(
                     "20 random characters",
-                    12.0,
+                    &TextStyle::new(12.0).with_weight(TextWeight::Medium),
                     c.text_dim,
-                    transform,
-                    x + 208.0,
-                    y + 10.0,
-                    TextWeight::Medium,
+                    Point::new(x + 208.0, y + 10.0),
+                    None,
                 );
             }
             y += Self::editor_generate_height(rect);
         }
-        Self::text(
-            tr,
-            scene,
+        ctx.text(
             if self.draft_kind == SecretItemKind::SecureNote {
                 "NOTE"
             } else {
                 "NOTES"
             },
-            10.0,
+            &TextStyle::new(10.0).with_weight(TextWeight::Bold),
             c.text_dim,
-            transform,
-            x,
-            y,
-            TextWeight::Bold,
+            Point::new(x, y),
+            None,
         );
         let note_placeholder = if self.draft_notes.is_empty() {
             if self.draft_kind == SecretItemKind::SecureNote {
@@ -3431,22 +3275,18 @@ impl PasswordsSurface {
         );
         self.editor_inputs
             .notes
-            .draw(scene, transform, tr, theme, &input_presence);
+            .draw(ctx.scene, transform, ctx.text, theme, &input_presence);
         y += if Self::editor_is_compact(rect) {
             82.0
         } else {
             104.0
         };
-        Self::text(
-            tr,
-            scene,
+        ctx.text(
             "TAGS",
-            10.0,
+            &TextStyle::new(10.0).with_weight(TextWeight::Bold),
             c.text_dim,
-            transform,
-            x,
-            y,
-            TextWeight::Bold,
+            Point::new(x, y),
+            None,
         );
         self.editor_inputs
             .tags
@@ -3457,18 +3297,14 @@ impl PasswordsSurface {
         );
         self.editor_inputs
             .tags
-            .draw(scene, transform, tr, theme, &input_presence);
+            .draw(ctx.scene, transform, ctx.text, theme, &input_presence);
         y += 72.0;
-        Self::text(
-            tr,
-            scene,
+        ctx.text(
             "CUSTOM FIELDS",
-            10.0,
+            &TextStyle::new(10.0).with_weight(TextWeight::Bold),
             c.text_dim,
-            transform,
-            x,
-            y,
-            TextWeight::Bold,
+            Point::new(x, y),
+            None,
         );
         self.editor_inputs
             .custom_fields
@@ -3477,24 +3313,24 @@ impl PasswordsSurface {
             &mut self.editor_inputs.custom_fields,
             self.active_field == Some(ActiveField::CustomFields),
         );
-        self.editor_inputs
-            .custom_fields
-            .draw(scene, transform, tr, theme, &input_presence);
+        self.editor_inputs.custom_fields.draw(
+            ctx.scene,
+            transform,
+            ctx.text,
+            theme,
+            &input_presence,
+        );
         y += 116.0;
         if !self.status.is_empty() {
-            Self::text(
-                tr,
-                scene,
+            ctx.text(
                 &self.status,
-                12.0,
+                &TextStyle::new(12.0).with_weight(TextWeight::Medium),
                 c.text_dim,
-                transform,
-                x,
-                y - 14.0,
-                TextWeight::Medium,
+                Point::new(x, y - 14.0),
+                None,
             );
         }
-        scene.pop_layer();
+        ctx.scene.pop_layer();
         let content_height = body_viewport.height() + self.max_editor_scroll(rect);
         let track = Rect::new(
             body_viewport.x1 - 5.0,
@@ -3506,7 +3342,7 @@ impl PasswordsSurface {
             track,
             ScrollMetrics::new(content_height, body_viewport.height(), self.editor_scroll),
         ) {
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
                 transform,
                 c.border_standard,
@@ -3516,9 +3352,9 @@ impl PasswordsSurface {
         }
         let (delete, cancel, save) = self.editor_footer_rects(rect);
         Button::paint(
-            scene,
+            ctx.scene,
             transform,
-            tr,
+            ctx.text,
             theme,
             &ButtonFace::new(
                 save,
@@ -3531,17 +3367,17 @@ impl PasswordsSurface {
             .style(ui::widget::ButtonStyle::Primary),
         );
         Button::paint(
-            scene,
+            ctx.scene,
             transform,
-            tr,
+            ctx.text,
             theme,
             &ButtonFace::new(cancel, "Cancel"),
         );
         if let Some(delete) = delete {
             Button::paint(
-                scene,
+                ctx.scene,
                 transform,
-                tr,
+                ctx.text,
                 theme,
                 &ButtonFace::new(delete, "Delete").style(ui::widget::ButtonStyle::Danger),
             );
@@ -3560,8 +3396,9 @@ impl PasswordsSurface {
         theme: &Theme,
         rect: Rect,
     ) {
+        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         let c = &theme.tokens.colors;
-        Self::card(scene, transform, c.surfaces.raised, rect, 18.0);
+        Self::card(ctx.scene, transform, c.surfaces.raised, rect, 18.0);
         let compact = rect.width() < 420.0;
         let inset = if compact { 18.0 } else { 34.0 };
         let x = rect.x0 + inset;
@@ -3576,60 +3413,44 @@ impl PasswordsSurface {
         let reused = self.health.reused.to_string();
         let weak = self.health.weak.to_string();
         let old = self.health.older_than_year.to_string();
-        Self::text(
-            tr,
-            scene,
+        ctx.text(
             "Password review",
-            25.0,
+            &TextStyle::new(25.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            transform,
-            header_x,
-            rect.y0 + 30.0,
-            TextWeight::Bold,
+            Point::new(header_x, rect.y0 + 30.0),
+            None,
         );
-        Self::text(
-            tr,
-            scene,
+        ctx.text(
             if compact {
                 "Based on passwords saved here"
             } else {
                 "Facts derived from the passwords stored here"
             },
-            14.0,
+            &TextStyle::new(14.0),
             c.text_dim,
-            transform,
-            header_x,
-            rect.y0 + 66.0,
-            TextWeight::Regular,
+            Point::new(header_x, rect.y0 + 66.0),
+            None,
         );
         Self::card(
-            scene,
+            ctx.scene,
             transform,
             c.surfaces.base,
             Rect::new(x, rect.y0 + 104.0, rect.x1 - inset, rect.y0 + 194.0),
             14.0,
         );
-        Self::text(
-            tr,
-            scene,
+        ctx.text(
             &total,
-            38.0,
+            &TextStyle::new(38.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            transform,
-            x + 24.0,
-            rect.y0 + 128.0,
-            TextWeight::Bold,
+            Point::new(x + 24.0, rect.y0 + 128.0),
+            None,
         );
-        Self::text(
-            tr,
-            scene,
+        ctx.text(
             "logins checked",
-            13.0,
+            &TextStyle::new(13.0).with_weight(TextWeight::Bold),
             c.text_dim,
-            transform,
-            x + 76.0,
-            rect.y0 + 145.0,
-            TextWeight::Bold,
+            Point::new(x + 76.0, rect.y0 + 145.0),
+            None,
         );
         let cards = if compact {
             [
@@ -3671,44 +3492,32 @@ impl PasswordsSurface {
         for (i, (title, count, detail)) in cards.iter().enumerate() {
             let y = rect.y0 + 218.0 + ui::num::f64_of_usize(i) * 96.0;
             Self::card(
-                scene,
+                ctx.scene,
                 transform,
                 c.surfaces.base,
                 Rect::new(x, y, rect.x1 - inset, y + 78.0),
                 12.0,
             );
-            Self::text(
-                tr,
-                scene,
+            ctx.text(
                 count,
-                22.0,
+                &TextStyle::new(22.0).with_weight(TextWeight::Bold),
                 c.text_primary,
-                transform,
-                x + 18.0,
-                y + 18.0,
-                TextWeight::Bold,
+                Point::new(x + 18.0, y + 18.0),
+                None,
             );
-            Self::text(
-                tr,
-                scene,
+            ctx.text(
                 title,
-                14.0,
+                &TextStyle::new(14.0).with_weight(TextWeight::Bold),
                 c.text_primary,
-                transform,
-                x + 64.0,
-                y + 13.0,
-                TextWeight::Bold,
+                Point::new(x + 64.0, y + 13.0),
+                None,
             );
-            Self::text(
-                tr,
-                scene,
+            ctx.text(
                 detail,
-                12.0,
+                &TextStyle::new(12.0),
                 c.text_dim,
-                transform,
-                x + 64.0,
-                y + 39.0,
-                TextWeight::Regular,
+                Point::new(x + 64.0, y + 39.0),
+                None,
             );
         }
     }
@@ -3788,8 +3597,9 @@ impl PasswordsSurface {
         theme: &Theme,
         rect: Rect,
     ) {
+        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         let c = &theme.tokens.colors;
-        Self::card(scene, transform, c.surfaces.raised, rect, 18.0);
+        Self::card(ctx.scene, transform, c.surfaces.raised, rect, 18.0);
         let compact = rect.width() < 420.0;
         let x = rect.x0 + if compact { 18.0 } else { 34.0 };
         let header_x = if compact && self.drawer.is_overlay() {
@@ -3797,20 +3607,14 @@ impl PasswordsSurface {
         } else {
             x
         };
-        Self::text(
-            tr,
-            scene,
+        ctx.text(
             "App access",
-            25.0,
+            &TextStyle::new(25.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            transform,
-            header_x,
-            rect.y0 + 30.0,
-            TextWeight::Bold,
+            Point::new(header_x, rect.y0 + 30.0),
+            None,
         );
-        Self::text(
-            tr,
-            scene,
+        ctx.text(
             if !self.status.is_empty() {
                 &self.status
             } else if self.app_grants.is_empty() {
@@ -3818,12 +3622,10 @@ impl PasswordsSurface {
             } else {
                 "Apps can use only the accounts and sites shown below"
             },
-            13.0,
+            &TextStyle::new(13.0),
             c.text_dim,
-            transform,
-            header_x,
-            rect.y0 + 66.0,
-            TextWeight::Regular,
+            Point::new(header_x, rect.y0 + 66.0),
+            None,
         );
         let viewport = Self::app_access_viewport(rect);
         if self.app_grants.is_empty() {
@@ -3833,32 +3635,19 @@ impl PasswordsSurface {
                 viewport.x1,
                 viewport.y0 + 150.0,
             );
-            Self::card(scene, transform, c.surfaces.base, empty, 14.0);
-            Self::text(
-                tr,
-                scene,
+            Self::card(ctx.scene, transform, c.surfaces.base, empty, 14.0);
+            ctx.text(
                 "No ongoing access",
-                17.0,
+                &TextStyle::new(17.0).with_weight(TextWeight::Bold),
                 c.text_primary,
-                transform,
-                empty.x0 + 22.0,
-                empty.y0 + 26.0,
-                TextWeight::Bold,
+                Point::new(empty.x0 + 22.0, empty.y0 + 26.0),
+                None,
             );
-            Self::text(
-                tr,
-                scene,
-                "One-time and while-open access ends automatically. You stay in control when an app asks again.",
-                13.0,
-                c.text_dim,
-                transform,
-                empty.x0 + 22.0,
-                empty.y0 + 62.0,
-                TextWeight::Regular,
-            );
+            ctx.text("One-time and while-open access ends automatically. You stay in control when an app asks again.", &TextStyle::new(13.0), c.text_dim, Point::new(empty.x0 + 22.0, empty.y0 + 62.0), None);
             return;
         }
-        scene.push_clip_layer(Fill::NonZero, transform, &viewport);
+        ctx.scene
+            .push_clip_layer(Fill::NonZero, transform, &viewport);
         let scroll = self
             .app_access_scroll
             .clamp(0.0, self.max_app_access_scroll(rect));
@@ -3868,15 +3657,15 @@ impl PasswordsSurface {
             if row.y1 < viewport.y0 || row.y0 > viewport.y1 {
                 continue;
             }
-            Self::card(scene, transform, c.surfaces.base, row, 12.0);
+            Self::card(ctx.scene, transform, c.surfaces.base, row, 12.0);
             let app_name = grant.app_id.rsplit('.').next().unwrap_or(&grant.app_id);
             let title = self
                 .items
                 .iter()
                 .find(|item| item.id == grant.item_id)
                 .map_or("Saved account", |item| item.title.as_str());
-            tr.draw_text_weighted(
-                scene,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 app_name,
                 15.0,
                 c.text_primary,
@@ -3885,8 +3674,8 @@ impl PasswordsSurface {
                 TextWeight::Bold,
             );
             let scope = grant.origin.as_deref().unwrap_or("This saved account");
-            tr.draw_text_weighted(
-                scene,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 &format!("{title}  ·  {scope}"),
                 12.0,
                 c.text_dim,
@@ -3895,9 +3684,9 @@ impl PasswordsSurface {
                 TextWeight::Regular,
             );
             Button::paint(
-                scene,
+                ctx.scene,
                 transform,
-                tr,
+                ctx.text,
                 theme,
                 &ButtonFace::new(
                     Rect::new(row.x1 - 94.0, row.y0 + 16.0, row.x1 - 12.0, row.y0 + 60.0),
@@ -3906,7 +3695,7 @@ impl PasswordsSurface {
                 .style(ui::widget::ButtonStyle::Danger),
             );
         }
-        scene.pop_layer();
+        ctx.scene.pop_layer();
         let metrics = ScrollMetrics::new(
             ui::num::f64_of_usize(self.app_grants.len()) * 88.0,
             viewport.height(),
@@ -3919,7 +3708,7 @@ impl PasswordsSurface {
             viewport.y1 - 4.0,
         );
         if let Some(thumb) = Scrollbar::vertical().thumb_rect(track, metrics) {
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
                 transform,
                 c.border_standard,
@@ -4073,10 +3862,7 @@ impl Widget for PasswordsSurface {
                 ShowcaseMode::Vault if self.mobile_detail => {
                     self.draw_detail(scene, tr, transform, theme, compact_content);
                     Self::pill(
-                        scene,
-                        tr,
-                        transform,
-                        theme,
+                        &mut PaintCtx::new(scene, transform, tr, theme),
                         Rect::new(
                             compact_content.x0 + 8.0,
                             compact_content.y0 + 30.0,
@@ -4144,7 +3930,9 @@ impl Widget for PasswordsSurface {
                 self.draw_editor(scene, tr, transform, theme, detail);
             }
             ShowcaseMode::Health => self.draw_health(scene, tr, transform, theme, detail),
-            ShowcaseMode::AppAccess => self.draw_app_access(scene, tr, transform, theme, detail),
+            ShowcaseMode::AppAccess => {
+                self.draw_app_access(scene, tr, transform, theme, detail);
+            }
             ShowcaseMode::Import | ShowcaseMode::Export => {
                 self.draw_detail(scene, tr, transform, theme, detail);
             }

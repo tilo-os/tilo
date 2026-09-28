@@ -3,7 +3,8 @@
 //! polylines, painted over the toolkit's [`FunctionPlane`] grid.
 
 use ui::charts::{ChartPalette, FunctionPlane};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::paint::PaintCtx;
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect};
@@ -404,10 +405,6 @@ impl Graph2dScreen {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "graph painting combines scene resources with the calculator model, available area and optional trace point"
-    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -498,15 +495,16 @@ impl Graph2dScreen {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         let panel_bg = if self.overlay {
             c.surfaces.raised
         } else {
             c.surfaces.base
         };
-        draw::fill_rect(scene, t, self.panel, panel_bg);
+        ctx.fill_rect(self.panel, panel_bg);
         draw::line(
-            scene,
+            ctx.scene,
             t,
             Point::new(self.panel.x1, self.panel.y0),
             Point::new(self.panel.x1, self.panel.y1),
@@ -515,7 +513,7 @@ impl Graph2dScreen {
         );
         // Title and subtitle stack on their measured line boxes (24 + 20 px at
         // 1×); `layout` starts the first card below the same band.
-        let (head_h, sub_h, _) = Self::header_band(tr);
+        let (head_h, sub_h, _) = Self::header_band(ctx.text);
         let head = Rect::new(
             self.panel.x0 + 16.0,
             self.panel.y0 + 12.0,
@@ -523,15 +521,12 @@ impl Graph2dScreen {
             self.panel.y0 + 12.0 + head_h,
         );
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             head,
             "Functions",
-            16.0,
+            &TextStyle::new(16.0).with_weight(TextWeight::Semibold),
             c.text_primary,
             Align::Left,
-            TextWeight::Semibold,
         );
         let sub = Rect::new(
             self.panel.x0 + 16.0,
@@ -540,15 +535,12 @@ impl Graph2dScreen {
             head.y1 + sub_h,
         );
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             sub,
             "y = f(x)  ·  click to edit",
-            12.0,
+            &TextStyle::new(12.0),
             c.text_dim,
             Align::Left,
-            TextWeight::Regular,
         );
     }
 
@@ -572,6 +564,7 @@ impl Graph2dScreen {
         theme: &Theme,
         model: &CalcModel,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         for i in 0..model.funcs.len() {
             let (Some(f), Some(&r), Some(&edit), Some(&dr), Some(&vr)) = (
@@ -585,16 +578,10 @@ impl Graph2dScreen {
             };
             let active = i == model.active_fn;
             if active {
-                draw::fill_round(
-                    scene,
-                    t,
-                    r,
-                    8.0,
-                    draw::mix(c.surfaces.raised, c.accent[5], 0.18),
-                );
-                draw::stroke_round(scene, t, r, 8.0, c.accent[5], 1.0);
+                ctx.fill_round(r, 8.0, draw::mix(c.surfaces.raised, c.accent[5], 0.18));
+                ctx.stroke_round(r, 8.0, c.accent[5], 1.0);
             } else if self.hovered_row == Some(i) {
-                ui::surface::card(scene, t, r, 8.0, c.surfaces.raised);
+                ui::surface::card(ctx.scene, t, r, 8.0, c.surfaces.raised);
             }
             // colour swatch
             let sw = Rect::new(
@@ -604,9 +591,7 @@ impl Graph2dScreen {
                 r.center().y + 7.0,
             );
             let col = ChartPalette::from_theme(theme).categorical(i);
-            draw::fill_round(
-                scene,
-                t,
+            ctx.fill_round(
                 sw,
                 3.0,
                 if f.visible {
@@ -623,15 +608,12 @@ impl Graph2dScreen {
             };
             let prefix = Rect::new(r.x0 + PREFIX_X, r.y0, r.x0 + PREFIX_X + self.prefix_w, r.y1);
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 prefix,
                 "y =",
-                14.0,
+                &TextStyle::new(14.0).with_weight(TextWeight::Medium),
                 txt_col,
                 Align::Left,
-                TextWeight::Medium,
             );
             let visible = f.visible;
             let Some(empty) = self.fields.get(i).map(MathField::is_empty) else {
@@ -640,59 +622,51 @@ impl Graph2dScreen {
             if empty && !active {
                 let pr = Rect::new(edit.x0 + 4.0, edit.y0, edit.x1, edit.y1);
                 draw::text_in(
-                    scene,
-                    tr,
-                    t,
+                    &mut ctx,
                     pr,
                     "f(x)",
-                    14.0,
+                    &TextStyle::new(14.0),
                     c.text_dim,
                     Align::Left,
-                    TextWeight::Regular,
                 );
             } else if let Some(field) = self.fields.get_mut(i) {
-                field.set_rect(edit, tr);
+                field.set_rect(edit, ctx.text);
                 let fld_col = if visible { txt_col } else { c.text_dim };
-                field.draw(scene, t, tr, theme, fld_col, active);
+                field.draw(ctx.scene, t, ctx.text, theme, fld_col, active);
             }
             // Direct deletion remains available beside every formula; Ctrl+K
             // offers the same durable DeleteGraph action to agents and search.
-            ui::surface::card(scene, t, dr, 5.0, c.neutral[2]);
+            ui::surface::card(ctx.scene, t, dr, 5.0, c.neutral[2]);
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 dr,
                 "×",
-                16.0,
+                &TextStyle::new(16.0).with_weight(TextWeight::Semibold),
                 c.text_dim,
                 Align::Center,
-                TextWeight::Semibold,
             );
             // visibility dot
             let vis_col = if f.visible { col } else { c.neutral[3] };
-            draw::stroke_round(scene, t, vr, vr.height() / 2.0, vis_col, 2.0);
+            ctx.stroke_round(vr, vr.height() / 2.0, vis_col, 2.0);
             if f.visible {
                 let inner = Rect::new(vr.x0 + 5.0, vr.y0 + 5.0, vr.x1 - 5.0, vr.y1 - 5.0);
-                draw::fill_round(scene, t, inner, inner.height() / 2.0, vis_col);
+                ctx.fill_round(inner, inner.height() / 2.0, vis_col);
             }
         }
     }
 
     /// The "+ Add function" button below the row list.
     fn draw_add_button(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
-        ui::surface::card(scene, t, self.add_rect, 8.0, c.surfaces.raised);
+        ui::surface::card(ctx.scene, t, self.add_rect, 8.0, c.surfaces.raised);
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             self.add_rect,
             "+ Add function",
-            13.0,
+            &TextStyle::new(13.0).with_weight(TextWeight::Medium),
             c.accent[6],
             Align::Center,
-            TextWeight::Medium,
         );
     }
 
@@ -707,10 +681,11 @@ impl Graph2dScreen {
         model: &CalcModel,
         trace: Option<Point>,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         // Three 12 px lines stacked on their measured line boxes (20 px each
         // at 1×, an 80 px card), so the read-out never overprints itself.
-        let line_h = draw::line_box(tr, 12.0) + 5.0;
+        let line_h = draw::line_box(ctx.text, 12.0) + 5.0;
         let info_y = self.add_rect.y1 + 16.0;
         let info = Rect::new(
             self.panel.x0 + 16.0,
@@ -718,7 +693,7 @@ impl Graph2dScreen {
             self.panel.x1 - 16.0,
             info_y + 3.0 * line_h + 20.0,
         );
-        ui::surface::card(scene, t, info, 8.0, c.neutral[1]);
+        ui::surface::card(ctx.scene, t, info, 8.0, c.neutral[1]);
         let view = &model.view2d;
         let l1 = Rect::new(
             info.x0 + 12.0,
@@ -727,27 +702,21 @@ impl Graph2dScreen {
             info.y0 + 8.0 + line_h,
         );
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             l1,
             &format!("center  ({:.2}, {:.2})", view.cx, view.cy),
-            12.0,
+            &TextStyle::new(12.0),
             c.text_dim,
             Align::Left,
-            TextWeight::Regular,
         );
         let l2 = Rect::new(info.x0 + 12.0, l1.y1, info.x1 - 12.0, l1.y1 + line_h);
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             l2,
             &format!("zoom  {:.1} px/unit", view.scale),
-            12.0,
+            &TextStyle::new(12.0),
             c.text_dim,
             Align::Left,
-            TextWeight::Regular,
         );
         let l3 = Rect::new(info.x0 + 12.0, l2.y1 + 2.0, info.x1 - 12.0, info.y1 - 6.0);
         if let Some(p) = trace {
@@ -757,32 +726,26 @@ impl Graph2dScreen {
             {
                 let wy = comp.eval1(wx);
                 draw::text_in(
-                    scene,
-                    tr,
-                    t,
+                    &mut ctx,
                     l3,
                     &format!(
                         "f({}) = {}",
                         engine::format_number(wx),
                         engine::format_number(wy)
                     ),
-                    13.0,
+                    &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
                     c.accent[6],
                     Align::Left,
-                    TextWeight::Semibold,
                 );
             }
         } else {
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 l3,
                 "drag to pan · scroll to zoom",
-                12.0,
+                &TextStyle::new(12.0),
                 c.text_dim,
                 Align::Left,
-                TextWeight::Regular,
             );
         }
     }
@@ -791,43 +754,32 @@ impl Graph2dScreen {
     /// the drawer is closed, or a compact "Hide" chip in the drawer header when
     /// it's open.
     fn draw_toggle(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         if self.toggle_rect == Rect::ZERO {
             return;
         }
         let c = &theme.tokens.colors;
         let r = self.toggle_rect;
         if self.panel_open {
-            ui::surface::card(scene, t, r, 8.0, c.neutral[2]);
+            ui::surface::card(ctx.scene, t, r, 8.0, c.neutral[2]);
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 r,
                 "Hide",
-                12.0,
+                &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                 c.text_dim,
                 Align::Center,
-                TextWeight::Semibold,
             );
         } else {
-            draw::fill_round(
-                scene,
-                t,
-                r,
-                8.0,
-                draw::mix(c.surfaces.raised, c.accent[5], 0.20),
-            );
-            draw::stroke_round(scene, t, r, 8.0, c.accent[5], 1.0);
+            ctx.fill_round(r, 8.0, draw::mix(c.surfaces.raised, c.accent[5], 0.20));
+            ctx.stroke_round(r, 8.0, c.accent[5], 1.0);
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 r,
                 "ƒ  Functions",
-                13.0,
+                &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
                 c.accent[6],
                 Align::Center,
-                TextWeight::Semibold,
             );
         }
     }
@@ -1034,6 +986,7 @@ impl Graph2dScreen {
         model: &CalcModel,
         trace_at: (Point, &View2d),
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let (p, v) = trace_at;
         if !self.canvas.contains(p) {
             return;
@@ -1050,7 +1003,7 @@ impl Graph2dScreen {
         let sx = self.to_screen(wx, 0.0, v).x;
         // vertical guide
         draw::line(
-            scene,
+            ctx.scene,
             t,
             Point::new(sx, self.canvas.y0),
             Point::new(sx, self.canvas.y1),
@@ -1062,10 +1015,8 @@ impl Graph2dScreen {
             if dot.y >= self.canvas.y0 && dot.y <= self.canvas.y1 {
                 let col = ChartPalette::from_theme(theme).categorical(model.active_fn);
                 let dot_r = Rect::new(dot.x - 5.0, dot.y - 5.0, dot.x + 5.0, dot.y + 5.0);
-                draw::fill_round(scene, t, dot_r, 5.0, col);
-                draw::stroke_round(
-                    scene,
-                    t,
+                ctx.fill_round(dot_r, 5.0, col);
+                ctx.stroke_round(
                     dot_r,
                     5.0,
                     ui::tokens::Colors::hairline_on(c.neutral[0], 255),
@@ -1078,7 +1029,9 @@ impl Graph2dScreen {
                 engine::format_number(wx),
                 engine::format_number(wy)
             );
-            let (label_w, _h) = tr.measure_weighted(&label, 13.0, None, TextWeight::Semibold);
+            let (label_w, _h) = ctx
+                .text
+                .measure_weighted(&label, 13.0, None, TextWeight::Semibold);
             let chip = Rect::new(
                 sx + 8.0,
                 self.canvas.y0 + 10.0,
@@ -1086,17 +1039,14 @@ impl Graph2dScreen {
                 self.canvas.y0 + 36.0,
             );
             let chip = clamp_rect_x(chip, self.canvas);
-            ui::surface::card(scene, t, chip, 6.0, c.surfaces.raised);
+            ui::surface::card(ctx.scene, t, chip, 6.0, c.surfaces.raised);
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 chip,
                 &label,
-                13.0,
+                &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
                 c.text_primary,
                 Align::Center,
-                TextWeight::Semibold,
             );
         }
     }

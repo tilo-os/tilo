@@ -7,8 +7,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Ellipse, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Fill, ImageBrush};
 
-use ui::text_render::{TextRenderer, TextWeight};
-use ui::theme::Theme;
+use ui::paint::PaintCtx;
+use ui::text_render::TextWeight;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -36,51 +36,40 @@ pub fn element_dest(dest: Rect, s: f64, e: &Element) -> Rect {
     )
 }
 
+/// The deck-wide values a slide's colour roles and image sources resolve
+/// against.
+#[derive(Clone, Copy)]
+pub struct DeckAssets<'a> {
+    pub palette: &'a Palette,
+    pub images: &'a dyn ImageLookup,
+}
+
 /// Paint one slide into `dest`. `corner` is the slide-card corner radius
 /// in pixels (0 for present mode's full-bleed render).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the shared draw context (scene, transform, text renderer, theme, palette, image \
-              store) plus the slide-specific geometry every caller (canvas, thumbnail, present \
-              view) passes; bundling them would only re-create this list as a throwaway struct"
-)]
 pub fn draw_slide(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    palette: &Palette,
+    ctx: &mut PaintCtx<'_>,
+    assets: DeckAssets<'_>,
     slide: &Slide,
     dest: Rect,
     corner: f64,
-    images: &dyn ImageLookup,
 ) {
-    draw_slide_except(
-        scene, transform, tr, theme, palette, slide, dest, corner, images, None,
-    );
+    draw_slide_except(ctx, assets, slide, dest, corner, None);
 }
 
 /// [`draw_slide`], leaving out the words of text element `editing`: the
 /// canvas draws that box's editor in their place.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "draw_slide's context plus the element whose words the caller draws itself"
-)]
 pub fn draw_slide_except(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    palette: &Palette,
+    ctx: &mut PaintCtx<'_>,
+    assets: DeckAssets<'_>,
     slide: &Slide,
     dest: Rect,
     corner: f64,
-    images: &dyn ImageLookup,
     editing: Option<&str>,
 ) {
+    let (scene, transform) = (&mut *ctx.scene, ctx.transform);
     let s = dest.width() / SLIDE_W;
     // Text roles resolve against this slide's own background.
-    let palette = &palette.on(slide.background);
+    let palette = &assets.palette.on(slide.background);
     let bg = palette.slide_bg(slide.background);
     let card = RoundedRect::from_rect(dest, corner);
     scene.fill(Fill::NonZero, transform, bg, None, &card);
@@ -89,13 +78,17 @@ pub fn draw_slide_except(
     // crisp at the rounded edge.
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &card);
     draw_decor(scene, transform, palette, slide, dest, s);
+    let assets = DeckAssets {
+        palette,
+        images: assets.images,
+    };
     for el in slide.z_sorted() {
         if el.kind == ElementKind::Text && editing == Some(el.id.as_str()) {
             continue;
         }
-        draw_element(scene, transform, tr, theme, palette, el, dest, s, images);
+        draw_element(ctx, assets, el, dest, s);
     }
-    scene.pop_layer();
+    ctx.scene.pop_layer();
 }
 
 /// Per-layout chrome: a faint footer rule + slide-number dot region so a
@@ -126,22 +119,8 @@ fn draw_decor(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the shared draw context plus the element and its resolved destination rect; see \
-              `draw_slide` above"
-)]
-fn draw_element(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    palette: &Palette,
-    e: &Element,
-    dest: Rect,
-    s: f64,
-    images: &dyn ImageLookup,
-) {
+fn draw_element(ctx: &mut PaintCtx<'_>, assets: DeckAssets<'_>, e: &Element, dest: Rect, s: f64) {
+    let (scene, transform, palette) = (&mut *ctx.scene, ctx.transform, assets.palette);
     let er = element_dest(dest, s, e);
     match e.kind {
         ElementKind::Rect => {
@@ -191,10 +170,10 @@ fn draw_element(
             );
         }
         ElementKind::Image => {
-            draw_image_element(scene, transform, tr, palette, e, er, s, images);
+            draw_image_element(ctx, assets, e, er, s);
         }
         ElementKind::Text => {
-            draw_text_element(scene, transform, tr, theme, palette, e, dest, s);
+            draw_text_element(ctx, palette, e, dest, s);
         }
     }
 }
@@ -202,21 +181,20 @@ fn draw_element(
 /// Paint an image element: the real decoded picture (object-fit *cover*,
 /// clipped to the element's rounded rect) once it has loaded, or a light
 /// loading / broken-file state until then.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the shared draw context plus the element and its resolved destination rect; see \
-              `draw_slide` above"
-)]
 fn draw_image_element(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    palette: &Palette,
+    ctx: &mut PaintCtx<'_>,
+    assets: DeckAssets<'_>,
     e: &Element,
     er: Rect,
     s: f64,
-    images: &dyn ImageLookup,
 ) {
+    let PaintCtx {
+        scene,
+        transform,
+        text: tr,
+        ..
+    } = ctx;
+    let (transform, palette, images) = (*transform, assets.palette, assets.images);
     let radius = (e.radius.max(4.0) * s).max(2.0);
     let frame = RoundedRect::from_rect(er, radius);
     match images.get(&e.src) {
@@ -335,16 +313,14 @@ pub fn text_box_rect(e: &Element) -> Rect {
     Rect::new(e.x, e.y, e.x + e.w.max(1.0), e.y)
 }
 
-fn draw_text_element(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    palette: &Palette,
-    e: &Element,
-    dest: Rect,
-    s: f64,
-) {
+fn draw_text_element(ctx: &mut PaintCtx<'_>, palette: &Palette, e: &Element, dest: Rect, s: f64) {
+    let PaintCtx {
+        scene,
+        transform,
+        text: tr,
+        theme,
+    } = ctx;
+    let (transform, theme) = (*transform, *theme);
     let color = palette.resolve_role(&e.fill).unwrap_or(palette.text);
     // Slide text is sized in slide units, whatever the reader's text scale.
     let reader_scale = tr.text_scale();
