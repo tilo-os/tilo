@@ -13,6 +13,7 @@
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use settings_store::magnifier::MagnifierStep;
@@ -15603,7 +15604,8 @@ impl Widget for ShellOverlayHost {
         }
     }
 
-    fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
+    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
+        let (s, p) = ui::doc::document(s, p);
         let open_desktop_tour = self.onboarding.is_none()
             && self
                 .chrome
@@ -15648,7 +15650,8 @@ impl Widget for ShellOverlayHost {
         clippy::too_many_lines,
         reason = "the compositor tick is deliberately ordered in one place so source refreshes precede palette input and every frame-side effect remains visible"
     )]
-    fn update(&mut self, doc: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
+        let (doc, path) = ui::doc::document(doc, path);
         if let Some(onboarding) = self.onboarding.as_mut() {
             return onboarding.update(doc, path);
         }
@@ -17737,8 +17740,8 @@ impl Widget for ShellOverlayHost {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;

@@ -1357,7 +1357,7 @@ mod bound_lifetime_tests {
     use taffy::{NodeId, TaffyTree};
     struct Root(Column);
     impl Widget for Root {
-        fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+        fn sync(&mut self, doc: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
             self.0.sync(doc, path);
         }
         fn build_layout(

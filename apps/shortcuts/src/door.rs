@@ -16,6 +16,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, channel};
+use ui::widget::{AppModel, ModelPath};
 
 use serde_json::{Map, Value, json};
 use tilo_automation::{ActionCatalog, SHORTCUTS_APP_ID, Shortcut, shortcut_resource_id};
@@ -722,11 +723,7 @@ impl Decorator for Door {
         self.content.as_mut()
     }
 
-    fn update(
-        &mut self,
-        state: &mut ui::automerge::AutoCommit,
-        path: &ui::automerge::ObjId,
-    ) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.remote.poll();
         if let Ok(mut core) = self.core.try_borrow_mut() {
             core.pump();

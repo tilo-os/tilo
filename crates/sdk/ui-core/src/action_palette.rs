@@ -28,6 +28,7 @@
 //! [`take_navigation`](ActionPalette::take_navigation) (content).
 
 use crate::bound_dispatch::{DeferredIntent, PreparedActionIntent};
+use crate::widget::{AppModel, ModelPath};
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -2658,8 +2659,8 @@ impl Widget for ActionPalette {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        doc: &mut AutoCommit,
-        path: &ObjId,
+        doc: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         if !self.is_presented() {
             return false;
@@ -2679,6 +2680,7 @@ impl Widget for ActionPalette {
                     self.focus_part(index + 1);
                 }
                 let handled = self.controls.children_mut()[index].perform_action(action, doc, path);
+                let (doc, path) = crate::doc::document(doc, path);
                 self.drain_command(doc, path);
                 return handled;
             }

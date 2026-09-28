@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui_core::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, TaffyTree};
 use ui_core::automerge::{AutoCommit, ObjId};
@@ -57,12 +58,12 @@ impl<K: Clone + PartialEq + 'static> Switch<K> {
 }
 
 impl<K: Clone + PartialEq + 'static> Widget for Switch<K> {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.reconcile();
         self.part.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.part.update(state, path)
     }
 

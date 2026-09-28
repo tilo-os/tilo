@@ -13,6 +13,7 @@
 //! edits so two instances pointed at one collab socket edit the same ruleset.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -1454,7 +1455,8 @@ impl Widget for FirewallApp {
         ]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         if !self.seeded {
             // Adopt an existing shared config, or publish the one we read
             // from the host. We only ever publish REAL data: a config we
@@ -1958,9 +1960,10 @@ impl Widget for FirewallApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if target == "firewall.retry" && matches!(action, A11yAction::Activate) {
             self.retry_connect(state);
             return true;

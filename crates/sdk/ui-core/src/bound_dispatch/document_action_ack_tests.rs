@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{ReadDoc, transaction::Transactable};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{Action, ActionError, ActionTransport, ExecutionLocus};
@@ -69,7 +70,7 @@ impl Widget for Owner {
             crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
         }))
     }
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {}
     fn build_layout(
         &mut self,
         t: &mut taffy::TaffyTree<()>,

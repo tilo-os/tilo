@@ -8,6 +8,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -3076,7 +3077,7 @@ impl Widget for SetupApp {
         }))
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.ensure_import_app();
         if let Some(import_app) = &mut self.import_app {
             import_app.sync(state, path);
@@ -3094,7 +3095,7 @@ impl Widget for SetupApp {
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.ensure_import_app();
         if let Some(import_app) = &mut self.import_app {
             return import_app.update(state, path);

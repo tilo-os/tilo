@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 use ui::doc::read_str;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
@@ -260,7 +261,8 @@ pub fn build_for_width(width_hint: Option<f32>) -> Box<dyn Widget> {
 }
 
 impl Widget for RegionPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if self.needs_seed {
             let loc = self.settings.locale;
             for (key, value) in [

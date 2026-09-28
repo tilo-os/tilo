@@ -141,7 +141,7 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
 }
 
 impl Widget for SemanticCountingPublisher {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+    fn sync(&mut self, _s: &mut AppModel, _p: &ModelPath) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

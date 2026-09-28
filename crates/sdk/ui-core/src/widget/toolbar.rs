@@ -1,5 +1,6 @@
 //! A measured command strip with a shared `ContextMenu` for overflow.
 //! The extent cache is the sole source for intrinsic sizing, fitting and placement.
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -974,8 +975,8 @@ impl Widget for Toolbar {
         &mut self,
         target: &str,
         action: &Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         let target = if target == "toolbar.overflow" && self.has_overflow() {
             Target::Overflow

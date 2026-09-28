@@ -18,6 +18,7 @@ use taffy::{NodeId, TaffyTree};
 use tilo_bluez::{DeviceInfo, PairOutcome};
 use ui::doc::{read_bool, read_str_or_text};
 use ui::theme::Theme;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -793,7 +794,8 @@ pub fn build() -> Box<dyn Widget> {
     Box::new(BluetoothPane::new())
 }
 impl Widget for BluetoothPane {
-    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
+        let (shared, _) = ui::doc::document(shared, root);
         let isolated = self.isolate_document;
         let mut state = if isolated {
             std::mem::take(&mut self.local_doc)

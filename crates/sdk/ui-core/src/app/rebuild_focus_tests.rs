@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Text, TextInput};
 use automerge::{AutoCommit, ObjId};
 use vello::kurbo::Rect;
@@ -100,7 +101,7 @@ impl Widget for RebuildHarness {
             .map(|c| c.as_mut() as &mut (dyn Widget + '_))
             .collect()
     }
-    fn on_external_event(&mut self, payload: &str, _s: &mut AutoCommit, _r: &ObjId) {
+    fn on_external_event(&mut self, payload: &str, _s: &mut AppModel, _r: &ModelPath) {
         match payload {
             "show_status" => self.show_status = true,
             "reset" => self.request_reset = true,

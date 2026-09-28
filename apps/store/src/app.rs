@@ -34,6 +34,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
@@ -4609,7 +4610,8 @@ impl Widget for StoreApp {
         Some(self.completed_invocations.remove(index))
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         self.drain_report_export();
         for report in &self.reports {
             let _ = ensure_text_obj(state, path, &report_note_key(&report.app_id));

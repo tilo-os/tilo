@@ -10,6 +10,7 @@
 //! diagnostics screen.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
@@ -285,7 +286,7 @@ impl Thumbnail {
 }
 
 impl Widget for Thumbnail {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         // Lazily resolve the real thumbnail. Once we have it, stop touching the
         // store; a freshly-decoded image flips `dirty` so the next frame repaints
         // it — no structural rebuild.

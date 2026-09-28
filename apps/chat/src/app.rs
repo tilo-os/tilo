@@ -16,6 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, SyncSender};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
@@ -2991,7 +2992,8 @@ impl Widget for ChatApp {
     fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
         Some(self)
     }
-    fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = ui::doc::document(doc, path);
         self.apply_realtime_stop(doc);
         self.establish_realtime_target();
         if !self.canonical && self.is_live {
@@ -3567,9 +3569,10 @@ impl Widget for ChatApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = ui::doc::document(state, path);
         if target.starts_with("context-menu:item:") {
             let Some(mut menu) = self.menu.take() else {
                 return false;
@@ -3878,7 +3881,7 @@ impl Widget for ChatApp {
     /// decoding in the background. A live-but-static call does **not** force
     /// continuous redraws (the roster/rings are static), so an idle call
     /// no longer pins a core.
-    fn update(&mut self, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _doc: &mut AppModel, _path: &ModelPath) -> bool {
         // A bound media endpoint wakes the event loop; sync adopts it.
         let media_bound = self.media.poll_binding();
         // Re-run `sync` once after the first layout so the channel already in

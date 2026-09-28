@@ -10,6 +10,7 @@
 //! [`TimePicker::from_state`], or be observed with `on_change` for an
 //! app-owned durable mutation.
 
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -460,7 +461,7 @@ impl TimePicker {
 }
 
 impl Widget for TimePicker {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         if let Some(value) = self
             .local_state
             .as_mut()
@@ -693,8 +694,8 @@ impl Widget for TimePicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
+        _state: &mut AppModel,
+        _root: &ModelPath,
     ) -> bool {
         let crate::a11y::Action::SetValue(value) = action else {
             return false;

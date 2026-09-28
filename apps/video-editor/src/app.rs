@@ -13,6 +13,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -6026,7 +6027,8 @@ impl Widget for VideoEditorApp {
         clippy::too_many_lines,
         reason = "the per-frame sync reads as the ordered list of things a frame reconciles"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         if std::mem::take(&mut self.project_sync.save_requested) {
             self.save_project(state);
         }
@@ -7370,10 +7372,11 @@ impl Widget for VideoEditorApp {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::{Action, hash_key};
+        let (state, _) = ui::doc::document(state, path);
         // An assistive-technology command is one gesture, like a key press.
         let _gesture = self.actions.gesture();
         let Some(&pane_key) = key_path.first() else {

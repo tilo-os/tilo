@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{AlignItems, Dimension, NodeId, Size, Style, TaffyTree};
@@ -1191,7 +1192,7 @@ impl Widget for SidebarWheelDisc {
         spring_active || self.wheel_last_event.is_some() || self.drag_from.is_some()
     }
 
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
         // Real (clamped) frame dt keeps the spring wall-clock-correct
         // under frame drops. Clamped to 1/30 s: semi-implicit Euler
         // stays stable, and a long stall just resumes rather than
@@ -1320,8 +1321,8 @@ impl Widget for SidebarWheelDisc {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
@@ -1345,8 +1346,8 @@ impl Widget for SidebarWheelDisc {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;

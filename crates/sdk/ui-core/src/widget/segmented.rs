@@ -15,6 +15,7 @@
 //! render/selection caches, never the canonical value (which lives in the
 //! host's CRDT), matching the toolkit's CRDT-native pattern.
 
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::style_helpers::{length, percent};
@@ -352,8 +353,8 @@ impl Widget for TriStateControl {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         let Some(index) = target
             .strip_prefix("segment:")
@@ -756,8 +757,8 @@ impl Widget for ColorSwatchPicker {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         let Some(index) = target
             .strip_prefix("swatch:")

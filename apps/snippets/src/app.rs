@@ -17,6 +17,7 @@
 //! open expand-modal are view state and stay local to each peer.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
@@ -1028,7 +1029,8 @@ impl ui::widget::Widget for SnippetsApp {
         Ok(true)
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         self.sync_library(state);
         self.sync_body_editor();
     }
@@ -1316,7 +1318,7 @@ impl ui::widget::Widget for SnippetsApp {
             || self.push.is_animating(SplitLayout::Docked)
     }
 
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
         // Advance the sidebar reveal + the push (list↔detail) slide toward
         // their targets. Frame-rate-independent; the host re-pumps frames
         // while `needs_animation_frame` stays true.
@@ -1448,9 +1450,10 @@ impl ui::widget::Widget for SnippetsApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = ui::doc::document(state, path);
         if let Some(mut modal) = self.expand.take() {
             let Some(outcome) = modal.perform_semantic_action(target, action, state, path) else {
                 self.expand = Some(modal);

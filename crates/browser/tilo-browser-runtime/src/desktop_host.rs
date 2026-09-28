@@ -24,6 +24,7 @@ use tilo_desktop::{
 };
 use tilo_desktop_model::apps::{AppCatalogue as _, OpenableApp};
 use tilo_desktop_model::*;
+use ui::widget::{AppModel, ModelPath};
 use ui::{TextRenderer, Theme, presence::PresenceCtx};
 use ui::{
     application::{
@@ -2169,10 +2170,11 @@ impl Widget for DesktopRoot {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         self.surface.sync(doc, path);
     }
-    fn update(&mut self, doc: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
+        let (doc, path) = ui::doc::document(doc, path);
         // Process the current admission before validating a queued local view.
         let mut changed = self.reconcile();
         if let Some(request) = self.pending_view_request.take() {

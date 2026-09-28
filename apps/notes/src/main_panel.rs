@@ -30,6 +30,7 @@
 //! ```
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
@@ -1188,7 +1189,8 @@ impl Widget for MainPanel {
         }
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         self.date_index.sync(state);
         let dates = self
             .page_id
@@ -2166,8 +2168,8 @@ impl Widget for MainPanel {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if self.page_id.is_none() && matches!(action, ui::a11y::Action::Activate) {
             self.empty_action_requested = true;
@@ -2183,8 +2185,8 @@ impl Widget for MainPanel {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         if target == "notes.scroll-position" {
             if self.scroll_thumb().is_none() {

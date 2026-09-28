@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::ops::{Deref, DerefMut};
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use serde::{Deserialize, Serialize};
@@ -318,8 +319,8 @@ impl Widget for QueryEditorChild {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.editor.perform_action(action, state, path)
     }
@@ -556,8 +557,8 @@ impl Widget for QueryDivider {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         self.pending = match action {
             ui::a11y::Action::Increment => Some(QueryResizeCommand::Adjust(24.0)),
@@ -690,8 +691,8 @@ impl Widget for QueryResizeMenu {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if matches!(action, ui::a11y::Action::Activate)
             && let Some(index) = key_path.first().and_then(|key| usize::try_from(*key).ok())
@@ -707,8 +708,8 @@ impl Widget for QueryResizeMenu {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
@@ -2103,7 +2104,8 @@ impl Widget for DbClientApp {
         })
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         self.drain_query_resize_actions();
         // Accessibility activation is delivered directly to the focused child;
         // drain its semantic action here and enter the same modal flow as a
@@ -2582,7 +2584,7 @@ impl Widget for DbClientApp {
 
     /// The schema browser eases wheel scrolling and row transitions on its
     /// own clock; it is the one child whose per-frame update this root runs.
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.schema_in_tree() && self.tree.update(state, path)
     }
 
@@ -2649,10 +2651,11 @@ impl Widget for DbClientApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let (state, _path) = ui::doc::document(state, path);
 
         if self.modal.is_open() {
             if !target.starts_with("db.modal.") {
@@ -2705,9 +2708,10 @@ impl Widget for DbClientApp {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = ui::doc::document(state, path);
         let _ = (action, state, path);
         false
     }

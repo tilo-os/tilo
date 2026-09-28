@@ -9,6 +9,7 @@
 //! button/scrim/Esc self-routing.
 
 use crate::time::Instant;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -1087,7 +1088,7 @@ impl Widget for NavShell {
         found
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.overview.sync(state, path);
         if let Some(d) = self.detail.as_mut() {
             d.sync(state, path);
@@ -1229,7 +1230,7 @@ impl Widget for NavShell {
         false
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         // Slides advance from the draw path (`self_tick`). The admitted
         // primary-frame update forwards model/momentum updates to every pane.
         let mut any = self.overview.update(state, path);

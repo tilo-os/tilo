@@ -26,6 +26,7 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, ButtonFace, ColorSwatchFace};
 use crate::widget::{TextInput, TextInputKind};
 use automerge::{AutoCommit, ObjId};
@@ -1042,7 +1043,7 @@ impl ColorPicker {
 }
 
 impl Widget for ColorPicker {
-    fn sync(&mut self, _state: &mut AutoCommit, _root: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _root: &ModelPath) {
         if let Some(color) = self
             .local_state
             .as_mut()
@@ -1395,8 +1396,8 @@ impl Widget for ColorPicker {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         if let Some(index) = target.strip_prefix(TARGET_SWATCH) {
@@ -1422,8 +1423,8 @@ impl Widget for ColorPicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
+        _state: &mut AppModel,
+        _root: &ModelPath,
     ) -> bool {
         let crate::a11y::Action::SetValue(value) = action else {
             return false;

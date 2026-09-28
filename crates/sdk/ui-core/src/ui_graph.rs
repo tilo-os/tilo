@@ -9,6 +9,7 @@ use crate::LocalState;
 use crate::theme::Theme;
 use crate::time::SystemTime;
 use crate::tokens::TextRole;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
     Button, ButtonStyle, Checkbox, Column, Container, Element, Row, Scrollable, Spacer, Text,
     TextInput, Toggle, Widget, labeled_check, labeled_field,
@@ -1436,12 +1437,12 @@ impl LiveUi {
 }
 
 impl Widget for LiveUi {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.rebuild_if_changed();
         self.child.update(state, path)
     }
@@ -3142,12 +3143,12 @@ fn delete_button(
 }
 
 impl Widget for UiGraphEditor {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.rebuild_if_changed();
         self.child.update(state, path)
     }

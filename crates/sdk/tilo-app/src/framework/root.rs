@@ -4,10 +4,11 @@
 
 use std::rc::Rc;
 use std::sync::Arc;
+use ui_core::widget::{AppModel, ModelPath};
 
 use tilo_resource::{Resource, SearchEntry};
 use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
-use ui_core::automerge::{AutoCommit, ObjId};
+use ui_core::automerge::AutoCommit;
 use ui_core::permissions::{LivePermissions, PermissionScope};
 use ui_core::presence::PresenceCtx;
 use ui_core::record::RecordSaveStatus;
@@ -201,7 +202,8 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         self.content.as_mut()
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui_core::doc::document(state, path);
         self.refresh_access();
         self.refresh(state);
         self.content.sync(state, path);

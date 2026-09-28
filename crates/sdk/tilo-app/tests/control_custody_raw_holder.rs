@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use ui_core::widget::{AppModel, ModelPath};
 
 use tilo_app as ui;
 use ui::automerge::{AutoCommit, ObjId};
@@ -28,7 +29,7 @@ impl ExternalRawWidget {
 }
 
 impl Widget for ExternalRawWidget {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.content.sync(state, path);
     }
 

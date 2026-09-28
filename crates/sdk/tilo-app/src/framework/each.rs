@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui_core::widget::{AppModel, ModelPath};
 
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -254,7 +255,7 @@ impl<R: Resource> Each<R> {
 }
 
 impl<R: Resource> Widget for Each<R> {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if self.live.revision() != self.built {
             self.built = self.live.revision();
             self.reconcile();
@@ -265,7 +266,7 @@ impl<R: Resource> Widget for Each<R> {
     }
 
     // The per-frame update pass drives retained models; every row sees it.
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for row in &mut self.rows {
             changed |= row.widget.update(state, path);

@@ -11,6 +11,7 @@
 //! [`Intent`]s for anything that needs a sibling pane or an overlay.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -3225,7 +3226,7 @@ impl Pane {
 }
 
 impl Widget for Pane {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if let Some(i) = self.search_input.as_mut() {
             i.sync(state, path);
         }

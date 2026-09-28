@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use agent_provider_config::{
     EndpointLocation, ModelDescriptor, ProviderConfig, ProviderProfile, ProviderProtocol,
@@ -1371,7 +1372,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for AgentModelsPane {
-    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
+        let (shared, _) = ui::doc::document(shared, root);
         let isolated = self.isolate_document;
         let mut state = if isolated {
             std::mem::take(&mut self.local_doc)
@@ -1420,7 +1422,7 @@ impl Widget for AgentModelsPane {
         }
     }
 
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
         if self.is_busy() && self.last_poll.elapsed() >= POLL_INTERVAL {
             self.refresh();
             return true;

@@ -2846,9 +2846,10 @@ mod legacy_owner_routing_tests {
             &mut self,
             target: &str,
             action: &crate::a11y::Action,
-            doc: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
         ) -> bool {
+            let (doc, _) = crate::doc::document(doc, path);
             if target != "owner:named" {
                 return false;
             }
@@ -2866,9 +2867,10 @@ mod legacy_owner_routing_tests {
             &mut self,
             action: &crate::a11y::Action,
             keys: &[u64],
-            doc: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
         ) -> bool {
+            let (doc, _) = crate::doc::document(doc, path);
             if keys != [7] || !matches!(action, crate::a11y::Action::Activate) {
                 return false;
             }

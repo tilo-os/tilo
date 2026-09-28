@@ -5,6 +5,7 @@
 //! Within-group reorder still lives in `TabBar` / `WindowGroup`.
 
 use crate::time::{Duration, Instant};
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{
@@ -2521,13 +2522,13 @@ impl Widget for GroupRow {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         for g in &mut self.groups {
             g.sync(state, root);
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, root: &ModelPath) -> bool {
         // Animation needs one layout refresh per host frame, not an endless
         // structural invalidation inside bounded composition settlement.
         self.structure_dirty |= self.snap_in_flight();

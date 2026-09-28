@@ -463,7 +463,7 @@ mod tests {
         save_allowed: bool,
     }
     impl Widget for OwnedRoot {
-        fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+        fn sync(&mut self, doc: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
             self.text.sync(doc, path);
         }
         fn build_layout(

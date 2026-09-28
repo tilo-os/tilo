@@ -3,6 +3,7 @@
 //! `ui::Row` doesn't serve — it's opinionated toward wrapping toolbar layouts.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, FlexDirection, NodeId, Size, Style, TaffyTree};
@@ -32,12 +33,12 @@ impl SplitRow {
 }
 
 impl Widget for SplitRow {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.left.sync(state, path);
         self.right.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let a = self.left.update(state, path);
         let b = self.right.update(state, path);
         a || b

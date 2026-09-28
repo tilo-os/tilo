@@ -5,6 +5,7 @@
 //! and do not flow through Automerge, mirroring how `permission_prompt`
 //! exposes its result via `pending_choice`.
 
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -504,7 +505,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         self.recompute_layout();
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         // The dialog holds no CRDT-backed state itself; forward so embedded
         // content widgets still get their sync pass.
         self.content.sync(state, path);
@@ -850,8 +851,8 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _: &mut AutoCommit,
-        _: &ObjId,
+        _: &mut AppModel,
+        _: &ModelPath,
     ) -> bool {
         if !self.open || !matches!(action, crate::a11y::Action::Activate) {
             return false;

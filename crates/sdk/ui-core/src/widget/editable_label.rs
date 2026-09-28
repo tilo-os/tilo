@@ -11,6 +11,7 @@
 //! The outcome of the most recent edit is polled once via [`take_outcome`]
 //! (rising-edge, like [`TextInput::take_dirty`]).
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
@@ -464,8 +465,8 @@ impl Widget for EditableLabel {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.semantic_target.as_deref() == Some(target) && self.perform_action(action, state, path)
     }
@@ -473,10 +474,11 @@ impl Widget for EditableLabel {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, path) = crate::doc::document(state, path);
 
         if matches!(action, Action::Focus | Action::Activate) {
             if !self.editing {

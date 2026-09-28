@@ -4,6 +4,7 @@ use automerge::{AutoCommit, ObjId};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::widget::{AppModel, ModelPath};
 use ui::{
     presence::PresenceCtx,
     text_render::TextRenderer,
@@ -442,7 +443,7 @@ impl Widget for BrowserTabStrip {
     fn is_focused(&self) -> bool {
         self.inner.is_focused()
     }
-    fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
+    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
         self.inner.sync(s, p);
     }
     fn build_layout(
@@ -702,8 +703,8 @@ impl Widget for BrowserTabStrip {
         &mut self,
         target: &str,
         a: &ui::a11y::Action,
-        s: &mut AutoCommit,
-        p: &ObjId,
+        s: &mut AppModel,
+        p: &ModelPath,
     ) -> bool {
         if matches!(a, ui::a11y::Action::Activate) {
             if target == "tab-overflow-before" && self.has_hidden_before() {

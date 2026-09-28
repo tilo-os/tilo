@@ -1,5 +1,6 @@
 //! Process-local screen routing with explicit, inspectable history.
 
+use crate::widget::{AppModel, ModelPath};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -386,12 +387,12 @@ impl Router {
 }
 
 impl Widget for Router {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.rebuild_if_changed();
         self.child.update(state, path)
     }
@@ -510,8 +511,8 @@ impl Widget for Router {
     fn on_nav_gesture(
         &mut self,
         direction: NavDirection,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         if self.child.on_nav_gesture(direction, state, path) {
             return true;

@@ -20,6 +20,7 @@
 //! container routes all events to it exclusively — how the out-of-layout
 //! list becomes hit-testable and click-outside dismissal works.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use crate::widget::TaffyTreeExt;
@@ -668,7 +669,8 @@ impl Dropdown {
 }
 
 impl Widget for Dropdown {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = crate::doc::document(state, root);
         if let Some(binding) = &mut self.local_state {
             if let Some(selected) = binding.poll() {
                 self.selected = selected;
@@ -1163,10 +1165,11 @@ impl Widget for Dropdown {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, root) = crate::doc::document(state, root);
         if !self.effectively_enabled() {
             return false;
         }

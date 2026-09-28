@@ -4,6 +4,7 @@
 //! Automerge document on every change (see [`crate::doc`]).
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -1261,8 +1262,9 @@ impl Widget for CalculatorApp {
         Ok(true)
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         use automerge::transaction::Transactable as _;
+        let (state, _) = ui::doc::document(state, path);
         if !self.seeded {
             if crate::doc::is_seeded(state) {
                 let _ = crate::doc::load_into(state, &mut self.model);
@@ -1729,10 +1731,11 @@ impl Widget for CalculatorApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let (state, _) = ui::doc::document(state, path);
         // Assistive actions bypass `handle_event`; they may change anything.
         self.dirty = true;
         match target {

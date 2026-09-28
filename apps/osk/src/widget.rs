@@ -73,6 +73,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 use ui::doc::{read_bool, read_str};
+use ui::widget::{AppModel, ModelPath};
 
 #[cfg(test)]
 use automerge::transaction::Transactable;
@@ -2269,7 +2270,8 @@ impl Widget for OskWidget {
             }
         }
     }
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         self.poll_hold(Instant::now());
         if !self.drafts.has(0) {
             if let Some(layout) = read_str(state, path, CONFIG_LAYOUT_KEY) {
@@ -2628,8 +2630,8 @@ impl Widget for OskWidget {
         &mut self,
         target: &str,
         action: &AccessibilityAction,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !self.visible {
             return false;
@@ -2722,7 +2724,7 @@ impl Widget for OskWidget {
     ///
     /// Unrecognised payloads are ignored so an unrelated `External` event can't
     /// disturb the keyboard.
-    fn on_external_event(&mut self, payload: &str, _state: &mut AutoCommit, _root: &ObjId) {
+    fn on_external_event(&mut self, payload: &str, _state: &mut AppModel, _root: &ModelPath) {
         match payload {
             "osk:show" => self.set_visible(true),
             "osk:hide" => self.set_visible(false),

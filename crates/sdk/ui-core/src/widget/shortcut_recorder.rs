@@ -4,6 +4,7 @@
 //! Enter/Space, then type the replacement chord. Escape cancels. A reset
 //! affordance is present only while the value differs from its default.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
@@ -100,7 +101,8 @@ impl Widget for ShortcutRecorder {
         self.interaction = environment;
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = crate::doc::document(state, root);
         if let Ok(Some((Value::Scalar(value), _))) = state.get(root, self.path.as_str())
             && let automerge::ScalarValue::Str(value) = value.as_ref()
         {
@@ -351,8 +353,8 @@ impl Widget for ShortcutRecorder {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
+        _state: &mut AppModel,
+        _root: &ModelPath,
     ) -> bool {
         if matches!(action, crate::a11y::Action::Activate) {
             self.capturing = true;

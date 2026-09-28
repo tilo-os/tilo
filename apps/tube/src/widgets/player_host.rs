@@ -19,6 +19,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
@@ -79,7 +80,7 @@ impl Widget for PlayerHost {
     fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
         Some(self)
     }
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         // Pumps the engine (pulls the freshest decoded frame + playhead).
         self.player.borrow_mut().sync(state, path);
     }

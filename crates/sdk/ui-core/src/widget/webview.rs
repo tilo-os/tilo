@@ -14,6 +14,7 @@
 //! [`crate::webview::WebViewEvent`]s from the engine during `sync` and
 //! owns that state in its CRDT.
 
+use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
 
 use automerge::{AutoCommit, ObjId};
@@ -571,8 +572,8 @@ impl Widget for WebView {
     fn on_nav_gesture(
         &mut self,
         dir: NavDirection,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         self.engine.send(match dir {
             NavDirection::Back => WebViewCommand::GoBack,

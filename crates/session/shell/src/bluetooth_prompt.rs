@@ -20,6 +20,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
+use ui::widget::{AppModel, ModelPath};
 
 use crate::bluetooth::PairingPromptHandle;
 use crate::shell::i18n::{t, t_args};
@@ -358,7 +359,8 @@ fn pressed(event: &WindowEvent, key: NamedKey) -> bool {
 }
 
 impl Widget for PairingPromptView {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if read_bool(state, root, KEY_REJECT) {
             let _ = state.put(root, KEY_REJECT, ScalarValue::Boolean(false));
             self.answer = Some(PairingReply::Reject);

@@ -7,6 +7,7 @@
 //! updates therefore keep widget identity, focus, scroll positions, and other
 //! retained presentation state.
 
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -221,12 +222,14 @@ where
         let child_domain = self.child_domain.get_or_insert_with(|| scope.child());
         self.child.install_control_custody(child_domain, attachment);
     }
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document(state, path);
         self.reconcile(state, path);
         self.child.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        let (state, path) = crate::doc::document(state, path);
         self.reconcile(state, path);
         self.child.update(state, path)
     }
@@ -357,7 +360,7 @@ where
         self.child.needs_idle_sync()
     }
 
-    fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {
+    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
         self.child.on_external_event(payload, state, root);
     }
 
@@ -389,7 +392,7 @@ where
         self.child.search_providers()
     }
 
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, path: &ObjId) {
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
         self.child.activate_search_result(action_id, doc, path);
     }
 

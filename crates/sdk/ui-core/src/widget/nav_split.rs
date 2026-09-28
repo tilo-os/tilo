@@ -14,6 +14,7 @@
 //! supply only the two child widgets.
 
 use crate::time::Instant;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -864,7 +865,7 @@ impl Widget for NavSplit {
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         // The reveal/push slide is driven from the draw path (`self_tick`),
         // not here, because drawing owns its frame delta. This pass only
         // forwards to children and reports whether anything still needs

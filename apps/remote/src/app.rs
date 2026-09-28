@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Mutex, PoisonError};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use iroh_base::{EndpointId, SecretKey};
@@ -2754,7 +2755,8 @@ impl Widget for RemoteApp {
         Some(update)
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         // Publish our own connection list into the shared document the first
         // time we run, then adopt any remote additions. The live app's list
         // is empty on a fresh machine, so nothing fabricated is ever written
@@ -3633,10 +3635,11 @@ impl Widget for RemoteApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action as A11yAction;
+        let (state, _) = ui::doc::document(state, path);
         if self.pending_confirmation.is_some() {
             let routed = match (target, action) {
                 ("remote.confirmation.cancel", A11yAction::Activate) => Action::CancelPending,

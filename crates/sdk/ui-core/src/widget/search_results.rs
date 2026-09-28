@@ -12,6 +12,7 @@
 //! [`SearchResultsView::set_rect`] for a free-floating overlay — and it lays
 //! its own headers and rows top-down from the current groups.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
@@ -763,8 +764,8 @@ impl Widget for SearchResultsView {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _: &mut AutoCommit,
-        _: &automerge::ObjId,
+        _: &mut AppModel,
+        _: &ModelPath,
     ) -> bool {
         if !matches!(
             action,

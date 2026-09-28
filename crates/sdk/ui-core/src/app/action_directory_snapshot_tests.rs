@@ -35,7 +35,8 @@ impl Widget for DeclaredDirectory {
             .map(|provider| vec![Box::new(provider) as Box<dyn crate::search::SearchProvider>])
             .unwrap_or_default()
     }
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = crate::doc::document(doc, path);
         if let Some(change) = self.sync_change.as_ref().and_then(|change| change.take()) {
             doc.put(ROOT, change, true).unwrap();
         }

@@ -8273,7 +8273,7 @@ mod tests {
             "StructureReplacingEditor"
         }
 
-        fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+        fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
             if std::mem::take(&mut self.replace_during_sync) {
                 let value = self.current.accessibility().unwrap().value.unwrap();
                 let current = std::mem::replace(&mut self.current, Self::editor(&value));
@@ -8466,8 +8466,8 @@ mod tests {
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
-            _state: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
+            _state: &mut crate::widget::AppModel,
+            _path: &crate::widget::ModelPath,
         ) -> bool {
             if matches!(action, crate::a11y::Action::Activate) {
                 self.activations
@@ -9551,7 +9551,12 @@ mod tests {
         ready: bool,
     }
     impl Widget for LateRecordProbe {
-        fn update(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) -> bool {
+        fn update(
+            &mut self,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
+        ) -> bool {
+            let (doc, _) = crate::doc::document(doc, path);
             self.frames = self.frames.saturating_add(1);
             if self.frames == 2 {
                 doc.put(automerge::ROOT, "loaded", "initial content")
@@ -9562,7 +9567,8 @@ mod tests {
         fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
             (self.frames >= 2).then(|| self.checkout.clone())
         }
-        fn sync(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+        fn sync(&mut self, doc: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+            let (doc, _) = crate::doc::document(doc, path);
             self.ready =
                 crate::record::identity(doc).is_some_and(|record| record.id == self.checkout.id);
         }
@@ -9615,10 +9621,11 @@ mod tests {
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
-            doc: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
         ) -> bool {
             use automerge::ReadDoc;
+            let (doc, _) = crate::doc::document(doc, path);
 
             if self.ready && matches!(action, crate::a11y::Action::Activate) {
                 doc.put(automerge::ROOT, "payload", "late record content")
@@ -9643,7 +9650,6 @@ mod tests {
     }
     impl Widget for RecordRootProbe {
         crate::testing::inert_widget_methods!(
-            sync,
             leaf_layout,
             apply_layout,
             draw,
@@ -10392,8 +10398,8 @@ mod a11y_driver_tests {
             &mut self,
             action: &Action,
             key_path: &[u64],
-            _s: &mut automerge::AutoCommit,
-            _p: &automerge::ObjId,
+            _s: &mut crate::widget::AppModel,
+            _p: &crate::widget::ModelPath,
         ) -> bool {
             let Some(&key) = key_path.first() else {
                 return false;
@@ -10982,9 +10988,10 @@ mod dispatched_action_driver_tests {
             &mut self,
             action: &crate::a11y::Action,
             _key_path: &[u64],
-            doc: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
         ) -> bool {
+            let (doc, _) = crate::doc::document(doc, path);
             if !matches!(action, crate::a11y::Action::Activate) {
                 return false;
             }
@@ -11337,7 +11344,7 @@ mod prepared_driver_tests {
                 local.writer().set("initial callback".into());
             }
         }
-        fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+        fn sync(&mut self, _: &mut crate::widget::AppModel, _: &crate::widget::ModelPath) {
             self.observed
                 .syncs
                 .set(self.observed.syncs.get().saturating_add(1));
@@ -11999,7 +12006,7 @@ mod framed_tests {
     }
 
     impl Widget for Probe {
-        fn sync(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) {
+        fn sync(&mut self, _state: &mut crate::widget::AppModel, _path: &crate::widget::ModelPath) {
             self.syncs = self.syncs.saturating_add(1);
         }
 

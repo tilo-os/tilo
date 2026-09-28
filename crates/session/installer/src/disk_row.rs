@@ -10,6 +10,7 @@
 //! (rising-edge), exactly like `ui::Button`'s `on_click_path`.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -329,9 +330,10 @@ impl Widget for DiskRow {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
+        let (state, root) = ui::doc::document(state, root);
         if self.disabled()
             || !matches!(
                 action,

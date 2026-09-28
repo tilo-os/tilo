@@ -6,6 +6,7 @@
 //! Callers push `MenuItem::action(label, fn)` and optional
 //! `MenuItem::separator()` entries, then call `open_at` on right-click.
 
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -1141,8 +1142,8 @@ impl Widget for ContextMenu {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !self.open || !matches!(action, crate::a11y::Action::Activate) {
             return false;

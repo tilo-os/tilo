@@ -32,6 +32,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use ui::doc::read_str_or_text;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -320,7 +321,8 @@ impl TimeZoneMap {
 }
 
 impl Widget for TimeZoneMap {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if self.action.is_some() {
             return;
         }
@@ -594,9 +596,10 @@ impl Widget for TimeZoneMap {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
+        let (state, root) = ui::doc::document(state, root);
         match action {
             ui::a11y::Action::Activate => {
                 if let Some(index) = self.cursor.or_else(|| self.selected_index()) {

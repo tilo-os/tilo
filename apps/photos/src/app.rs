@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
@@ -14806,7 +14807,8 @@ impl Widget for PhotosApp {
         clippy::too_many_lines,
         reason = "synchronization derives the bounded library, filters, search, and thumbnail work from one document snapshot"
     )]
-    fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, path) = ui::doc::document(doc, path);
         self.reconcile_content(doc);
         self.drain_action_control_pending(doc);
         self.drain_analysis_results(doc);
@@ -16475,9 +16477,10 @@ impl Widget for PhotosApp {
         &mut self,
         target: &str,
         action: &AccessAction,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         self.reconcile_content(state);
         self.perform_toolbar_semantic_action(target, action, state)
             || self.perform_directory_semantic_action(target, action)

@@ -15,6 +15,7 @@ use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId, transaction::Transactable};
 use taffy::style_helpers::length;
@@ -4421,7 +4422,8 @@ impl Widget for NotesApp {
         &[crate::actions::NOTES_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         self.refresh_canonical_assets(state);
         if self.legacy_fixture_storage.is_none() {
             self.offer_inline_asset_move(state);
@@ -5010,8 +5012,8 @@ impl Widget for NotesApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if target == "notes.drawer"
             && self.built_narrow
