@@ -8,6 +8,9 @@
 
 use super::*;
 
+#[cfg(target_os = "linux")]
+mod linux_header;
+
 #[cfg(not(target_os = "android"))]
 type PrimaryA11yAdapter = accesskit_winit::Adapter;
 #[cfg(target_os = "android")]
@@ -85,6 +88,9 @@ struct AppHandler {
     /// What the host chrome last presented, to skip unchanged refreshes.
     #[cfg(target_os = "macos")]
     host_commands_key: Option<super::host_commands::HostCommandsKey>,
+    /// Who decorates the window, and the header bar when the app does.
+    #[cfg(target_os = "linux")]
+    decorations: linux_header::Decorations,
 }
 
 #[cfg(target_os = "macos")]
@@ -1529,6 +1535,8 @@ impl AppHandler {
             }
         }
         sync_safe_area(&mut self.app, window);
+        #[cfg(target_os = "linux")]
+        self.decorations.refresh(&mut self.app, window);
         let app = &mut self.app;
 
         // Continue one bounded provider page per frame. Re-querying resets the
@@ -1681,6 +1689,8 @@ impl AppHandler {
         crate::webview::frame_trace::begin_scene();
         let (transform, window_rect, t_draw_us) =
             draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
+        #[cfg(target_os = "linux")]
+        self.decorations.draw(app, &mut scene, transform);
 
         let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
         draw_legacy_cursors(app, &mut scene, transform);
@@ -3516,6 +3526,16 @@ impl AppHandler {
         if let Some(adapter) = self.a11y_adapter.as_mut() {
             adapter.process_event(window, &event);
         }
+        #[cfg(target_os = "linux")]
+        {
+            let routed = self.decorations.route(&mut self.app, window, &event);
+            if routed.close {
+                self.close_primary_window(event_loop, window);
+            }
+            if routed.consumed {
+                return;
+            }
+        }
         self.dispatch_touch_pointer_events(window, &event);
         match event {
             WindowEvent::CloseRequested => self.close_primary_window(event_loop, window),
@@ -3759,6 +3779,8 @@ impl App {
             host_chrome: None,
             #[cfg(target_os = "macos")]
             host_commands_key: None,
+            #[cfg(target_os = "linux")]
+            decorations: linux_header::Decorations::Unsettled,
         };
         match event_loop.run_app(&mut handler) {
             Ok(()) => {}
