@@ -104,6 +104,18 @@ const BRAND_GAP: f32 = 5.0;
 const WIDE_VIEWPORT_WIDTH: f64 = 1100.0;
 const WIDE_VIEWPORT_HEIGHT: f64 = 560.0;
 const COMPACT_VIEWPORT_WIDTH: f64 = 600.0;
+/// How long the decorative backdrop keeps moving after the greeter appears or
+/// after the last input, before it holds its frame. A greeter mostly waits
+/// unattended, and without a GPU every backdrop frame is a full software
+/// render: at 5K that was over four cores and the compositor behind it, for
+/// as long as the login screen stayed up.
+const BACKDROP_ACTIVE: Duration = Duration::from_secs(20);
+/// Frame interval of the moving backdrop.
+const BACKDROP_INTERVAL: Duration = Duration::from_millis(42);
+
+fn backdrop_idle_after(activity: Instant) -> Instant {
+    activity.checked_add(BACKDROP_ACTIVE).unwrap_or(activity)
+}
 
 /// A stack with an explicit gap and optional padding, fixed width,
 /// minimum height, and opaque card chrome. Only the wide welcome stage is horizontal.
@@ -609,7 +621,11 @@ pub struct GreeterApp {
     viewport_offset: Rc<Cell<(f32, f32)>>,
     /// Pure presentation caches, never authentication or replicated state.
     layout_text_scale: f32,
-    backdrop_started: Instant,
+    /// Backdrop animation time at `backdrop_resumed`; it advances only until
+    /// `backdrop_idle_at`, then holds until input resumes it from there.
+    backdrop_phase: f64,
+    backdrop_resumed: Instant,
+    backdrop_idle_at: Instant,
     backdrop_deadline: Option<Instant>,
     shot_time: Option<f64>,
     /// Queued console requests (see [`console`]); `None` in shots and tests
@@ -715,7 +731,9 @@ impl GreeterApp {
             proxy: Arc::new(OnceLock::new()),
             viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
             layout_text_scale: 1.0,
-            backdrop_started: Instant::now(),
+            backdrop_phase: 0.0,
+            backdrop_resumed: Instant::now(),
+            backdrop_idle_at: backdrop_idle_after(Instant::now()),
             backdrop_deadline: None,
             shot_time: None,
             console: None,
@@ -814,6 +832,28 @@ impl GreeterApp {
         } else {
             0.0
         });
+    }
+
+    fn backdrop_elapsed(&self, now: Instant) -> f64 {
+        self.backdrop_phase
+            + now
+                .min(self.backdrop_idle_at)
+                .saturating_duration_since(self.backdrop_resumed)
+                .as_secs_f64()
+    }
+
+    /// Input keeps the backdrop moving; after it had settled, it resumes from
+    /// the frame it held and the next wake redraws it.
+    fn note_backdrop_activity(&mut self, now: Instant) {
+        if now >= self.backdrop_idle_at {
+            self.backdrop_phase = self.backdrop_elapsed(now);
+            self.backdrop_resumed = now;
+            // One wake to redraw; draw drops it again for a static theme.
+            if self.shot_time.is_none() {
+                self.backdrop_deadline = Some(now);
+            }
+        }
+        self.backdrop_idle_at = backdrop_idle_after(now);
     }
 
     fn uses_wide_layout(&self, text_scale: f32) -> bool {
@@ -1737,24 +1777,35 @@ impl Widget for GreeterApp {
         presence: &PresenceCtx,
     ) {
         let now = Instant::now();
-        let elapsed = self
-            .shot_time
-            .unwrap_or_else(|| self.backdrop_started.elapsed().as_secs_f64());
+        let elapsed = self.shot_time.unwrap_or_else(|| self.backdrop_elapsed(now));
         let mut backdrop = Scene::new();
         ui::auth_backdrop::draw(&mut backdrop, theme, self.rect, elapsed);
         scene.append(&backdrop, Some(transform));
-        self.backdrop_deadline =
-            if self.shot_time.is_none() && ui::auth_backdrop::needs_animation(theme) {
-                now.checked_add(Duration::from_secs_f64(1.0 / 24.0))
-            } else {
-                None
-            };
+        self.backdrop_deadline = if self.shot_time.is_none()
+            && ui::auth_backdrop::needs_animation(theme)
+            && now < self.backdrop_idle_at
+        {
+            now.checked_add(BACKDROP_INTERVAL)
+                .map(|next| next.min(self.backdrop_idle_at))
+        } else {
+            None
+        };
         if let Some(c) = &mut self.composed {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if matches!(
+            event,
+            WindowEvent::KeyboardInput { .. }
+                | WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::Touch(_)
+        ) {
+            self.note_backdrop_activity(Instant::now());
+        }
         // Track Caps Lock from typed letters (winit's Modifiers can't report
         // the lock directly — see `ui::caps_lock`). A flip in the estimate
         // triggers a rebuild so the warning under the password field
@@ -3252,6 +3303,70 @@ mod tests {
                 );
             }
         }
+        // Phase `backdrop_settles_when_unattended_and_input_resumes_it`.
+        backdrop_settles_when_unattended_and_input_resumes_it();
+    }
+
+    /// Phase of `shot_scenarios_compose_and_the_backdrop_stays_bounded`.
+    fn backdrop_settles_when_unattended_and_input_resumes_it() {
+        let theme = Theme::dark();
+        let mut app = GreeterApp::with_sessions_and_login_user(test_sessions(), None);
+        let _layout = layout_at_with_theme(&mut app, (1280.0, 800.0), &theme);
+        let draw = |app: &mut GreeterApp| {
+            app.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                &PresenceCtx::empty(),
+            );
+        };
+        draw(&mut app);
+        assert!(app.next_wake_deadline().is_some(), "a fresh greeter moves");
+
+        let now = std::time::Instant::now();
+        let later = |by| {
+            now.checked_add(by)
+                .expect("the monotonic clock has room ahead")
+        };
+        app.backdrop_resumed = now
+            .checked_sub(BACKDROP_ACTIVE.saturating_add(std::time::Duration::from_secs(5)))
+            .expect("the monotonic clock is past 25 s");
+        app.backdrop_idle_at = backdrop_idle_after(app.backdrop_resumed);
+        draw(&mut app);
+        assert!(
+            app.next_wake_deadline().is_none(),
+            "an unattended greeter must stop scheduling backdrop frames"
+        );
+        let held = app.backdrop_elapsed(now);
+        assert!(
+            (held - BACKDROP_ACTIVE.as_secs_f64()).abs() < 1e-6,
+            "the settled backdrop holds the frame it reached, got {held}"
+        );
+        assert!(
+            (app.backdrop_elapsed(later(std::time::Duration::from_secs(60))) - held).abs() < 1e-9,
+            "the held frame does not move while nobody is there"
+        );
+
+        app.note_backdrop_activity(now);
+        let resumed = app
+            .next_wake_deadline()
+            .expect("input must wake the loop to resume the backdrop");
+        assert!(resumed <= std::time::Instant::now());
+        assert!(
+            (app.backdrop_elapsed(now) - held).abs() < 1e-9,
+            "the backdrop resumes from the held frame instead of jumping"
+        );
+        draw(&mut app);
+        assert!(
+            app.next_wake_deadline().is_some(),
+            "and keeps moving after input"
+        );
+        assert!(
+            app.backdrop_elapsed(later(BACKDROP_ACTIVE.saturating_mul(2))) - held
+                <= BACKDROP_ACTIVE.as_secs_f64() + 1e-6,
+            "one input buys one active window, not an endless animation"
+        );
     }
 
     #[test]

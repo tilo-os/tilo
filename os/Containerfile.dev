@@ -76,7 +76,8 @@ FROM ${RUST_TOOLCHAIN_IMAGE} AS rust-toolchain
 FROM scratch AS dev-inputs
 COPY os/components.toml /tilo/os/
 COPY os/scripts/unseal-rootfs.py os/scripts/check-dev-kernel.sh os/scripts/builder-packages.txt \
-     os/scripts/install-components.py os/scripts/finalize-dev-image.py /tilo/os/scripts/
+     os/scripts/install-components.py os/scripts/finalize-dev-image.py \
+     os/scripts/verify-boot-ordering.sh /tilo/os/scripts/
 COPY Cargo.lock rust-toolchain.toml /tilo/
 
 # ---- The base, unsealed, with the builder's toolchain -------------------------
@@ -251,6 +252,7 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     && ssh-keygen -q -t ed25519 -N '' -f /run/tilo-dev-hostkey \
     && /usr/sbin/sshd -t -h /run/tilo-dev-hostkey \
     && rm -f /run/tilo-dev-hostkey /run/tilo-dev-hostkey.pub \
+    && bash /run/tilo-dev/os/scripts/verify-boot-ordering.sh \
     && bootc container lint
 
 LABEL sh.tilo.image.flavour="dev" \
