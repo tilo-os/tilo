@@ -20,8 +20,6 @@ thin = ["dep:runtime-dylib"]
 tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-# One owner for ~/.config/tilo/settings.json.
-settings-store = { path = "../../crates/system/settings-store" }
 # The Tilo action model: doc-mutating operations are replayable, undoable actions.
 tilo-actions = { path = "../../crates/collab/actions" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }

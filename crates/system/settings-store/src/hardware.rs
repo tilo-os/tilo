@@ -274,7 +274,7 @@ impl DisplayHardwareSnapshot {
             .ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is unavailable"))?;
         let mut body = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
         body.push(b'\n');
-        atomic_file::write_creating_parent(&path, &body)
+        tilo_files::native::atomic::write_creating_parent(&path, &body)
     }
 }
 
@@ -490,7 +490,7 @@ impl DisplayTransaction {
 /// accepted: falling back to `/tmp` would let another user forge display
 /// capabilities shown by Settings.
 pub fn display_snapshot_path() -> Option<std::path::PathBuf> {
-    xdg_paths::xdg::runtime_dir().map(|path| path.join("tilo/display-state.json"))
+    tilo_paths::xdg::runtime_dir().map(|path| path.join("tilo/display-state.json"))
 }
 
 /// What kind of input device libinput reports, as far as Settings cares:

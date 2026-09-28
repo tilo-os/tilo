@@ -44,9 +44,13 @@ use std::path::PathBuf;
 
 use crate::model::{Currency, DateStyle, TimeStyle};
 
+fn locale() -> ui::storage::Settings {
+    ui::storage::Settings::section("locale")
+}
+
 /// Where the shared per-user settings live.
 pub fn settings_path() -> Option<PathBuf> {
-    settings_store::settings_path()
+    locale().path()
 }
 
 /// Measurement system. Sheets doesn't use this directly, but it is part of
@@ -122,7 +126,7 @@ impl GlobalSettings {
     /// Load from the shared settings document (on the web, the page's
     /// profile). Defaults for anything absent.
     pub fn load() -> Self {
-        Self::from_json(&serde_json::Value::Object(settings_store::load()).to_string())
+        Self::from_json(&serde_json::Value::Object(locale().document()).to_string())
     }
 
     /// Persist the `locale` section to the shared settings document,
@@ -134,7 +138,7 @@ impl GlobalSettings {
     /// fails.
     pub fn save(&self) -> std::io::Result<()> {
         match serde_json::to_value(self.locale).map_err(std::io::Error::other)? {
-            serde_json::Value::Object(locale) => settings_store::update_section("locale", locale),
+            serde_json::Value::Object(values) => locale().update(values),
             _ => Err(std::io::Error::other(
                 "the locale is not a settings section",
             )),

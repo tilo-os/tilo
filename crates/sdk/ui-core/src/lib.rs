@@ -206,6 +206,7 @@ pub mod profiling;
 pub mod query_text;
 pub mod realtime_continuity;
 pub mod standalone_history_pane;
+pub mod storage;
 pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
 pub mod text_assistance;

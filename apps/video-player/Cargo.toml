@@ -30,7 +30,6 @@ tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
-settings-store = { path = "../../crates/system/settings-store" }
 media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 collab-types = { path = "../../crates/collab/collab-types" }
 automerge.workspace = true

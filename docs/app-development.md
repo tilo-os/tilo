@@ -884,6 +884,43 @@ the portability and capability checks for a target on any host. For
 `package`, a `--target` value other than `linux`, `macos` or `web` is a Rust
 target triple.
 
+### Files, preferences and secrets
+
+Everything an app keeps outside its documents goes through `ui::storage`, the
+same API on every target. With a `HostContext` use its methods; they are scoped
+to the app the host prepared.
+
+| What | Call | Backed by |
+|---|---|---|
+| Documents (collaborative) | resources and records; `ui::persist` for a one-document app | Automerge records |
+| App files: imports, caches, databases | `cx.files().data()` / `.config()` / `.cache()` / `.state()` → `tilo_files::Dir` (`ui::storage::AppFiles::for_app(id)` without a context) | `tilo_paths::AppPaths`: per-user directories natively, the origin-private file system in a page |
+| Preferences | `cx.settings()` (the app's section) or `ui::storage::Settings::section("locale")` for a shared one: `load`, `bool`, `string`, `update` | the desktop settings document (`settings-store`), or the host's source |
+| Secrets | `cx.secrets()` (`ui::storage::secrets(id)`) | `tilo-secrets`: Secret Service, Keychain, wrapped IndexedDB |
+
+Apps do not depend on `settings-store`, `app-state`, `xdg-paths` or
+`atomic-file`: those are the SDK's internals (the last two are deprecated
+shims over `tilo-paths` and `tilo_files::native::atomic`). Desktop-only code
+that must name a native path uses `tilo_paths` and `tilo_files::native`.
+
+### Capabilities
+
+`[capabilities]` in `tilo-app.toml` lists every capability the code uses, as
+`required` (the app cannot work without it; every declared target must provide
+it) or `optional` (the app degrades where it is missing):
+
+```toml
+[capabilities]
+required = ["network.http"]
+optional = ["files.open", "app-files", "clipboard"]
+```
+
+`tilo-app check`, `build`, `run` and `package` fail before compiling when the
+code uses one the manifest does not list, naming the site and the fix
+(`tilo-app add capability <name>`); the policy gate
+(`tools/policy/check_app_capabilities.py`) enforces the same table,
+`tools/policy/app_capability_usage.toml`. macOS packaging derives entitlements
+and usage strings from the list.
+
 ## The app shape
 
 Keep the binary boring:
@@ -1424,7 +1461,7 @@ scope from the identity of the thing being changed:
 
 | State | Canonical home | Identity / permission scope | Replication |
 |---|---|---|---|
-| Package preference or account configuration | package `state.automerge` through `ui::persist` / `app-state` | application package id / `Scope::App` | replicated: in a shared workspace the package document is the app's collaboration route, one document per app and room. Keep person- or device-scoped settings out of it |
+| Package preference or account configuration shared with collaborators | package `state.automerge` through `ui::persist` (device-local preferences use `cx.settings()`) | application package id / `Scope::App` | replicated: in a shared workspace the package document is the app's collaboration route, one document per app and room. Keep person- or device-scoped settings out of it |
 | Collaborative document, note, annotation set, or other artifact | one Automerge document per room record | room-scoped `ui::RecordId`; `Scope::ResourceInstance` for artifact authority | record route in its home room |
 | Collaborative filesystem entry | filesystem catalogue/content store | rename-stable `FileRecordId`; `Scope::FsRecord` | follows rename and move |
 | Host filesystem access | the host filesystem | component-aligned path; `Scope::FsPath` | never implies record authority and never matches CRDT operations |

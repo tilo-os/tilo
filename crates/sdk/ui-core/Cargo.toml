@@ -92,7 +92,6 @@ notifications = ["native", "tilo-host/notifications"]
 [dependencies]
 mime_guess.workspace = true
 fnv.workspace = true
-xdg-paths = { version = "0.1.0", path = "../../system/xdg-paths" }
 # Host services: the clock, background work, clipboard, file choosers,
 # notifications, media sessions, location and screen capture, and their
 # native backends. Re-exported under the toolkit's own module paths.
@@ -110,8 +109,10 @@ advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
 tilo-font-catalog = { version = "0.1.0", path = "../font-catalog" }
-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
+# `storage`: app files through tilo-files in tilo-paths' per-app locations.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+tilo-paths.workspace = true
 # Parses the portal's returned file URIs. Non-optional:
 # `portal::to_local_path` is the file-access rule — a URI naming a remote
 # host must not resolve to a local path — and must be testable in every

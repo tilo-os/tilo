@@ -270,7 +270,7 @@ tilo-install runtime remove 2026.07
   [`cli-apps.md`](./cli-apps.md).
 - **Get a real signing identity** and store it out-of-band. See
   [`trust.md`](./trust.md) for `tilo-app-package pack --identity`.
-- **Ship a Flatpak alongside** for stock Linux. See
+- **Ship for Linux, macOS and the web** from the same source. See
   [`cross-target.md`](./cross-target.md).
 - **Publish a format codec** as a WebAssembly module. See
   [`formats.md`](./formats.md).
