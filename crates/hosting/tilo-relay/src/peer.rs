@@ -223,6 +223,49 @@ pub struct PeerContext {
     /// Answers remote-action frames addressed to this relay. `None` unless
     /// the host supplied one and advertises `app_serving`.
     pub app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+    /// Also hands validated live frames to the browser live relay, when the
+    /// host serves browsers.
+    pub live_bridge: Option<LiveBridge>,
+    /// Agent devices this host was told about, see [`AgentRegistry`].
+    pub agents: AgentRegistry,
+}
+
+/// Receives every validated live frame: workspace, stamped sender, frame.
+pub type LiveBridge = Arc<dyn Fn(u64, [u8; 32], &[u8]) + Send + Sync>;
+
+/// Agent devices by device key: their verified delegation, or `None` once
+/// the agent was withdrawn. An agent device is confined to its delegated
+/// rooms, is its own principal for remote actions, and a withdrawn one is
+/// refused like a revoked device.
+pub type AgentRegistry = Arc<
+    std::sync::RwLock<
+        std::collections::HashMap<[u8; 32], Option<tilo_relay_protocol::agents::AgentDelegation>>,
+    >,
+>;
+
+/// Whether `device` may be in `workspace_id` as far as agent delegation is
+/// concerned: `Err` with the reason when it is an agent outside its scope.
+fn agent_admits(
+    agents: &AgentRegistry,
+    device: &[u8; 32],
+    workspace_id: u64,
+) -> Result<(), &'static str> {
+    let agents = agents
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match agents.get(device) {
+        None => Ok(()),
+        Some(None) => Err("the agent was withdrawn"),
+        Some(Some(delegation)) => {
+            if delegation.expires_at_ns <= unix_now_ns() {
+                Err("the agent's delegation expired")
+            } else if delegation.permits_workspace(workspace_id) {
+                Ok(())
+            } else {
+                Err("the agent is not delegated this room")
+            }
+        }
+    }
 }
 
 /// Read-mostly session state [`handle_envelope`] and its per-arm
@@ -246,6 +289,8 @@ struct SessionCtx<'a> {
     agent_reads_v1: bool,
     private_tx: &'a mpsc::Sender<PrivateOutbound>,
     revocations: &'a Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
+    live_bridge: Option<&'a LiveBridge>,
+    agents: &'a AgentRegistry,
 }
 
 /// Run one peer connection until the wire closes.
@@ -272,6 +317,26 @@ where
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     run_peer_version(peer, connection, read, write, ctx, false, false).await
+}
+
+/// [`run_peer`] over a carrier other than an iroh connection (a browser's
+/// HTTPS session): `closed` resolves when that carrier ends.
+///
+/// # Errors
+///
+/// As [`run_peer`].
+pub async fn run_peer_until<R, W>(
+    peer: AuthenticatedPeer,
+    closed: impl std::future::Future<Output = ()> + Send,
+    read: R,
+    write: W,
+    ctx: PeerContext,
+) -> Result<(), PeerError>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    run_peer_stream(peer, read, write, ctx, false, false, closed).await
 }
 
 pub(crate) async fn run_peer_version<R, W>(
@@ -332,6 +397,8 @@ where
         metrics,
         own_device_public_key,
         app_serving,
+        live_bridge,
+        agents,
     } = ctx;
 
     // Outbound channel — every workspace runtime this peer is
@@ -365,6 +432,8 @@ where
         agent_reads_v1,
         private_tx: &private_tx,
         revocations: &revocations,
+        live_bridge: live_bridge.as_ref(),
+        agents: &agents,
     };
 
     // A clean EOF is only one of the ways this ends: a write to a
@@ -1402,6 +1471,8 @@ async fn audit_subscriber_access(
         ));
     }
     for workspace_id in subscribed {
+        agent_admits(session.agents, &peer.device_public_key, *workspace_id)
+            .map_err(|reason| PeerError::Protocol(reason.into()))?;
         let Some(workspace) = session.workspaces.lock().await.get(workspace_id).cloned() else {
             continue;
         };
@@ -1516,13 +1587,28 @@ async fn handle_envelope(
             frame,
         )
         .await),
+        env @ Envelope::Commit { .. } => handle_commit(peer, session, subscribed, env).await,
+        Envelope::LiveJoin { workspace_id } => {
+            handle_live_join(peer, session, subscribed, workspace_id).await
+        }
+        Envelope::LiveLeave { workspace_id } => {
+            handle_live_leave(peer, session, workspace_id).await
+        }
+        Envelope::Live {
+            workspace_id,
+            frame,
+            ..
+        } => handle_live(peer, session, subscribed, workspace_id, frame).await,
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
         Envelope::Ready { .. }
         | Envelope::NotAuthorised { .. }
         | Envelope::Pong
         | Envelope::SyncResponse { .. }
-        | Envelope::RemoteActionUndeliverable { .. } => Ok(None),
+        | Envelope::RemoteActionUndeliverable { .. }
+        | Envelope::Committed { .. }
+        | Envelope::CommitRefused { .. }
+        | Envelope::LiveMember { .. } => Ok(None),
     }
 }
 
@@ -1550,6 +1636,12 @@ async fn handle_subscribe(
     replay: &mut Option<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>)>,
     workspace_id: u64,
 ) -> Result<Option<Envelope>, PeerError> {
+    if let Err(reason) = agent_admits(session.agents, &peer.device_public_key, workspace_id) {
+        return Ok(Some(Envelope::NotAuthorised {
+            workspace_id,
+            reason: reason.into(),
+        }));
+    }
     let ws = get_or_autobind_workspace(session.workspaces, session.autobind, workspace_id).await?;
     let Some(ws) = ws else {
         return Ok(Some(Envelope::NotAuthorised {
@@ -4531,6 +4623,160 @@ async fn handle_delta(
     Ok(None)
 }
 
+/// Handle an inbound `Commit`: admit it exactly like a `Delta` (the reply
+/// waits until the host persisted it), then tell the author its host order.
+/// A commit the host cannot admit is refused to the author without closing
+/// the session.
+async fn handle_commit(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    env: Envelope,
+) -> Result<Option<Envelope>, PeerError> {
+    let Envelope::Commit {
+        workspace_id,
+        op,
+        author_device_public_key,
+        authored_at_ns,
+        delta,
+    } = env
+    else {
+        return Err(PeerError::Protocol(
+            "handle_commit called with a non-Commit envelope".into(),
+        ));
+    };
+    let refused = |reason: &str| {
+        Ok(Some(Envelope::CommitRefused {
+            workspace_id,
+            op,
+            reason: reason.into(),
+        }))
+    };
+    if !subscribed.contains(&workspace_id) {
+        return refused("commit sent before subscribing to workspace");
+    }
+    if peer.role != crate::auth::PeerRole::Device
+        || author_device_public_key != peer.device_public_key
+    {
+        return refused("author does not match authenticated device");
+    }
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return refused("workspace not bound on this relay");
+    };
+    let Some(source) = authorized_state_source(&ws, peer, session).await? else {
+        return refused("workspace membership changed");
+    };
+    let delta = Envelope::Delta {
+        workspace_id,
+        author_device_public_key,
+        authored_at_ns,
+        delta,
+        signature: [0; 64],
+    };
+    enqueue_state(&ws, delta, Some(source), peer.role, session.metrics.clone()).await?;
+    let seq = ws.lock().await.next_seq(unix_now_ns());
+    Ok(Some(Envelope::Committed {
+        workspace_id,
+        op,
+        seq,
+    }))
+}
+
+/// Handle `LiveJoin`: add a subscribed device to the workspace's live plane
+/// and send it one `LiveMember` per member already present.
+async fn handle_live_join(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    workspace_id: u64,
+) -> Result<Option<Envelope>, PeerError> {
+    let refused = || {
+        Ok(Some(Envelope::NotAuthorised {
+            workspace_id,
+            reason: "live join requires a subscription".into(),
+        }))
+    };
+    if !subscribed.contains(&workspace_id) {
+        return refused();
+    }
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return refused();
+    };
+    let Some(members) = ws
+        .lock()
+        .await
+        .live_join(peer.device_public_key, workspace_id)
+    else {
+        return refused();
+    };
+    for device in members {
+        // Live state is never authority: a member notice lost to a full
+        // queue costs only a late cursor.
+        let _ = session.outbound.try_send(Envelope::LiveMember {
+            workspace_id,
+            device_public_key: device,
+            active: true,
+        });
+    }
+    Ok(None)
+}
+
+/// Handle `LiveLeave`.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the guard only lives for the lookup; the value kept is a clone"
+)]
+async fn handle_live_leave(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    workspace_id: u64,
+) -> Result<Option<Envelope>, PeerError> {
+    let ws = session.workspaces.lock().await.get(&workspace_id).cloned();
+    if let Some(ws) = ws {
+        let mut ws = ws.lock().await;
+        ws.live_leave(&peer.device_public_key, workspace_id);
+        drop(ws);
+    }
+    Ok(None)
+}
+
+/// Handle an inbound `Live` frame: decode it canonically, stamp the
+/// authenticated sender and relay it within the sender's rate budget.
+/// Invalid, over-budget or non-member frames are dropped: live traffic is
+/// never authority, and dropping it costs only a stale cursor.
+async fn handle_live(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    workspace_id: u64,
+    frame: Vec<u8>,
+) -> Result<Option<Envelope>, PeerError> {
+    if !subscribed.contains(&workspace_id) {
+        return Ok(None);
+    }
+    let Ok(decoded) = crate::live::LiveFrame::decode(&frame) else {
+        return Ok(None);
+    };
+    let presence = matches!(decoded, crate::live::LiveFrame::Presence(_));
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return Ok(None);
+    };
+    if let Some(bridge) = session.live_bridge
+        && ws.lock().await.is_live_member(&peer.device_public_key)
+    {
+        bridge(workspace_id, peer.device_public_key, &frame);
+    }
+    let stamped = Envelope::Live {
+        workspace_id,
+        from_device_public_key: peer.device_public_key,
+        frame,
+    };
+    ws.lock()
+        .await
+        .fanout_live(&peer.device_public_key, presence, &stamped, unix_now_ns());
+    Ok(None)
+}
+
 async fn handle_delta_prefix(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -4758,7 +5004,21 @@ fn serve_locally(
 ) -> Result<Option<Envelope>, &'static str> {
     use tilo_actions::remote::{Caller, RemoteActionFrame};
     let request = RemoteActionFrame::decode(frame).map_err(|_| "malformed remote action frame")?;
-    let caller = Caller::authenticated(peer.user_public_key, peer.device_public_key);
+    let agent = session
+        .agents
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&peer.device_public_key)
+        .cloned();
+    let caller = match agent {
+        Some(Some(delegation)) => Caller::delegated_agent(
+            delegation.agent_id,
+            peer.user_public_key,
+            peer.device_public_key,
+        ),
+        Some(None) => return Err("the agent was withdrawn"),
+        None => Caller::authenticated(peer.user_public_key, peer.device_public_key),
+    };
     let Some(reply) = plane.serve(workspace_id, &caller, request.message) else {
         return Ok(None);
     };
@@ -6566,6 +6826,8 @@ mod private_transport_tests {
                 own_device_public_key: peer.cert.device_public_key,
                 app_serving: None,
                 metrics,
+                live_bridge: None,
+                agents: crate::peer::AgentRegistry::default(),
             },
             true,
             false,
@@ -7460,6 +7722,8 @@ mod private_transport_tests {
                 own_device_public_key: a.cert.device_public_key,
                 app_serving: None,
                 metrics: Arc::new(crate::metrics::Metrics::default()),
+                live_bridge: None,
+                agents: crate::peer::AgentRegistry::default(),
             };
             tasks.push(tokio::spawn(run_peer_stream(
                 peer.clone(),
@@ -7799,6 +8063,8 @@ mod private_transport_tests {
                     own_device_public_key: a.cert.device_public_key,
                     app_serving: None,
                     metrics: Arc::new(crate::metrics::Metrics::default()),
+                    live_bridge: None,
+                    agents: crate::peer::AgentRegistry::default(),
                 },
                 true,
                 false,
@@ -8083,6 +8349,8 @@ mod private_transport_tests {
             agent_reads_v1: false,
             private_tx: &private,
             revocations: &revocations,
+            live_bridge: None,
+            agents: Box::leak(Box::default()),
         };
         let (mut broken, reader) = tokio::io::duplex(1);
         drop(reader);
@@ -8299,6 +8567,8 @@ mod private_transport_tests {
             agent_reads_v1: false,
             private_tx: &ap,
             revocations: &revocations,
+            live_bridge: None,
+            agents: Box::leak(Box::default()),
         };
         let receiver = SessionCtx {
             outbound: &btx,
@@ -8420,6 +8690,8 @@ mod private_transport_tests {
             agent_reads_v1: false,
             private_tx: &ap,
             revocations: &revocations,
+            live_bridge: None,
+            agents: Box::leak(Box::default()),
         };
         let receiver = SessionCtx {
             outbound: &btx,
@@ -8557,6 +8829,8 @@ mod private_transport_tests {
             agent_reads_v1: false,
             private_tx: &source_private,
             revocations: &revocations,
+            live_bridge: None,
+            agents: Box::leak(Box::default()),
         };
         assert!(matches!(
             handle_private(EnvelopeV2::EnableActions { room }, &source, &source_session)
@@ -8771,6 +9045,8 @@ mod private_transport_tests {
             agent_reads_v1: agent_read,
             private_tx: &ap,
             revocations: &revocations,
+            live_bridge: None,
+            agents: Box::leak(Box::default()),
         };
         let receiver = SessionCtx {
             outbound: &btx,
@@ -9232,6 +9508,8 @@ mod private_transport_tests {
             agent_reads_v1: false,
             private_tx: &ptx,
             revocations: &revocations,
+            live_bridge: None,
+            agents: Box::leak(Box::default()),
         };
         // The browser sends a SyncReq as presence.
         handle_presence(

@@ -170,7 +170,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   offline, so an incomplete snapshot fails in CI rather than in an image build.
 - **Kernel buildroots.** The kernel's build dependencies and the Fedora kernel
   SRPM come from their own snapshot, `os/Containerfile.kernel-buildroot`,
-  instead of the OS frozen RPM snapshot. `snapshot-kernel-buildroot` resolves
+  instead of the OS frozen RPM snapshot. `build-buildroots.yml` resolves
   it natively on x86-64 and ARM64 against the mirrored base, checks the SRPM's
   Fedora signature, records its checksum, the base and the package manifest,
   deletes every repository file so a kernel build cannot fall back to the
