@@ -57,6 +57,7 @@ pub mod display_bars;
 pub mod display_confirm;
 pub mod display_identify;
 pub mod doc_open;
+pub mod document_import;
 pub mod editor_app;
 pub mod emoji_recents;
 pub mod fabric_clock;

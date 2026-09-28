@@ -15025,6 +15025,7 @@ dependencies = [
  "iroh",
  "iroh-base",
  "libc",
+ "notes",
  "postcard",
  "qdoc",
  "rcgen",

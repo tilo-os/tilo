@@ -289,6 +289,14 @@ impl PendingOwnerCommit {
             .check()
             .map_err(DesktopCommandError::Uncertain)
             .and_then(|()| {
+                if matches!(
+                    self.request.operation,
+                    CommitOperation::DocumentImport { .. }
+                ) {
+                    return owner
+                        .commit_document_import(&self.request, self.policy_time.as_ref())
+                        .map(|receipt| (receipt, None));
+                }
                 if let Some(time) = &self.policy_time {
                     return if self.direct_delivery {
                         owner.commit_desktop_command_with_delivery_policy_time(&self.request, time)
@@ -343,6 +351,7 @@ impl PendingOwnerCommit {
             CommitOperation::Document { .. } => "owner_commit_document",
             CommitOperation::EffectReceipt { .. } => "owner_commit_effect_receipt",
             CommitOperation::AgentRuntime { .. } => "owner_commit_agent_unavailable",
+            CommitOperation::DocumentImport { .. } => "owner_commit_invalid_import",
         };
         let timing = Timing::new(phase);
         self.start_execution();
@@ -440,6 +449,14 @@ impl OwnerCommitHandle {
     ) -> tilo_action_broker::services::DesktopCommandFuture {
         self.desktop_command_with_delivery(request, false)
     }
+    /// A document import proposal or answer, in the same serialized
+    /// semantic turn as desktop commands.
+    pub(crate) fn document_import(
+        &self,
+        request: OwnerCommitRequest,
+    ) -> tilo_action_broker::services::DesktopCommandFuture {
+        self.desktop_command_with_delivery(request, false)
+    }
     pub(crate) fn desktop_command_with_delivery(
         &self,
         request: OwnerCommitRequest,
@@ -450,7 +467,10 @@ impl OwnerCommitHandle {
             use tilo_peer_state::desktop_command::DesktopCommandError::{Rejected, Uncertain};
             let policy_time = this.admission_time().map_err(Rejected)?;
             this.health().map_err(Uncertain)?;
-            if !matches!(request.operation, CommitOperation::DesktopCommand { .. }) {
+            if !matches!(
+                request.operation,
+                CommitOperation::DesktopCommand { .. } | CommitOperation::DocumentImport { .. }
+            ) {
                 return Err(Rejected("not a desktop command".into()));
             }
             request.binding().map_err(Rejected)?;
@@ -545,6 +565,9 @@ impl SessionOwner {
             }
             CommitOperation::DesktopCommand { .. } => {
                 return Err("desktop commands require their admitted semantic service".into());
+            }
+            CommitOperation::DocumentImport { .. } => {
+                return Err("document imports require their admitted semantic service".into());
             }
             CommitOperation::Document {
                 app,

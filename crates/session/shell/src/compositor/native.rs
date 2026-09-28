@@ -4748,6 +4748,12 @@ fn install_session_peer_sync(
     frame_builder.host_mut().set_personal_devices(Arc::new(
         crate::shell::device_fabric_runtime::FabricDeviceDirectory::new(Arc::clone(&net)),
     ));
+    let hosted_net = Arc::clone(&net);
+    frame_builder.with_chrome(move |chrome| {
+        chrome.window_transfers.set_hosted_rooms(Box::new(
+            crate::shell::document_import::NativeHostedRooms(hosted_net),
+        ));
+    });
     let stream_net = Arc::clone(&net);
     state.set_legacy_stream_publisher(Arc::new(move |message| {
         stream_net.publish_legacy_active(message)

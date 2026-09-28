@@ -303,6 +303,29 @@ pub struct WindowTransferRequest {
     pub confirm_label: String,
 }
 
+/// The owner's answer to a document someone proposed bringing into their
+/// workspace ([`crate::shell::document_import`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DocumentImportDecision {
+    Accept,
+    Decline,
+    /// The sheet went away unanswered; the proposal stays unanswered.
+    Dismissed,
+}
+
+/// The sheet asking a workspace's owner whether a proposed document may
+/// join it. It is drawn as a choice sheet: accept, or decline.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentImportRequest {
+    pub handle: String,
+    pub app_id: String,
+    pub title: String,
+    pub detail: String,
+    pub accept_label: String,
+    pub decline_label: String,
+    pub confirm_label: String,
+}
+
 enum PendingDialog {
     ShortcutStep {
         request: ShortcutStepRequest,
@@ -344,6 +367,10 @@ enum PendingDialog {
     WindowTransfer {
         request: WindowTransferRequest,
         reply: oneshot::Sender<WindowTransferDecision>,
+    },
+    DocumentImport {
+        request: DocumentImportRequest,
+        reply: oneshot::Sender<DocumentImportDecision>,
     },
 }
 
@@ -653,6 +680,29 @@ impl PortalDialogQueue {
         Ok(receiver)
     }
 
+    /// Queue the sheet asking a workspace's owner to accept or decline a
+    /// proposed document. Dismissing it answers
+    /// [`DocumentImportDecision::Dismissed`].
+    pub fn enqueue_document_import(
+        &self,
+        request: DocumentImportRequest,
+    ) -> Result<oneshot::Receiver<DocumentImportDecision>, String> {
+        let (reply, receiver) = oneshot::channel();
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
+        if inner.pending.contains_key(&request.handle) {
+            return Err("duplicate live portal request".into());
+        }
+        inner.order.push_back(request.handle.clone());
+        inner.pending.insert(
+            request.handle.clone(),
+            PendingDialog::DocumentImport { request, reply },
+        );
+        Ok(receiver)
+    }
+
     fn finish_window_transfer(&self, handle: &str, choice: Option<usize>) -> bool {
         let pending = self
             .inner
@@ -668,6 +718,14 @@ impl PortalDialogQueue {
                         .map_or(WindowTransferDecision::Cancelled, |choice| choice.decision)
                 });
                 let _ = reply.send(decision);
+                true
+            }
+            Some(PendingDialog::DocumentImport { reply, .. }) => {
+                let _ = reply.send(match choice {
+                    Some(0) => DocumentImportDecision::Accept,
+                    Some(1) => DocumentImportDecision::Decline,
+                    _ => DocumentImportDecision::Dismissed,
+                });
                 true
             }
             Some(other) => {
@@ -867,6 +925,14 @@ impl PortalDialogQueue {
                     .collect(),
                 confirm_label: request.confirm_label.clone(),
             }),
+            PendingDialog::DocumentImport { request, .. } => Some(DialogView::WindowTransfer {
+                handle: request.handle.clone(),
+                app_name: friendly_app_name(&request.app_id),
+                title: request.title.clone(),
+                detail: request.detail.clone(),
+                choices: vec![request.accept_label.clone(), request.decline_label.clone()],
+                confirm_label: request.confirm_label.clone(),
+            }),
             PendingDialog::UsbDevices {
                 request, selected, ..
             } => Some(DialogView::UsbDevices {
@@ -949,6 +1015,10 @@ impl PortalDialogQueue {
             }
             Some(PendingDialog::WindowTransfer { reply, .. }) => {
                 let _ = reply.send(WindowTransferDecision::Cancelled);
+                true
+            }
+            Some(PendingDialog::DocumentImport { reply, .. }) => {
+                let _ = reply.send(DocumentImportDecision::Dismissed);
                 true
             }
             Some(PendingDialog::Authentication { reply, .. }) => {

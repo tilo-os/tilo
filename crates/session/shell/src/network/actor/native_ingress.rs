@@ -339,6 +339,32 @@ impl ActorState {
             }
         }
     }
+    /// Send `request` to the governor of the governed room on topic `ws`,
+    /// opening the room's private lane on first use.
+    pub(super) fn governor_action(
+        &mut self,
+        ws: u64,
+        room: uuid::Uuid,
+        request: Box<super::governor_lane::Request>,
+    ) {
+        let Some(runtime) = self
+            .host_sessions
+            .iter_mut()
+            .find_map(|((topic, _), runtime)| {
+                (*topic == ws && runtime.native_scope.is_some()).then_some(runtime)
+            })
+        else {
+            let _ = request
+                .reply
+                .send(Err("the governed room is not connected".into()));
+            return;
+        };
+        runtime
+            .governor
+            .get_or_insert_with(|| super::governor_lane::Lane::open(runtime.session.clone(), room))
+            .send(*request);
+    }
+
     pub(super) fn native_connect(&mut self, connect: Connect) {
         let ws = crate::shell::network::room_topic_id(connect.room);
         if !self.native_routes.contains(ws) && self.native_routes.entries.len() >= 64 {
@@ -515,6 +541,7 @@ impl ActorState {
             (ws, host),
             HostRuntime {
                 actions: None,
+                governor: None,
                 session,
                 pump,
                 native_scope: Some(scope),
