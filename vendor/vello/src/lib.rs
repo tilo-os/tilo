@@ -1686,6 +1686,15 @@ impl Renderer {
         }
     }
 
+    /// Limit the adaptive bump buffers to `bytes` in total, whatever frames
+    /// report using. Scenes past it drop geometry, which the shaders report,
+    /// instead of taking a browser's GPU process past its memory limit.
+    /// Viewport floors come on top.
+    pub fn set_bump_budget_limit(&mut self, bytes: u64) {
+        self.budget.set_max_total_bytes(bytes);
+        self.engine.clear_pool();
+    }
+
     /// Drop transient GPU buffers held only for reuse. In-flight command
     /// buffers keep their own references, so this is safe at a damage-shape
     /// transition and prevents obsolete size classes living forever.

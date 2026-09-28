@@ -91,6 +91,8 @@ pub(crate) struct BudgetTracker {
     pinned: bool,
     /// An overflow that growth could not answer has been reported.
     limit_reported: bool,
+    /// Bytes the whole adaptive budget may grow to.
+    max_total_bytes: u64,
     /// Tiles in the viewport last rendered, for the log only.
     n_tiles: u32,
     /// Frames seen, for the log only.
@@ -142,6 +144,7 @@ impl BudgetTracker {
             log: std::env::var_os(LOG_ENV).is_some_and(|v| !v.is_empty()),
             pinned,
             limit_reported: false,
+            max_total_bytes: u64::MAX,
             n_tiles: 0,
             frame: 0,
         }
@@ -152,6 +155,21 @@ impl BudgetTracker {
         self.budget = self
             .budget
             .with_max_binding_bytes(max_binding_bytes(limits));
+    }
+
+    /// Limit the growth of the whole budget to `bytes`, shrinking it now if
+    /// it is already larger.
+    pub(crate) fn set_max_total_bytes(&mut self, bytes: u64) {
+        self.max_total_bytes = bytes;
+        self.budget.fit_total_bytes(bytes);
+    }
+
+    /// Grow to cover `used`, within the total limit.
+    fn grow(&mut self, used: &BumpAllocators) -> bool {
+        let before = self.budget;
+        self.budget.observe(used);
+        self.budget.fit_total_bytes(self.max_total_bytes);
+        self.budget != before
     }
 
     /// The reservation to render the next frame with.
@@ -279,7 +297,7 @@ impl BudgetTracker {
         let before = self.effective();
         let overflowed = used.failed != 0;
         let in_effect = self.effective();
-        let budget_changed = !self.pinned && self.budget.observe(&used);
+        let budget_changed = !self.pinned && self.grow(&used);
         let changed = before != self.effective();
         if self.log {
             self.report(&used, &in_effect, budget_changed);
@@ -321,7 +339,7 @@ impl BudgetTracker {
     pub(crate) fn observe_now(&mut self, used: &BumpAllocators) -> bool {
         self.frame += 1;
         let in_effect = self.effective();
-        let changed = !self.pinned && self.budget.observe(used);
+        let changed = !self.pinned && self.grow(used);
         if self.log {
             self.report(used, &in_effect, changed);
         }

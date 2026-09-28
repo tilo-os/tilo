@@ -210,3 +210,12 @@ commands, on an unknown tag, or on a jump that is not forward and inside the
 buffer, and `fill_segment_count` clamps a fill's segment count to the
 segment buffer. Valid streams render byte-identically (every GPU fixture in
 `vendor/vello/src/lib.rs` passes unchanged).
+
+## Total bump budget (`config.rs`, `bump_budget.rs`, `lib.rs`)
+
+`BumpBudget::fit_total_bytes` shrinks every reservation by one factor until
+the whole budget fits a byte limit; `BudgetTracker` applies it after each
+growth, and `Renderer::set_bump_budget_limit` sets it. The per-binding clamp
+alone still let seven buffers reach 128 MiB each; a browser's GPU process has
+a hard memory limit (Safari's is 600 MB), and Safari's was killed at 842 MB
+mid-frame, which hung the macOS window server.

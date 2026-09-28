@@ -4,8 +4,13 @@
 // runtime refuses to start the renderer there: a refusal loses nothing, a
 // reboot loses the user's work in every application.
 //
-// `?unsafeWebKitGPU=1` on the page URL opts in, for controlled testing only.
+// This is a temporary safety net, not the fix: the renderer now bounds its
+// GPU memory and work (canvas cap, total vello budget, terminating fine
+// shader). Flip WEBKIT_GUARD_DEFAULT to false once a WebKit run of the
+// desktop has passed. `?unsafeWebKitGPU=1` on the page URL opts in before
+// then, for controlled testing; `?unsafeWebKitGPU=0` refuses after.
 
+export const WEBKIT_GUARD_DEFAULT = true;
 export const WEBKIT_WEBGPU_OVERRIDE = 'unsafeWebKitGPU';
 export const WEBKIT_WEBGPU_REFUSAL = "Safari isn't supported yet — use Chrome or Firefox. Its WebGPU can freeze and restart your Mac with this desktop.";
 
@@ -27,6 +32,7 @@ export function webgpuRefusal(env = globalThis) {
   if (!isWebKit(navigator)) return undefined;
   let search = '';
   try { search = env.location?.search ?? ''; } catch {}
-  if (new URLSearchParams(search).get(WEBKIT_WEBGPU_OVERRIDE) === '1') return undefined;
-  return WEBKIT_WEBGPU_REFUSAL;
+  const override = new URLSearchParams(search).get(WEBKIT_WEBGPU_OVERRIDE);
+  const guarded = override === '1' ? false : override === '0' ? true : WEBKIT_GUARD_DEFAULT;
+  return guarded ? WEBKIT_WEBGPU_REFUSAL : undefined;
 }

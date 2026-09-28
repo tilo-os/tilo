@@ -168,6 +168,11 @@ impl Mount {
 const MAX_SCENE_GLYPHS: usize = 400_000;
 /// Encoded scene bytes one frame may hand to the renderer.
 const MAX_SCENE_BYTES: usize = 128 << 20;
+/// vello's adaptive scratch buffers, in total, above the viewport floors. A
+/// 60-window desktop at the capped canvas holds about 92 MiB of them, floors
+/// included. Safari kills its GPU process past 600 MB; with every buffer
+/// allowed a full 128 MiB binding, the renderer alone could reach 900 MB.
+const MAX_BUMP_BUDGET_BYTES: u64 = 128 << 20;
 
 fn scene_within_limits(scene: &vello::Scene) -> Result<(), String> {
     let encoding = scene.encoding();
@@ -829,7 +834,7 @@ fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
                 .devices
                 .get(surface.dev_id)
                 .ok_or("WebGPU device missing")?;
-            let renderer = vello::Renderer::new(
+            let mut renderer = vello::Renderer::new(
                 &handle.device,
                 vello::RendererOptions {
                     antialiasing_support: vello::AaSupport::area_only(),
@@ -837,6 +842,7 @@ fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
                 },
             )
             .map_err(|e| e.to_string())?;
+            renderer.set_bump_budget_limit(MAX_BUMP_BUDGET_BYTES);
             let p = proxy().map_err(|e| format!("{e:?}"))?;
             let failure = Arc::new(Mutex::new(None));
             let lost = Arc::clone(&failure);
