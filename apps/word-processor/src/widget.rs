@@ -10174,21 +10174,9 @@ impl Widget for WordProcessorWidget {
         dyn ui::undo::CommittedActions,
         dyn ui::undo::LocalUndo,
         dyn ui::history_mode::capability::DocumentHistory,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
     );
-
-    fn action_directory_invocation_domain(
-        &self,
-        _doc: &AutoCommit,
-    ) -> ui::widget::ActionDirectoryInvocationDomain {
-        // A file-choice-only surface has one immutable, privately retained offer.
-        // Ordinary Writer also offers place-image; its replaceable process blob
-        // resolver has no inert identity yet, so the whole domain stays unknown.
-        self.file_choice.as_ref().map_or(
-            ui::widget::ActionDirectoryInvocationDomain::Unsupported,
-            |offer| offer.continuation_domain,
-        )
-    }
 
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
         &crate::semantic_read::action::READERS
@@ -11367,6 +11355,21 @@ impl Widget for WordProcessorWidget {
     fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
         self.action_palette_request.take()
     }
+    fn needs_redraw(&self) -> bool {
+        self.lifecycle.dirty
+    }
+    fn mark_drawn(&mut self) {
+        self.lifecycle.dirty = false;
+    }
+    /// One self-drawn taffy leaf filling its tile: its size follows the
+    /// parent alone, so only the first layout is a size change. Pages,
+    /// toolbars and panels are positioned inside `self.rect` by hand.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+}
+
+impl ui::resources::PublishesResources for WordProcessorWidget {
     /// Publish the resource tree Ctrl+K walks (delegates to the
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`]).
@@ -11394,6 +11397,18 @@ impl Widget for WordProcessorWidget {
         }
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
+    fn action_directory_invocation_domain(
+        &self,
+        _doc: &AutoCommit,
+    ) -> ui::widget::ActionDirectoryInvocationDomain {
+        // A file-choice-only surface has one immutable, privately retained offer.
+        // Ordinary Writer also offers place-image; its replaceable process blob
+        // resolver has no inert identity yet, so the whole domain stays unknown.
+        self.file_choice.as_ref().map_or(
+            ui::widget::ActionDirectoryInvocationDomain::Unsupported,
+            |offer| offer.continuation_domain,
+        )
+    }
     /// A delivered invocation's tree, rebuilt for its invoker's own view.
     fn resources_for(
         &self,
@@ -11401,7 +11416,7 @@ impl Widget for WordProcessorWidget {
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::Resource> {
         match participant {
-            None => Widget::resources(self, doc),
+            None => ui::resources::resources(self, doc),
             Some(participant) => self.participant_resources(Some(participant), doc),
         }
     }
@@ -11424,21 +11439,9 @@ impl Widget for WordProcessorWidget {
             })
         }
         let Some(participant) = participant else {
-            return Widget::resource(self, doc, id);
+            return ui::resources::resource(self, doc, id);
         };
         find(self.participant_resources(Some(participant), doc), id)
-    }
-    fn needs_redraw(&self) -> bool {
-        self.lifecycle.dirty
-    }
-    fn mark_drawn(&mut self) {
-        self.lifecycle.dirty = false;
-    }
-    /// One self-drawn taffy leaf filling its tile: its size follows the
-    /// parent alone, so only the first layout is a size change. Pages,
-    /// toolbars and panels are positioned inside `self.rect` by hand.
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
     }
 }
 

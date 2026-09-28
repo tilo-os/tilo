@@ -5419,56 +5419,12 @@ impl MonitorApp {
 impl Widget for MonitorApp {
     ui::provides!(
         dyn ui::history_mode::capability::DocumentHistory,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[MONITOR_OPERATION_TYPE]
-    }
-
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = monitor_process_root_resource();
-        root.children.extend(
-            self.model
-                .processes
-                .iter()
-                .take(MAX_CONTEXT_PROCESS_RESOURCES)
-                .map(monitor_process_resource),
-        );
-        vec![root]
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        // One compact root exposes the safe contextual sample. Individual
-        // process ids are resolved lazily below, avoiding an all-process
-        // materialization in the broker's cursor-based directory.
-        let resources = if cursor.is_empty() && max_results > 0 {
-            self.resources(doc)
-        } else {
-            Vec::new()
-        };
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if id == "processes" {
-            return Some(monitor_process_root_resource());
-        }
-        let (pid, started_at) = parse_process_resource_id(id)?;
-        self.model
-            .processes
-            .iter()
-            .find(|process| process.pid == pid && process.started_at == started_at)
-            .map(monitor_process_resource)
     }
 
     fn start_operation(
@@ -5914,6 +5870,51 @@ impl Widget for MonitorApp {
         if reduced {
             self.proc_push.snap(self.proc_push.pane());
         }
+    }
+}
+
+impl ui::resources::PublishesResources for MonitorApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let mut root = monitor_process_root_resource();
+        root.children.extend(
+            self.model
+                .processes
+                .iter()
+                .take(MAX_CONTEXT_PROCESS_RESOURCES)
+                .map(monitor_process_resource),
+        );
+        vec![root]
+    }
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        // One compact root exposes the safe contextual sample. Individual
+        // process ids are resolved lazily below, avoiding an all-process
+        // materialization in the broker's cursor-based directory.
+        let resources = if cursor.is_empty() && max_results > 0 {
+            self.resources(doc)
+        } else {
+            Vec::new()
+        };
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if id == "processes" {
+            return Some(monitor_process_root_resource());
+        }
+        let (pid, started_at) = parse_process_resource_id(id)?;
+        self.model
+            .processes
+            .iter()
+            .find(|process| process.pid == pid && process.started_at == started_at)
+            .map(monitor_process_resource)
     }
 }
 
@@ -6790,7 +6791,7 @@ mod tests {
             let pid = a.selected_pid.unwrap();
             a.prefs.confirm_kill = true;
             a.prefs.confirm_kill = false;
-            let resources = Widget::resources(&a, &AutoCommit::new());
+            let resources = ui::resources::resources(&a, &AutoCommit::new());
             let process = resources[0]
                 .children
                 .iter()
@@ -8463,7 +8464,7 @@ mod tests {
             let mut a = app();
             draw_at(&mut a, 1_280.0, 720.0);
             let pid = a.selected_pid.expect("sample selects a process");
-            let resources = Widget::resources(&a, &AutoCommit::new());
+            let resources = ui::resources::resources(&a, &AutoCommit::new());
             let process = resources[0]
                 .children
                 .iter()
@@ -8536,7 +8537,7 @@ mod tests {
                 a.model.processes.push(process);
             }
             let target = a.model.processes.last().expect("added process").clone();
-            let resources = Widget::resources(&a, &AutoCommit::new());
+            let resources = ui::resources::resources(&a, &AutoCommit::new());
             let root = resources.first().expect("process root");
             assert_eq!(
                 root.children.len(),
@@ -8551,18 +8552,20 @@ mod tests {
                     .any(|resource| resource.id.0 == target_id),
                 "a tail process is intentionally omitted from the eager page"
             );
-            let resolved = Widget::resource(&a, &AutoCommit::new(), &target_id)
+            let resolved = ui::resources::resource(&a, &AutoCommit::new(), &target_id)
                 .expect("an omitted exact PID generation stays agent-resolvable");
             assert_eq!(resolved.id.0, target_id);
             assert!(resolved.actions.iter().any(|action| action.id == "kill"));
 
-            let page = Widget::action_directory_resource_page(&a, &AutoCommit::new(), b"", 1)
-                .expect("Monitor publishes a bounded directory page");
+            let page =
+                ui::resources::action_directory_resource_page(&a, &AutoCommit::new(), b"", 1)
+                    .expect("Monitor publishes a bounded directory page");
             assert_eq!(page.resources.len(), 1, "one root obeys max_results=1");
             assert!(page.exhausted);
             assert!(page.next_cursor.is_empty());
-            let empty = Widget::action_directory_resource_page(&a, &AutoCommit::new(), b"", 0)
-                .expect("zero-size page is still a valid response");
+            let empty =
+                ui::resources::action_directory_resource_page(&a, &AutoCommit::new(), b"", 0)
+                    .expect("zero-size page is still a valid response");
             assert!(empty.resources.is_empty(), "max_results is a hard ceiling");
         }
 
@@ -8660,7 +8663,7 @@ mod tests {
             a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
             let process = a.model.processes[3].clone();
             let pid = process.pid;
-            let resources = Widget::resources(&a, &AutoCommit::new());
+            let resources = ui::resources::resources(&a, &AutoCommit::new());
             let process_resource = resources[0]
                 .children
                 .iter()
@@ -8937,7 +8940,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: AutoCommit::new(),
         registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| Widget::resources(&app(), doc),
+        resources: |doc| ui::resources::resources(&app(), doc),
         palette: ["Refresh processes", "Show process details", "Copy PID", "Stop process"],
     }
 }

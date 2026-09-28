@@ -511,7 +511,7 @@ mod tests {
         let mut app = crate::app::WindowsApp::new_offline();
         let mut doc = doc.clone();
         ui::widget::Widget::sync(&mut app, &mut doc, &ROOT);
-        ui::widget::Widget::resources(&app, &doc)
+        ui::resources::resources(&app, &doc)
     }
 
     ui::action_contract_tests! {

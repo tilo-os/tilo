@@ -186,7 +186,7 @@ impl SearchProvider for ResourceSearch {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl<R: Resource> Decorator for ResourceRoot<R> {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources; inner = content);
 
     type Inner = dyn Widget;
 
@@ -249,25 +249,8 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         Some(self)
     }
 
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Decorator::resources_for(self, None, doc)
-    }
-
     // The resource is the same for every participant (an agent task sees and
     // invokes the same actions); only the content's tree is per participant.
-    fn resources_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-    ) -> Vec<tilo_actions::Resource> {
-        let mut resources = vec![tilo_resource::publish::<R>(
-            self.dispatch.resource_id(),
-            &self.label,
-            &self.live.get(),
-        )];
-        resources.extend(self.content.resources_for(participant, doc));
-        resources
-    }
 
     // The undo boundary of a surface's immediate actions this event; the
     // host records one step per event and author.
@@ -294,6 +277,29 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         })];
         providers.extend(self.content.search_providers());
         providers
+    }
+}
+
+impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        ui_core::resources::PublishesResources::resources_for(self, None, doc)
+    }
+    fn resources_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Vec<tilo_actions::Resource> {
+        let mut resources = vec![tilo_resource::publish::<R>(
+            self.dispatch.resource_id(),
+            &self.label,
+            &self.live.get(),
+        )];
+        resources.extend(ui_core::resources::resources_for(
+            self.content.as_ref(),
+            participant,
+            doc,
+        ));
+        resources
     }
 }
 

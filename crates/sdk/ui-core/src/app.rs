@@ -3350,7 +3350,10 @@ pub(crate) mod ordinary_confirmation_tests {
         output: Rc<RefCell<Option<crate::ControlOutbox>>>,
     }
     impl Widget for Fixture {
-        crate::provides!(dyn crate::widget::controls::ActionControls);
+        crate::provides!(
+            dyn crate::widget::controls::ActionControls,
+            dyn crate::resources::PublishesResources
+        );
 
         crate::testing::delegate_widget_methods!(
             child: sync,
@@ -3368,9 +3371,6 @@ pub(crate) mod ordinary_confirmation_tests {
         }
         fn children_mut(&mut self) -> Vec<&mut (dyn crate::widget::Widget + '_)> {
             vec![self.child.as_mut()]
-        }
-        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-            self.resources.borrow().clone()
         }
         fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
             let mut handlers = self.child.resource_operation_handlers();
@@ -3395,6 +3395,12 @@ pub(crate) mod ordinary_confirmation_tests {
             Ok(Some(crate::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             )))
+        }
+    }
+
+    impl crate::resources::PublishesResources for Fixture {
+        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+            self.resources.borrow().clone()
         }
     }
 

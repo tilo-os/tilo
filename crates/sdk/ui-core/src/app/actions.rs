@@ -805,16 +805,20 @@ impl App {
                 .collect();
             let witness = action_directory_snapshot::DirectoryWitness {
                 registry_generation: self.actions.action_registry_generation,
-                root_domain: self
-                    .root_widget
-                    .action_directory_invocation_domain(&self.state.doc),
+                root_domain: crate::resources::action_directory_invocation_domain(
+                    self.root_widget.as_ref(),
+                    &self.state.doc,
+                ),
                 provider_domains,
                 key: self.resource_cache_key(),
                 permissions,
                 permission_generation: self.actions.permission_generation.get(),
                 route: self.bound_broker_route().cloned(),
                 owners,
-                root_revision: self.root_widget.action_directory_revision(&self.state.doc),
+                root_revision: crate::resources::action_directory_revision(
+                    self.root_widget.as_ref(),
+                    &self.state.doc,
+                ),
                 providers: directory_providers
                     .into_iter()
                     .map(|provider| {

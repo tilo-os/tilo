@@ -197,7 +197,8 @@ where
     crate::provides!(
         dyn crate::widget::FullscreenProvider,
         dyn crate::undo::CommittedActions,
-        dyn crate::widget::controls::ActionControls
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources
     );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -342,10 +343,6 @@ where
         self.child.release_record_scope()
     }
 
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.child.resources(doc)
-    }
-
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         self.child.search_providers()
     }
@@ -375,6 +372,15 @@ where
             presence,
             permissions,
         );
+    }
+}
+
+impl<K> crate::resources::PublishesResources for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        crate::resources::resources(self.child.as_ref(), doc)
     }
 }
 

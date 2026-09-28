@@ -3474,28 +3474,12 @@ impl Widget for PlayerApp {
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::undo::CommittedActions,
         dyn ui::history_mode::capability::DocumentHistory,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
-    }
-
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
-        crate::actions::resources(
-            &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
-            doc,
-        )
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
-        crate::actions::resource(
-            &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
-            doc,
-            id,
-        )
     }
 
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
@@ -4153,6 +4137,24 @@ impl Widget for PlayerApp {
         // A follower must keep syncing even with no local input so it applies
         // the host's incoming transport.
         self.collab.is_some()
+    }
+}
+
+impl ui::resources::PublishesResources for PlayerApp {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
+        crate::actions::resources(
+            &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
+            doc,
+        )
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
+        crate::actions::resource(
+            &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
+            doc,
+            id,
+        )
     }
 }
 
@@ -4831,7 +4833,7 @@ mod tests {
         // Case `library_navigation_is_published_as_canonical_actions`.
         {
             let app = PlayerApp::for_shot(None, Some("library"));
-            let resources = Widget::resources(&app, &AutoCommit::new());
+            let resources = ui::resources::resources(&app, &AutoCommit::new());
             let queue =
                 find_resource(&resources, "video-player.queue.local").expect("queue resource");
             let recent =
@@ -4985,7 +4987,7 @@ mod tests {
             let mut app = synth_app();
             app.open_path(Path::new("/tmp/Clip.mp4"))
                 .expect("source identity available");
-            let resources = Widget::resources(&app, &AutoCommit::new());
+            let resources = ui::resources::resources(&app, &AutoCommit::new());
             let app_resource = &resources[0];
             assert_eq!(app_resource.kind, "video-player.application");
             let media = &app_resource.children[0];

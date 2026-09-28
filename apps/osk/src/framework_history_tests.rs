@@ -107,7 +107,8 @@ impl LiveFixture {
 impl Widget for LiveFixture {
     ui::provides!(
         dyn ui::history_mode::capability::DocumentHistory,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
     );
 
     fn sync(&mut self, d: &mut AppModel, p: &ModelPath) {
@@ -120,9 +121,6 @@ impl Widget for LiveFixture {
             self.event_count.set(self.event_count.get() + 1);
         }
         false
-    }
-    fn resources(&self, d: &AutoCommit) -> Vec<Resource> {
-        self.keyboard.borrow().resources(d)
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["osk.suggestions"]
@@ -172,6 +170,12 @@ impl Widget for LiveFixture {
     }
     fn take_structure_dirty(&mut self) -> bool {
         self.keyboard.borrow_mut().take_structure_dirty()
+    }
+}
+
+impl ui::resources::PublishesResources for LiveFixture {
+    fn resources(&self, d: &AutoCommit) -> Vec<Resource> {
+        self.keyboard.borrow().resources(d)
     }
 }
 
@@ -442,9 +446,12 @@ fn framework_history_finite_drain_stale_lifetime_and_newer_field_survive_old_ack
         "availability and reentrant setter never rearm consumed offers"
     );
     let old = &offers[1];
-    let encoded =
-        ui::tilo_actions::door::encode_json(&root.resources(&doc), &old.address, &old.arguments)
-            .unwrap();
+    let encoded = ui::tilo_actions::door::encode_json(
+        &ui::resources::resources(&root, &doc),
+        &old.address,
+        &old.arguments,
+    )
+    .unwrap();
     let mut registry = ui::tilo_actions::ActionRegistry::new();
     crate::actions::register(&mut registry);
     registry.decode(&encoded).unwrap().apply(&mut doc).unwrap();
@@ -1108,7 +1115,7 @@ struct ReentrantAck {
     )>,
 }
 fn assert_no_reentrant_offer(root: &mut OskWidget, doc: &AutoCommit) {
-    let allowed = ui::tilo_actions::door::survey(&root.resources(doc))
+    let allowed = ui::tilo_actions::door::survey(&ui::resources::resources(root, doc))
         .into_iter()
         .filter(|door| door.contract.availability.is_available())
         .map(|door| door.address)

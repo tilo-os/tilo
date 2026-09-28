@@ -329,7 +329,7 @@ mod tests {
         let (mut doc, _) = document();
         let mut widget = crate::WordProcessorWidget::from_document(&doc).unwrap();
         assert_eq!(
-            widget.action_directory_invocation_domain(&doc),
+            ui::resources::action_directory_invocation_domain(&widget, &doc),
             ActionDirectoryInvocationDomain::Unsupported
         );
         let image = action(&ResourceProvider::resources(&widget, &doc), "place-image");
@@ -345,13 +345,16 @@ mod tests {
                 crate::WpFormat::Markdown,
             )
             .unwrap();
-        let before = widget.action_directory_invocation_domain(&doc);
+        let before = ui::resources::action_directory_invocation_domain(&widget, &doc);
         assert!(matches!(
             before,
             ActionDirectoryInvocationDomain::Versioned(_)
         ));
         widget.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(widget.action_directory_invocation_domain(&doc), before);
+        assert_eq!(
+            ui::resources::action_directory_invocation_domain(&widget, &doc),
+            before
+        );
         let a = action(&ResourceProvider::resources(&widget, &doc), "use-selected");
         assert!(
             a.continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Immediate))
@@ -378,7 +381,10 @@ mod tests {
             changed
                 .offer_file_choice(path.into(), bytes.to_vec(), format)
                 .unwrap();
-            assert_ne!(changed.action_directory_invocation_domain(&doc), before);
+            assert_ne!(
+                ui::resources::action_directory_invocation_domain(&changed, &doc),
+                before
+            );
             let other = action(&ResourceProvider::resources(&changed, &doc), "use-selected");
             assert_ne!(
                 other.continuation_identity(ContinuationQuery::Exact(

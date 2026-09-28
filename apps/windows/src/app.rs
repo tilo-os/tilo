@@ -1395,7 +1395,10 @@ impl WindowsApp {
 }
 
 impl Widget for WindowsApp {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
+    ui::provides!(
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
@@ -2853,9 +2856,6 @@ impl Widget for WindowsApp {
     fn get_rect(&self) -> Rect {
         self.area
     }
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        actions::provide_resources(&self.catalogue)
-    }
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -3070,6 +3070,12 @@ impl Widget for WindowsApp {
         children.push(&mut self.update_windows_button);
         children.push(&mut self.revoke_windows_connection_button);
         children
+    }
+}
+
+impl ui::resources::PublishesResources for WindowsApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        actions::provide_resources(&self.catalogue)
     }
 }
 

@@ -1649,7 +1649,7 @@ mod tests {
             let doc = AutoCommit::new();
 
             // The hook `ui::App::collect_resources` calls each frame.
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "one stable Tube application root");
             assert_eq!(resources[0].kind, "tube.application");
             let video = resources[0]
@@ -1693,7 +1693,7 @@ mod tests {
         {
             let (app, vid, _) = watching();
             let mut doc = AutoCommit::new();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let mut palette = ui::ActionPalette::new();
             palette.load_open_resources(&resources);
             palette.open();
@@ -1713,7 +1713,7 @@ mod tests {
         {
             let app = TubeApp::new();
             let mut doc = AutoCommit::new();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let settings = resources[0]
                 .children
                 .iter()
@@ -1792,7 +1792,7 @@ mod tests {
         {
             let (app, vid, _) = watching();
             let mut doc = AutoCommit::new();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let mut palette = ui::ActionPalette::new();
             palette.load_open_resources(&resources);
             palette.open();
@@ -1871,7 +1871,7 @@ mod tests {
     fn synced_resources(doc: &AutoCommit) -> Vec<Resource> {
         let (mut app, _, _) = watching();
         app.sync(&mut doc.clone(), &ROOT);
-        Widget::resources(&app, doc)
+        ui::resources::resources(&app, doc)
     }
 
     ui::action_contract_tests! {
@@ -1998,7 +1998,7 @@ mod tests {
         {
             let app = TubeApp::new();
             let doc = AutoCommit::new();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let device = resources[0]
                 .children
                 .iter()

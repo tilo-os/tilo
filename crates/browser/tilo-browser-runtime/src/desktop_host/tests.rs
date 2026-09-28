@@ -161,7 +161,7 @@ fn workspace_activity_actions_are_local_and_select_empty_workspaces() {
         .borrow_mut()
         .workspaces
         .push(Workspace::new(other, "Work"));
-    let actions = root.caller_view_resources(&AutoCommit::new());
+    let actions = ui::resources::caller_view_resources(&root, &AutoCommit::new());
     assert!(actions.iter().any(|r| r.id.0 == RESOURCE_ID));
     let mut doc = AutoCommit::new();
     for view in [

@@ -2224,21 +2224,12 @@ impl OskWidget {
 impl Widget for OskWidget {
     ui::provides!(
         dyn ui::history_mode::capability::DocumentHistory,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["osk.suggestions"]
-    }
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut layouts = self
-            .layouts
-            .keys()
-            .filter(|name| name.as_str() != "symbols")
-            .cloned()
-            .collect::<Vec<_>>();
-        layouts.sort();
-        crate::actions::resources(layouts, &self.preferred_text_layout)
     }
     fn start_operation(
         &mut self,
@@ -2291,7 +2282,7 @@ impl Widget for OskWidget {
         {
             self.set_emoji_recents_from_sync(recents);
         }
-        let resources = self.resources(state);
+        let resources = ui::resources::resources(self, state);
         self.drafts.prepare_after_sync(&resources);
     }
 
@@ -2723,6 +2714,19 @@ impl Widget for OskWidget {
     }
 }
 
+impl ui::resources::PublishesResources for OskWidget {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let mut layouts = self
+            .layouts
+            .keys()
+            .filter(|name| name.as_str() != "symbols")
+            .cloned()
+            .collect::<Vec<_>>();
+        layouts.sort();
+        crate::actions::resources(layouts, &self.preferred_text_layout)
+    }
+}
+
 impl ui::widget::controls::ActionControls for OskWidget {
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.drafts.take()
@@ -3148,7 +3152,7 @@ mod tests {
         eprintln!("phase resource_catalogue_exports_configuration_not_keystrokes");
         {
             let osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-            let resources = osk.resources(&AutoCommit::new());
+            let resources = ui::resources::resources(&osk, &AutoCommit::new());
             let keyboard = resources.first().expect("keyboard resource");
             assert!(
                 keyboard.actions.is_empty(),
@@ -3169,7 +3173,7 @@ mod tests {
         {
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
             let mut doc = AutoCommit::new();
-            let resources = osk.resources(&doc);
+            let resources = ui::resources::resources(&osk, &doc);
             let encoded = ui::tilo_actions::door::encode(
                 &resources,
                 &ui::tilo_actions::ActionAddress::new("osk.keyboard.layout", "azerty"),
@@ -4164,7 +4168,7 @@ mod tests {
             crate::actions::register(&mut registry);
             registry
         },
-        resources: |doc| Widget::resources(&OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())), doc),
+        resources: |doc| ui::resources::resources(&OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())), doc),
         palette: ["English (QWERTY)", "French (AZERTY)", "Clear learned suggestions"],
     }
 
@@ -4402,7 +4406,7 @@ mod tests {
         let offer = ui::widget::controls::take_control_invocation(&mut osk)
             .expect("the recents are offered as a preference action");
         let encoded = ui::tilo_actions::door::encode_json(
-            &osk.resources(&doc),
+            &ui::resources::resources(&osk, &doc),
             &offer.address,
             &offer.arguments,
         )
