@@ -1,4 +1,4 @@
-name: Snapshot / CI builder
+name: Build / CI builder
 
 # Publishes registry.tilo.so/tilo/tilo-builder, which check.yml runs in. Weekly so
 # the base and the package set stay current; on dispatch, and whenever the

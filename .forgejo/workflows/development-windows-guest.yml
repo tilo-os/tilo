@@ -1,4 +1,4 @@
-name: Development / assemble retained Windows guest
+name: Build / Windows guest
 
 on:
   workflow_dispatch:

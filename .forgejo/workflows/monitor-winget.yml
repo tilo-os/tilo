@@ -1,4 +1,4 @@
-name: Monitor / WinGet acceptance
+name: Release / imager WinGet acceptance
 
 on:
   schedule:

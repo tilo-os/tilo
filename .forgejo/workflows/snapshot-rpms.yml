@@ -1,4 +1,4 @@
-name: Snapshot / RPM repository
+name: Build / RPM snapshot
 
 # Builds, signs and tags the frozen RPM repo as
 # registry.tilo.so/tilo/rpms:set-<fingerprint>, where the fingerprint is the
