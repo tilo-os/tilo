@@ -37,13 +37,8 @@ impl crate::widget::FullscreenProvider for FsRoot {
 }
 
 impl Widget for FsRoot {
-    fn fullscreen_provider(&self) -> Option<&dyn crate::widget::FullscreenProvider> {
-        Some(self)
-    }
+    crate::provides!(dyn crate::widget::FullscreenProvider);
 
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn crate::widget::FullscreenProvider> {
-        Some(self)
-    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

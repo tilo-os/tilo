@@ -2402,6 +2402,8 @@ impl FloatingSurfaceProvider for GroupRow {
 }
 
 impl Widget for GroupRow {
+    crate::provides!(dyn crate::widget::FloatingSurfaceProvider);
+
     // Modal capture and presentation polling follow visible content, never inactive tabs.
     fn modal_capture(&self) -> Option<Rect> {
         self.children().into_iter().find_map(Widget::modal_capture)
@@ -3090,14 +3092,6 @@ impl Widget for GroupRow {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
-
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        Some(self)
     }
 
     fn wants_pointer_capture(&self) -> bool {

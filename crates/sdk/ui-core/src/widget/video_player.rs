@@ -2417,13 +2417,8 @@ impl FullscreenProvider for VideoPlayer {
 }
 
 impl Widget for VideoPlayer {
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        Some(self)
-    }
+    crate::provides!(dyn crate::widget::FullscreenProvider);
 
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        Some(self)
-    }
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.pump_engine();
     }

@@ -1405,9 +1405,10 @@ impl Continuable for TileHost {
         path: &ObjId,
     ) -> Option<crate::collaboration::ContinuationMetadata> {
         match &self.content {
-            TileContent::App(app) => app
-                .continuable()
-                .and_then(|continuable| continuable.continuation_metadata(state, path)),
+            TileContent::App(app) => {
+                crate::widget::capability::capability::<dyn Continuable>(&**app)
+                    .and_then(|continuable| continuable.continuation_metadata(state, path))
+            }
             _ => None,
         }
     }
@@ -1419,9 +1420,12 @@ impl Continuable for TileHost {
         path: &ObjId,
     ) -> bool {
         match &mut self.content {
-            TileContent::App(app) => app.continuable_mut().is_some_and(|continuable| {
-                continuable.restore_continuation_metadata(metadata, state, path)
-            }),
+            TileContent::App(app) => {
+                crate::widget::capability::capability_mut::<dyn Continuable>(&mut **app)
+                    .is_some_and(|continuable| {
+                        continuable.restore_continuation_metadata(metadata, state, path)
+                    })
+            }
             _ => false,
         }
     }
@@ -1572,21 +1576,12 @@ impl FullscreenProvider for TileHost {
 }
 
 impl Widget for TileHost {
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        Some(self)
-    }
-
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        Some(self)
-    }
-
-    fn continuable(&self) -> Option<&dyn Continuable> {
-        Some(self)
-    }
-
-    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
-        Some(self)
-    }
+    crate::provides!(
+        dyn crate::widget::FullscreenProvider,
+        dyn crate::widget::Continuable,
+        dyn crate::widget::FloatingSurfaceProvider,
+        dyn crate::widget::AudiencePresentationProvider
+    );
 
     fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
         if let Some(error) = &self.record_error {
@@ -2484,23 +2479,6 @@ impl Widget for TileHost {
         self.rect
     }
 
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
-
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
-
-    fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
-        Some(self)
-    }
-
-    fn audience_presentation_provider_mut(
-        &mut self,
-    ) -> Option<&mut dyn AudiencePresentationProvider> {
-        Some(self)
-    }
     fn wants_pointer_capture(&self) -> bool {
         match &self.content {
             TileContent::App(widget) => widget.wants_pointer_capture(),
@@ -3339,13 +3317,7 @@ mod tests {
     }
 
     impl Widget for FloatingProbe {
-        fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-            Some(self)
-        }
-
-        fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-            Some(self)
-        }
+        crate::provides!(dyn crate::widget::FloatingSurfaceProvider);
 
         fn build_layout(
             &mut self,

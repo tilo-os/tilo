@@ -2355,9 +2355,7 @@ impl Collaborative for RemoteApp {
 }
 
 impl Widget for RemoteApp {
-    fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
-        Some(self)
-    }
+    ui::provides!(dyn ui::widget::Collaborative);
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::REMOTE_OPERATION_TYPE]
