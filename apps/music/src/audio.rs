@@ -846,7 +846,7 @@ struct Pending {
     started: bool,
 }
 
-/// Without GStreamer, the platform's own player where it has one (the page's
+/// Without `GStreamer`, the platform's own player where it has one (the page's
 /// media element, through `media::MediaEngine`); elsewhere a silent stub.
 #[cfg(not(feature = "audio"))]
 struct Inner {
@@ -866,7 +866,11 @@ impl AudioBackend {
     /// Construct the actual pipeline on the initialization worker.
     #[cfg_attr(
         not(feature = "audio"),
-        allow(dead_code, reason = "the silent build never starts a backend")
+        allow(
+            dead_code,
+            clippy::unnecessary_wraps,
+            reason = "the silent build never starts a backend"
+        )
     )]
     fn try_new(#[cfg(feature = "audio")] output: &AudioOutput) -> Result<Self, String> {
         #[cfg(feature = "audio")]
@@ -1380,6 +1384,13 @@ impl AudioBackend {
     ///
     /// A source that declares no length cannot be checked this way; there,
     /// "the fetch ran to its end" is the best available answer.
+    #[cfg_attr(
+        not(all(feature = "audio", feature = "live")),
+        allow(
+            clippy::unused_self,
+            reason = "only the streaming backend stages files"
+        )
+    )]
     pub fn staging_complete(&self) -> bool {
         #[cfg(all(feature = "audio", feature = "live"))]
         {
@@ -1405,6 +1416,13 @@ impl AudioBackend {
     /// the whole file landed, or the source refused a range. Pair it with
     /// [`Self::staging_complete`] to tell a finished download from a complete
     /// one; on its own it only says the bytes will not grow any further.
+    #[cfg_attr(
+        not(all(feature = "audio", feature = "live")),
+        allow(
+            clippy::unused_self,
+            reason = "only the streaming backend stages files"
+        )
+    )]
     pub fn staging_finished(&self) -> bool {
         #[cfg(all(feature = "audio", feature = "live"))]
         {
@@ -1423,6 +1441,13 @@ impl AudioBackend {
     /// declared (`None` when it declared none, or when nothing is staging).
     /// Reported so a caller can say *how far short* a refused fetch fell rather
     /// than only that it did.
+    #[cfg_attr(
+        not(all(feature = "audio", feature = "live")),
+        allow(
+            clippy::unused_self,
+            reason = "only the streaming backend stages files"
+        )
+    )]
     pub fn staged_progress(&self) -> Option<(u64, Option<u64>)> {
         #[cfg(all(feature = "audio", feature = "live"))]
         {
@@ -1459,6 +1484,10 @@ impl AudioBackend {
     /// explicit sink chain was built. Used to prove the live path renders to a
     /// **real** sink and never a `fakesink` — and to diagnose silence (a
     /// `fakesink` here means no real sink plugin is installed).
+    #[cfg_attr(
+        not(feature = "audio"),
+        allow(clippy::unused_self, reason = "only `GStreamer` builds a sink chain")
+    )]
     pub fn actual_audio_sink_name(&self) -> Option<String> {
         #[cfg(feature = "audio")]
         {
