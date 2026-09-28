@@ -198,10 +198,6 @@ path = "tests/held_memory.rs"
 # Examples that carry unit tests build as test targets too, so `cargo test`
 # and the CI test jobs run those tests.
 [[example]]
-name = "browser-peer-harness"
-test = true
-
-[[example]]
 name = "inspect-peer-archive"
 test = true
 
