@@ -83,8 +83,7 @@ use super::{
     PrimaryScrollResult, ResourceOperationStart, Widget, WindowCloseAdmission,
 };
 use crate::dnd::DragPayload;
-use crate::permissions::PermissionScope;
-use crate::presence::{PresenceCtx, PresenceKey};
+use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
@@ -342,6 +341,12 @@ pub trait Decorator {
         self.inner_mut().take_action_palette_request()
     }
 
+    fn take_action_revert(
+        &mut self,
+    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
+        self.inner_mut().take_action_revert()
+    }
+
     fn cursor_shape(&self, point: vello::kurbo::Point) -> Option<winit::window::CursorIcon> {
         self.inner().cursor_shape(point)
     }
@@ -525,55 +530,8 @@ pub trait Decorator {
         self.inner_mut().set_record_scope(record);
     }
 
-    fn presence_key(&self) -> Option<PresenceKey> {
-        self.inner().presence_key()
-    }
-
-    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
-        self.inner().presence_payload()
-    }
-
     fn needs_idle_sync(&self) -> bool {
         self.inner().needs_idle_sync()
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.inner().permission_scope()
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        self.inner().search_providers()
-    }
-
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
-        self.inner_mut()
-            .activate_search_result(action_id, doc, path);
-    }
-
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.inner_mut().take_committed_action()
-    }
-
-    fn take_action_revert(
-        &mut self,
-    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
-        self.inner_mut().take_action_revert()
-    }
-
-    fn keeps_undo_step_open(&self) -> bool {
-        self.inner().keeps_undo_step_open()
-    }
-
-    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
-        self.inner_mut().set_undo_status(status)
-    }
-
-    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
-        self.inner_mut().take_undo_request()
-    }
-
-    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
-        self.inner_mut().handle_local_undo_request(request)
     }
 
     fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {
@@ -990,6 +948,12 @@ impl<T: Decorator> Widget for T {
         Decorator::take_action_palette_request(self)
     }
 
+    fn take_action_revert(
+        &mut self,
+    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
+        Decorator::take_action_revert(self)
+    }
+
     fn cursor_shape(&self, point: vello::kurbo::Point) -> Option<winit::window::CursorIcon> {
         Decorator::cursor_shape(self, point)
     }
@@ -1171,28 +1135,8 @@ impl<T: Decorator> Widget for T {
         Decorator::set_record_scope(self, record);
     }
 
-    fn presence_key(&self) -> Option<PresenceKey> {
-        Decorator::presence_key(self)
-    }
-
-    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
-        Decorator::presence_payload(self)
-    }
-
     fn needs_idle_sync(&self) -> bool {
         Decorator::needs_idle_sync(self)
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        Decorator::permission_scope(self)
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        Decorator::search_providers(self)
-    }
-
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
-        Decorator::activate_search_result(self, action_id, doc, path);
     }
 
     fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {

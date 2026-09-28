@@ -913,7 +913,8 @@ impl Widget for MusicApp {
     ui::provides!(
         dyn ui::widget::Continuable,
         dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -960,16 +961,6 @@ impl Widget for MusicApp {
         self.apply_pending_media_handoff(state);
         self.publish_mpris();
         self.publish_handoff();
-    }
-
-    /// Fold the user's library into the unified Ctrl+K palette. The app retains
-    /// one prebuilt [`LibrarySearchProvider`](crate::search_type::LibrarySearchProvider)
-    /// per library revision, and this returns an O(1) shared-catalog clone;
-    /// opening Ctrl+K therefore never reindexes the corpus. The provider is
-    /// synchronous and offline-safe; the live YouTube-Music search is async and
-    /// lives in the app's own search view.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.library_search_provider.clone())]
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -1906,6 +1897,18 @@ impl Widget for MusicApp {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+    }
+}
+
+impl ui::search::capability::SearchSource for MusicApp {
+    /// Fold the user's library into the unified Ctrl+K palette. The app retains
+    /// one prebuilt [`LibrarySearchProvider`](crate::search_type::LibrarySearchProvider)
+    /// per library revision, and this returns an O(1) shared-catalog clone;
+    /// opening Ctrl+K therefore never reindexes the corpus. The provider is
+    /// synchronous and offline-safe; the live YouTube-Music search is async and
+    /// lives in the app's own search view.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.library_search_provider.clone())]
     }
 }
 

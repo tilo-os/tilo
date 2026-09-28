@@ -1,60 +1,21 @@
-name: CI / runtime on macOS
+name: Dev / runtime-macos
 
 # The per-user runtime (`tilo-runtime`) is the Tilo host on machines without
 # the Tilo desktop, stock macOS first. Its library, standalone services and
 # `tilo-runtime` executable must keep building there, which no Linux lane
-# observes. Not a required check. It requests no OIDC token: the macOS
-# runners' release-signing credentials are never minted for it.
-# Manual only: no macOS runner serves imager-macos-aarch64, so pull-request
-# runs only queued. When one is registered, restore a pull_request trigger
-# whose paths cover tilo-runtime's dependency closure
-# (tools/policy/check_workflow_package_paths.py audits it).
+# observes. It requests no OIDC token: the macOS runners' release-signing
+# credentials are never minted for it.
+# Manual only: no macOS runner serves imager-macos-aarch64. When one is
+# registered, add a pull_request trigger whose paths cover tilo-runtime's
+# dependency closure (tools/policy/check_workflow_package_paths.py audits it).
 on:
   workflow_dispatch:
 
-concurrency:
-  group: runtime-macos-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
-  applicability:
-    if: ${{ github.event_name == 'pull_request' }}
-    runs-on: runner-quality
-    timeout-minutes: 5
-    container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
-    outputs:
-      applicable: ${{ steps.compare.outputs.applicable }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 2
-          sparse-checkout: |
-            tools/ci/prepare_pr_history.py
-            tools/ci/workflow_applicability.py
-            .forgejo/workflows/runtime-macos.yml
-          sparse-checkout-cone-mode: false
-          token: ${{ secrets.REGISTRY_TOKEN }}
-      - name: Prepare targeted PR history
-        run: python3 -I tools/ci/prepare_pr_history.py
-      - name: Require an exact relevant PR diff before macOS work
-        id: compare
-        run: python3 -I tools/ci/workflow_applicability.py --workflow .forgejo/workflows/runtime-macos.yml
-
   check:
-    needs: applicability
-    if: >-
-      ${{
-        always() &&
-        (github.event_name != 'pull_request' ||
-         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true'))
-      }}
     runs-on: imager-macos-aarch64
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Check the runtime, its tests and executable on macOS
         run: cargo check -p tilo-runtime --all-targets --locked

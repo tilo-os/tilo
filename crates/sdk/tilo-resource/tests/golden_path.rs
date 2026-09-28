@@ -75,6 +75,64 @@ impl Board {
     }
 }
 
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Channel {
+    pub topic: String,
+    pub read: i64,
+}
+
+#[resource(kind = "test.channel", label = "Channel")]
+impl Channel {
+    /// Set the topic.
+    #[action]
+    pub fn set_topic(&mut self, topic: String) {
+        self.topic = topic;
+    }
+
+    /// Mark the channel read.
+    #[action(housekeeping)]
+    pub fn mark_read(&mut self, count: i64) {
+        self.read = count;
+    }
+}
+
+#[test]
+fn a_housekeeping_action_says_so_in_its_change() {
+    let housekeeping = |replica: &mut Replica<Channel>| {
+        replica.versions().last().is_some_and(|version| {
+            version
+                .context
+                .as_ref()
+                .is_some_and(tilo_actions::ActionContext::is_housekeeping)
+        })
+    };
+    let mut channel = Replica::<Channel>::new();
+    channel.apply(Channel::MARK_READ.with(3)).unwrap();
+    assert!(housekeeping(&mut channel));
+    channel
+        .apply(Channel::SET_TOPIC.with("Launch".into()))
+        .unwrap();
+    assert!(!housekeeping(&mut channel));
+    channel
+        .apply(Invoke::group([Channel::MARK_READ.with(4)]))
+        .unwrap();
+    assert!(
+        housekeeping(&mut channel),
+        "a group of housekeeping is housekeeping"
+    );
+    channel
+        .apply(Invoke::group([
+            Channel::MARK_READ.with(5),
+            Channel::SET_TOPIC.with("Ship".into()),
+        ]))
+        .unwrap();
+    assert!(
+        !housekeeping(&mut channel),
+        "one content change makes it content"
+    );
+    assert_eq!(channel.state().unwrap().read, 5);
+}
+
 fn card_ids(replica: &Replica<Board>) -> Vec<Id> {
     replica.state().unwrap().cards.ids().cloned().collect()
 }

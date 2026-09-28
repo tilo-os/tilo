@@ -93,6 +93,21 @@ where
             .first()
             .map_or(ExecutionLocus::ClientLocal, tilo_actions::Action::locus)
     }
+
+    /// A gesture is housekeeping only when every member is; one content
+    /// change makes it content.
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        if !self.actions.is_empty()
+            && self
+                .actions
+                .iter()
+                .all(|action| !action.change_kind().is_content())
+        {
+            tilo_actions::ChangeKind::Housekeeping
+        } else {
+            tilo_actions::ChangeKind::Content
+        }
+    }
 }
 
 /// The registry type id groups of `R`'s actions are replayed under.

@@ -1,4 +1,4 @@
-name: Development / signed native source verification
+name: CI / development signing tools
 
 on:
   workflow_dispatch:

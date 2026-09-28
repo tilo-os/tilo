@@ -2418,9 +2418,12 @@ impl RoomActivityPane {
         self.passive_digest = self.digest.clone();
         self.reset_narrative();
 
+        // Filters and counts name the people history resolved; a change it
+        // could not name still shows under Everyone.
         let mut seen: HashSet<String> = HashSet::new();
         self.contributors = rows
             .iter()
+            .filter(|e| e.author.name != ui::history_source::UNKNOWN_AUTHOR_NAME)
             .filter(|e| seen.insert(e.author.name.clone()))
             .map(|e| e.author.name.clone())
             .collect();

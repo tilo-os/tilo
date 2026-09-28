@@ -198,7 +198,8 @@ where
         dyn crate::widget::FullscreenProvider,
         dyn crate::undo::CommittedActions,
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::search::capability::SearchSource
     );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -343,14 +344,6 @@ where
         self.child.release_record_scope()
     }
 
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        self.child.search_providers()
-    }
-
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
-        self.child.activate_search_result(action_id, doc, path);
-    }
-
     fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {
         self.child.apply_room_action(doc, type_id, payload)
     }
@@ -371,6 +364,23 @@ where
             theme,
             presence,
             permissions,
+        );
+    }
+}
+
+impl<K> crate::search::capability::SearchSource for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        crate::search::capability::search_providers(self.child.as_ref())
+    }
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
+        crate::search::capability::activate_search_result(
+            self.child.as_mut(),
+            action_id,
+            doc,
+            path,
         );
     }
 }

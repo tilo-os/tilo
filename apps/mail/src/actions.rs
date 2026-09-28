@@ -538,6 +538,14 @@ impl Action for MailAction {
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
     }
+
+    /// Whether a message was read is state about it, not a change to it.
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        match self {
+            MailAction::SetRead { .. } => tilo_actions::ChangeKind::Housekeeping,
+            _ => tilo_actions::ChangeKind::Content,
+        }
+    }
 }
 
 /// Register Mail's action decoder for palette execution + remote replay.

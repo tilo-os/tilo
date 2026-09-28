@@ -25,9 +25,11 @@ class RegistryServerImageWorkflowTests(unittest.TestCase):
         with self.subTest(phase='pr code cannot read checkout registry credentials'):
             self.doCleanups()
             self.setUp()
-            checkouts = self.source.split("      - uses: actions/checkout@", 1)[1]
-            applicability_checkout, checkouts = checkouts.split("\n      - name:", 1)
-            build_checkout = checkouts.split(
+            shared = (ROOT / ".forgejo/workflows/applicability.yml").read_text()
+            applicability_checkout = shared.split("      - uses: actions/checkout@", 1)[1].split(
+                "\n      - name:", 1)[0]
+            self.assertIn("uses: ./.forgejo/workflows/applicability.yml", self.source)
+            build_checkout = self.source.split(
                 "      - name: Checkout the exact image source\n", 1
             )[1].split("\n\n      - name:", 1)[0]
             for checkout in (applicability_checkout, build_checkout):

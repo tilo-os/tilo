@@ -1138,6 +1138,14 @@ impl Action for EbookAction {
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
     }
+
+    /// Where the reader is in a book is shared state about it, not a change to it.
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        match self {
+            Self::SetProgress { .. } => tilo_actions::ChangeKind::Housekeeping,
+            _ => tilo_actions::ChangeKind::Content,
+        }
+    }
 }
 
 /// Register Books' action decoder for palette execution + remote replay.

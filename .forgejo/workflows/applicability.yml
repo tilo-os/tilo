@@ -1,0 +1,51 @@
+name: PR applicability
+
+# Pull-request runs of a path-filtered workflow start its heavy jobs only when
+# the pull request's own diff, from its real merge base, touches the workflow's
+# declared paths (tools/ci/workflow_applicability.py). Forgejo matches `paths:`
+# against the merge base recorded before main was last merged into the branch,
+# so main's changes would otherwise count as the pull request's.
+on:
+  workflow_call:
+    inputs:
+      workflow:
+        description: The calling workflow file
+        required: true
+        type: string
+      event:
+        description: The calling workflow's github.event_name
+        required: true
+        type: string
+    outputs:
+      applicable:
+        value: ${{ jobs.compare.outputs.applicable }}
+
+jobs:
+  compare:
+    # Inside a called workflow github.event_name is workflow_call.
+    if: ${{ inputs.event == 'pull_request' }}
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
+    outputs:
+      applicable: ${{ steps.compare.outputs.applicable }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # The helpers run from the pull request's revision. Checkout removes
+          # its credential before they run, so retain the complete commit graph
+          # the merge-base proof needs.
+          persist-credentials: false
+          fetch-depth: 0
+          sparse-checkout: |
+            tools/ci/prepare_pr_history.py
+            tools/ci/workflow_applicability.py
+            ${{ inputs.workflow }}
+          sparse-checkout-cone-mode: false
+      - name: Prepare targeted PR history
+        run: python3 -I tools/ci/prepare_pr_history.py
+      - name: Require an exact relevant PR diff
+        id: compare
+        run: python3 -I tools/ci/workflow_applicability.py --workflow "${{ inputs.workflow }}" --event "${{ inputs.event }}"

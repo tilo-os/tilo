@@ -8,17 +8,22 @@
 # result byte for byte.
 set -euo pipefail
 
-ready=1
-for name in SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
-  value="${!name:-}"
-  if [[ -z $value || $value == *$'\n'* ]]; then
-    ready=0
-  fi
-done
+# Callers source this file, so it must not leave helper variables behind.
+tilo_runner_compiler_cache_complete() {
+  local name value
+  for name in SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+    value="${!name:-}"
+    if [[ -z $value || $value == *$'\n'* ]]; then
+      return 1
+    fi
+  done
+}
 
-if [[ $ready -ne 1 && ( -z ${FALLBACK_AWS_ACCESS_KEY_ID:-} || -z ${FALLBACK_AWS_SECRET_ACCESS_KEY:-} ) ]]; then
+if tilo_runner_compiler_cache_complete; then
+  echo "::notice::using the runner compiler cache at ${SCCACHE_ENDPOINT}"
+elif [[ -z ${FALLBACK_AWS_ACCESS_KEY_ID:-} || -z ${FALLBACK_AWS_SECRET_ACCESS_KEY:-} ]]; then
   echo '::notice::no compiler cache credentials; compiling without the remote cache'
-elif [[ $ready -ne 1 ]]; then
+else
   # Do not mix a runner bucket with this repository's keys. They authorize
   # different buckets.
   export SCCACHE_BUCKET=tilo-ci-sccache-125650147312-us-west-2
@@ -30,9 +35,8 @@ elif [[ $ready -ne 1 ]]; then
   export AWS_ACCESS_KEY_ID="$FALLBACK_AWS_ACCESS_KEY_ID"
   export AWS_SECRET_ACCESS_KEY="$FALLBACK_AWS_SECRET_ACCESS_KEY"
   echo "::notice::runner compiler cache is incomplete; using the repository cache at ${SCCACHE_ENDPOINT}"
-else
-  echo "::notice::using the runner compiler cache at ${SCCACHE_ENDPOINT}"
 fi
+unset -f tilo_runner_compiler_cache_complete
 
 if [[ -z ${SCCACHE_BUCKET:-} || -z ${AWS_ACCESS_KEY_ID:-} ]]; then
   return 0 2>/dev/null || exit 0

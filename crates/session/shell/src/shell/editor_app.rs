@@ -820,6 +820,8 @@ impl EditorApp {
 }
 
 impl Widget for EditorApp {
+    ui::provides!(dyn ui::presence::capability::PublishesPresence);
+
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         self.body.sync(state, root);
@@ -994,10 +996,6 @@ impl Widget for EditorApp {
         self.body.set_record(record);
     }
 
-    fn presence_key(&self) -> Option<ui::presence::PresenceKey> {
-        Some(self.body.presence_key())
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -1031,6 +1029,12 @@ impl Widget for EditorApp {
             self.edit.set_caret(pos);
             self.clamp_cursor();
         }
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for EditorApp {
+    fn presence_key(&self) -> Option<ui::presence::PresenceKey> {
+        Some(self.body.presence_key())
     }
 }
 
@@ -1534,8 +1538,7 @@ mod tests {
             // so a peer's caret/selection materialises where `draw` looks.
             // Unhosted — no record named yet — it is the bare field.
             let mut app = EditorApp::new();
-            let key = app
-                .presence_key()
+            let key = ui::presence::capability::presence_key(&app)
                 .expect("the editor body publishes presence");
             match key {
                 PresenceKey::Widget { path } => {
@@ -1549,7 +1552,7 @@ mod tests {
             // tab painted last.
             let record = ui::record::RecordId::for_tab(0x2b);
             app.set_record_scope(&record);
-            match app.presence_key().expect("still publishes") {
+            match ui::presence::capability::presence_key(&app).expect("still publishes") {
                 PresenceKey::Widget { path } => {
                     assert_eq!(
                         path,

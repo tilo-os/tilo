@@ -27,7 +27,7 @@ Automatic RPM snapshots cancel an obsolete run when a newer snapshot input
 lands. Explicit snapshot publication is non-cancellable, verifies that its
 input paths stayed unchanged, and rebases its resulting pin across unrelated
 `main` commits before promotion.
-Use an explicit **Snapshot / RPM repository** dispatch when a sequence of
+Use an explicit **Build / RPM snapshot** dispatch when a sequence of
 package-input commits repeatedly supersedes the automatic run; it retains the
 same signed native build and freshness checks.
 

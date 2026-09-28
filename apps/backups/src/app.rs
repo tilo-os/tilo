@@ -4786,7 +4786,8 @@ impl BackupsApp {
 impl Widget for BackupsApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -4967,10 +4968,6 @@ impl Widget for BackupsApp {
         Some("backups_app")
     }
 
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -5148,6 +5145,12 @@ impl Widget for BackupsApp {
             || self.job.is_some()
             || self.drawer.is_animating()
             || self.status_bubble.needs_frame(Instant::now())
+    }
+}
+
+impl ui::search::capability::SearchSource for BackupsApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_index.provider())]
     }
 }
 

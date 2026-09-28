@@ -899,7 +899,8 @@ impl Widget for BrowserTabs {
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::widget::Continuable,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::search::capability::SearchSource
     );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -1331,9 +1332,6 @@ impl Widget for BrowserTabs {
                 .poll_resource_operation(invocation, cancellation_requested, doc, path)
         })
     }
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        self.active().search_providers()
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         if let Some(recovery) = self.recovery.as_ref() {
             return vec![recovery.panel.as_ref()];
@@ -1510,6 +1508,12 @@ impl Widget for BrowserTabs {
     }
     fn take_window_close_intent(&mut self) -> bool {
         std::mem::take(&mut self.close_intent)
+    }
+}
+
+impl ui::search::capability::SearchSource for BrowserTabs {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        self.active().search_providers()
     }
 }
 

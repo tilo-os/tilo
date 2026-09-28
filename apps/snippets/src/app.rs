@@ -1044,7 +1044,8 @@ impl ui::widget::Widget for SnippetsApp {
         dyn ui::undo::CommittedActions,
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -1080,15 +1081,6 @@ impl ui::widget::Widget for SnippetsApp {
 
     fn needs_idle_sync(&self) -> bool {
         !self.seeded
-    }
-
-    /// Fold the library into the unified Ctrl+K palette. The provider is an
-    /// O(1) handle to the retained incremental
-    /// [`SnippetSearchProvider`](crate::search_provider::SnippetSearchProvider),
-    /// making every snippet findable there by title, language, folder, tag,
-    /// description or body, alongside the actions the app exports.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
     }
 
     // `Widget::build_layout`/`apply_layout` return `NodeId`/`()`, not a
@@ -1503,6 +1495,17 @@ impl ui::widget::Widget for SnippetsApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::search::capability::SearchSource for SnippetsApp {
+    /// Fold the library into the unified Ctrl+K palette. The provider is an
+    /// O(1) handle to the retained incremental
+    /// [`SnippetSearchProvider`](crate::search_provider::SnippetSearchProvider),
+    /// making every snippet findable there by title, language, folder, tag,
+    /// description or body, alongside the actions the app exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
     }
 }
 

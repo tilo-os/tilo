@@ -89,6 +89,10 @@ pub struct VmEntry {
     /// libvirt: virtio-gpu outputs (default one).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heads: Option<u8>,
+    /// libvirt: virgl 3D acceleration, rendered on the host GPU through an
+    /// `egl-headless` display beside the SPICE console.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gl: bool,
     /// libvirt: the first output's preferred mode, `WIDTHxHEIGHT`; the others
     /// offer the standard modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]

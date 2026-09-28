@@ -2860,7 +2860,7 @@ fn resource_and_view_actions_target_exact_entities() {
             .name
             .clone();
 
-        let providers = app.search_providers();
+        let providers = ui::search::capability::search_providers(&app);
         let provider = providers.first().expect("the editor publishes a provider");
         let hit = provider
             .search(&media)

@@ -6167,9 +6167,11 @@ impl FrameHarness {
         crate::collaboration::PresencePayload,
     )> {
         let node = self.focused?;
-        self.inspect_node(node, |widget| widget.presence_payload())
-            .ok()
-            .flatten()
+        self.inspect_node(node, |widget| {
+            crate::presence::capability::presence_payload(widget)
+        })
+        .ok()
+        .flatten()
     }
 
     /// Send wheel line-deltas at the last pointer position. Move the pointer

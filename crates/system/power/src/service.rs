@@ -5,8 +5,8 @@
 //! Runs on a background tokio runtime (spawned by the compositor next to the notification
 //! service) and:
 //!
-//! * takes a logind *block* lock so logind delegates the lid switch and power key to the
-//!   compositor's policy;
+//! * on the seat that owns them, takes a logind *block* lock so logind delegates the lid
+//!   switch and power key to the compositor's policy;
 //! * mirrors the [`InhibitRegistry`] into a logind `idle:sleep` block lock;
 //! * polls the battery, runs the threshold [`BatteryMonitor`], and pushes low/critical toasts
 //!   + a critical auto-suspend;
@@ -165,15 +165,25 @@ impl PowerService {
 
         // Best-effort: if logind refuses the delegate lock we still run our policy; logind may
         // just also act on the lid. Do not fail startup.
-        let delegate = match logind.delegate_handled_keys().await {
-            Ok(l) => {
-                info!(target: "tilo::power", "logind: delegating lid/power-key to compositor policy");
-                Some(l)
+        let seat = std::env::var("XDG_SEAT").ok();
+        let delegate = if receives_seat_buttons(seat.as_deref()) {
+            match logind.delegate_handled_keys().await {
+                Ok(l) => {
+                    info!(target: "tilo::power", "logind: delegating lid/power-key to compositor policy");
+                    Some(l)
+                }
+                Err(e) => {
+                    warn!(target: "tilo::power", error = %e, "logind: could not take delegate lock");
+                    None
+                }
             }
-            Err(e) => {
-                warn!(target: "tilo::power", error = %e, "logind: could not take delegate lock");
-                None
-            }
+        } else {
+            info!(
+                target: "tilo::power",
+                seat = seat.as_deref().unwrap_or_default(),
+                "logind: lid/power-key stay with logind; they belong to seat0, not this seat"
+            );
+            None
         };
         let sleep_delay_lock = take_sleep_delay_lock(&logind).await;
 
@@ -498,6 +508,14 @@ impl PowerService {
     }
 }
 
+/// Whether a session on `seat` gets the lid switch and power key. logind tags those
+/// buttons `seat0` and keeps them there; a session on any other seat (a second
+/// head, a dev-VM slot) never sees them, so delegating them to it would leave the
+/// power button, and an ACPI shutdown request, doing nothing at all.
+fn receives_seat_buttons(seat: Option<&str>) -> bool {
+    seat.is_none_or(|seat| seat.is_empty() || seat == "seat0")
+}
+
 async fn take_sleep_delay_lock(logind: &LogindManager) -> Option<LogindInhibitor> {
     match logind
         .inhibit(
@@ -539,6 +557,14 @@ mod tests {
             let retry = stream_retry_after(now);
             assert!(retry > now);
             assert_eq!(retry.duration_since(now), SIGNAL_STREAM_RETRY_DELAY);
+        }
+        // Phase `only_the_button_seat_takes_the_key_delegation`.
+        {
+            assert!(receives_seat_buttons(Some("seat0")));
+            assert!(receives_seat_buttons(None));
+            assert!(receives_seat_buttons(Some("")));
+            assert!(!receives_seat_buttons(Some("seat-pr1307")));
+            assert!(!receives_seat_buttons(Some("seat1")));
         }
         // Phase `lid_edge_only_acts_on_close_transition`.
         {

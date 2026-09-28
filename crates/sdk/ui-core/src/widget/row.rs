@@ -225,6 +225,11 @@ impl Row {
 }
 
 impl Widget for Row {
+    crate::provides!(
+        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::presence::capability::PublishesPresence
+    );
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -470,20 +475,6 @@ impl Widget for Row {
             .fold(false, |acc, d| acc || d)
     }
 
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
-    }
-
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -536,7 +527,7 @@ impl Widget for Row {
             }
         }
 
-        if let Some(scope) = self.permission_scope()
+        if let Some(scope) = crate::permissions::capability::permission_scope(self)
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
@@ -549,7 +540,7 @@ impl Widget for Row {
             );
         }
 
-        if let Some(key) = self.presence_key()
+        if let Some(key) = crate::presence::capability::presence_key(self)
             && let Some(peers) = presence.here.get(&key)
             && let Some(user) = peers.first()
         {
@@ -564,6 +555,24 @@ impl Widget for Row {
         for child in &mut self.children {
             child.release_scene_cache();
         }
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for Row {
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if self.presence_path.is_empty() {
+            None
+        } else {
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
+        }
+    }
+}
+
+impl crate::permissions::capability::PermissionGated for Row {
+    fn permission_scope(&self) -> Option<PermissionScope> {
+        self.permission_scope.clone()
     }
 }
 

@@ -232,12 +232,13 @@ def applicable(repo, event_name, event, paths, workflow=None):
 def main():
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--workflow", required=True)
+    cli.add_argument("--event", help="event name when run from a called workflow")
     args = cli.parse_args()
     try:
         paths = declared_paths(args.workflow)
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
         result, matched = applicable(
-            Path.cwd(), os.environ["GITHUB_EVENT_NAME"], event, paths, args.workflow
+            Path.cwd(), args.event or os.environ["GITHUB_EVENT_NAME"], event, paths, args.workflow
         )
         print(json.dumps({"applicable": result, "matched_paths": matched}))
         with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
