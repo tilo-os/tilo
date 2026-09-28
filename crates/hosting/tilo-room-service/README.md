@@ -49,13 +49,26 @@ in `rooms.mjs` does). The fragment never reaches a server.
 | `TILO_ROOMS_MAX` | `8` | rooms at once (1–64) |
 | `TILO_ROOMS_TTL_SECS` | `1800` | room lifetime |
 | `TILO_ROOMS_MAX_GUESTS` | `4` | guest tickets per room besides the page's |
-| `TILO_ROOMS_PORT_BASE` | `9700` | loopback ports of room relays |
+| `TILO_ROOMS_PORT_BASE` | `9700` | ports of room relays (up to 64 from here) |
+| `TILO_ROOMS_DIRECT_PORTS` | `0` | `1`: each room serves browsers on its own TCP and UDP port |
 
-The TLS front terminates the browser's TLS with the `*.<domain>` certificate
-and relays the bytes over a second TLS connection to the room's relay, which
-presents a certificate the service generated at start and pins. The ingress
-must pass `*.<domain>` through by SNI. WebTransport (UDP) is not relayed, so
-the live plane (cursors, presence) uses its HTTPS stream fallback.
+Two ways to reach a room:
+
+- **Direct ports** (`TILO_ROOMS_DIRECT_PORTS=1`), which the live plane needs:
+  room `<id>` is `https://<id>.<domain>:<port>`, served by its relay on
+  `0.0.0.0:<port>` over TCP (HTTPS) and UDP (WebTransport: cursors and
+  presence) with the `*.<domain>` certificate, or without one the relay's
+  development certificate that WebTransport pins by hash. Expose the port
+  range for TCP and UDP.
+- **TLS front** (default): `https://<id>.<domain>[:TILO_ROOMS_PUBLIC_PORT]`.
+  The front terminates the browser's TLS with the `*.<domain>` certificate
+  and relays the bytes over a second TLS connection to the room's relay,
+  which presents a certificate the service generated at start and pins. The
+  ingress must pass `*.<domain>` through by SNI. It carries TCP only, so
+  documents sync but the live plane (cursors, presence) stays off.
+
+Rooms carry only signed document commits, certification and presence;
+every browser renders the desktop and its apps itself (wasm and WebGPU).
 
 ## Build and run
 

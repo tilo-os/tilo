@@ -71,8 +71,14 @@ impl Service {
             headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
             headers.insert(header::VARY, header::HeaderValue::from_static("origin"));
         }
-        headers.insert(header::ACCESS_CONTROL_ALLOW_METHODS, header::HeaderValue::from_static("GET, POST, OPTIONS"));
-        headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, header::HeaderValue::from_static("content-type"));
+        headers.insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            header::HeaderValue::from_static("GET, POST, OPTIONS"),
+        );
+        headers.insert(
+            header::ACCESS_CONTROL_ALLOW_HEADERS,
+            header::HeaderValue::from_static("content-type"),
+        );
         response
     }
 
@@ -80,8 +86,14 @@ impl Service {
         let mut response = Response::new(full(value.to_string()));
         *response.status_mut() = status;
         let headers = response.headers_mut();
-        headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static("application/json"));
-        headers.insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
+        headers.insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static("application/json"),
+        );
+        headers.insert(
+            header::CACHE_CONTROL,
+            header::HeaderValue::from_static("no-store"),
+        );
         response
     }
 
@@ -95,11 +107,13 @@ impl Service {
 
     fn free_port(&self) -> Option<u16> {
         let rooms = self.rooms.lock().ok()?;
-        (0..64u16).filter_map(|offset| self.config.port_base.checked_add(offset)).find(|port| {
-            rooms.values().all(|room| room.port != *port)
-                && std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok()
-                && std::net::UdpSocket::bind(("127.0.0.1", *port)).is_ok()
-        })
+        (0..64u16)
+            .filter_map(|offset| self.config.port_base.checked_add(offset))
+            .find(|port| {
+                rooms.values().all(|room| room.port != *port)
+                    && std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok()
+                    && std::net::UdpSocket::bind(("127.0.0.1", *port)).is_ok()
+            })
     }
 
     fn join_url(&self, room: &Room, ticket: &str) -> String {
@@ -110,17 +124,28 @@ impl Service {
             room.user_public_key,
             room.uuid,
             ticket,
-            encode(&format!("{}/rooms/{}/admit", self.config.public_api, room.id)),
+            encode(&format!(
+                "{}/rooms/{}/admit",
+                self.config.public_api, room.id
+            )),
         )
     }
 
     async fn create(self: &Arc<Self>) -> Result<serde_json::Value, (StatusCode, String)> {
         {
-            let poisoned = || (StatusCode::INTERNAL_SERVER_ERROR, "room registry poisoned".to_owned());
+            let poisoned = || {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "room registry poisoned".to_owned(),
+                )
+            };
             let open = self.rooms.lock().map_err(|_| poisoned())?.len();
             let mut starting = self.starting.lock().map_err(|_| poisoned())?;
             if open.saturating_add(*starting) >= self.config.max_rooms {
-                return Err((StatusCode::SERVICE_UNAVAILABLE, "all rooms are in use; try again later".into()));
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "all rooms are in use; try again later".into(),
+                ));
             }
             *starting = starting.saturating_add(1);
             drop(starting);
@@ -132,7 +157,10 @@ impl Service {
         }
         result.map_err(|error| {
             eprintln!("tilo-room-service: room start failed: {error:#}");
-            (StatusCode::SERVICE_UNAVAILABLE, "the room could not be started".into())
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the room could not be started".into(),
+            )
         })
     }
 
@@ -180,9 +208,14 @@ impl Service {
 
     fn events(room: &Arc<Room>) -> Response<Body> {
         let (history, receiver) = room.subscribe();
-        let mut backlog: std::collections::VecDeque<String> = std::iter::once(": connected\n\n".to_owned())
-            .chain(history.iter().map(|member| format!("event: member\ndata: {member}\n\n")))
-            .collect();
+        let mut backlog: std::collections::VecDeque<String> =
+            std::iter::once(": connected\n\n".to_owned())
+                .chain(
+                    history
+                        .iter()
+                        .map(|member| format!("event: member\ndata: {member}\n\n")),
+                )
+                .collect();
         let stream = futures::stream::unfold((receiver, false), move |(mut receiver, done)| {
             let next = backlog.pop_front();
             async move {
@@ -192,34 +225,56 @@ impl Service {
                 if done {
                     return None;
                 }
-                let chunk = match tokio::time::timeout(Duration::from_secs(15), receiver.recv()).await {
+                let chunk = match tokio::time::timeout(Duration::from_secs(15), receiver.recv())
+                    .await
+                {
                     Err(_) => ": keep-alive\n\n".to_owned(),
                     Ok(Ok(Event::Member(member))) => format!("event: member\ndata: {member}\n\n"),
-                    Ok(Ok(Event::Expired) | Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                    Ok(
+                        Ok(Event::Expired) | Err(tokio::sync::broadcast::error::RecvError::Closed),
+                    ) => {
                         return Some((
-                            Ok(Frame::data(Bytes::from_static(b"event: expired\ndata: {}\n\n"))),
+                            Ok(Frame::data(Bytes::from_static(
+                                b"event: expired\ndata: {}\n\n",
+                            ))),
                             (receiver, true),
                         ));
                     }
-                    Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => ": lagged\n\n".to_owned(),
+                    Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
+                        ": lagged\n\n".to_owned()
+                    }
                 };
                 Some((Ok(Frame::data(Bytes::from(chunk))), (receiver, false)))
             }
         });
         let mut response = Response::new(StreamBody::new(stream).boxed());
         let headers = response.headers_mut();
-        headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static("text/event-stream"));
-        headers.insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
+        headers.insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static("text/event-stream"),
+        );
+        headers.insert(
+            header::CACHE_CONTROL,
+            header::HeaderValue::from_static("no-store"),
+        );
         response
     }
 
     async fn asset(&self, path: &str) -> Response<Body> {
         let relative = path.trim_start_matches('/');
-        let relative = if relative.is_empty() { "join.html" } else { relative };
+        let relative = if relative.is_empty() {
+            "join.html"
+        } else {
+            relative
+        };
         let Some(kind) = content_type(relative) else {
             return Self::error(StatusCode::NOT_FOUND, "not found");
         };
-        if relative.split('/').any(|part| part.is_empty() || part.starts_with('.')) || relative.contains('\\') {
+        if relative
+            .split('/')
+            .any(|part| part.is_empty() || part.starts_with('.'))
+            || relative.contains('\\')
+        {
             return Self::error(StatusCode::NOT_FOUND, "not found");
         }
         match tokio::fs::read(self.config.assets.join(relative)).await {
@@ -227,7 +282,10 @@ impl Service {
                 let mut response = Response::new(full(bytes));
                 let headers = response.headers_mut();
                 headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static(kind));
-                headers.insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-cache"));
+                headers.insert(
+                    header::CACHE_CONTROL,
+                    header::HeaderValue::from_static("no-cache"),
+                );
                 response
             }
             Err(_) => Self::error(StatusCode::NOT_FOUND, "not found"),
@@ -238,7 +296,11 @@ impl Service {
         let Some(room) = self.room(id) else {
             return Self::error(StatusCode::NOT_FOUND, "no such room");
         };
-        let Ok(body) = Limited::new(body, 4096).collect().await.map(http_body_util::Collected::to_bytes) else {
+        let Ok(body) = Limited::new(body, 4096)
+            .collect()
+            .await
+            .map(http_body_util::Collected::to_bytes)
+        else {
             return Self::error(StatusCode::BAD_REQUEST, "invalid request");
         };
         let Ok(request) = serde_json::from_slice::<serde_json::Value>(&body) else {
@@ -246,7 +308,10 @@ impl Service {
         };
         let text = |name: &str| request.get(name).and_then(serde_json::Value::as_str);
         let (Some(ticket), Some(code)) = (text("ticket"), text("pairingCode")) else {
-            return Self::error(StatusCode::BAD_REQUEST, "ticket and pairingCode are required");
+            return Self::error(
+                StatusCode::BAD_REQUEST,
+                "ticket and pairingCode are required",
+            );
         };
         match room.admit(ticket, code).await {
             Ok(member) => Self::json(StatusCode::OK, &member),
@@ -265,7 +330,9 @@ impl Service {
         let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
         let response = match (&method, parts.as_slice()) {
             (&Method::OPTIONS, _) => Response::new(full(Bytes::new())),
-            (&Method::GET, ["healthz"]) => Self::json(StatusCode::OK, &serde_json::json!({"ok": true})),
+            (&Method::GET, ["healthz"]) => {
+                Self::json(StatusCode::OK, &serde_json::json!({"ok": true}))
+            }
             (&Method::GET, ["app", ..]) => self.asset(path.trim_start_matches("/app")).await,
             (&Method::POST, ["rooms"]) => match self.create().await {
                 Ok(value) => Self::json(StatusCode::CREATED, &value),
@@ -286,7 +353,10 @@ impl Service {
                         StatusCode::CREATED,
                         &serde_json::json!({"joinUrl": self.join_url(&room, &ticket), "ticket": ticket}),
                     ),
-                    None => Self::error(StatusCode::TOO_MANY_REQUESTS, "this room has all the guests it takes"),
+                    None => Self::error(
+                        StatusCode::TOO_MANY_REQUESTS,
+                        "this room has all the guests it takes",
+                    ),
                 },
             },
             _ => Self::error(StatusCode::NOT_FOUND, "not found"),
@@ -302,12 +372,15 @@ async fn main() -> Result<()> {
     let public = tls::public_config(config.certificate.as_ref(), &config.domain)?;
     let identity = tls::HostIdentity::generate()?;
     let host_certificate = identity.certificate.clone();
-    let (api, front) = (TcpListener::bind(config.api).await?, TcpListener::bind(config.tls).await?);
+    let (api, front) = (
+        TcpListener::bind(config.api).await?,
+        TcpListener::bind(config.tls).await?,
+    );
     eprintln!(
         "tilo-room-service: API {} (listening {}), rooms on {} (TLS {})",
         config.public_api,
         config.api,
-        config.origin("<room>"),
+        config.origin("<room>", config.port_base),
         config.tls
     );
     let domain = config.domain.clone();
@@ -318,9 +391,13 @@ async fn main() -> Result<()> {
         starting: Mutex::new(0),
     });
     let lookup = Arc::clone(&service);
-    tokio::spawn(tls::serve(front, public, domain, host_certificate, move |id| {
-        lookup.room(id).map(|room| room.port)
-    }));
+    tokio::spawn(tls::serve(
+        front,
+        public,
+        domain,
+        host_certificate,
+        move |id| lookup.room(id).map(|room| room.port),
+    ));
     loop {
         let (socket, _) = api.accept().await?;
         let service = Arc::clone(&service);

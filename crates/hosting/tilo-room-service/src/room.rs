@@ -46,7 +46,9 @@ pub struct Room {
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -67,7 +69,14 @@ fn uuid_v4() -> String {
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     let part = |range: std::ops::Range<usize>| hex::encode(bytes.get(range).unwrap_or_default());
-    format!("{}-{}-{}-{}-{}", part(0..4), part(4..6), part(6..8), part(8..10), part(10..16))
+    format!(
+        "{}-{}-{}-{}-{}",
+        part(0..4),
+        part(4..6),
+        part(6..8),
+        part(8..10),
+        part(10..16)
+    )
 }
 
 /// A field of a JSON line, or null.
@@ -90,7 +99,10 @@ impl Room {
     ) -> Result<(Arc<Self>, Child)> {
         let directory = config.state.join(&id);
         std::fs::create_dir(&directory).context("create room directory")?;
-        let (chain, key) = (directory.join("host-cert.pem"), directory.join("host-key.pem"));
+        let (chain, key) = (
+            directory.join("host-cert.pem"),
+            directory.join("host-key.pem"),
+        );
         write_private(&chain, identity.certificate_pem.as_bytes())?;
         write_private(&key, identity.key_pem.as_bytes())?;
         let mut command = Command::new(&config.relay_binary);
@@ -100,9 +112,23 @@ impl Room {
             .arg("--state")
             .arg(directory.join("state"))
             .arg("--web")
-            .arg(format!("127.0.0.1:{port}"))
+            .arg(if config.direct_ports {
+                format!("0.0.0.0:{port}")
+            } else {
+                format!("127.0.0.1:{port}")
+            })
             .arg("--tls")
-            .arg(format!("files:{},{}", chain.display(), key.display()))
+            .arg(match (config.direct_ports, &config.certificate) {
+                // Browsers reach the relay itself: the public certificate.
+                (true, Some((public_chain, public_key))) => {
+                    format!("files:{},{}", public_chain.display(), public_key.display())
+                }
+                // Local: the relay's development certificate, which the
+                // page's WebTransport pins by the hash the relay announces.
+                (true, None) => "dev".to_owned(),
+                // Behind the TLS front: the internal certificate it pins.
+                (false, _) => format!("files:{},{}", chain.display(), key.display()),
+            })
             .arg("--allowed-origin")
             .arg(config.api_origin());
         for origin in &config.site_origins {
@@ -133,12 +159,13 @@ impl Room {
         };
         let (events, _) = broadcast::channel(64);
         let room = Arc::new(Self {
-            origin: config.origin(&id),
+            origin: config.origin(&id, port),
             id,
             port,
             uuid: uuid_v4(),
             user_public_key,
-            expires_at_ms: now_ms().saturating_add(u64::try_from(config.ttl.as_millis()).unwrap_or(u64::MAX)),
+            expires_at_ms: now_ms()
+                .saturating_add(u64::try_from(config.ttl.as_millis()).unwrap_or(u64::MAX)),
             stdin: Mutex::new(stdin),
             events,
             history: std::sync::Mutex::default(),
@@ -174,7 +201,10 @@ impl Room {
             return None;
         }
         let secret = hex::encode(rand::random::<[u8; 20]>());
-        tickets.push(Ticket { secret: secret.clone(), used: false });
+        tickets.push(Ticket {
+            secret: secret.clone(),
+            used: false,
+        });
         drop(tickets);
         Some(secret)
     }
@@ -185,11 +215,16 @@ impl Room {
         ensure!(
             !pairing_code.is_empty()
                 && pairing_code.len() <= 64
-                && pairing_code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == ' '),
+                && pairing_code
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == ' '),
             "invalid pairing code"
         );
         {
-            let mut tickets = self.tickets.lock().map_err(|_| anyhow::anyhow!("tickets poisoned"))?;
+            let mut tickets = self
+                .tickets
+                .lock()
+                .map_err(|_| anyhow::anyhow!("tickets poisoned"))?;
             let entry = tickets
                 .iter_mut()
                 .find(|entry| entry.secret == ticket && !entry.used)
@@ -202,9 +237,13 @@ impl Room {
         let until = deadline(Duration::from_secs(60));
         loop {
             match tokio::time::timeout_at(until, events.recv()).await {
-                Ok(Ok(Event::Member(member))) if field(&member, "pairingCode") == pairing_code => return Ok(member),
+                Ok(Ok(Event::Member(member))) if field(&member, "pairingCode") == pairing_code => {
+                    return Ok(member);
+                }
                 Ok(Ok(Event::Member(_)) | Err(broadcast::error::RecvError::Lagged(_))) => {}
-                Ok(Ok(Event::Expired) | Err(broadcast::error::RecvError::Closed)) => bail!("the room ended"),
+                Ok(Ok(Event::Expired) | Err(broadcast::error::RecvError::Closed)) => {
+                    bail!("the room ended")
+                }
                 Err(_) => bail!("the room did not certify the device in time"),
             }
         }
@@ -221,7 +260,11 @@ impl Room {
 
     pub fn subscribe(&self) -> (Vec<serde_json::Value>, broadcast::Receiver<Event>) {
         let receiver = self.events.subscribe();
-        let history = self.history.lock().map(|history| history.clone()).unwrap_or_default();
+        let history = self
+            .history
+            .lock()
+            .map(|history| history.clone())
+            .unwrap_or_default();
         (history, receiver)
     }
 
@@ -230,7 +273,10 @@ impl Room {
     pub async fn stop(&self, mut child: Child) {
         let _ = self.events.send(Event::Expired);
         let _ = self.tell("shutdown\n").await;
-        if tokio::time::timeout(Duration::from_secs(10), child.wait()).await.is_err() {
+        if tokio::time::timeout(Duration::from_secs(10), child.wait())
+            .await
+            .is_err()
+        {
             let _ = child.kill().await;
         }
         let _ = std::fs::remove_dir_all(&self.directory);

@@ -28,6 +28,10 @@ pub struct Config {
     pub site_origins: Vec<String>,
     /// The API's public base URL, for join links and `/app/`.
     pub public_api: String,
+    /// Rooms serve browsers on their own port (TCP and UDP, the relay's own
+    /// certificate) instead of behind the TLS front, so the live plane
+    /// (WebTransport) reaches them.
+    pub direct_ports: bool,
 }
 
 fn var(name: &str) -> Option<String> {
@@ -45,7 +49,8 @@ where
 
 impl Config {
     pub fn from_env() -> Result<Self> {
-        let path = |name: &str, default: &str| PathBuf::from(var(name).unwrap_or_else(|| default.into()));
+        let path =
+            |name: &str, default: &str| PathBuf::from(var(name).unwrap_or_else(|| default.into()));
         let certificate = match (var("TILO_ROOMS_TLS_CERT"), var("TILO_ROOMS_TLS_KEY")) {
             (Some(cert), Some(key)) => Some((cert.into(), key.into())),
             (None, None) => None,
@@ -76,6 +81,7 @@ impl Config {
                 .unwrap_or_else(|| "http://localhost:8790".into())
                 .trim_end_matches('/')
                 .to_owned(),
+            direct_ports: var("TILO_ROOMS_DIRECT_PORTS").is_some_and(|value| value == "1"),
         };
         ensure!(
             config
@@ -104,8 +110,12 @@ impl Config {
         Ok(config)
     }
 
-    /// `https://<room>.<domain>[:port]`.
-    pub fn origin(&self, room: &str) -> String {
+    /// `https://<room>.<domain>[:port]`; with direct ports, the room's own
+    /// `port`.
+    pub fn origin(&self, room: &str, port: u16) -> String {
+        if self.direct_ports {
+            return format!("https://{room}.{}:{port}", self.domain);
+        }
         match self.public_port.filter(|port| *port != 443) {
             Some(port) => format!("https://{room}.{}:{port}", self.domain),
             None => format!("https://{room}.{}", self.domain),
@@ -114,13 +124,23 @@ impl Config {
 
     /// The API's own origin (scheme, host and port of `public_api`).
     pub fn api_origin(&self) -> String {
-        let rest = self.public_api.split_once("://").map_or("", |(_, rest)| rest);
-        let scheme = self.public_api.split_once("://").map_or("https", |(scheme, _)| scheme);
+        let rest = self
+            .public_api
+            .split_once("://")
+            .map_or("", |(_, rest)| rest);
+        let scheme = self
+            .public_api
+            .split_once("://")
+            .map_or("https", |(scheme, _)| scheme);
         format!("{scheme}://{}", rest.split('/').next().unwrap_or_default())
     }
 
     /// Whether a page at `origin` may call the API.
     pub fn allows(&self, origin: &str) -> bool {
-        origin == self.api_origin() || self.site_origins.iter().any(|allowed| allowed == origin || allowed == "*")
+        origin == self.api_origin()
+            || self
+                .site_origins
+                .iter()
+                .any(|allowed| allowed == origin || allowed == "*")
     }
 }
