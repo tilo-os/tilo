@@ -479,10 +479,6 @@ impl ComputeClient {
     ///
     /// Returns an error when dialing, framing, or certified-device
     /// authentication fails, including a mismatched pinned relay device.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "all identity inputs are explicit trust anchors"
-    )]
     pub async fn connect(
         endpoint: Endpoint,
         relay_address: EndpointAddr,

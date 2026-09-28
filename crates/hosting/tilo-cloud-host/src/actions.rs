@@ -401,8 +401,14 @@ impl Store {
             return Ok(receipt);
         }
         #[cfg(test)]
-        return self
-            .fixture_document_action(source, request, now, before, peer, state, scope, digest);
+        return self.fixture_document_action(
+            source,
+            request,
+            now,
+            (before, peer),
+            state,
+            (scope, digest),
+        );
         #[cfg(not(test))]
         bail!("unsupported operation")
     }
@@ -410,20 +416,14 @@ impl Store {
     /// actions, kept so owner permission and durability tests keep a real
     /// Writer mutation.
     #[cfg(test)]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the fixture continues the dispatcher's own locals"
-    )]
     fn fixture_document_action(
         &mut self,
         source: [u8; 32],
         request: &ActionRequest,
         now: u64,
-        before: StatePeer,
-        mut peer: StatePeer,
+        (before, mut peer): (StatePeer, StatePeer),
         mut state: State,
-        scope: String,
-        digest: String,
+        (scope, digest): (String, String),
     ) -> Result<ActionReceipt> {
         let (app, record) = match &request.operation {
             NativeOperation::WriterInsert { .. } => {

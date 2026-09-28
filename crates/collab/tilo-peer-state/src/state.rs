@@ -781,10 +781,6 @@ impl StatePeer {
     ///
     /// Returns an error if the device is not a current governed member at `now` or the
     /// challenge cannot be signed.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Keep the membership challenge's authenticated protocol fields explicit"
-    )]
     pub fn membership_challenge(
         &self,
         workspace_id: u64,

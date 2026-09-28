@@ -1846,6 +1846,19 @@ fn build_record_plane(
     }))
 }
 
+/// The local node a workspace's sync runs on: its endpoint and peer lookup,
+/// content store and hydrator, the namespace it projects, the transport
+/// identity it authenticates as and the [`PeerPolicy`] it serves through.
+pub struct SyncNode {
+    pub endpoint: Endpoint,
+    pub lookup: MemoryLookup,
+    pub store: Arc<ContentStore>,
+    pub hydrator: Arc<Hydrator>,
+    pub namespace: Arc<Mutex<Namespace>>,
+    pub identity: FsTransportIdentity,
+    pub policy: PeerPolicy,
+}
+
 impl Workspace {
     /// Begin hosting a new workspace, returning a ticket to share with
     /// peers. `policy` is what the sync and content planes serve *through*
@@ -1869,7 +1882,16 @@ impl Workspace {
         policy: PeerPolicy,
     ) -> Result<(Workspace, Ticket)> {
         Self::host_inner(
-            endpoint, namespace, lookup, store, hydrator, identity, policy, None,
+            SyncNode {
+                endpoint,
+                lookup,
+                store,
+                hydrator,
+                namespace,
+                identity,
+                policy,
+            },
+            None,
         )
         .await
     }
@@ -1879,10 +1901,6 @@ impl Workspace {
     /// # Errors
     ///
     /// Returns an error when the gossip topic or protocol router fails to start.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit transport, authority, storage, and record dependencies make the host trust boundary auditable"
-    )]
     pub async fn host_with_records(
         endpoint: Endpoint,
         lookup: MemoryLookup,
@@ -1894,32 +1912,33 @@ impl Workspace {
         records: RecordServices,
     ) -> Result<(Workspace, Ticket)> {
         Self::host_inner(
-            endpoint,
-            namespace,
-            lookup,
-            store,
-            hydrator,
-            identity,
-            policy,
+            SyncNode {
+                endpoint,
+                lookup,
+                store,
+                hydrator,
+                namespace,
+                identity,
+                policy,
+            },
             Some(records),
         )
         .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the internal host constructor preserves the explicit trust-boundary inputs of the public entry points"
-    )]
     async fn host_inner(
-        endpoint: Endpoint,
-        namespace: Arc<Mutex<Namespace>>,
-        lookup: MemoryLookup,
-        store: Arc<ContentStore>,
-        hydrator: Arc<Hydrator>,
-        identity: FsTransportIdentity,
-        policy: PeerPolicy,
+        node: SyncNode,
         records: Option<RecordServices>,
     ) -> Result<(Workspace, Ticket)> {
+        let SyncNode {
+            endpoint,
+            lookup,
+            store,
+            hydrator,
+            namespace,
+            identity,
+            policy,
+        } = node;
         let topic = *endpoint.id().as_bytes();
         let ticket = Ticket {
             node: endpoint.addr(),
@@ -1939,13 +1958,15 @@ impl Workspace {
             ticket.workspace_id(),
         ));
         let ws = Self::start(
-            endpoint,
-            lookup,
-            store,
-            hydrator,
-            namespace,
-            identity,
-            policy,
+            SyncNode {
+                endpoint,
+                lookup,
+                store,
+                hydrator,
+                namespace,
+                identity,
+                policy,
+            },
             (topic, ticket.workspace_id()),
             vec![],
             record_plane,
@@ -1963,10 +1984,6 @@ impl Workspace {
     /// # Errors
     ///
     /// Returns an error if the gossip topic or protocol router fails to start.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the join boundary mirrors host authority inputs and adds the authenticated invitation ticket"
-    )]
     pub async fn join(
         endpoint: Endpoint,
         lookup: MemoryLookup,
@@ -1978,7 +1995,17 @@ impl Workspace {
         policy: PeerPolicy,
     ) -> Result<Workspace> {
         Self::join_inner(
-            endpoint, lookup, store, hydrator, namespace, ticket, identity, policy, None,
+            SyncNode {
+                endpoint,
+                lookup,
+                store,
+                hydrator,
+                namespace,
+                identity,
+                policy,
+            },
+            ticket,
+            None,
         )
         .await
     }
@@ -1988,50 +2015,28 @@ impl Workspace {
     /// # Errors
     ///
     /// Returns an error if the gossip topic or protocol router fails to start.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit transport, authority, storage, and record dependencies make the join trust boundary auditable"
-    )]
     pub async fn join_with_records(
-        endpoint: Endpoint,
-        lookup: MemoryLookup,
-        store: Arc<ContentStore>,
-        hydrator: Arc<Hydrator>,
-        namespace: Arc<Mutex<Namespace>>,
+        node: SyncNode,
         ticket: Ticket,
-        identity: FsTransportIdentity,
-        policy: PeerPolicy,
         records: RecordServices,
     ) -> Result<Workspace> {
-        Self::join_inner(
+        Self::join_inner(node, ticket, Some(records)).await
+    }
+
+    async fn join_inner(
+        node: SyncNode,
+        ticket: Ticket,
+        records: Option<RecordServices>,
+    ) -> Result<Workspace> {
+        let SyncNode {
             endpoint,
             lookup,
             store,
             hydrator,
             namespace,
-            ticket,
             identity,
             policy,
-            Some(records),
-        )
-        .await
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the internal join constructor preserves the explicit trust-boundary inputs of the public entry points"
-    )]
-    async fn join_inner(
-        endpoint: Endpoint,
-        lookup: MemoryLookup,
-        store: Arc<ContentStore>,
-        hydrator: Arc<Hydrator>,
-        namespace: Arc<Mutex<Namespace>>,
-        ticket: Ticket,
-        identity: FsTransportIdentity,
-        policy: PeerPolicy,
-        records: Option<RecordServices>,
-    ) -> Result<Workspace> {
+        } = node;
         let topic = ticket.workspace;
         let record_plane = build_record_plane(
             &endpoint,
@@ -2077,13 +2082,15 @@ impl Workspace {
             }
         }
         Self::start(
-            endpoint,
-            lookup,
-            store,
-            hydrator,
-            namespace,
-            identity,
-            policy,
+            SyncNode {
+                endpoint,
+                lookup,
+                store,
+                hydrator,
+                namespace,
+                identity,
+                policy,
+            },
             (topic, ticket.workspace_id()),
             vec![ticket.node],
             record_plane,
@@ -2093,26 +2100,25 @@ impl Workspace {
     }
 
     #[allow(
-        clippy::too_many_arguments,
-        reason = "startup wires explicit authenticated services whose authority must not be hidden in an unvalidated bag"
-    )]
-    #[allow(
         clippy::too_many_lines,
         reason = "startup owns the ordered lifecycle and cleanup of every sync protocol task"
     )]
     async fn start(
-        endpoint: Endpoint,
-        lookup: MemoryLookup,
-        store: Arc<ContentStore>,
-        hydrator: Arc<Hydrator>,
-        namespace: Arc<Mutex<Namespace>>,
-        identity: FsTransportIdentity,
-        policy: PeerPolicy,
+        node: SyncNode,
         (topic_bytes, workspace_id): ([u8; 32], uuid::Uuid),
         bootstrap: Vec<EndpointAddr>,
         record_plane: Option<RecordPlane>,
         sessions: Arc<SessionPool>,
     ) -> Result<Workspace> {
+        let SyncNode {
+            endpoint,
+            lookup,
+            store,
+            hydrator,
+            namespace,
+            identity,
+            policy,
+        } = node;
         // After bootstrap/seed, set the delta watermark so future local
         // writes produce minimal deltas (and the seed isn't re-broadcast).
         prime_namespace_baseline(&namespace);

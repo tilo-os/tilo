@@ -782,10 +782,6 @@ fn endpoint_from_socket(
         runtime,
     )?)
 }
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is a distinct piece of custody or context the caller already holds"
-)]
 async fn serve_h3(
     endpoint: quinn::Endpoint,
     authority: String,

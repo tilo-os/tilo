@@ -184,10 +184,6 @@ static CALLER_MEMO: Mutex<Vec<CallerEntry>> = Mutex::new(Vec::new());
 /// identical shared peer. `origin` is the exact prior proof a refresh
 /// compares against (empty for a fresh derivation). Only successful
 /// derivations are retained.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the memo key covers each caller input"
-)]
 pub(crate) fn caller(
     peers: &Arc<(StatePeer, StatePeer)>,
     scope: [u8; 32],

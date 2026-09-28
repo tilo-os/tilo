@@ -165,25 +165,19 @@ pub fn plan(
 ///
 /// # Errors
 ///
-/// Returns an error if `proof` does not open `device` (refusing to raise the floor past the
+/// Returns an error if `proof` does not open `req.device` (refusing to raise the floor past the
 /// only proven-working secret), if `plan.floor.target_floor` exceeds `plan.generation`, or if
 /// the underlying counter advance fails.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "TPM step inputs; each is an independent value the caller already holds"
-)]
 pub fn advance_floor(
     runner: &dyn Runner,
     ws: &Workspace,
-    device: &Path,
-    cfg: &crate::Config,
+    req: &Request<'_>,
     plan: &Plan,
     floor: FloorState,
-    authority_key_name: &[u8],
-    approvals: &[crate::approval::Approval],
+    approvals: &counter::FloorApprovals<'_>,
     proof: &[u8],
-    scratch: &Path,
 ) -> Result<counter::AdvanceOutcome> {
+    let device = req.device;
     if !plan.floor.advances() {
         return Ok(counter::AdvanceOutcome {
             floor,
@@ -211,40 +205,43 @@ pub fn advance_floor(
     counter::advance(
         runner,
         ws,
-        cfg.nv_index,
-        scratch,
+        req.cfg.nv_index,
+        req.scratch,
         floor,
         plan.floor.target_floor,
-        counter::MAX_INCREMENTS_PER_ADVANCE,
-        Path::new(&cfg.floor_authority_key),
-        authority_key_name,
         approvals,
-        Some(Path::new(&cfg.approval_dir)),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::Prediction;
+    use crate::policy::{GenerationPolicy, NvConstraint, Prediction};
+    use crate::token::SealedObject;
 
     fn tok(gen_num: u64, base: i64) -> (u32, RollbackToken) {
         (
             u32::try_from(gen_num).unwrap(),
             RollbackToken::new(
                 1,
-                gen_num,
-                0x01D9_1100,
-                crate::counter::operand(base, gen_num).unwrap(),
+                &GenerationPolicy {
+                    generation: gen_num,
+                    key_name: b"n",
+                    pcr_bank: "sha256",
+                    pcrs: &[11],
+                    platform_pcrs: &[7],
+                    nv: NvConstraint {
+                        index: 0x01D9_1100,
+                        operand: crate::counter::operand(base, gen_num).unwrap(),
+                    },
+                    pin: false,
+                },
                 base,
-                "sha256",
-                &[11],
-                &[7],
-                false,
-                b"p",
-                b"q",
-                b"n",
-                b"d",
+                &SealedObject {
+                    public: b"p",
+                    private: b"q",
+                    policy_digest: b"d",
+                },
                 &[Prediction {
                     approved_policy: b"a".to_vec(),
                     signature: b"s".to_vec(),
@@ -390,10 +387,6 @@ type EnrolledTokens = (Vec<(u32, RollbackToken)>, Option<(u32, u32)>);
 ///
 /// Returns the token list (refreshed if enrollment happened) and, if enrollment happened,
 /// its `(keyslot, token id)`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "mirrors the original inline confirmation step exactly; each parameter is a distinct piece of that step's context (runner/workspace/device/config/request/floor/authorising-secret/tokens)"
-)]
 fn ensure_generation_enrolled(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -425,11 +418,13 @@ fn ensure_generation_enrolled(
         ws,
         device,
         cfg,
-        req.generation,
-        floor,
-        &predictions,
+        &keyslots::Enrollment {
+            generation: req.generation,
+            floor,
+            predictions: &predictions,
+            pin: req.pin,
+        },
         authorising,
-        req.pin,
     )?);
     let tokens = keyslots::list_tokens(runner, device)?;
     Ok((tokens, enrolled))
@@ -575,14 +570,16 @@ pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Out
     let advanced = advance_floor(
         runner,
         ws,
-        device,
-        cfg,
+        req,
         &plan,
         floor,
-        &authority_key_name,
-        &approvals,
+        &counter::FloorApprovals {
+            authority_public_key: Path::new(&cfg.floor_authority_key),
+            authority_key_name: &authority_key_name,
+            approvals: &approvals,
+            dir: Some(Path::new(&cfg.approval_dir)),
+        },
         &proof,
-        req.scratch,
     )?;
     floor = advanced.floor;
 

@@ -25,22 +25,80 @@ use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::surface::soft_shadow;
 use tilo_ui::theme::Theme;
 
-/// `(name, width, height, spread, offset_y, intensity, radius)` — the
-/// live call sites, in their own numbers.
-const CASES: &[(&str, f64, f64, f64, f64, f32, f64)] = &[
+/// One shadowed card as a live call site asks for it, in its own numbers.
+struct ShadowCase {
+    name: &'static str,
+    width: f64,
+    height: f64,
+    spread: f64,
+    offset_y: f64,
+    intensity: f32,
+    radius: f64,
+}
+
+/// The live call sites.
+const CASES: &[ShadowCase] = &[
     // `overlay_host`'s overview row: the surface whose accent glow was
     // invisible because the falloff scaled with its 1022 px width.
-    ("overview-card", 1022.0, 235.0, 40.0, 0.0, 0.35, 14.0),
+    ShadowCase {
+        name: "overview-card",
+        width: 1022.0,
+        height: 235.0,
+        spread: 40.0,
+        offset_y: 0.0,
+        intensity: 0.35,
+        radius: 14.0,
+    },
     // `notification`'s toast stack.
-    ("toast", 360.0, 68.0, 18.0, 6.0, 0.5, 12.0),
+    ShadowCase {
+        name: "toast",
+        width: 360.0,
+        height: 68.0,
+        spread: 18.0,
+        offset_y: 6.0,
+        intensity: 0.5,
+        radius: 12.0,
+    },
     // The command palette / a settings modal.
-    ("palette", 640.0, 470.0, 44.0, 14.0, 0.55, 16.0),
+    ShadowCase {
+        name: "palette",
+        width: 640.0,
+        height: 470.0,
+        spread: 44.0,
+        offset_y: 14.0,
+        intensity: 0.55,
+        radius: 16.0,
+    },
     // Small, near-square wheel-disc spoke card.
-    ("spoke-card", 44.0, 44.0, 14.0, 0.0, 0.35, 10.0),
+    ShadowCase {
+        name: "spoke-card",
+        width: 44.0,
+        height: 44.0,
+        spread: 14.0,
+        offset_y: 0.0,
+        intensity: 0.35,
+        radius: 10.0,
+    },
     // A window group's title pill, and its close glyph: the smallest
     // shadows in the toolkit, both shorter than twice their spread.
-    ("title-pill", 96.0, 26.0, 10.0, 2.0, 0.35, 13.0),
-    ("close-pill", 22.0, 26.0, 10.0, 2.0, 0.35, 11.0),
+    ShadowCase {
+        name: "title-pill",
+        width: 96.0,
+        height: 26.0,
+        spread: 10.0,
+        offset_y: 2.0,
+        intensity: 0.35,
+        radius: 13.0,
+    },
+    ShadowCase {
+        name: "close-pill",
+        width: 22.0,
+        height: 26.0,
+        spread: 10.0,
+        offset_y: 2.0,
+        intensity: 0.35,
+        radius: 11.0,
+    },
 ];
 
 fn out_dir() -> PathBuf {
@@ -69,51 +127,54 @@ fn px_dim(v: f64) -> u32 {
     v.ceil().clamp(0.0, f64::from(u32::MAX)) as u32
 }
 
-/// Paint one case centred in `canvas`: the shadow through the production
-/// primitive, then the card itself on top, so what you see is what a
-/// surface sitting on that shadow looks like.
-// Standard immediate-mode paint-helper signature (scene + geometry + the
-// shadow's own tunable parameters); every parameter is independently
-// load-bearing for this one shot case.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each shadow shot varies canvas and card dimensions, spread, offset, intensity and radius with one theme"
-)]
-fn paint(
-    scene: &mut Scene,
-    theme: &Theme,
-    canvas: Rect,
-    width: f64,
-    height: f64,
-    spread: f64,
-    off: f64,
-    intensity: f32,
-    radius: f64,
-) {
-    let c = canvas.center();
-    let rect = Rect::new(
-        c.x - width / 2.0,
-        c.y - height / 2.0,
-        c.x + width / 2.0,
-        c.y + height / 2.0,
-    );
-    // The shadow's hue is the elevation token's (black on every preset), not
-    // `neutral[0]`: light themes run their ramp base → text, so that slot is
-    // the paper itself and the shadow disappeared with it. The card is the
-    // shared `surface::card`, so it carries its derived rest edge exactly as
-    // the live surfaces do.
-    let tint = theme.tokens.elevation.e3.color;
-    // …at the authored intensity scaled the way the elevation ladder scales
-    // a light theme's shadows, which is what the live call sites now do.
-    let intensity = intensity * theme.tokens.elevation.shadow_scale;
-    soft_shadow(scene, Affine::IDENTITY, rect, tint, spread, off, intensity);
-    tilo_ui::surface::card(
-        scene,
-        Affine::IDENTITY,
-        rect,
-        radius,
-        theme.tokens.colors.surfaces.raised,
-    );
+impl ShadowCase {
+    /// The canvas the case needs to show its whole falloff: a full spread of
+    /// margin on every side, plus the offset.
+    fn cell(&self) -> (f64, f64) {
+        (
+            self.width + self.spread * 4.0,
+            self.height + self.spread * 4.0 + self.offset_y * 2.0,
+        )
+    }
+
+    /// Paint the case centred in `canvas`: the shadow through the production
+    /// primitive, then the card itself on top, so what you see is what a
+    /// surface sitting on that shadow looks like.
+    fn paint(&self, scene: &mut Scene, theme: &Theme, canvas: Rect) {
+        let Self {
+            width,
+            height,
+            spread,
+            offset_y: off,
+            intensity,
+            radius,
+            ..
+        } = *self;
+        let c = canvas.center();
+        let rect = Rect::new(
+            c.x - width / 2.0,
+            c.y - height / 2.0,
+            c.x + width / 2.0,
+            c.y + height / 2.0,
+        );
+        // The shadow's hue is the elevation token's (black on every preset), not
+        // `neutral[0]`: light themes run their ramp base → text, so that slot is
+        // the paper itself and the shadow disappeared with it. The card is the
+        // shared `surface::card`, so it carries its derived rest edge exactly as
+        // the live surfaces do.
+        let tint = theme.tokens.elevation.e3.color;
+        // …at the authored intensity scaled the way the elevation ladder scales
+        // a light theme's shadows, which is what the live call sites now do.
+        let intensity = intensity * theme.tokens.elevation.shadow_scale;
+        soft_shadow(scene, Affine::IDENTITY, rect, tint, spread, off, intensity);
+        tilo_ui::surface::card(
+            scene,
+            Affine::IDENTITY,
+            rect,
+            radius,
+            theme.tokens.colors.surfaces.raised,
+        );
+    }
 }
 
 pub fn run(_args: &[String]) {
@@ -128,16 +189,14 @@ pub fn run(_args: &[String]) {
 
     // Per-case shots, each on a canvas with a full spread of margin so
     // the whole falloff is visible.
-    for (name, w, h, spread, off, i, r) in CASES {
-        let (cw, ch) = (
-            px_dim(w + spread * 4.0),
-            px_dim(h + spread * 4.0 + off * 2.0),
-        );
+    for case in CASES {
+        let (w, h) = case.cell();
+        let (cw, ch) = (px_dim(w), px_dim(h));
         let mut scene = Scene::new();
         let canvas = Rect::new(0.0, 0.0, f64::from(cw), f64::from(ch));
-        paint(&mut scene, &theme, canvas, *w, *h, *spread, *off, *i, *r);
+        case.paint(&mut scene, &theme, canvas);
         let mut renderer = OffscreenRenderer::new(cw, ch);
-        let path = dir.join(format!("shadow-{name}.png"));
+        let path = dir.join(format!("shadow-{}.png", case.name));
         renderer.render_png(&scene, bg, &path);
         println!("  wrote {}", path.display());
     }
@@ -146,26 +205,13 @@ pub fn run(_args: &[String]) {
     // falloffs can be compared against each other rather than against a
     // memory of the last screenshot. Each cell is sized to its own case —
     // a fixed grid puts the palette's 470 px card through the row above.
-    let cells: Vec<(f64, f64)> = CASES
-        .iter()
-        .map(|(_, w, h, spread, off, _, _)| (w + spread * 4.0, h + spread * 4.0 + off * 2.0))
-        .collect();
+    let cells: Vec<(f64, f64)> = CASES.iter().map(ShadowCase::cell).collect();
     let sw = cells.iter().map(|(w, _)| *w).fold(0.0, f64::max);
     let sh: f64 = cells.iter().map(|(_, h)| *h).sum();
     let mut scene = Scene::new();
     let mut y = 0.0;
-    for ((_, w, h, spread, off, i, r), (_, ch)) in CASES.iter().zip(&cells) {
-        paint(
-            &mut scene,
-            &theme,
-            Rect::new(0.0, y, sw, y + ch),
-            *w,
-            *h,
-            *spread,
-            *off,
-            *i,
-            *r,
-        );
+    for (case, (_, ch)) in CASES.iter().zip(&cells) {
+        case.paint(&mut scene, &theme, Rect::new(0.0, y, sw, y + ch));
         y += ch;
     }
     let mut renderer = OffscreenRenderer::new(px_dim(sw), px_dim(sh));

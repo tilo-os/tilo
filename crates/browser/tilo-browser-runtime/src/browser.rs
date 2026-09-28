@@ -7,7 +7,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 use ui::{
-    application::{ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput},
+    application::{
+        ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    },
     application_view::InstanceViewStore,
     headless::FrameHarness,
     permissions::{Actor, PermissionContext, Role, UserId},
@@ -641,13 +643,15 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     }));
     let mut context = HostContext::prepare(
         definition,
-        records.clone(),
-        views,
-        config.device.clone(),
-        config.instance,
-        permissions,
-        UserId(config.author),
-        tilo_actions::ActionContext::default(),
+        HostContextInputs {
+            records: records.clone(),
+            views,
+            device_id: config.device.clone(),
+            instance_id: config.instance,
+            permissions,
+            author: UserId(config.author),
+            action_context: tilo_actions::ActionContext::default(),
+        },
         &target,
     )
     .map_err(error)?;
