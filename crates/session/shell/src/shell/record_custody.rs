@@ -274,6 +274,16 @@ impl RecordCustody {
     }
 
     /// Rooms this device is in whose index references `id`.
+    /// Whether `room` is a (lasting) workspace on this device.
+    fn is_member_of(&self, room: RoomId) -> bool {
+        self.tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .any(|workspace| !workspace.ephemeral && workspace.room == room)
+    }
+
     fn referencing_rooms(&self, id: &RecordId) -> Vec<RoomId> {
         let tree = self.tree.read();
         tree.desktop
@@ -381,13 +391,21 @@ impl RecordCustody {
     }
 
     /// Reach record `id` through a room this device is in whose index
-    /// references it. Returns the document once it has arrived; until then
-    /// `None`, having asked the route's holders and the room's devices.
+    /// references it — or, for a comment record, through `in_room`, the room
+    /// it was met in: its author serves it where they posted it, whether or
+    /// not this device's copy of the index has caught up. Returns the
+    /// document once it has arrived; until then `None`, having asked the
+    /// route's holders and the room's devices.
     ///
     /// # Errors
     ///
-    /// When no room this device is in references `id`.
-    pub fn fetch(&self, id: &RecordId) -> Result<Option<AutoCommit>, CustodyError> {
+    /// When no room this device is in references `id`, and it is not a
+    /// comment record met in one.
+    pub fn fetch(
+        &self,
+        id: &RecordId,
+        in_room: Option<RoomId>,
+    ) -> Result<Option<AutoCommit>, CustodyError> {
         if let Some(held) = self.held(id) {
             return Ok(Some(held));
         }
@@ -398,12 +416,19 @@ impl RecordCustody {
         if let Some(done) = done {
             return Ok(AutoCommit::load(&done).ok());
         }
-        let rooms = self.referencing_rooms(id);
+        let mut rooms = self.referencing_rooms(id);
+        if rooms.is_empty()
+            && id.comment_author().is_some()
+            && let Some(room) = in_room.filter(|room| self.is_member_of(*room))
+        {
+            rooms.push(room);
+        }
         if rooms.is_empty() {
             return Err(CustodyError::Unreachable(id.as_str().to_string()));
         }
         let fresh = !lock(&self.state).fetching.contains_key(id);
         if fresh {
+            tracing::debug!(record = %id.as_str(), rooms = ?rooms, "custody: asking the rooms for a record");
             let routes: Vec<CrdtRoute> = rooms
                 .iter()
                 .map(|room| record_route(&room.to_string(), id))

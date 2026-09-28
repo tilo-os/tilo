@@ -14602,7 +14602,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one end-to-end scenario across two devices and a host"
     )]
-    async fn a_member_reaches_a_record_the_room_references_on_another_device() {
+    async fn a_member_reaches_a_recording_met_in_the_room_on_another_device() {
         use crate::shell::record_custody::{DeviceSigner, RecordCustody};
 
         let _env = tilo_test_env::lock();
@@ -14670,8 +14670,10 @@ mod tests {
         keep_session(&ada_store, &unreviewed, &trace, false);
         let bea_store = ui::record::RecordStore::in_memory();
 
-        // The room's index references both, as a sent remark leaves it.
-        for tree in [&ada_tree, &bea_tree] {
+        // Ada's index references both, as a sent remark leaves it. Bea's
+        // copy need not: she meets the recording on Ada's message in the
+        // room, and Ada serves it there.
+        for tree in [&ada_tree] {
             let mut tree = tree.write();
             let held = tree.desktop.room_records_held.entry(room).or_default();
             for id in [&reviewed, &unreviewed] {
@@ -14689,12 +14691,13 @@ mod tests {
         let viewer = person_of(&bea_root);
         assert_eq!(
             replay
-                .open_record(
+                .open_record_in(
                     &reviewed,
+                    Some(room),
                     &viewer,
                     crate::shell::replay::Presentation::Offscreen
                 )
-                .expect("the room references the record"),
+                .expect("a comment record met in the room is reachable there"),
             None,
             "the record is not here yet; it arrives from the room"
         );
@@ -14713,7 +14716,7 @@ mod tests {
         );
         assert_eq!(ada_custody.served_in(&reviewed), vec![room.to_string()]);
         let fetched = bea_custody
-            .fetch(&reviewed)
+            .fetch(&reviewed, Some(room))
             .expect("reachable")
             .expect("arrived");
         assert_eq!(
@@ -14734,8 +14737,8 @@ mod tests {
         .await;
         assert!(
             bea_custody
-                .fetch(&unreviewed)
-                .expect("referenced")
+                .fetch(&unreviewed, Some(room))
+                .expect("met in the room")
                 .is_none(),
             "a recording nobody reviewed never leaves its device"
         );

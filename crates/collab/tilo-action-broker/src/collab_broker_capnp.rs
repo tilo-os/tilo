@@ -6650,6 +6650,23 @@ fn delegate_nearby_transfer_command(
     }
 }
 
+/// Say at debug level why the action door refused an invocation, which the
+/// caller hears only as a receipt.
+fn noting_door_refusal(
+    answer: tilo_actions::remote::RemoteActionMessage,
+) -> tilo_actions::remote::RemoteActionMessage {
+    if let tilo_actions::remote::RemoteActionMessage::Receipt(
+        tilo_actions::remote::InvocationReceipt {
+            status: tilo_actions::remote::ReceiptStatus::Rejected { error },
+            ..
+        },
+    ) = &answer
+    {
+        tracing::debug!(%error, "refused an invocation over the action door");
+    }
+    answer
+}
+
 /// Answer a remote-action call with `message` at once.
 fn reply_frame(
     message: tilo_actions::remote::RemoteActionMessage,
@@ -6756,9 +6773,9 @@ impl channel_handle::Server for CapnpChannelHandle {
         // Awaited on this local set, which is also where an application's
         // directory answers; the connection's other calls keep flowing.
         Promise::from_future(async move {
-            let answer = answer.await.ok_or_else(|| {
+            let answer = noting_door_refusal(answer.await.ok_or_else(|| {
                 capnp::Error::failed("the action host dropped the request".into())
-            })?;
+            })?);
             let bytes = RemoteActionFrame::new(answer)
                 .encode()
                 .map_err(|error| capnp::Error::failed(error.to_string()))?;

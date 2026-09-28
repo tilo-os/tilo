@@ -413,6 +413,7 @@ impl tilo_action_broker::services::SessionReplayServices for NativeSessionReplay
     fn open_record(
         &self,
         record: &ui::record::RecordId,
+        room: Option<tilo_desktop_model::RoomId>,
         viewer: &str,
     ) -> Result<Option<tilo_desktop_model::RoomId>, String> {
         let replay = self
@@ -420,8 +421,9 @@ impl tilo_action_broker::services::SessionReplayServices for NativeSessionReplay
             .get()
             .ok_or_else(|| "this session cannot replay recordings".to_string())?;
         replay
-            .open_record(
+            .open_record_in(
                 record,
+                room,
                 &viewer.to_string(),
                 super::replay::Presentation::Shown,
             )
