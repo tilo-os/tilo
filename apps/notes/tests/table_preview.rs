@@ -1,53 +1,35 @@
 //! Tables use their complete content for production layout and painting.
-use std::{collections::HashMap, fmt::Write as _};
-use taffy::prelude::*;
+use std::fmt::Write as _;
 use ui::a11y::Role;
-use ui::presence::PresenceCtx;
+use ui::headless::Framed;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use ui::widget::block_editor::{Block, BlockEditor};
 use vello::Scene;
-use vello::kurbo::{Affine, Point};
 
-fn render_table(source: &str, width: f32, visual: bool, scale: f32) -> (BlockEditor, Scene) {
+fn render_table(
+    source: &str,
+    width: f32,
+    visual: bool,
+    scale: f32,
+) -> (Framed<BlockEditor>, Scene) {
     let mut editor = BlockEditor::new().with_wrap_lines(true);
     editor.set_blocks(vec![
         Block::table(source, visual),
         Block::paragraph("After table"),
     ]);
-    let theme = Theme::dark().with_text_scale(scale);
-    let mut renderer = crate::component_support::renderer();
-    renderer.set_text_scale(scale);
-    let mut tree = TaffyTree::new();
-    let mut nodes = HashMap::new();
-    let node = editor.build_layout(&mut tree, &theme, &mut nodes);
-    tree.compute_layout_with_measure(
-        node,
-        Size {
-            width: AvailableSpace::Definite(width),
-            height: AvailableSpace::MaxContent,
-        },
-        |known, available, node, _, _| {
-            nodes.get(&node).map_or(Size::ZERO, |ptr| unsafe {
-                (**ptr).measure(known, available, &mut renderer)
-            })
-        },
-    )
-    .unwrap();
-    editor.apply_layout(&tree, node, Point::ZERO);
-    let mut scene = Scene::new();
-    editor.draw(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut renderer,
-        &theme,
-        &PresenceCtx::empty(),
+    let editor = crate::component_support::framed_block_editor(
+        editor,
+        width,
+        (0.0, 0.0),
+        Theme::dark().with_text_scale(scale),
     );
     assert_eq!(
         editor.blocks()[0].text(),
         source,
         "responsive rendering never rewrites canonical table text"
     );
+    let scene = Framed::harness(&editor).scene().clone();
     (editor, scene)
 }
 

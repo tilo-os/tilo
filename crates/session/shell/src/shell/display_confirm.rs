@@ -33,6 +33,9 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
 use crate::shell::i18n::{t, t_args};
+use crate::shell::overlay_host::layers::{
+    LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer,
+};
 
 /// How often a shown prompt re-reads the transaction, so it follows the
 /// backend (applied elsewhere, restored on timeout) without per-frame I/O.
@@ -584,6 +587,66 @@ impl DisplayConfirmPrompt {
             }
         }
         text_renderer.set_text_scale(renderer_scale);
+    }
+}
+
+/// Above every desktop surface while it waits; Escape reverts, as in its
+/// own keyboard model.
+impl ShellLayer for DisplayConfirmPrompt {
+    fn id(&self) -> LayerId {
+        LayerId::DisplayConfirmation
+    }
+
+    fn is_open(&self) -> bool {
+        self.visible()
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, cx: &mut LayerCx<'_, '_>) -> Routed {
+        if Self::handle_event(self, event, cx.cursor, cx.geometry.outputs) {
+            cx.request(LayerIntent::Repaint);
+            Routed::Consumed
+        } else {
+            Routed::Pass
+        }
+    }
+
+    fn draw(&mut self, cx: &mut LayerPaint<'_>) {
+        Self::draw(
+            self,
+            cx.scene,
+            cx.transform,
+            cx.text_renderer,
+            cx.theme,
+            cx.geometry.outputs,
+        );
+    }
+
+    fn accessibility(&self, geometry: LayerGeometry<'_>) -> Option<ui::a11y::AccessNode> {
+        Self::accessibility(self, geometry.outputs)
+    }
+
+    fn accessibility_rect(&self, _geometry: LayerGeometry<'_>, _path: &[usize]) -> Option<Rect> {
+        None
+    }
+
+    fn focus_accessibility(&mut self, _path: &[usize]) -> bool {
+        false
+    }
+
+    fn dismiss(&mut self) -> bool {
+        let open = self.visible();
+        self.revert();
+        open
+    }
+
+    fn is_animating(&self, _now: Instant) -> bool {
+        self.needs_frame()
+    }
+
+    /// Follows the transaction between polls: the prompt closes when it is
+    /// answered elsewhere or its time runs out.
+    fn tick(&mut self, now: Instant) -> bool {
+        self.poll(now, false)
     }
 }
 

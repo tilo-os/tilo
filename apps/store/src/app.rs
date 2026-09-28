@@ -5251,9 +5251,8 @@ mod tests {
                     "Useful software with a description that wraps onto another line.".into();
             }
             app.set_layout_width_hint(480.0);
-            let mut list = app.compose(&Theme::dark());
-            layout_composition(list.as_mut(), 480.0);
-            check(list.as_ref());
+            let list = frame_composition(app.compose(&Theme::dark()), 480.0);
+            check(list.root_widget());
         }
 
         // Case `medium_short_viewport_uses_one_width_appropriate_source_summary`.
@@ -5272,13 +5271,13 @@ mod tests {
             let mut app = seeded_app();
             app.set_items(crate::shots::fixture_catalog());
             app.set_layout_width_hint(480.0);
-            let mut tree = app.compose(&Theme::dark());
-            layout_composition(tree.as_mut(), 480.0);
+            let frame = frame_composition(app.compose(&Theme::dark()), 480.0);
+            let tree = frame.root_widget();
 
-            let discover = accessible_rect(tree.as_ref(), "Discover more · 3")
+            let discover = accessible_rect(tree, "Discover more · 3")
                 .expect("discover heading in full catalogue");
             let mut grids = Vec::new();
-            card_grid_extents(tree.as_ref(), &mut grids);
+            card_grid_extents(tree, &mut grids);
             assert_eq!(grids.len(), 2, "ready and discover grids");
             assert!(
                 grids[0].1 <= discover.y0,
@@ -5296,7 +5295,18 @@ mod tests {
         }
     }
 
-    fn layout_composition(widget: &mut dyn Widget, width: f32) -> (TaffyTree<()>, NodeId) {
+    /// Mount a composed tree and run one frame at `width` × 900.
+    fn frame_composition(widget: Box<dyn Widget>, width: f32) -> ui::headless::FrameHarness {
+        ui::headless::FrameHarness::new(
+            ui::State::new(),
+            widget,
+            ui::headless::viewport((width, 900.0)),
+        )
+    }
+
+    /// The `CardGrid` control test drains `take_control_invocation`, which the
+    /// harness's control custody would take first, so it lays out by hand.
+    fn layout_card_grid(widget: &mut CardGrid, width: f32) -> (TaffyTree<()>, NodeId) {
         let mut tree = TaffyTree::new();
         let mut map = HashMap::new();
         let node = widget.build_layout(&mut tree, &Theme::dark(), &mut map);
@@ -5442,7 +5452,7 @@ mod tests {
                         busy,
                     );
                     let mut grid = CardGrid::content_sized(vec![card]);
-                    let (tree, node) = layout_composition(&mut grid, width);
+                    let (tree, node) = layout_card_grid(&mut grid, width);
                     let center = control_mut(&mut grid, "select.button")
                         .unwrap()
                         .get_rect()
@@ -5545,9 +5555,11 @@ mod tests {
                 app.set_items(crate::shots::fixture_catalog());
                 app.set_layout_width_hint(width);
                 app.text_scale = scale;
-                let mut tree = app.compose(&Theme::dark().with_text_scale(scale));
-                layout_composition(tree.as_mut(), width as f32);
-                assert_finite_rects(tree.as_ref());
+                let frame = frame_composition(
+                    app.compose(&Theme::dark().with_text_scale(scale)),
+                    width as f32,
+                );
+                assert_finite_rects(frame.root_widget());
             }
         }
 
@@ -5584,10 +5596,9 @@ mod tests {
             let mut app = seeded_app();
             app.set_layout_width_hint(1200.0);
             app.items[0].description = "A useful app with a longer description. ".repeat(7);
-            let mut list = app.build_list(&Theme::dark());
-            layout_composition(list.as_mut(), 1200.0);
+            let list = frame_composition(app.build_list(&Theme::dark()), 1200.0);
             let mut found = 0;
-            check(list.as_ref(), &mut found);
+            check(list.root_widget(), &mut found);
             assert_eq!(found, 3);
         }
 

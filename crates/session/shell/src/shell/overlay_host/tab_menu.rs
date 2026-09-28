@@ -15,7 +15,7 @@ use ui::widget::{EventCtx, Widget as _};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 
-use super::layers::{LayerCx, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer};
+use super::layers::{LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer};
 use crate::shell::i18n::t_args;
 use crate::shell::state::{GroupId, StripId};
 use crate::shell::{TabMenuAction, build_tab_context_menu};
@@ -259,7 +259,7 @@ impl ShellLayer for TabMenuLayer {
     /// `MenuItem` children carry the shared widget's row bounds, the armed
     /// row as focused, and `tabmenu:*` targets that
     /// [`ShellLayer::semantic_intent`] resolves.
-    fn accessibility(&self, _viewport: Rect) -> Option<AccessNode> {
+    fn accessibility(&self, _geometry: LayerGeometry<'_>) -> Option<AccessNode> {
         use ui::a11y::{AccessState, Role};
         if !self.is_open() {
             return None;
@@ -308,7 +308,7 @@ impl ShellLayer for TabMenuLayer {
         )
     }
 
-    fn accessibility_rect(&self, _viewport: Rect, path: &[usize]) -> Option<Rect> {
+    fn accessibility_rect(&self, _geometry: LayerGeometry<'_>, path: &[usize]) -> Option<Rect> {
         match path {
             [] => Some(self.menu.get_rect()),
             [ordinal] => self

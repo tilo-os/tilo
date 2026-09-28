@@ -486,17 +486,21 @@ fn resource_provider_and_search_catalog_stay_bounded_and_refresh_on_revision() {
             id: calendar.id.clone(),
         })
         .expect("operation serializes");
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::View,
-                crate::actions::CALENDAR_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    crate::actions::CALENDAR_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
+                &ROOT
             )
-            .expect("collection operation is accepted")
-        );
+            .expect("collection operation is accepted"),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(app.calendar_filter.as_deref(), Some(calendar.id.as_str()));
 
         let payload = serde_json::to_vec(&crate::actions::CalendarOperation::SetCalendarVisible {
@@ -504,28 +508,36 @@ fn resource_provider_and_search_catalog_stay_bounded_and_refresh_on_revision() {
             visible: false,
         })
         .expect("operation serializes");
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::CALENDAR_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::CALENDAR_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
+                &ROOT
             )
-            .expect("visibility operation is accepted")
-        );
-        assert!(
-            Widget::invoke_resource_operation(
+            .expect("visibility operation is accepted"),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
+        assert!(matches!(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::CALENDAR_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::CALENDAR_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
+                &ROOT
             )
-            .expect("replaying an absolute visibility operation is accepted")
-        );
+            .expect("replaying an absolute visibility operation is accepted"),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert!(
             app.accounts
                 .all_calendars()
@@ -737,6 +749,10 @@ fn titles_elide_to_fit_and_week_ranges_keep_both_endpoints() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
 fn launch_ics_admits_host_sources_and_rejects_invalid_ones() {
     // Case `launch_ics_uses_host_admission_and_preserves_existing_calendar_and_source`.
     {
@@ -829,11 +845,13 @@ fn launch_ics_admits_host_sources_and_rejects_invalid_ones() {
         let payload =
             serde_json::to_vec(&crate::actions::CalendarOperation::FinalizeLaunchImport).unwrap();
         assert!(
-            app.start_resource_operation_with_document(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                crate::actions::CALENDAR_OPERATION_TYPE,
-                &payload,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::CALENDAR_OPERATION_TYPE,
+                    &payload
+                ),
                 &mut state.doc,
                 &state.root
             )
@@ -1303,13 +1321,15 @@ fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
         );
 
         let invocation = tilo_actions::InvocationId::new();
-        let start = Widget::start_resource_operation(
+        let start = Widget::start_operation(
             &mut app,
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            &first.type_id,
-            &first.payload,
-            &state,
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                &first.type_id,
+                &first.payload,
+            ),
+            &mut state,
             &automerge::ROOT,
         )
         .expect("resource import accepted");
@@ -1978,7 +1998,7 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
     // Case `invitation_handoff_is_the_exact_mail_resource_action_and_never_claims_send`.
     {
         let mut app = CalendarApp::new_demo();
-        let doc = AutoCommit::new();
+        let mut doc = AutoCommit::new();
         let event = app
             .selection
             .and_then(|selection| match selection {
@@ -1997,16 +2017,21 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
             },
         )
         .unwrap();
-        let output = Widget::invoke_resource_operation_v2(
+        let ui::widget::ResourceOperationStart::Completed(output) = Widget::start_operation(
             &mut app,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::CALENDAR_OPERATION_TYPE,
-            &payload,
-            &doc,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
+                crate::actions::CALENDAR_OPERATION_TYPE,
+                &payload,
+            ),
+            &mut doc,
             &automerge::ROOT,
         )
         .unwrap()
-        .expect("Calendar handles its invitation effect");
+        .expect("Calendar handles its invitation effect") else {
+            panic!("the invitation handoff completes synchronously");
+        };
         let value = output.value.expect("typed handoff result");
         assert_eq!(value["delivery"], "not_sent");
         assert_eq!(value["target"]["resource"], "mail.mailbox");
@@ -2851,17 +2876,21 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
         // Replaying this absolute payload must converge on the requested value
         // rather than invert it as a toggle would.
         for _ in 0..2 {
-            assert!(
-                Widget::invoke_resource_operation(
+            assert!(matches!(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::Effect,
-                    &semantic_payload.type_id,
-                    &semantic_payload.payload,
-                    &state,
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        &semantic_payload.type_id,
+                        &semantic_payload.payload
+                    ),
+                    &mut state,
+                    &automerge::ROOT
                 )
-                .expect("published visibility action is accepted")
-            );
+                .expect("published visibility action is accepted"),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
         }
         assert_eq!(
             app.accounts
@@ -3432,17 +3461,21 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
         })
         .expect("operation serializes");
 
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::View,
-                crate::actions::CALENDAR_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &automerge::ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    crate::actions::CALENDAR_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
-            .expect("hidden collection still opens")
-        );
+            .expect("hidden collection still opens"),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(app.calendar_filter.as_deref(), Some("icloud/holidays"));
         assert!(
             app.status
@@ -3471,17 +3504,21 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
         );
         let payload = serde_json::to_vec(&crate::actions::CalendarOperation::ShowAllCalendars)
             .expect("operation serializes");
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::View,
-                crate::actions::CALENDAR_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &automerge::ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    crate::actions::CALENDAR_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
-            .expect("show-all operation is accepted")
-        );
+            .expect("show-all operation is accepted"),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert!(app.calendar_filter.is_none());
         assert_eq!(app.status.as_deref(), Some("Showing all calendars"));
     }

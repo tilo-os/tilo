@@ -1175,45 +1175,8 @@ fn key_accessible_name(key: &model::Key) -> String {
     }
 }
 
-impl Widget for CalculatorApp {
-    fn is_focusable(&self) -> bool {
-        true
-    }
-
-    fn set_focus(&mut self, focused: bool) {
-        self.dirty |= self.host_focused != focused;
-        self.host_focused = focused;
-    }
-
-    fn is_focused(&self) -> bool {
-        self.host_focused
-    }
-
-    fn ime_cursor_rect(&self) -> Option<Rect> {
-        if !self.host_focused {
-            return None;
-        }
-        match self.model.mode {
-            Mode::Calc => self.calc.expression_ime_rect(),
-            Mode::Graph2d => self.g2.field_rect(self.model.active_fn),
-            Mode::Graph3d => self.g3.field_rect(self.model.active_surface),
-        }
-    }
-
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        self.host_focused
-            .then_some(winit::window::ImePurpose::Normal)
-    }
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[actions::CALCULATOR_OPERATION_TYPE]
-    }
-
-    fn invoke_resource_operation(
+impl CalculatorApp {
+    fn answer_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
         type_id: &str,
@@ -1260,6 +1223,66 @@ impl Widget for CalculatorApp {
             }
         });
         Ok(true)
+    }
+}
+
+impl Widget for CalculatorApp {
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.dirty |= self.host_focused != focused;
+        self.host_focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.host_focused
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        if !self.host_focused {
+            return None;
+        }
+        match self.model.mode {
+            Mode::Calc => self.calc.expression_ime_rect(),
+            Mode::Graph2d => self.g2.field_rect(self.model.active_fn),
+            Mode::Graph3d => self.g3.field_rect(self.model.active_surface),
+        }
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.host_focused
+            .then_some(winit::window::ImePurpose::Normal)
+    }
+
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[actions::CALCULATOR_OPERATION_TYPE]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -2470,13 +2493,17 @@ mod tests {
             let heads = state.doc.get_heads();
             app.set_mode(Mode::Graph3d);
             assert!(
-                app.invoke_resource_operation(
-                    open.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &state.doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        open.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut state.doc,
                     &state.root
                 )
+                .map(|started| started.is_some())
                 .unwrap(),
                 "search recall: first invoke handled"
             );
@@ -2486,13 +2513,17 @@ mod tests {
             app.model_dirty = false;
             app.model.expr = "uncommitted input".into();
             assert!(
-                app.invoke_resource_operation(
-                    open.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &state.doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        open.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut state.doc,
                     &state.root
                 )
+                .map(|started| started.is_some())
                 .unwrap(),
                 "search recall: second invoke handled"
             );
@@ -2506,13 +2537,17 @@ mod tests {
             );
             app.perform_action(&mut state.doc, &actions::delete_history_entry_action(&id));
             assert!(
-                app.invoke_resource_operation(
-                    open.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &state.doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        open.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut state.doc,
                     &state.root
                 )
+                .map(|started| started.is_some())
                 .is_err(),
                 "search recall: deleted row is refused"
             );

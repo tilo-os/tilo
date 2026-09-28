@@ -108,6 +108,8 @@ mod desktop_overlays;
 #[cfg(any(target_arch = "wasm32", test))]
 mod live_view;
 #[cfg(any(target_arch = "wasm32", test))]
+mod local_desktop;
+#[cfg(any(target_arch = "wasm32", test))]
 mod system_search;
 
 /// Private browser action correlation, also exercised by the ordinary host harness.
