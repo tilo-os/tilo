@@ -96,25 +96,19 @@ impl Standalone {
         workspace.adopt(&actor)?;
         let workspace = Arc::new(workspace);
         let apps = Arc::new(apps::Apps::from_env(root, &room_id));
-        stage("opening the room owner");
-        let owner = room_owner(root, &room_id, &workspace, &apps, dev)?;
         let channels = Arc::new(Mutex::new(channels(root)));
         let fanout = Arc::new(FanoutState::new());
-        stage("opening the joined rooms");
-        let custody = tilo_identity_host::broker::trusted_current_device(&room_id)?;
-        let joined = joined_rooms(
+        stage("opening the joined rooms and channel keys");
+        let (joined, channel_keys) =
+            joined_rooms_and_keys(root, &room_id, (Arc::clone(&channels), Arc::clone(&fanout)))?;
+        stage("opening the room owner");
+        let owner = room_owner(
             root,
             &room_id,
-            custody.clone(),
-            (Arc::clone(&channels), Arc::clone(&fanout)),
-        )?;
-        stage("opening the channel keys");
-        let channel_keys = channels::open(
-            root,
-            RoomId::parse(&room_id).ok_or_else(|| io::Error::other("invalid runtime room"))?,
-            custody.0,
-            Arc::clone(&joined),
-            Arc::clone(&channels),
+            &workspace,
+            &apps,
+            dev,
+            channel_keys.keys.clone(),
         )?;
         let rooms = Arc::new(Rooms {
             profile: Arc::clone(&workspace),
@@ -319,6 +313,7 @@ fn room_owner(
     workspace: &Arc<ProfileWorkspace>,
     apps: &Arc<apps::Apps>,
     dev: bool,
+    keys: tilo_action_broker::channel_encryption::ChannelKeyProvider,
 ) -> io::Result<Arc<dyn OwnerCommitService>> {
     if !workspace.governs() {
         return Ok(Arc::new(AdoptedRoom {
@@ -331,8 +326,28 @@ fn room_owner(
         dev,
     };
     let device = tilo_identity_host::broker::trusted_current_device(room)?;
-    let owner = RoomOwner::open(profile, room, device, creation, Arc::clone(workspace))?;
+    let owner = RoomOwner::open(profile, room, device, creation, Arc::clone(workspace), keys)?;
     Ok(Arc::new(owner))
+}
+
+/// The joined rooms and this device's channel keys for them and for the
+/// profile's own room, under the device's trusted custody.
+fn joined_rooms_and_keys(
+    profile: &Path,
+    room: &str,
+    broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
+) -> io::Result<(Arc<Joined>, channels::Channels)> {
+    let custody = tilo_identity_host::broker::trusted_current_device(room)?;
+    let channels = Arc::clone(&broker.0);
+    let joined = joined_rooms(profile, room, custody.clone(), broker)?;
+    let keys = channels::open(
+        profile,
+        RoomId::parse(room).ok_or_else(|| io::Error::other("invalid runtime room"))?,
+        custody.0,
+        Arc::clone(&joined),
+        channels,
+    )?;
+    Ok((joined, keys))
 }
 
 /// The rooms this profile joined, synced as this device over an endpoint
