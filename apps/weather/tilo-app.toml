@@ -20,6 +20,7 @@ aarch64 = "aarch64"
 
 [capabilities]
 required = ["network.http"]
+optional = ["settings"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

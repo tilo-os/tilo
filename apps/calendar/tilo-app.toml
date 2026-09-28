@@ -22,8 +22,7 @@ x86_64 = "v3"
 aarch64 = "aarch64"
 
 [capabilities]
-# CalDAV sync; the calendar itself works without an account.
-optional = ["network.http", "network.fetch-proxy"]
+optional = ["files.paths", "app-files", "secrets", "network.http", "network.fetch-proxy"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

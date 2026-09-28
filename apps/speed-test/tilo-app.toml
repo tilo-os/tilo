@@ -11,6 +11,7 @@ x86_64 = "v3"
 
 [capabilities]
 required = ["network.http"]
+optional = []
 
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

@@ -5037,7 +5037,111 @@ fn every_template_scaffolds_a_portable_app() {
         assert!(report.passed(), "{}: {}", template.name(), report.render());
         assert!(report.files > 0);
         assert!(report.render().starts_with("portability: ok"));
+        // The manifest declares every capability the generated code uses.
+        let manifest = tilo_app_package::Manifest::from_toml_str(
+            &std::fs::read_to_string(app.join("tilo-app.toml")).unwrap(),
+        )
+        .unwrap();
+        let declared: Vec<&str> = manifest
+            .capabilities
+            .required
+            .iter()
+            .chain(&manifest.capabilities.optional)
+            .map(String::as_str)
+            .collect();
+        let missing = crate::capability_usage::undeclared(&app, &declared).unwrap();
+        assert!(missing.is_empty(), "{}: {missing:?}", template.name());
     }
+}
+
+#[test]
+fn every_workspace_app_declares_what_it_uses_and_its_targets_provide_what_it_requires() {
+    let apps = portability::workspace_apps(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+    assert!(apps.len() >= 50, "found {} apps", apps.len());
+    let mut problems = Vec::new();
+    for app in apps {
+        let manifest = tilo_app_package::Manifest::from_toml_str(
+            &std::fs::read_to_string(app.join("tilo-app.toml")).unwrap(),
+        )
+        .unwrap();
+        let capabilities = &manifest.capabilities;
+        let declared: Vec<&str> = capabilities
+            .required
+            .iter()
+            .chain(&capabilities.optional)
+            .map(String::as_str)
+            .collect();
+        for (capability, sites) in crate::capability_usage::undeclared(&app, &declared).unwrap() {
+            problems.push(format!(
+                "{}: uses {capability} ({:?})",
+                app.display(),
+                sites[0]
+            ));
+        }
+        for platform in manifest.package.platforms() {
+            let Some(target) = targets::Target::from_platform(platform.as_str()) else {
+                continue;
+            };
+            for finding in tilo_caps::check(&capabilities.required, &capabilities.optional, target)
+            {
+                if finding.is_error(false) {
+                    problems.push(format!("{} on {target}: {finding:?}", app.display()));
+                }
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn a_capability_the_code_uses_must_be_declared_before_a_build() {
+    let root = tempfile::tempdir().unwrap();
+    let app = root.path().join("locator");
+    create_app(request(app.clone())).unwrap();
+    let mut lib = std::fs::read_to_string(app.join("src/lib.rs")).unwrap();
+    lib.push_str("\npub fn locate() { let _ = ui::location::Feature::Location; }\n");
+    std::fs::write(app.join("src/lib.rs"), lib).unwrap();
+    let project = |app: &Path| targets::Project {
+        app_dir: app.to_path_buf(),
+        cargo_manifest: app.join("Cargo.toml"),
+        package: "locator".into(),
+        lib_name: "locator".into(),
+        bin: "locator".into(),
+        manifest_path: app.join("tilo-app.toml"),
+        manifest: tilo_app_package::Manifest::from_toml_str(
+            &std::fs::read_to_string(app.join("tilo-app.toml")).unwrap(),
+        )
+        .unwrap(),
+        workspace_root: app.to_path_buf(),
+        target_dir: app.join("target"),
+        sdk_root: app.to_path_buf(),
+    };
+    let error = targets::check_target(&project(&app), targets::Target::Linux, false)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains(
+            "error[capability]: the code uses `location` but tilo-app.toml does not declare it"
+        ),
+        "{error}"
+    );
+    assert!(error.contains("--> src/lib.rs:"), "{error}");
+    assert!(
+        error.contains("tilo-app add capability location"),
+        "{error}"
+    );
+
+    let manifest = std::fs::read_to_string(app.join("tilo-app.toml")).unwrap();
+    std::fs::write(
+        app.join("tilo-app.toml"),
+        manifest.replacen(
+            "[publisher]",
+            "[capabilities]\noptional = [\"location\"]\n\n[publisher]",
+            1,
+        ),
+    )
+    .unwrap();
+    targets::check_target(&project(&app), targets::Target::Linux, false).unwrap();
 }
 
 fn platform_specific_app(root: &Path) -> PathBuf {
@@ -5239,6 +5343,7 @@ fn portability_rules_follow_the_app_platforms() {
 pub fn mount() {
     let _ = std::process::Command::new("udisksctl").status();
     let _ = std::env::var_os("XDG_RUNTIME_DIR");
+    let _ = "https://demo.local/clip.mp4";
     std::thread::spawn(|| {});
 }
 "#,

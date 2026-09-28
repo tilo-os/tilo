@@ -129,6 +129,7 @@ capabilities! {
     Secrets = "secrets": "Keep secrets in the platform's credential store.",
     Settings = "settings": "Keep per-app preferences.",
     NetworkHttp = "network.http": "Make HTTP requests.",
+    NetworkFetchProxy = "network.fetch-proxy": "Read any site's responses in a page through the host's fetch proxy.",
     NetworkStatus = "network.status": "Know whether the device is online or metered.",
     NetworkSockets = "network.sockets": "Open raw TCP and UDP sockets.",
     Background = "background": "Keep working while the app is open.",
@@ -217,12 +218,14 @@ impl Capability {
             | Self::OpenUri
             | Self::Settings
             | Self::NetworkHttp
+            | Self::NetworkFetchProxy
+            | Self::NetworkStatus
             | Self::Background
             | Self::Spellcheck
             | Self::Secrets => [Available, Available, Available],
             Self::FilesSave => [Available, Planned, Available],
             Self::Notifications => [Available, Prompt, Prompt],
-            Self::NetworkStatus | Self::Print => [Planned, Planned, Available],
+            Self::Print => [Planned, Planned, Available],
             Self::NetworkSockets => [Available, Available, Unsupported(WEB_SOCKETS)],
             Self::ScheduledWake => [Planned, Planned, Unsupported(WEB_WAKE)],
             Self::MediaDecode | Self::MediaSession => [Available, Available, Planned],
@@ -239,7 +242,10 @@ impl Capability {
     #[must_use]
     pub fn macos_entitlements(self) -> &'static [&'static str] {
         match self {
-            Self::NetworkHttp | Self::NetworkSockets | Self::NetworkStatus => {
+            Self::NetworkHttp
+            | Self::NetworkFetchProxy
+            | Self::NetworkSockets
+            | Self::NetworkStatus => {
                 &["com.apple.security.network.client"]
             }
             Self::FilesOpen | Self::FilesSave | Self::FilesPaths => {

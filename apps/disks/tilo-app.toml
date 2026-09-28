@@ -23,6 +23,11 @@ platform-reason = "Administers block devices through udisks."
 x86_64 = "v3"
 aarch64 = "aarch64"
 
+# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+[capabilities]
+required = ["processes"]
+optional = ["files.paths", "threads"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""
