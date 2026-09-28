@@ -901,6 +901,10 @@ fn display_name(path: &Path) -> String {
 ///
 /// Android's SAF view path also opens an already-chosen local file this way
 /// before handing the descriptor to the system viewer.
+///
+/// # Errors
+/// Returns when the path cannot be opened without following a final symlink,
+/// or when the opened descriptor is not a regular file.
 #[cfg(unix)]
 pub fn open_regular_file(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -920,6 +924,10 @@ pub fn open_regular_file(path: &Path) -> std::io::Result<File> {
 
 /// Bind the type and reparse checks to the opened Windows handle, so a link
 /// cannot be substituted between validation and opening the selected file.
+///
+/// # Errors
+/// Returns when the path cannot be opened, or when the opened handle is not a
+/// regular file (including reparse points).
 #[cfg(windows)]
 pub fn open_regular_file(path: &Path) -> std::io::Result<File> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
