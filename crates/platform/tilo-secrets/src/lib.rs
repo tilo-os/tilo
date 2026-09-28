@@ -712,4 +712,59 @@ mod tests {
         store.probe_blocking().unwrap();
         conformance::check_store_blocking(&store);
     }
+
+    /// An item `secret-tool` stored before this crate existed is adopted from
+    /// the real Secret Service, and deleted with the adopted key.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_system_store_adopts_a_secret_tool_item_when_asked() {
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+
+        if std::env::var_os("TILO_SECRETS_SYSTEM_TEST").is_none() {
+            return;
+        }
+        let nonce = format!("{}", std::process::id());
+        let legacy = [
+            ("tilo-purpose", "tilo-secrets-adoption-test"),
+            ("tilo-key", nonce.as_str()),
+        ];
+        let mut writer = Command::new("secret-tool")
+            .args(["store", "--label=tilo-secrets adoption test"])
+            .args(legacy.iter().flat_map(|(name, value)| [*name, *value]))
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("secret-tool is installed");
+        writer
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"pre-existing")
+            .unwrap();
+        assert!(writer.wait().unwrap().success());
+        let lookup = || {
+            Command::new("secret-tool")
+                .arg("lookup")
+                .args(legacy.iter().flat_map(|(name, value)| [*name, *value]))
+                .output()
+                .unwrap()
+                .stdout
+        };
+        assert_eq!(lookup(), b"pre-existing");
+
+        let store = SecretStore::for_app("so.tilo.secrets-adoption");
+        let adopted = store
+            .get_or_adopt_blocking("adopted", &legacy, PutOptions::default())
+            .unwrap()
+            .expect("the secret-tool item is found");
+        assert_eq!(adopted.expose(), b"pre-existing");
+        assert_eq!(
+            store.get_blocking("adopted").unwrap().unwrap().expose(),
+            b"pre-existing"
+        );
+        assert_eq!(lookup(), b"pre-existing", "older builds still read theirs");
+        store.delete_with_legacy_blocking("adopted", &legacy).unwrap();
+        assert_eq!(store.get_blocking("adopted").unwrap(), None);
+        assert!(lookup().is_empty());
+    }
 }
