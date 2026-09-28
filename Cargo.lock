@@ -898,6 +898,7 @@ name = "atomic-file"
 version = "0.1.0"
 dependencies = [
  "advisory-lock",
+ "atomic-file",
  "rustix 1.1.4",
  "serde",
  "serde_json",

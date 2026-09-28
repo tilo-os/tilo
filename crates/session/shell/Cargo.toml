@@ -332,6 +332,16 @@ path = "src/bin/tilo-control.rs"
 name = "it"
 path = "tests/it.rs"
 
+# Examples that carry unit tests build as test targets too, so `cargo test`
+# and the CI test jobs run those tests.
+[[example]]
+name = "runtime-mcp-inspect"
+test = true
+
+[[example]]
+name = "shared-runtime-proof"
+test = true
+
 [lints]
 workspace = true
 
