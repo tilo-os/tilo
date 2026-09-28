@@ -17,13 +17,20 @@ automerge.workspace = true
 blake3.workspace = true
 collab-types = { path = "../collab-types" }
 ed25519-dalek.workspace = true
+# The random id of each enrollment challenge request.
+getrandom.workspace = true
 parking_lot.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
+rand_core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
+# The device custody an enrollment presents to the issuing host.
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 tilo-peer-state = { path = "../tilo-peer-state" }
+# The join client an enrollment redeems its invitation over.
+tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { path = "../tilo-user-identity" }
 iroh-base = { workspace = true, features = ["key"], optional = true }

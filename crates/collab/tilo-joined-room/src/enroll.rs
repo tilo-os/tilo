@@ -1,25 +1,18 @@
-//! Typed canonical exchange. The actor supplies its real endpoint and custody.
-#[allow(
-    clippy::wildcard_imports,
-    reason = "the `tests` submodule resolves invite items through this namespace"
-)]
-use super::*;
+//! Redeeming an invitation with the host it names: the typed canonical
+//! exchange. The caller supplies its real endpoint and custody.
 use crate::{
-    network::actor::HostIdentity,
-    shell::{
-        native_workspace_owner::{NativeWorkspaceOwner, PendingEnrollmentStatus},
-        state::WorkspaceId,
-    },
+    NativeWorkspaceOwner, PendingEnrollmentId, PendingEnrollmentStatus, VerifiedNativeEnrollment,
+    VerifiedNativeEnrollmentIntent, WorkspaceId, enrollment::ns as now_ns,
 };
 use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
-use tilo_joined_room::PendingEnrollmentId;
+use tilo_identity_host::custody::HostIdentity;
 use tilo_peer_state::join::{
-    self, JoinCompleteRequest, JoinTransportRequest, TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1,
+    self, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest, JoinTransportResponse,
+    TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1,
 };
-use tilo_peer_state::join::{JoinChallengeRequest, JoinTransportResponse};
 use tilo_relay::workspace_join::WorkspaceJoinClient;
-use tilo_user_identity::RevocationList;
+use tilo_user_identity::{DeviceCert, RevocationList};
 
 fn current(identity: &HostIdentity, topic: u64, expected: &DeviceCert) -> Result<(), String> {
     let (certificate, _) = identity.current_native_material(topic)?;
@@ -44,17 +37,28 @@ fn active(
     }
     Ok(())
 }
-/// Returns closed response evidence only. The owner still rechecks the target
-/// slot and crosses its single installation barrier before any Joined result.
+/// Redeem `invitation` for `local`, the workspace slot the room will show
+/// in where the host has slots. The signed Complete proof is durable before
+/// it is sent, and a retry resends exactly that proof.
+///
+/// Returns closed response evidence only. The owner still rechecks the
+/// target slot and crosses its single installation barrier
+/// ([`NativeWorkspaceOwner::install`]) before any Joined result.
+///
+/// # Errors
+/// The invitation does not verify for this device, the pinned host refuses
+/// or answers out of scope, custody changes during the exchange, or the
+/// Complete is not acknowledged (its proof is then retained for an exact
+/// retry).
 #[allow(
     clippy::too_many_lines,
     reason = "one ordered exchange: prepare, persist, send, verify and hand back closed evidence"
 )]
-pub(crate) async fn prepare_and_complete(
+pub async fn prepare_and_complete(
     client: WorkspaceJoinClient,
     identity: HostIdentity,
     identity_topic: u64,
-    local: WorkspaceId,
+    local: Option<WorkspaceId>,
     invitation: String,
     owner: NativeWorkspaceOwner,
 ) -> Result<VerifiedNativeEnrollment, String> {
@@ -66,7 +70,11 @@ pub(crate) async fn prepare_and_complete(
     for entry in entries {
         revocations.insert(entry).map_err(|e| e.to_string())?;
     }
-    let (intent, id) = if let Some(pending) = owner.pending_enrollment_for_slot(local)? {
+    let retained = match local {
+        Some(local) => owner.pending_enrollment_for_slot(local)?,
+        None => owner.pending_enrollment_for_invitation(&invitation)?,
+    };
+    let (intent, id) = if let Some(pending) = retained {
         if pending.status() != PendingEnrollmentStatus::Active {
             return Err(
                 "native enrollment was cancelled; retained proof requires reconciliation".into(),
@@ -83,7 +91,7 @@ pub(crate) async fn prepare_and_complete(
         }
         // Reuse the recorded proof even when its original challenge has expired.
         // The issuing host alone resolves durable Complete idempotency/current membership.
-        let id = owner.prepare_enrollment_into(&intent, Some(local), SystemTime::now())?;
+        let id = owner.prepare_enrollment_into(&intent, local, SystemTime::now())?;
         if &id != pending.id() {
             return Err("native retry changed pending generation".into());
         }
@@ -172,7 +180,7 @@ pub(crate) async fn prepare_and_complete(
             hint,
             prepared,
         )?;
-        let id = owner.prepare_enrollment_into(&intent, Some(local), prepared)?;
+        let id = owner.prepare_enrollment_into(&intent, local, prepared)?;
         (intent, id)
     };
     current(&identity, identity_topic, &device)?;
@@ -199,16 +207,3 @@ pub(crate) async fn prepare_and_complete(
         _ => Err("native Complete was not acknowledged; exact signed proof retained".into()),
     }
 }
-
-fn now_ns(now: SystemTime) -> Result<u64, String> {
-    u64::try_from(
-        now.duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
-            .as_nanos(),
-    )
-    .map_err(|e| e.to_string())
-}
-
-#[cfg(test)]
-#[path = "native_exchange_tests.rs"]
-mod tests;
