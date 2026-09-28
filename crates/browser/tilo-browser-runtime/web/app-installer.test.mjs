@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {APP_ALIASES, createAppInstaller} from './app-installer.mjs';
+import {APP_ALIASES, createAppInstaller, localSeed} from './app-installer.mjs';
 
 const emptyModule = () => new WebAssembly.Module(Uint8Array.of(0, 0x61, 0x73, 0x6d, 1, 0, 0, 0));
 
@@ -137,4 +137,32 @@ test('preloadApps installs a session\'s apps in one concurrent batch and reports
     return true;
   });
   assert.deepEqual(await core.installer.preload(['so.tilo.ebook', 'so.tilo.word-processor']), ['so.tilo.ebook', 'so.tilo.word-processor']);
+});
+
+test('a local desktop seed names every app by its full id and lists what to link', () => {
+  const {seed, apps} = localSeed({
+    apps: ['writer'],
+    workspaces: [
+      {title: 'Reading', strips: [{title: 'Odyssey', windows: [{app: 'so.tilo.ebook', record: 'r1', focused: true}, {app: 'chat'}]}]},
+      {title: 'Writing'},
+    ],
+  });
+  assert.deepEqual(apps, ['so.tilo.word-processor', 'so.tilo.ebook', 'so.tilo.chat']);
+  assert.deepEqual(seed.apps, apps);
+  assert.deepEqual(seed.workspaces[0].strips[0].windows, [
+    {app: 'so.tilo.ebook', record: 'r1', focused: true},
+    {app: 'so.tilo.chat'},
+  ]);
+  assert.deepEqual(seed.workspaces[1], {title: 'Writing', strips: []});
+  assert.deepEqual(localSeed({}), {seed: {apps: [], workspaces: []}, apps: []});
+  assert.throws(() => localSeed(null), /local must be an object/);
+});
+
+test('a desktop finds an asset among every linked app', async () => {
+  const core = fakeCore();
+  core.releaseCore();
+  const resolveApp = async appId => ({module: emptyModule(), assets: new Map([[`${appId}.png`, `https://registry.example/${appId}`]])});
+  await core.installer.preload(['so.tilo.ebook', 'so.tilo.word-processor'], {resolveApp});
+  assert.equal(core.installer.asset('so.tilo.word-processor.png'), 'https://registry.example/so.tilo.word-processor');
+  assert.equal(core.installer.asset('missing.png'), undefined);
 });

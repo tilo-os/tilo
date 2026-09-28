@@ -128,17 +128,13 @@ impl Widget for LiveFixture {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["osk.suggestions"]
     }
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
-    ) -> Result<bool, String> {
-        self.keyboard
-            .borrow_mut()
-            .invoke_resource_operation(kind, type_id, payload, doc, path)
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        self.keyboard.borrow_mut().start_operation(op, doc, path)
     }
     fn document_action_applied(
         &mut self,

@@ -25,6 +25,9 @@ check() {
 
 # build-web-core.sh and build-web-app.sh: the core with its app collection.
 check "web core" -p tilo-browser-runtime -p ebook -p word-processor --features tilo-browser-runtime/dylink
+# build-web-core.sh --features cloud: the same core with the certified peer.
+check "web core with peer" -p tilo-browser-runtime -p ebook -p word-processor \
+  --features tilo-browser-runtime/dylink,tilo-browser-runtime/cloud
 # scripts/build.sh: the Cloud frontend's monolithic module.
 check "cloud frontend" -p tilo-browser-runtime --features cloud,static-apps
 # web-registry-client/build-verifier.sh.

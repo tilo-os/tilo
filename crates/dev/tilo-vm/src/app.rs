@@ -1587,6 +1587,12 @@ impl App {
                 alternative: "use --hypervisor whpx on Windows ARM64, or omit --headless".into(),
             });
         }
+        if (args.heads.is_some() || args.resolution.is_some()) && adapter != "libvirt" {
+            return Err(CliError::Unsupported {
+                what: format!("--heads or --resolution with the {adapter} adapter"),
+                alternative: "use --hypervisor libvirt, or omit them".into(),
+            });
+        }
         if args.direct_boot_bundle.is_some() && adapter != "whpx" {
             return Err(CliError::Unsupported {
                 what: format!("--direct-boot-bundle with the {adapter} adapter"),
@@ -1730,6 +1736,8 @@ impl App {
             emulated: args.emulated,
             memory_mb: args.memory_mb,
             headless: args.headless,
+            heads: args.heads,
+            resolution: args.resolution,
             cpus: args.cpus,
             ssh_port: args.ssh_port,
             template: args.template,
@@ -1983,7 +1991,16 @@ impl App {
                     break;
                 }
                 // Connection transport failures can resolve while the VM boots.
-                Err(CliError::Unreachable { .. }) => std::thread::sleep(Duration::from_secs(2)),
+                Err(CliError::Unreachable { .. }) => {
+                    // WHPX boots quickly enough that a two-second SSH poll
+                    // accounts for a noticeable part of the restart time.
+                    let interval = if vm.entry.hypervisor == "whpx" {
+                        Duration::from_millis(500)
+                    } else {
+                        Duration::from_secs(2)
+                    };
+                    std::thread::sleep(interval);
+                }
                 // SSH and tilo-vmd already answered. Waiting cannot fix a refused
                 // key, incompatible protocol, or any other semantic failure.
                 Err(error) => return Err(error),
@@ -5927,6 +5944,8 @@ mod tests {
             emulated: false,
             memory_mb: None,
             headless: false,
+            heads: None,
+            resolution: None,
             cpus: None,
             ssh: None,
             ssh_port: None,

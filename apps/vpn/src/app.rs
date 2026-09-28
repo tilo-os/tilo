@@ -3697,113 +3697,26 @@ impl Widget for VpnApp {
         resources
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        _payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind != tilo_actions::OperationKind::Effect
-            || !matches!(
-                type_id,
-                "vpn.toggle-tunnel"
-                    | actions::VPN_IMPORT_TYPE
-                    | actions::VPN_DELETE_TYPE
-                    | actions::VPN_PROVISION_TYPE
-            )
-        {
-            return Ok(false);
-        }
-        Err("VPN machine changes require the lifecycle-capable operation host".into())
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect || type_id != "vpn.toggle-tunnel" {
-            if kind == tilo_actions::OperationKind::Effect && type_id == actions::VPN_DELETE_TYPE {
-                if self.queued_delete.is_some() {
-                    return Err("another VPN profile deletion is already queued".into());
-                }
-                let (id, name): (ConnId, String) =
-                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                let connection = self
-                    .vault
-                    .get(id)
-                    .ok_or_else(|| "VPN profile is no longer saved".to_string())?;
-                if connection.name != name {
-                    return Err("VPN profile changed before deletion was confirmed".into());
-                }
-                let uuid = self.local_details.get(&id)
-                    .map(|details| details.network_manager_uuid.clone())
-                    .filter(|uuid| !uuid.is_empty())
-                    .ok_or_else(|| "Credentials are unavailable on this device; local NetworkManager profile cannot be deleted here".to_string())?;
-                self.queued_delete = Some((id, uuid, invocation));
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            if kind == tilo_actions::OperationKind::Effect && type_id == actions::VPN_IMPORT_TYPE {
-                if self.import_rx.is_some() || self.import_invocation.is_some() {
-                    return Err("another VPN profile import is already in progress".into());
-                }
-                let raw: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                let kind = match raw.as_str() {
-                    "wireguard" => ConnKind::WireGuard,
-                    "openvpn" => ConnKind::OpenVpn,
-                    _ => return Err("unsupported VPN profile type".into()),
-                };
-                self.import_invocation = Some(invocation);
-                self.provision_target = None;
-                self.request_import(kind);
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            if kind == tilo_actions::OperationKind::Effect && type_id == actions::VPN_PROVISION_TYPE
-            {
-                if self.import_rx.is_some() || self.import_invocation.is_some() {
-                    return Err("another VPN profile import is already in progress".into());
-                }
-                let (raw, expected_kind): (String, String) =
-                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                let id = raw
-                    .parse()
-                    .map_err(|_| "Invalid VPN connection id".to_string())?;
-                let (profile_id, actual_kind) = self
-                    .vault
-                    .get(id)
-                    .map(|connection| (connection.id, connection.kind))
-                    .ok_or_else(|| "VPN profile is no longer saved".to_string())?;
-                if actual_kind.as_str() != expected_kind {
-                    return Err("VPN profile protocol changed before setup started".into());
-                }
-                self.import_invocation = Some(invocation);
-                self.request_local_provision(profile_id);
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if self.queued_resource_toggle.is_some() {
-            return Err("another VPN tunnel change is queued".into());
-        }
-        let raw: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let id = raw
-            .parse()
-            .map_err(|_| "Invalid VPN connection id".to_string())?;
-        let connection = self
-            .vault
-            .get(id)
-            .ok_or_else(|| "VPN connection is no longer saved".to_string())?;
-        if connection.status == ConnStatus::Connecting {
-            return Err("The tunnel is already changing state".into());
-        }
-        self.queued_resource_toggle = Some((id, invocation));
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )
     }
 
     fn poll_resource_operation(
@@ -4126,6 +4039,95 @@ impl Widget for VpnApp {
         _permissions: &ui::permissions::PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl VpnApp {
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != tilo_actions::OperationKind::Effect || type_id != "vpn.toggle-tunnel" {
+            if kind == tilo_actions::OperationKind::Effect && type_id == actions::VPN_DELETE_TYPE {
+                if self.queued_delete.is_some() {
+                    return Err("another VPN profile deletion is already queued".into());
+                }
+                let (id, name): (ConnId, String) =
+                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let connection = self
+                    .vault
+                    .get(id)
+                    .ok_or_else(|| "VPN profile is no longer saved".to_string())?;
+                if connection.name != name {
+                    return Err("VPN profile changed before deletion was confirmed".into());
+                }
+                let uuid = self.local_details.get(&id)
+                    .map(|details| details.network_manager_uuid.clone())
+                    .filter(|uuid| !uuid.is_empty())
+                    .ok_or_else(|| "Credentials are unavailable on this device; local NetworkManager profile cannot be deleted here".to_string())?;
+                self.queued_delete = Some((id, uuid, invocation));
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            if kind == tilo_actions::OperationKind::Effect && type_id == actions::VPN_IMPORT_TYPE {
+                if self.import_rx.is_some() || self.import_invocation.is_some() {
+                    return Err("another VPN profile import is already in progress".into());
+                }
+                let raw: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let kind = match raw.as_str() {
+                    "wireguard" => ConnKind::WireGuard,
+                    "openvpn" => ConnKind::OpenVpn,
+                    _ => return Err("unsupported VPN profile type".into()),
+                };
+                self.import_invocation = Some(invocation);
+                self.provision_target = None;
+                self.request_import(kind);
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            if kind == tilo_actions::OperationKind::Effect && type_id == actions::VPN_PROVISION_TYPE
+            {
+                if self.import_rx.is_some() || self.import_invocation.is_some() {
+                    return Err("another VPN profile import is already in progress".into());
+                }
+                let (raw, expected_kind): (String, String) =
+                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let id = raw
+                    .parse()
+                    .map_err(|_| "Invalid VPN connection id".to_string())?;
+                let (profile_id, actual_kind) = self
+                    .vault
+                    .get(id)
+                    .map(|connection| (connection.id, connection.kind))
+                    .ok_or_else(|| "VPN profile is no longer saved".to_string())?;
+                if actual_kind.as_str() != expected_kind {
+                    return Err("VPN profile protocol changed before setup started".into());
+                }
+                self.import_invocation = Some(invocation);
+                self.request_local_provision(profile_id);
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            return Ok(None);
+        }
+        if self.queued_resource_toggle.is_some() {
+            return Err("another VPN tunnel change is queued".into());
+        }
+        let raw: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let id = raw
+            .parse()
+            .map_err(|_| "Invalid VPN connection id".to_string())?;
+        let connection = self
+            .vault
+            .get(id)
+            .ok_or_else(|| "VPN connection is no longer saved".to_string())?;
+        if connection.status == ConnStatus::Connecting {
+            return Err("The tunnel is already changing state".into());
+        }
+        self.queued_resource_toggle = Some((id, invocation));
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -5010,16 +5012,18 @@ mod tests {
         }
         // Case `exported_tunnel_toggle_is_a_cancellable_background_job`.
         {
-            let (mut app, doc) = demo_with_doc();
+            let (mut app, mut doc) = demo_with_doc();
             let connection = app.vault.connections[0].id;
             let invocation = tilo_actions::InvocationId::new();
             let started = app
-                .start_resource_operation(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    "vpn.toggle-tunnel",
-                    &serde_json::to_vec(&connection.to_string()).unwrap(),
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        "vpn.toggle-tunnel",
+                        &serde_json::to_vec(&connection.to_string()).unwrap(),
+                    ),
+                    &mut doc,
                     &automerge::ROOT,
                 )
                 .unwrap();

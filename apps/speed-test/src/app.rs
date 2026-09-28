@@ -271,6 +271,29 @@ impl Default for SpeedTestApp {
     }
 }
 
+impl SpeedTestApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ActionOutput>, String> {
+        if kind == OperationKind::Document || type_id != OPERATION_TYPE {
+            return Ok(None);
+        }
+        match serde_json::from_slice::<SpeedOperation>(payload)
+            .map_err(|error| error.to_string())?
+        {
+            SpeedOperation::Start => self.start(),
+            SpeedOperation::Stop => self.stop(),
+            SpeedOperation::ChangeRegion => self.cycle_region(),
+        }
+        Ok(Some(ActionOutput::default()))
+    }
+}
+
 impl Widget for SpeedTestApp {
     fn update(&mut self, _doc: &mut AppModel, _path: &ModelPath) -> bool {
         let mut changed = false;
@@ -750,25 +773,21 @@ impl Widget for SpeedTestApp {
         vec![root]
     }
 
-    fn invoke_resource_operation_v2(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<ActionOutput>, String> {
-        if kind == OperationKind::Document || type_id != OPERATION_TYPE {
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
             return Ok(None);
-        }
-        match serde_json::from_slice::<SpeedOperation>(payload)
-            .map_err(|error| error.to_string())?
-        {
-            SpeedOperation::Start => self.start(),
-            SpeedOperation::Stop => self.stop(),
-            SpeedOperation::ChangeRegion => self.cycle_region(),
-        }
-        Ok(Some(ActionOutput::default()))
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .map(ui::widget::ResourceOperationStart::Completed))
     }
 
     fn name(&self) -> &'static str {

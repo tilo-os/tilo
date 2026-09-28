@@ -336,16 +336,20 @@ mod tests {
             let address = hit.action_address().unwrap();
             let resource = app.resource(&doc, &address.resource).unwrap();
             let encoded = tilo_actions::door::encode(&[resource], &address, None).unwrap();
-            assert!(
-                app.invoke_resource_operation(
-                    tilo_actions::OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
                     &ROOT
                 )
-                .unwrap()
-            );
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(app.current_slide(), 2);
         }
     }

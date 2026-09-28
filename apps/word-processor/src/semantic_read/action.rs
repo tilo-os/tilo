@@ -1,20 +1,21 @@
-//! Closed inert request/contract for the ordinary app action door.
-//! Registration and a valid request do not qualify the legacy app document.
-//! The action stays unavailable until the SDK owns a genuine immutable source,
-//! complete committed heads, original-caller custody, and final disclosure fence.
+//! The `read-text` action: a closed request, its result contract, and the
+//! body-text projection the SDK runs over the committed canonical document.
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 use tilo_actions::{
     ActionContract, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
     ResultSpec,
 };
-use ui::semantic_document_read::{MAX_REQUEST_BYTES, RegisteredSemanticReader, SemanticReadError};
+use ui::semantic_document_read::{
+    MAX_REQUEST_BYTES, ReadPage, RegisteredSemanticReader, SemanticReadError,
+};
 
 pub const OPERATION_TYPE: &str = "word-processor.read";
 pub static READERS: [RegisteredSemanticReader; 1] = [RegisteredSemanticReader::new(
     OPERATION_TYPE,
     result_schema,
     validate_request,
+    project,
 )];
 
 #[derive(Serialize, Deserialize)]
@@ -24,9 +25,7 @@ struct Request {
     cursor: Option<String>,
 }
 
-/// Shape validation only. The future owner adapter must retain its input/decode
-/// credit before calling this allocating legacy serde component. No budget token
-/// or supplied heads turn this request data into owner authority.
+/// Shape validation only; no supplied heads or cursor confer authority.
 fn validate_request(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
     if payload.len() > MAX_REQUEST_BYTES {
         return Err(SemanticReadError::Limit);
@@ -87,11 +86,7 @@ pub fn spec() -> ActionSpec {
             schema: result_schema().clone(),
         },
         ..ActionContract::view()
-    })
-    .unavailable(
-        "qualified_read_unavailable",
-        "A current committed document read is not available",
-    );
+    });
     crate::actions::continuation::pure(
         spec,
         "qualified-read-parameter-protocol.v1",
@@ -99,8 +94,40 @@ pub fn spec() -> ActionSpec {
     )
 }
 
-/// Existing Json wire variant; only the future private owner stamp supplies
-/// record and basis. General Completed JSON cannot select that result path.
+/// One page of body text at `heads`, for a request [`validate_request`] accepted.
+fn project(
+    document: &automerge::AutoCommit,
+    heads: &[automerge::ChangeHash],
+    payload: &[u8],
+) -> Result<ReadPage, SemanticReadError> {
+    let request: Request =
+        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
+    let cursor = request
+        .cursor
+        .as_deref()
+        .map(serde_json::from_str::<super::Cursor>)
+        .transpose()
+        .map_err(|_| SemanticReadError::InvalidRequest)?;
+    let limits = qdoc::semantic_read::Limits {
+        items: usize::from(request.page_size),
+        ..qdoc::semantic_read::Limits::default()
+    };
+    let page = super::read_text(document, heads, cursor.as_ref(), limits)
+        .map_err(|error| super::read_error(&error))?;
+    let next_cursor = page
+        .next
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|_| SemanticReadError::Limit)?;
+    Ok(ReadPage {
+        content: serde_json::json!({ "segments": page.segments }),
+        next_cursor,
+    })
+}
+
+/// The SDK stamps `record` and `basis`; the projection supplies `content` and
+/// `nextCursor`.
 pub fn result_schema() -> &'static serde_json::Value {
     static SCHEMA: OnceLock<serde_json::Value> = OnceLock::new();
     SCHEMA.get_or_init(|| {

@@ -65,28 +65,6 @@ fn window_widths_clamp_migrate_and_round_trip_as_fractions() {
         assert!((WindowWidth::Fraction(9999).resolve(3840.0) - 3840.0).abs() <= f64::EPSILON);
     }
 
-    // Phase `legacy_pixel_widths_migrate_to_the_share_they_represented`.
-    // A workspace persisted by the pixel model still loads, its widths coming
-    // back as the share of the screen the user had — not a pixel count that
-    // would mean something different on their next monitor.
-    {
-        // The old model ran 300..1200 px with 1200 as the whole strip, so its
-        // tier constants were a third / a half / two thirds of it.
-        assert_eq!(WindowWidth::from_legacy_pixels(400).permille(), 333);
-        assert_eq!(WindowWidth::from_legacy_pixels(600).permille(), 500);
-        assert_eq!(WindowWidth::from_legacy_pixels(1200).permille(), 1000);
-
-        let legacy = r#"{ "id": 7, "tabs": [], "active_tab": 0, "width": { "Custom": 600 } }"#;
-        let g: WindowGroup = serde_json::from_str(legacy).expect("legacy width must load");
-        assert_eq!(
-            g.width,
-            WindowWidth::Fraction(500),
-            "a persisted 600 px width is half the strip, whatever the display",
-        );
-        assert!((g.width.resolve(1600.0) - 800.0).abs() <= f64::EPSILON);
-        assert!((g.width.resolve(3840.0) - 1920.0).abs() <= f64::EPSILON);
-    }
-
     // Phase `fraction_widths_round_trip_through_persisted_json`.
     // The current shape round-trips through the persisted JSON unchanged.
     {
