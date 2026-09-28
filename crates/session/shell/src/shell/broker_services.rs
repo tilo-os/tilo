@@ -295,21 +295,14 @@ pub struct NativeLauncher(pub Option<WorkspaceTreeHandle>);
 impl NativeLauncher {
     /// Record `person` granting `app` authorship of `workspace`'s space and
     /// add the grant to the launch's copy, unless the app already holds it.
-    /// The tree checks `person`'s own authority; a refusal launches a viewer.
+    /// See [`super::state::WorkspaceTree::grant_app_authorship`].
     fn grant_authorship(
         &self,
         person: &str,
         app: &str,
         workspace: &mut tilo_desktop_model::Workspace,
     ) {
-        use super::state::WorkspaceExt as _;
-        use collab_types::caps::{CapOverride, ResourceRef, Scope, Subject, Verb};
         let Some(tree) = &self.0 else { return };
-        let actor = workspace.actor_for_app(app);
-        if workspace.allows(&actor, &ResourceRef::Workspace, Verb::Write) {
-            return;
-        }
-        let grant = CapOverride::grant(Subject::app(app), Scope::Workspace, Verb::Write);
         let mut tree = tree.write();
         let Some(id) = tree
             .desktop
@@ -320,18 +313,7 @@ impl NativeLauncher {
         else {
             return;
         };
-        let Some(recorded) = tree.grant_in_workspace(id, &person.to_string(), grant) else {
-            return;
-        };
-        let stored = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|candidate| candidate.id == id)
-            .and_then(|candidate| candidate.capabilities.iter().find(|cap| cap.id == recorded))
-            .cloned();
-        tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
-        tree.flush_to_disk();
+        let stored = tree.grant_app_authorship(id, &person.to_string(), app);
         drop(tree);
         if let Some(stored) = stored {
             workspace.capabilities.push(stored);

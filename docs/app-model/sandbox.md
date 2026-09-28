@@ -283,8 +283,11 @@ documents and cannot originate a change to one. If that is your launch:
 - The workspace is bound read-only and served read-only, and the document
   control socket refuses edits with the read-only-filesystem message.
 
-An app that no workspace-scoped capability names gets neither variable and
-launches as it always did.
+An app launched into a workspace that no workspace-scoped capability names
+is a read-only participant too: missing policy fails closed. A person who
+may change the workspace grants an app authorship by opening it there (from
+the palette, or through the open-app action), and the app then launches as
+an author with `TILO_PARTICIPATION=author`.
 
 ## What gets into your process
 
