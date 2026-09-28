@@ -77,7 +77,7 @@ pub fn ensure_collaboration_identity_for_legacy_linux_host(
 /// because this is a compatibility migration for that section, not a global
 /// settings-document schema version.
 const HOST_INPUT_MIGRATION_VERSION_KEY: &str = "host_input_migration_version";
-const HOST_INPUT_MIGRATION_VERSION: u64 = 3;
+const HOST_INPUT_MIGRATION_VERSION: u64 = 4;
 
 /// Process-global entry point. Resolves the user's XDG config dir from
 /// `$XDG_CONFIG_HOME` (falling back to `$HOME/.config`) and creates
@@ -175,6 +175,24 @@ fn host_keyboard_updates(
     existing: &serde_json::Map<String, serde_json::Value>,
     read: &mut impl FnMut(&str, &str) -> Option<String>,
 ) -> serde_json::Map<String, serde_json::Value> {
+    let mut input = host_layout_updates(existing, read);
+    // The same whole-section writers store `compose_key: null`, meaning "no
+    // compose key chosen", so null is as unowned as absent.
+    if existing
+        .get("compose_key")
+        .is_none_or(serde_json::Value::is_null)
+        && let Some(compose) = read("org.gnome.desktop.input-sources", "xkb-options")
+            .and_then(|raw| parse_gnome_compose_key(&raw))
+    {
+        input.insert("compose_key".into(), serde_json::json!(compose));
+    }
+    input
+}
+
+fn host_layout_updates(
+    existing: &serde_json::Map<String, serde_json::Value>,
+    read: &mut impl FnMut(&str, &str) -> Option<String>,
+) -> serde_json::Map<String, serde_json::Value> {
     let mut input = serde_json::Map::new();
     let Some(raw_sources) = read("org.gnome.desktop.input-sources", "sources") else {
         return input;
@@ -195,12 +213,6 @@ fn host_keyboard_updates(
     {
         input.insert("keyboard_layout".into(), serde_json::json!(active));
         input.insert("keyboard_layouts".into(), serde_json::json!(source_ids));
-    }
-    if !existing.contains_key("compose_key")
-        && let Some(compose) = read("org.gnome.desktop.input-sources", "xkb-options")
-            .and_then(|raw| parse_gnome_compose_key(&raw))
-    {
-        input.insert("compose_key".into(), serde_json::json!(compose));
     }
     input
 }
@@ -528,8 +540,27 @@ mod tests {
             );
             assert_eq!(
                 repaired.get(HOST_INPUT_MIGRATION_VERSION_KEY),
-                Some(&serde_json::json!(3))
+                Some(&serde_json::json!(HOST_INPUT_MIGRATION_VERSION))
             );
+
+            // Version three kept a null compose key; four imports the host's.
+            let null_compose = serde_json::Map::from_iter([
+                ("keyboard_layout".into(), serde_json::json!("de:nodeadkeys")),
+                ("compose_key".into(), serde_json::Value::Null),
+                (
+                    HOST_INPUT_MIGRATION_VERSION_KEY.into(),
+                    serde_json::json!(3),
+                ),
+            ]);
+            let repaired = host_input_migration_updates(&null_compose, |schema, key| {
+                (schema == "org.gnome.desktop.input-sources" && key == "xkb-options")
+                    .then(|| "['compose:rwin']".into())
+            });
+            assert_eq!(
+                repaired.get("compose_key"),
+                Some(&serde_json::json!("rwin"))
+            );
+            assert!(!repaired.contains_key("keyboard_layout"));
 
             let explicit = serde_json::Map::from_iter([
                 ("keyboard_layout".into(), serde_json::json!("us")),
@@ -557,13 +588,24 @@ mod tests {
                 ("compose_key".into(), serde_json::Value::Null),
                 ("key_repeat".into(), serde_json::json!(0.5)),
             ]);
-            let imported = host_input_migration_updates(&defaults, |schema, key| {
-                (schema == "org.gnome.desktop.input-sources" && key == "sources")
-                    .then(|| "[('xkb', 'de+nodeadkeys')]".into())
-            });
+            let imported =
+                host_input_migration_updates(&defaults, |schema, key| match (schema, key) {
+                    ("org.gnome.desktop.input-sources", "sources") => {
+                        Some("[('xkb', 'de+nodeadkeys')]".into())
+                    }
+                    ("org.gnome.desktop.input-sources", "xkb-options") => {
+                        Some("['compose:rwin']".into())
+                    }
+                    _ => None,
+                });
             assert_eq!(
                 imported.get("keyboard_layouts"),
                 Some(&serde_json::json!(["de:nodeadkeys"]))
+            );
+            assert_eq!(
+                imported.get("compose_key"),
+                Some(&serde_json::json!("rwin")),
+                "a null compose key is the unset default, not a choice"
             );
             assert_eq!(
                 imported.get(HOST_INPUT_MIGRATION_VERSION_KEY),
