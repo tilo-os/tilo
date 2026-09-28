@@ -180,6 +180,9 @@ pub(crate) struct LiveGroup {
     /// published in content space so they align with the content on
     /// receivers scrolled differently.
     pub scroll: Option<f64>,
+    /// The active tab shows a legacy window: its app id and content bounds,
+    /// which the overlay fills with the session's video of that window.
+    pub legacy: Option<(String, Rect)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -300,10 +303,14 @@ pub(crate) fn snapshot_json(
                 "rect": rect_json(group.rect),
                 "scroll": scroll_json(group.scroll),
                 "record": record_json(tab_records.get(&group.tab)),
+                "legacy": group.legacy.as_ref().map_or(serde_json::Value::Null, |(app, content)| {
+                    serde_json::json!({"app": app, "tab": group_id(group.tab), "content": rect_json(*content)})
+                }),
             })
         })
         .collect::<Vec<_>>();
     serde_json::json!({
+        "covered": layout.covered,
         "focus": focus,
         "focusRect": focused.map_or(serde_json::Value::Null, |group| rect_json(group.rect)),
         "focusScroll": focused.map_or(serde_json::Value::Null, |group| scroll_json(group.scroll)),
@@ -627,12 +634,14 @@ mod tests {
                     rect: Rect::new(10.0, 40.0, 610.0, 700.0),
                     tab: 30,
                     scroll: Some(120.5),
+                    legacy: None,
                 },
                 LiveGroup {
                     id: 4,
                     rect: Rect::new(620.0, 40.0, 1000.0, 700.0),
                     tab: 40,
                     scroll: None,
+                    legacy: None,
                 },
             ],
             focused_group: Some(4),
@@ -691,6 +700,26 @@ mod tests {
         assert_eq!(value["focusScroll"], 333.33);
         layout.groups[1].scroll = Some(f64::NAN);
         assert!(snapshot_json(&layout, &records, None)["focusScroll"].is_null());
+    }
+
+    #[test]
+    fn snapshot_names_legacy_window_tabs_and_their_content_bounds() {
+        let (mut layout, records) = layout();
+        layout.groups[1].legacy = Some((
+            "org.chromium.Chromium".into(),
+            Rect::new(620.0, 76.0, 1000.0, 700.0),
+        ));
+        let value = snapshot_json(&layout, &records, None);
+        assert!(value["groups"][0]["legacy"].is_null());
+        assert_eq!(
+            value["groups"][1]["legacy"],
+            serde_json::json!({
+                "app": "org.chromium.Chromium",
+                "tab": "0000000000000028",
+                "content": [620.0, 76.0, 380.0, 624.0],
+            })
+        );
+        assert_eq!(value["covered"], false);
     }
 
     #[test]

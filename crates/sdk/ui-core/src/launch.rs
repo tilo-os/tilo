@@ -1582,8 +1582,7 @@ fn build_history_capture(
     root: Box<dyn Widget>,
     viewport: (u32, u32),
 ) -> Result<FrameHarness, LaunchError> {
-    let registration = root
-        .history_registration()
+    let registration = crate::history_mode::capability::history_registration(root.as_ref())
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     let mut harness = FrameHarness::new_with_theme(State::new(), root, viewport, shot_theme(args));
     if let Some(registration) = registration {
@@ -1703,10 +1702,9 @@ fn legacy_history_registration(
     spec: &LaunchSpec,
     inputs: &LegacyLaunchInputs,
 ) -> Result<Option<crate::history_mode::HistoryRegistration>, LaunchError> {
-    if let Some(registration) = inputs
-        .root
-        .history_registration()
-        .map_err(|error| LaunchError::Operation(error.to_string()))?
+    if let Some(registration) =
+        crate::history_mode::capability::history_registration(inputs.root.as_ref())
+            .map_err(|error| LaunchError::Operation(error.to_string()))?
     {
         if registration.definition.app_id != spec.app_id {
             return Err(LaunchError::Operation(
@@ -1848,8 +1846,7 @@ fn finalize_native_app_with_constructor(
         registry,
         persistence,
     } = inputs;
-    let root_history = root
-        .history_registration()
+    let root_history = crate::history_mode::capability::history_registration(root.as_ref())
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     // A second root may only be built where the spec builds it and the host,
     // not the root, owns persistence: a preview must never open a store.
@@ -3541,6 +3538,8 @@ mod tests {
     }
 
     impl Widget for RegistrationRoot {
+        crate::provides!(dyn crate::history_mode::capability::DocumentHistory);
+
         crate::testing::delegate_widget_methods!(
             inner: sync,
             build_layout,
@@ -3552,7 +3551,9 @@ mod tests {
         fn name(&self) -> &str {
             "Registration root"
         }
+    }
 
+    impl crate::history_mode::capability::DocumentHistory for RegistrationRoot {
         fn history_registration(
             &self,
         ) -> Result<
@@ -3577,7 +3578,6 @@ mod tests {
                 }
             }
         }
-
         fn document_history_definition(
             &self,
         ) -> Option<&'static crate::history_mode::HistoryDefinition> {

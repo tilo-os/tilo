@@ -857,7 +857,8 @@ fn execute_owned(
                     state.generation = Some(next);
                     state.statuses.clear();
                 }
-                root.document_action_applied(
+                crate::history_mode::capability::document_action_applied(
+                    root,
                     &envelope.action,
                     &envelope.base_change_hashes(),
                     doc,

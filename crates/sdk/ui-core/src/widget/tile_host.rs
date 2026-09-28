@@ -630,7 +630,9 @@ impl TileHost {
 
     pub fn new(content: TileContent) -> Self {
         let registration = match &content {
-            TileContent::App(root) => root.history_registration(),
+            TileContent::App(root) => {
+                crate::history_mode::capability::history_registration(root.as_ref())
+            }
             _ => Ok(None),
         };
         let mut tile = Self {
@@ -772,7 +774,9 @@ impl TileHost {
             return;
         }
         let definition = match &self.content {
-            TileContent::App(root) => root.document_history_definition(),
+            TileContent::App(root) => {
+                crate::history_mode::capability::document_history_definition(root.as_ref())
+            }
             _ => None,
         };
         let Some(definition) = definition else {
@@ -1278,7 +1282,9 @@ impl TileHost {
         self.content = content;
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
         let registration = match &self.content {
-            TileContent::App(root) => root.history_registration(),
+            TileContent::App(root) => {
+                crate::history_mode::capability::history_registration(root.as_ref())
+            }
             _ => Ok(None),
         };
         self.history = None;
@@ -1581,7 +1587,8 @@ impl Widget for TileHost {
         dyn crate::widget::Continuable,
         dyn crate::widget::FloatingSurfaceProvider,
         dyn crate::widget::AudiencePresentationProvider,
-        dyn crate::collaboration::participants::CollaborationTopology
+        dyn crate::collaboration::participants::CollaborationTopology,
+        dyn crate::history_mode::capability::FrameworkHistoryTopology
     );
 
     fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
@@ -1640,30 +1647,6 @@ impl Widget for TileHost {
         }
     }
 
-    fn visit_framework_history(
-        &self,
-        visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
-    ) {
-        if let TileContent::App(live) = &self.content {
-            if let Some(history) = &self.history {
-                visitor(history, live.as_ref());
-            }
-            live.visit_framework_history(visitor);
-        }
-    }
-    fn visit_framework_history_mut(
-        &mut self,
-        visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
-    ) {
-        let owner = self.history_owner();
-        if let TileContent::App(live) = &mut self.content {
-            if let Some(history) = &mut self.history {
-                history.set_enclosing_owner(owner);
-                visitor(history, live.as_mut());
-            }
-            live.visit_framework_history_mut(visitor);
-        }
-    }
     fn resets_callback_binding(&self) -> bool {
         self.history.is_some()
     }
@@ -2516,6 +2499,33 @@ impl Widget for TileHost {
         let opening_indicator =
             Widget::opening(self) && Widget::needs_animation_frame(&self.opening_spinner);
         self.spawn_in_flight() || self.handover_in_flight() || opening_indicator || inner
+    }
+}
+
+impl crate::history_mode::capability::FrameworkHistoryTopology for TileHost {
+    fn visit_framework_history(
+        &self,
+        visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
+    ) {
+        if let TileContent::App(live) = &self.content {
+            if let Some(history) = &self.history {
+                visitor(history, live.as_ref());
+            }
+            crate::history_mode::capability::visit_framework_history(live.as_ref(), visitor);
+        }
+    }
+    fn visit_framework_history_mut(
+        &mut self,
+        visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
+    ) {
+        let owner = self.history_owner();
+        if let TileContent::App(live) = &mut self.content {
+            if let Some(history) = &mut self.history {
+                history.set_enclosing_owner(owner);
+                visitor(history, live.as_mut());
+            }
+            crate::history_mode::capability::visit_framework_history_mut(live.as_mut(), visitor);
+        }
     }
 }
 
@@ -3686,31 +3696,8 @@ mod tests {
             }],
         };
     impl Widget for DeclaredHistoryProbe {
-        fn document_history_definition(
-            &self,
-        ) -> Option<&'static crate::history_mode::HistoryDefinition> {
-            Some(self.definition)
-        }
-        fn history_registration(
-            &self,
-        ) -> Result<
-            Option<crate::history_mode::HistoryRegistration>,
-            crate::history_mode::HistoryRegistrationError,
-        > {
-            if !self.existing {
-                return Ok(None);
-            }
-            crate::history_mode::HistoryRegistration::new(
-                &EXISTING_HISTORY,
-                vec![
-                    crate::history_mode::HistorySourceRegistration::Unversioned {
-                        scope: "external",
-                        reason: "existing provider",
-                    },
-                ],
-            )
-            .map(Some)
-        }
+        crate::provides!(dyn crate::history_mode::capability::DocumentHistory);
+
         fn name(&self) -> &str {
             "Declared history probe"
         }
@@ -3748,6 +3735,34 @@ mod tests {
         }
         fn get_rect(&self) -> Rect {
             Rect::ZERO
+        }
+    }
+
+    impl crate::history_mode::capability::DocumentHistory for DeclaredHistoryProbe {
+        fn history_registration(
+            &self,
+        ) -> Result<
+            Option<crate::history_mode::HistoryRegistration>,
+            crate::history_mode::HistoryRegistrationError,
+        > {
+            if !self.existing {
+                return Ok(None);
+            }
+            crate::history_mode::HistoryRegistration::new(
+                &EXISTING_HISTORY,
+                vec![
+                    crate::history_mode::HistorySourceRegistration::Unversioned {
+                        scope: "external",
+                        reason: "existing provider",
+                    },
+                ],
+            )
+            .map(Some)
+        }
+        fn document_history_definition(
+            &self,
+        ) -> Option<&'static crate::history_mode::HistoryDefinition> {
+            Some(self.definition)
         }
     }
     impl crate::widget::AppWidget for DeclaredHistoryProbe {
@@ -3808,7 +3823,7 @@ mod tests {
             assert!(replaced.validate().is_err());
             assert!(host.history.as_ref().unwrap().validate().is_ok());
             let mut count = 0;
-            host.visit_framework_history(&mut |_, _| count += 1);
+            crate::history_mode::capability::visit_framework_history(&host, &mut |_, _| count += 1);
             assert_eq!(count, 1);
         }
 
@@ -3833,7 +3848,7 @@ mod tests {
             host.sync(&mut AutoCommit::new(), &ROOT);
             assert!(owner.same_owner(&host.history_owner().unwrap()));
             let mut count = 0;
-            host.visit_framework_history(&mut |_, _| count += 1);
+            crate::history_mode::capability::visit_framework_history(&host, &mut |_, _| count += 1);
             assert_eq!(count, 1);
         }
 

@@ -205,6 +205,8 @@ use crate::Task;
 
 struct OpsEntry {
     producer: moq_net::track::Producer,
+    /// The group a host stream is writing ([`LiveRelay::inject_stream`]).
+    open: Option<moq_net::group::Producer>,
     _watch: Task,
 }
 
@@ -409,6 +411,110 @@ impl LiveRelay {
         };
         counter.fetch_add(1, Ordering::Relaxed);
         written.is_ok()
+    }
+
+    /// Host injection of a continuous ordered stream (for example a video
+    /// window) into `ops/<record>` of `(room, publisher)`. `start` finishes
+    /// the open group and opens a new one, so a subscriber that starts at the
+    /// latest group receives it from its first frame; otherwise `frames` join
+    /// the open group, and are dropped while none is open. Never blocks;
+    /// frames reach only current subscribers of that track.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the guard must stay held across the dependent state updates below"
+    )]
+    pub fn inject_stream(
+        &self,
+        room: &str,
+        publisher: &str,
+        record: &str,
+        start: bool,
+        frames: &[bytes::Bytes],
+    ) -> bool {
+        let inner = &self.0;
+        let dropped = || {
+            inner
+                .counters
+                .injected_dropped
+                .fetch_add(1, Ordering::Relaxed);
+            false
+        };
+        let Some(path) = namespace_path(room, publisher) else {
+            return dropped();
+        };
+        if !hex64(record)
+            || frames.is_empty()
+            || frames
+                .iter()
+                .any(|frame| frame.is_empty() || frame.len() > MAX_STREAM_FRAME_BYTES)
+        {
+            return dropped();
+        }
+        let Some(slot) = inner.slot(&path, true) else {
+            return dropped();
+        };
+        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.host_active = Some(Instant::now());
+        let Some(entry) = state.ops.get_mut(&format!("{OPS_PREFIX}{record}")) else {
+            return dropped();
+        };
+        if start {
+            if let Some(open) = entry.open.take() {
+                let _ = open.finish();
+            }
+            entry.open = entry.producer.append_group().ok();
+        }
+        let Some(group) = entry.open.as_mut() else {
+            return dropped();
+        };
+        for frame in frames {
+            if group.write_frame(stamp(), frame.clone()).is_err() {
+                entry.open = None;
+                return dropped();
+            }
+        }
+        inner.counters.injected.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Whether a host stream on `ops/<record>` of `(room, publisher)` still
+    /// has its group open: false once its last subscriber left and the track
+    /// was withdrawn, so the next sequence must start a new group.
+    pub fn stream_open(&self, room: &str, publisher: &str, record: &str) -> bool {
+        let Some(slot) = namespace_path(room, publisher).and_then(|path| self.0.slot(&path, false))
+        else {
+            return false;
+        };
+        slot.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .ops
+            .get(&format!("{OPS_PREFIX}{record}"))
+            .is_some_and(|entry| entry.open.is_some())
+    }
+
+    /// End a host stream on `ops/<record>` of `(room, publisher)`: its open
+    /// group finishes and the track is sealed like a quiet ops track.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the guard must stay held across the dependent state updates below"
+    )]
+    pub fn end_stream(&self, room: &str, publisher: &str, record: &str) {
+        let Some(path) = namespace_path(room, publisher) else {
+            return;
+        };
+        let Some(slot) = self.0.slot(&path, false) else {
+            return;
+        };
+        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(entry) = state.ops.get_mut(&format!("{OPS_PREFIX}{record}")) else {
+            return;
+        };
+        if let Some(open) = entry.open.take()
+            && open.finish().is_ok()
+        {
+            seal_later(entry.producer.clone(), open.sequence);
+        }
     }
 
     /// Host injection of one presence frame into the `presence` datagram track
@@ -797,6 +903,7 @@ impl Inner {
                         let OpsEntry {
                             producer,
                             _watch: watch,
+                            ..
                         } = entry;
                         let _ = producer.abort(moq_net::Error::Cancel);
                         // This is the watch task itself, finishing now.
@@ -809,6 +916,7 @@ impl Inner {
             name,
             OpsEntry {
                 producer,
+                open: None,
                 _watch: watch,
             },
         );
@@ -905,7 +1013,9 @@ impl Inner {
         };
         drop(client);
         for (_, entry) in ops {
-            let OpsEntry { producer, _watch } = entry;
+            let OpsEntry {
+                producer, _watch, ..
+            } = entry;
             let _ = producer.abort(moq_net::Error::Unauthorized);
         }
         if let Some(presence) = presence {

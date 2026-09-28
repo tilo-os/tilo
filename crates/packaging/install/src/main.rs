@@ -2073,9 +2073,7 @@ fn decode_hex_32(s: &str) -> Result<[u8; 32], String> {
 }
 
 fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+    tilo_clock::unix_now()
 }
 
 fn age(installed_at: u64) -> String {

@@ -3809,6 +3809,52 @@ fn app_task_plans_are_scoped_to_the_app_and_gated_by_doctor() {
         );
     }
 
+    // Phase: platform_clippy_lints_other_targets_and_leaves_the_host_to_check.
+    {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("reading-list");
+        create_app(request(destination.clone())).expect("create app");
+        let host = PackageArch::host().expect("an x86_64 or aarch64 host");
+        for platform in [PackagePlatform::Tilo, PackagePlatform::Linux] {
+            assert_eq!(
+                plan_platform_clippy(&destination, platform, None).expect("host plan"),
+                None,
+                "{platform:?} on this machine is the host build"
+            );
+        }
+        let other = match host {
+            PackageArch::X86_64 => PackageArch::Aarch64,
+            PackageArch::Aarch64 => PackageArch::X86_64,
+        };
+        let cross = plan_platform_clippy(&destination, PackagePlatform::Linux, Some(other))
+            .expect("cross plan")
+            .expect("another architecture is linted");
+        assert_eq!(
+            cross.args,
+            [
+                OsString::from("clippy"),
+                OsString::from("--manifest-path"),
+                destination.join("Cargo.toml").into_os_string(),
+                OsString::from("--package"),
+                OsString::from("reading-list"),
+                OsString::from("--target"),
+                OsString::from(format!("{}-unknown-linux-gnu", other.as_str())),
+                OsString::from("--no-deps"),
+                OsString::from("--"),
+                OsString::from("-D"),
+                OsString::from("warnings"),
+            ]
+        );
+        let windows = plan_platform_clippy(&destination, PackagePlatform::Windows, None)
+            .expect("windows plan")
+            .expect("windows is not the host");
+        assert!(windows.args.contains(&OsString::from(format!(
+            "{}-pc-windows-msvc",
+            host.as_str()
+        ))));
+        assert!(plan_platform_clippy(&destination, PackagePlatform::Web, None).is_err());
+    }
+
     // Phase: app_task_refuses_to_spawn_when_doctor_fails.
     {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -5173,6 +5219,24 @@ fn reload_replaces_the_contents_of_every_open_window() {
     assert_eq!(open[1].contents, "draft");
 }
 
+/// How long a spawned stand-in app may take to reach a state on a loaded
+/// machine. Waits end as soon as the state is reached.
+#[cfg(unix)]
+const PROCESS_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Kills and reaps the stand-in app on every exit from the test, including a
+/// failed assertion.
+#[cfg(unix)]
+struct KillOnDrop(std::process::Child);
+
+#[cfg(unix)]
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 #[test]
 #[cfg(unix)]
 fn dev_reload_signal_updates_every_window_without_a_new_process() {
@@ -5192,12 +5256,14 @@ while true; do sleep 0.2; done\n",
     )
     .unwrap();
     seal_script(&script);
-    let mut child = std::process::Command::new(&script)
-        .arg(&state)
-        .spawn()
-        .expect("app process");
+    let child = KillOnDrop(
+        std::process::Command::new(&script)
+            .arg(&state)
+            .spawn()
+            .expect("app process"),
+    );
     let ready = state.with_extension("ready");
-    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(2)) else {
+    let Some(deadline) = Instant::now().checked_add(PROCESS_DEADLINE) else {
         panic!("clock");
     };
     while Instant::now() < deadline && !ready.is_file() {
@@ -5206,12 +5272,12 @@ while true; do sleep 0.2; done\n",
     assert!(ready.is_file(), "the app did not open its windows");
     let pid = std::fs::read_to_string(state.with_extension("pid")).unwrap();
     assert!(
-        reload_running_dev_app(&child),
+        reload_running_dev_app(&child.0),
         "the running app accepts an in-place reload"
     );
     let contents_path = state.with_extension("contents");
     let mut contents = String::new();
-    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(2)) else {
+    let Some(deadline) = Instant::now().checked_add(PROCESS_DEADLINE) else {
         panic!("clock");
     };
     while Instant::now() < deadline {
@@ -5221,8 +5287,7 @@ while true; do sleep 0.2; done\n",
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    drop(child);
     assert_eq!(
         std::fs::read_to_string(state.with_extension("windows")).unwrap(),
         "primary\nnotes\n"

@@ -2180,9 +2180,7 @@ impl ContainersApp {
 }
 
 impl Widget for ContainersApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
@@ -3138,6 +3136,12 @@ impl Widget for ContainersApp {
 
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for ContainersApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 

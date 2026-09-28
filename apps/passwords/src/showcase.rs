@@ -3045,9 +3045,7 @@ impl PasswordsSurface {
                 None,
             );
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_secs());
+        let now = tilo_clock::unix_now();
         let updated = ui::format::relative(
             i64::try_from(now.saturating_sub(item.updated_unix)).unwrap_or(i64::MAX),
         );

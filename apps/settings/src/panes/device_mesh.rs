@@ -437,11 +437,7 @@ fn save_home_peer_last_seen(last_seen: &HashMap<String, u64>) {
 }
 
 fn last_seen_label(last_seen_ms: u64) -> String {
-    let now_ms = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        });
+    let now_ms = tilo_clock::unix_now_ms();
     let minutes = now_ms.saturating_sub(last_seen_ms) / 60_000;
     if minutes == 0 {
         "Offline · Last seen just now".into()
@@ -1780,11 +1776,7 @@ impl DeviceMeshPane {
                                 "Online · Syncing files".into()
                             },
                         );
-                        let now_ms = SystemTime::now()
-                            .duration_since(SystemTime::UNIX_EPOCH)
-                            .map_or(0, |duration| {
-                                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-                            });
+                        let now_ms = tilo_clock::unix_now_ms();
                         self.home_peer_last_seen.insert(device, now_ms);
                         save_home_peer_last_seen(&self.home_peer_last_seen);
                         self.home_peers = registered_home_peers();

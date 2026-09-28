@@ -2924,7 +2924,8 @@ mod command_path_tests {
         assert!(panel.lines[0].contains("Anyone with the link"));
         w.apply_command(FileCommand::ShowHistory);
         assert!(w.collab_panel.is_none());
-        assert!(w.history_registration().unwrap().is_some());
+        let registration = ui::history_mode::capability::history_registration(&w);
+        assert!(registration.unwrap().is_some());
         w.apply_command(FileCommand::CloseCollabPanel);
         assert!(w.collab_panel.is_none());
     }

@@ -2700,6 +2700,29 @@ impl RecordAdmission {
     }
 }
 
+/// The actor [`genesis`] makes record `id` of `workspace` under.
+fn genesis_actor_of(id: &RecordId, kind: &RecordKind, workspace: &str) -> automerge::ActorId {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::new()
+        .chain_update(b"tilo.record.genesis\0")
+        .chain_update(id.as_str().as_bytes())
+        .chain_update(b"\0")
+        .chain_update(kind.as_str().as_bytes())
+        .chain_update(b"\0")
+        .chain_update(workspace.as_bytes())
+        .finalize();
+    automerge::ActorId::from(digest.get(..16).unwrap_or_default())
+}
+
+/// The actor that made the genesis of the record `doc` holds. Nobody edits
+/// as it, and its changes carry no time, so history lists none of them.
+/// `None` when `doc` holds no record.
+pub fn genesis_actor(doc: &AutoCommit) -> Option<automerge::ActorId> {
+    let checkout = identity(doc)?;
+    let home = str_at(doc, &meta_ro(doc)?, "home")?;
+    Some(genesis_actor_of(&checkout.id, &checkout.kind, &home))
+}
+
 /// Make `doc` the record `checkout` of `workspace` as it is created: its
 /// identity and the app's `initialize`d content, in one change that is byte
 /// for byte the same on every peer that creates it. The change is made by an
@@ -2716,16 +2739,7 @@ fn genesis(
     workspace: &str,
     initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
 ) -> Result<(), RecordOpenError> {
-    use sha2::Digest as _;
-    let digest = sha2::Sha256::new()
-        .chain_update(b"tilo.record.genesis\0")
-        .chain_update(checkout.id.as_str().as_bytes())
-        .chain_update(b"\0")
-        .chain_update(checkout.kind.as_str().as_bytes())
-        .chain_update(b"\0")
-        .chain_update(workspace.as_bytes())
-        .finalize();
-    let actor = automerge::ActorId::from(digest.get(..16).unwrap_or_default());
+    let actor = genesis_actor_of(&checkout.id, &checkout.kind, workspace);
     let mut made = AutoCommit::new().with_actor(actor.clone());
     for key in doc.keys(&ROOT).collect::<Vec<_>>() {
         if let Ok(Some((Value::Scalar(value), _))) = doc.get(&ROOT, key.as_str()) {

@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use ui::search::{CatalogSearchProvider, SearchCatalog, SearchProvider, SearchResult};
 use ui::widget::{AppModel, ModelPath};
 
@@ -1545,9 +1545,7 @@ impl MonitorApp {
     }
 
     fn clock() -> String {
-        let secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
+        let secs = tilo_clock::unix_now();
         format!(
             "{:02}:{:02}:{:02}",
             (secs / 3600) % 24,
@@ -5419,9 +5417,7 @@ impl MonitorApp {
 }
 
 impl Widget for MonitorApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[MONITOR_OPERATION_TYPE]
@@ -5919,6 +5915,12 @@ impl Widget for MonitorApp {
         if reduced {
             self.proc_push.snap(self.proc_push.pane());
         }
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for MonitorApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 

@@ -2530,7 +2530,7 @@ impl App {
     ) {
         (
             self.controlled_installed_history_definition,
-            self.root_widget.document_history_definition(),
+            crate::history_mode::capability::document_history_definition(self.root_widget.as_ref()),
         )
     }
 

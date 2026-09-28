@@ -686,8 +686,9 @@ fn history_captures(f: &FrameHarness) -> bool {
         .history
         .as_ref()
         .is_some_and(|history| history.captures_input());
-    f.root
-        .visit_framework_history(&mut |history, _| captured |= history.captures_input());
+    crate::history_mode::capability::visit_framework_history(f.root.as_ref(), &mut |history, _| {
+        captured |= history.captures_input()
+    });
     captured
 }
 

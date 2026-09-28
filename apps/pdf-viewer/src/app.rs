@@ -213,10 +213,7 @@ fn now_ms() -> i64 {
 }
 
 fn today_ymd() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
+    let secs = tilo_clock::unix_now_i64();
     ymd_from_unix_secs(secs)
 }
 

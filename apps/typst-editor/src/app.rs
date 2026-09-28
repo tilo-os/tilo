@@ -1910,9 +1910,7 @@ impl Widget for TypstApp {
         }
     }
 
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
@@ -2354,6 +2352,12 @@ impl Widget for TypstApp {
         // sets `dirty`, so divider drags, preview text-selection, and inline
         // diagnostic tooltips all repaint smoothly.
         self.dirty
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for TypstApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 

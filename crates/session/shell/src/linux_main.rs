@@ -370,12 +370,7 @@ fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::p
         eprintln!("identity verification failed: primary identity has no parent directory");
         return std::process::ExitCode::FAILURE;
     };
-    let now_ns = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .try_into()
-        .unwrap_or(u64::MAX);
+    let now_ns = tilo_clock::unix_now_ns();
     if let Err(error) = firstboot::verify_collaboration_identity(
         identity_dir,
         &firstboot::collaboration_identity_paths(),

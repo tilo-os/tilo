@@ -1966,6 +1966,12 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 woke_by_pump = true;
                 #[cfg(feature="media")]
                 if let Some(installed)=delivery_ingress.as_mut(){
+                    // A static legacy window sends nothing: its stream ends when
+                    // its session leaves the relay.
+                    for author in installed.legacy_publishers() {
+                        let subscribed = host.relay.is_subscribed(owner.workspace_id(), &author).await;
+                        installed.legacy_subscribed(author, subscribed);
+                    }
                     // A refused descriptor renewal (e.g. disk capacity below the
                     // store's headroom) must not terminate the host: keep serving,
                     // and retry on the next tick once the condition clears.
@@ -2320,6 +2326,13 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         };
                         let inbound_bytes = bytes.len();
                         let decoded: Result<tilo_peer_state::NeighbourMsg> = postcard::from_bytes(&bytes).map_err(anyhow::Error::from);
+                        // Legacy-window video is never owner state.
+                        #[cfg(feature = "media")]
+                        if let (tilo_peer_state::TransportOrigin::UntrustedPresence(author), Ok(message)) = (&origin, &decoded)
+                            && crate::legacy_windows::LegacyWindows::carries(message) {
+                            if let Some(installed) = delivery_ingress.as_mut() { installed.legacy_window(*author, message); }
+                            continue;
+                        }
                         let kind = decoded.as_ref().map(message_kind).unwrap_or("undecodable");
                         let started = std::time::Instant::now();
                         let publication_before = owner.publication_revision();

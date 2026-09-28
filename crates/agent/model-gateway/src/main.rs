@@ -13,7 +13,7 @@ use std::os::unix::net::UnixListener;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use accounts::{AccountId, Secret, SecretVault};
 use agent_provider_config::assign::{self, Inputs, ModelAssignments, Resolution};
@@ -1584,9 +1584,7 @@ fn log_mark(trace: PlanTrace, event: TraceEvent, at_unix_ms: Option<u64>) {
 }
 
 fn unix_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis())
+    u128::from(tilo_clock::unix_now_ms())
 }
 
 /// A configuration identifier, reduced to a log-safe token.
@@ -3270,10 +3268,7 @@ mod tests {
     }
 
     fn serve_test_socket() -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let nonce = tilo_clock::unix_now_ns();
         let path = std::env::temp_dir().join(format!("gw-{}-{nonce}.sock", std::process::id()));
         serve_in_background(UnixListener::bind(&path).unwrap(), 2);
         path
