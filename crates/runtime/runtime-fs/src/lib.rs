@@ -37,7 +37,7 @@
 
 use std::rc::Rc;
 
-use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
+use runtime_portal::NotAvailable;
 
 // Generated schema. `include!` at the crate root under the exact
 // module name the capnp compiler emits (`fs_capnp` for schema/fs.capnp).
@@ -84,8 +84,6 @@ pub mod blobs_capnp {
     include!("generated/blobs_capnp.rs");
 }
 
-use capnp_rpc::rpc_twoparty_capnp;
-
 #[cfg(unix)]
 pub mod grants;
 #[cfg(unix)]
@@ -128,9 +126,7 @@ pub const MAX_READ_CHUNK: u32 = 1 << 20;
 /// service fd, or [`NotAvailable::ConnectionFailed`] if the fd can't be
 /// lifted to an RPC connection.
 pub fn try_connect() -> Result<FsClient, NotAvailable> {
-    let fd = service_fd("fs").ok_or(NotAvailable::ServiceFdMissing)?;
-    let unix = UnixCapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client)?;
-    let client: WorkspaceFsClient = unix.bootstrap();
+    let client: WorkspaceFsClient = runtime_portal::connect_service("fs")?.bootstrap();
     Ok(FsClient::from_raw(client))
 }
 

@@ -11947,6 +11947,7 @@ version = "0.1.0"
 dependencies = [
  "capnp",
  "capnp-rpc",
+ "libc",
  "postcard",
  "runtime-portal",
  "serde",
