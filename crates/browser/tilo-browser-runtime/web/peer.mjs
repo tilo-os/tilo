@@ -697,7 +697,7 @@ export async function connectPeer({
     get agents() { return agents; },
     /** The room's app actions (`actions.mjs`), or `undefined` without a room. */
     get actions() { return actions; },
-    /** `actions` in the frozen qOS `actionsV1` contract. */
+    /** `actions` in the frozen `actionsV1` contract. */
     get actionsV1() { return actions?.v1; },
     /** This peer in the wasm runtime, for mounts that replicate through it. */
     get runtimeId() { return peer?.id; },
