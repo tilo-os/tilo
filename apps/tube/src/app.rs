@@ -2482,7 +2482,10 @@ impl TubeApp {
 }
 
 impl Widget for TubeApp {
-    ui::provides!(dyn ui::widget::FullscreenProvider);
+    ui::provides!(
+        dyn ui::widget::FullscreenProvider,
+        dyn ui::undo::CommittedActions
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::TUBE_OPERATION_TYPE]
@@ -2541,10 +2544,6 @@ impl Widget for TubeApp {
         if let Some(child) = &mut self.root_child {
             child.refresh_control_action_availability(allowed);
         }
-    }
-
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.take_committed()
     }
 
     fn start_operation(
@@ -3092,6 +3091,12 @@ impl Widget for TubeApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::CommittedActions for TubeApp {
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 

@@ -1206,7 +1206,7 @@ impl MusicApp {
     /// replays byte-identically on peers), exactly as the palette does. The
     /// document heads captured just before the first action of the event are
     /// stashed so the host records **one** undo boundary bracketing it
-    /// ([`ui::widget::Widget::take_committed_action`]). Callers reload the
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)). Callers reload the
     /// in-memory library from the document afterward for immediate UI feedback;
     /// `sync` reconciles it again on the next frame (so a palette dispatch shows
     /// up the same way).

@@ -309,7 +309,7 @@ impl CalculatorApp {
     /// actor + committed change, so it replays byte-identically on peers). The
     /// document heads captured just before the first action of the current event
     /// are stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]). The in-memory model is mutated by the
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)). The in-memory model is mutated by the
     /// caller for immediate feedback; `store` then reconciles it (a no-op for the
     /// list the action already wrote), and `sync` re-adopts the document on
     /// undo/redo or a merged peer patch.
@@ -1227,6 +1227,8 @@ impl CalculatorApp {
 }
 
 impl Widget for CalculatorApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn is_focusable(&self) -> bool {
         true
     }
@@ -1892,13 +1894,6 @@ impl Widget for CalculatorApp {
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its history / graph action, so it records one undo boundary for the whole
-    /// gesture (see `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn test_id(&self) -> Option<&str> {
         Some("calculator_app")
     }
@@ -1911,6 +1906,15 @@ impl Widget for CalculatorApp {
     /// change.
     fn is_layout_dirty(&self) -> bool {
         self.area == Rect::ZERO
+    }
+}
+
+impl ui::undo::CommittedActions for CalculatorApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its history / graph action, so it records one undo boundary for the whole
+    /// gesture (see `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -3045,8 +3049,7 @@ mod tests {
                 app.on_key(&WKey::Character(ch.into()), none, &mut state.doc);
             }
             assert_eq!(app.model.funcs[0].expr, "2*x", "undo: typed formula");
-            let before = app
-                .take_committed_action()
+            let before = ui::undo::take_committed_action(&mut app)
                 .expect("formula actions expose one undo bracket");
             assert!(
                 state.record_committed_action(before, None, None),

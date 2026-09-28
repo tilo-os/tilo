@@ -1580,7 +1580,8 @@ impl Widget for TileHost {
         dyn crate::widget::FullscreenProvider,
         dyn crate::widget::Continuable,
         dyn crate::widget::FloatingSurfaceProvider,
-        dyn crate::widget::AudiencePresentationProvider
+        dyn crate::widget::AudiencePresentationProvider,
+        dyn crate::collaboration::participants::CollaborationTopology
     );
 
     fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
@@ -1777,12 +1778,6 @@ impl Widget for TileHost {
             && let TileContent::App(live) = &mut self.content
         {
             live.native_view_frame_start();
-        }
-    }
-    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        match &mut self.content {
-            TileContent::App(live) => vec![live.as_mut()],
-            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
         }
     }
     fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
@@ -2534,6 +2529,15 @@ impl Widget for TileHost {
         let opening_indicator =
             Widget::opening(self) && Widget::needs_animation_frame(&self.opening_spinner);
         self.spawn_in_flight() || self.handover_in_flight() || opening_indicator || inner
+    }
+}
+
+impl crate::collaboration::participants::CollaborationTopology for TileHost {
+    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        match &mut self.content {
+            TileContent::App(live) => vec![live.as_mut()],
+            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
+        }
     }
 }
 

@@ -974,14 +974,6 @@ pub trait Widget {
     /// Exclusive counterpart to [`Widget::provide`].
     fn provide_mut<'a>(&'a mut self, _request: &mut capability::RequestMut<'a, '_>) {}
 
-    /// Retained session topology. Presentation children are the ordinary
-    /// default; owners with hidden or inactive live sessions override this
-    /// without exposing those descendants to drawing or input traversal.
-    #[doc(hidden)]
-    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.children_mut()
-    }
-
     /// Attach native child views through this owner's retained lifecycle topology.
     ///
     /// Presentation containers with inactive or hidden live descendants override
@@ -1819,55 +1811,6 @@ pub trait Widget {
         self.resource(doc, id)
     }
 
-    /// A participant (an agent task) joined the record this tree serves. A
-    /// multi-participant widget creates that participant's own view here
-    /// (Writer: caret at the document end) and publishes it as presence.
-    /// Idempotent. The default reaches retained descendants; returns whether
-    /// a view was newly created (so the host drops resource caches only then).
-    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-        let mut joined = false;
-        for child in self.collaboration_children_mut() {
-            joined |= child.join_participant(participant);
-        }
-        joined
-    }
-
-    /// Drop a participant's view (its task ended). Idempotent.
-    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
-        for child in self.collaboration_children_mut() {
-            child.leave_participant(participant);
-        }
-    }
-
-    /// Name shown beside a participant's caret (the agent's display name).
-    /// The default reaches retained descendants.
-    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
-        for child in self.collaboration_children_mut() {
-            child.set_participant_label(participant, label);
-        }
-    }
-
-    /// Current presence of every remote participant this tree holds a view
-    /// for, derived from that participant's own view exactly as the local
-    /// window derives its own presence. The default collects descendants.
-    fn participant_presence(&self, doc: &AutoCommit) -> Vec<ParticipantPresence> {
-        let mut out = Vec::new();
-        self.for_each_child(&mut |child| out.extend(child.participant_presence(doc)));
-        out
-    }
-
-    /// The host serves only remote participants and has no local person (a
-    /// headless host worker). A multi-participant widget then publishes its
-    /// participant-independent catalogue schema
-    /// ([`tilo_actions::ResourceProvider::catalogue_schema`]) as its own
-    /// view's tree instead of one caret's snapshot, so the publication and
-    /// its revision do not change when a caret moves.
-    fn set_participant_host(&mut self, host: bool) {
-        for child in self.collaboration_children_mut() {
-            child.set_participant_host(host);
-        }
-    }
-
     /// Explicit disclosure authority for an actionless resource container in
     /// the broker pull directory. Returning `None` means its label and
     /// hierarchy are not remotely discoverable unless the resource itself has
@@ -1895,71 +1838,6 @@ pub trait Widget {
     /// Presentation (navigation), not a CRDT action — mutate the doc only
     /// if selecting changes shared state.
     fn activate_search_result(&mut self, _action_id: &str, _doc: &mut AppModel, _path: &ModelPath) {
-    }
-
-    /// The affordance-driven twin of the Ctrl+K palette: when a widget's own
-    /// control dispatches the same [`tilo_actions`] action its
-    /// [`ActionSpec`](tilo_actions::ActionSpec) exports, it reports the
-    /// document heads captured **just before** here, so the host can record
-    /// one undo boundary the same way a palette dispatch does. Rising-edge:
-    /// reading MUST clear it.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        None
-    }
-
-    /// Whether the undo step this widget's last reported boundary opened
-    /// stays open for the actions that continue it — the rest of a word
-    /// typed a keystroke at a time. A hosted component then closes the step
-    /// at the widget's next boundary, or before an undo, a save or a merge,
-    /// instead of after this event. Answered by the widget itself, never its
-    /// children.
-    fn keeps_undo_step_open(&self) -> bool {
-        false
-    }
-
-    /// Host → widget: the live state of the undo history, published once per
-    /// frame to every laid-out widget.
-    ///
-    /// A widget only ever receives `&mut AutoCommit`, which carries the
-    /// document but not its history — so without this a control could not tell
-    /// whether there was anything to undo, and every app was reduced to
-    /// printing the shortcut and hoping. Store the status (embed an
-    /// [`UndoAccess`](crate::undo::UndoAccess)) and read it back in `draw`, in
-    /// [`is_enabled`](Widget::is_enabled), and in
-    /// [`accessibility`](Widget::accessibility) — which only gets `&self`, and
-    /// is exactly where the disabled state must be reflected.
-    ///
-    /// The host sweeps its `node_map`, so this reaches a widget at any depth
-    /// with no container forwarding. Call the provider only when the widget
-    /// consumes status; deriving historical summaries can require a document
-    /// diff. Default: ignore the provider without evaluating it.
-    fn set_undo_status(&mut self, _status: &mut dyn FnMut() -> crate::undo::UndoStatus) {}
-
-    /// Widget → host: an undo or redo the user asked for.
-    ///
-    /// The host drains this after each event and performs it through
-    /// `App::perform_undo` /
-    /// `App::perform_redo` — the same methods
-    /// the Ctrl+Z key handler calls, so a button and the shortcut are one
-    /// implementation and cannot drift.
-    ///
-    /// Rising-edge: reading MUST clear it, so one activation is one undo.
-    /// Default: nothing requested.
-    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
-        None
-    }
-
-    /// Offer a host keyboard undo/redo shortcut to focused widget-local
-    /// history before the application document consumes it.
-    ///
-    /// The default recursively asks retained children. A component with its
-    /// own editing history should return `true` only while focus is inside
-    /// that component and it has consumed the request. Returning `false`
-    /// preserves the standard collaboration-safe document undo behavior.
-    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
-        self.children_mut()
-            .into_iter()
-            .any(|child| child.handle_local_undo_request(request))
     }
 
     /// Apply an action another app in this room published, if this app owns
@@ -2605,7 +2483,7 @@ pub(crate) fn take_collab_requests(
     };
     let mut requests = capability::capability_mut::<dyn Collaborative>(&mut *widget)
         .map_or_else(Vec::new, Collaborative::take_collab_requests);
-    for child in widget.collaboration_children_mut() {
+    for child in crate::collaboration::participants::collaboration_children(widget) {
         requests.extend(take_collab_requests(child));
     }
     requests
@@ -2623,7 +2501,7 @@ pub(crate) fn handle_collab_event(
     if let Some(collaborative) = capability::capability_mut::<dyn Collaborative>(&mut *widget) {
         collaborative.handle_collab_event(event);
     }
-    for child in widget.collaboration_children_mut() {
+    for child in crate::collaboration::participants::collaboration_children(widget) {
         handle_collab_event(child, event);
     }
 }

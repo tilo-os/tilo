@@ -1014,13 +1014,13 @@ impl ComposeWindow {
     /// The undo boundary before the body's latest edit, for the host.
     pub fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         let started = self.seed_actions.take_committed();
-        let edited = ui::Widget::take_committed_action(&mut self.editor);
+        let edited = ui::undo::take_committed_action(&mut self.editor);
         started.or(edited)
     }
 
     /// Typing a word in the body is one undo step.
     pub fn keeps_undo_step_open(&self) -> bool {
-        ui::Widget::keeps_undo_step_open(&self.editor)
+        ui::undo::keeps_undo_step_open(&self.editor)
     }
 
     fn focused_kind(&self) -> BlockKind {

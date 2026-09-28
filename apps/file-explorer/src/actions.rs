@@ -128,7 +128,7 @@ mod tests {
                 !action_ids.contains(&"navigate"),
                 "a raw local path is not a durable action identity"
             );
-            assert!(files.take_committed_action().is_none());
+            assert!(ui::undo::take_committed_action(&mut files).is_none());
         }
     }
 

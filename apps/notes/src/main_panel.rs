@@ -1066,7 +1066,7 @@ impl MainPanel {
     /// Whether the undo step the body's last edit opened stays open for the
     /// next letters of the word.
     pub fn keeps_undo_step_open(&self) -> bool {
-        self.editor.keeps_undo_step_open()
+        ui::undo::keeps_undo_step_open(&self.editor)
     }
 
     /// Modal overlays own the visible caret while retaining the underlying edit.
