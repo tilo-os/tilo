@@ -928,7 +928,7 @@ fn a_participant_host_resolves_a_delivered_invocation_against_the_invokers_view(
 fn a_participant_host_resolves_a_participantless_invocation_against_its_own_view() {
     let (mut wp, state, _) = widget_with(&["first paragraph"]);
     ui::collaboration::participants::set_participant_host(&mut wp, true);
-    let own = WordProcessorWidget::resources(&wp, &state.doc);
+    let own = wp.publish_resources(&state.doc);
     let tree = {
         let _scope =
             ui::invocation_scope::InvokerScope::enter(ActionInvoker::actor("certified-job"));
