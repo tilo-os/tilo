@@ -1267,7 +1267,16 @@ enum ConnectPhase {
 /// A reservation moves with its queued value and releases automatically when
 /// the receiver consumes or drops that value, waking anyone waiting for room.
 #[derive(Clone)]
-struct ByteBudget(Arc<AtomicUsize>, Arc<tokio::sync::Notify>);
+struct ByteBudget(Arc<AtomicUsize>, Arc<tokio::sync::Notify>, Option<RoomWake>);
+
+/// Wakes the owner once outbound room frees after one of its sends was
+/// refused as busy. The owner has no timer of its own for that retry, so
+/// without this a refused edit would wait for unrelated input.
+#[derive(Clone)]
+struct RoomWake {
+    wanted: Arc<AtomicBool>,
+    owner: crate::wake::WakeHandle,
+}
 
 struct ByteReservation {
     budget: ByteBudget,
@@ -1279,7 +1288,25 @@ impl ByteBudget {
         Self(
             Arc::new(AtomicUsize::new(0)),
             Arc::new(tokio::sync::Notify::new()),
+            None,
         )
+    }
+
+    fn with_room_wake(room: RoomWake) -> Self {
+        Self(
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(tokio::sync::Notify::new()),
+            Some(room),
+        )
+    }
+
+    /// Ask for an owner wake at the next release of any reservation sharing
+    /// this budget's latch. Arm before re-checking for room, so a release
+    /// racing the refusal is never missed.
+    fn arm_room_wake(&self) {
+        if let Some(room) = &self.2 {
+            room.wanted.store(true, Ordering::Release);
+        }
     }
 
     fn reserve(&self, bytes: usize, limit: usize) -> Option<ByteReservation> {
@@ -1321,6 +1348,11 @@ impl Drop for ByteReservation {
     fn drop(&mut self) {
         self.budget.0.fetch_sub(self.bytes, Ordering::AcqRel);
         self.budget.1.notify_waiters();
+        if let Some(room) = &self.budget.2
+            && room.wanted.swap(false, Ordering::AcqRel)
+        {
+            room.owner.notify_events();
+        }
     }
 }
 
@@ -1339,15 +1371,22 @@ struct QueuedCollabEvent {
 
 impl BridgeState {
     fn new() -> Self {
+        let owner_wake = crate::wake::WakeHandle::new();
+        // Both outbound budgets share one latch: a refused document send is
+        // queued behind commands of either kind.
+        let outbound_room = RoomWake {
+            wanted: Arc::new(AtomicBool::new(false)),
+            owner: owner_wake.clone(),
+        };
         Self {
             document_reads: committed_document::Reads::default(),
             healthy: Arc::new(AtomicBool::new(true)),
             publication_failure: Arc::new(std::sync::Mutex::new(None)),
-            command_bytes: ByteBudget::new(),
+            command_bytes: ByteBudget::with_room_wake(outbound_room.clone()),
             event_bytes: ByteBudget::new(),
-            document_command_bytes: ByteBudget::new(),
+            document_command_bytes: ByteBudget::with_room_wake(outbound_room),
             document_event_bytes: ByteBudget::new(),
-            owner_wake: crate::wake::WakeHandle::new(),
+            owner_wake,
             wake_pending: Arc::new(AtomicBool::new(false)),
             connect: Arc::new(std::sync::Mutex::new(ConnectPhase::Connecting)),
         }
@@ -1423,6 +1462,7 @@ impl BridgeState {
                 direction,
                 "collab: bounded bridge overloaded or disconnected; disabling collaboration"
             );
+            self.notify_events();
         }
     }
 }
@@ -1462,10 +1502,15 @@ fn try_enqueue_sdk_command(
             return Err(TransportError::TooLarge { actual, max });
         }
         command.shrink_document();
-        let Some(reservation) = state.document_command_bytes.reserve_sole(
-            command_bytes(&command).unwrap_or(usize::MAX),
-            SDK_DOCUMENT_COMMAND_BYTES,
-        ) else {
+        let bytes = command_bytes(&command).unwrap_or(usize::MAX);
+        let budget = &state.document_command_bytes;
+        let Some(reservation) = budget
+            .reserve_sole(bytes, SDK_DOCUMENT_COMMAND_BYTES)
+            .or_else(|| {
+                budget.arm_room_wake();
+                budget.reserve_sole(bytes, SDK_DOCUMENT_COMMAND_BYTES)
+            })
+        else {
             tracing::debug!(
                 bytes = len,
                 "collab: document budget full; change will be retried"
@@ -1477,7 +1522,17 @@ fn try_enqueue_sdk_command(
             _reservation: reservation,
         }) {
             Ok(()) => Ok(()),
-            Err(tokio_mpsc::error::TrySendError::Full(_)) => Err(TransportError::Busy),
+            Err(tokio_mpsc::error::TrySendError::Full(refused)) => {
+                // Release the refused reservation before arming, or its own
+                // drop would spend the wake on a retry that finds the queue
+                // still full.
+                drop(refused);
+                budget.arm_room_wake();
+                if tx.capacity() > 0 {
+                    state.owner_wake.notify_events();
+                }
+                Err(TransportError::Busy)
+            }
             Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
                 state.fail_closed("outbound command queue");
                 Err(TransportError::Closed)
@@ -3180,7 +3235,10 @@ async fn drive_shovel(
                     );
                     continue;
                 };
-                let directory = capnp_rpc::new_client(ActionDirectoryServer { requests });
+                let directory = capnp_rpc::new_client(ActionDirectoryServer {
+                    requests,
+                    owner: inbound_tx.state.owner_wake.clone(),
+                });
                 if let Err(error) = route
                     .channel
                     .publish_action_directory(&app_id, directory)
@@ -4436,6 +4494,19 @@ async fn deliver_waiting(
 /// pump below.
 struct ActionDirectoryServer {
     requests: mpsc::SyncSender<ActionDirectoryRequest>,
+    owner: crate::wake::WakeHandle,
+}
+
+/// Queue one request for the App's pump and wake it: an idle owner sleeps
+/// until an event arrives, and nothing else announces this one.
+fn submit_directory_request(
+    requests: &mpsc::SyncSender<ActionDirectoryRequest>,
+    owner: &crate::wake::WakeHandle,
+    request: ActionDirectoryRequest,
+) -> Result<(), mpsc::TrySendError<ActionDirectoryRequest>> {
+    requests.try_send(request)?;
+    owner.notify_events();
+    Ok(())
 }
 
 fn directory_unavailable() -> runtime_collab::ActionDirectoryResolution {
@@ -4544,15 +4615,17 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
             Err(error) => return capnp::capability::Promise::err(error),
         };
         let requests = self.requests.clone();
+        let owner = self.owner.clone();
         capnp::capability::Promise::from_future(async move {
             let (reply, response) = tokio::sync::oneshot::channel();
-            requests
-                .try_send(ActionDirectoryRequest::Query { query, reply })
-                .map_err(|_| {
-                    capnp::Error::failed(
-                        "application action directory is busy or unavailable".into(),
-                    )
-                })?;
+            submit_directory_request(
+                &requests,
+                &owner,
+                ActionDirectoryRequest::Query { query, reply },
+            )
+            .map_err(|_| {
+                capnp::Error::failed("application action directory is busy or unavailable".into())
+            })?;
             let page = tokio::time::timeout(ACTION_DIRECTORY_REPLY_TIMEOUT, response)
                 .await
                 .map_err(|_| capnp::Error::failed("application action directory timed out".into()))?
@@ -4605,16 +4678,20 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
             Err(error) => return capnp::capability::Promise::err(error),
         };
         let requests = self.requests.clone();
+        let owner = self.owner.clone();
         capnp::capability::Promise::from_future(async move {
             let (reply, response) = tokio::sync::oneshot::channel();
-            let reply_value = if requests
-                .try_send(ActionDirectoryRequest::Resolve {
+            let reply_value = if submit_directory_request(
+                &requests,
+                &owner,
+                ActionDirectoryRequest::Resolve {
                     revision,
                     resource,
                     action,
                     reply,
-                })
-                .is_err()
+                },
+            )
+            .is_err()
             {
                 directory_unavailable()
             } else {
@@ -8632,6 +8709,71 @@ mod tests {
                 ),
                 "queued document bytes never starve control traffic"
             );
+        }
+
+        // Case `a_busy_document_send_wakes_the_owner_once_room_frees`.
+        {
+            let mut scope = crate::wake::WakeScope::new();
+            let wakes = Arc::new(AtomicUsize::new(0));
+            let count = wakes.clone();
+            scope
+                .bind(move |_| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                })
+                .unwrap();
+            let _entry = scope.enter();
+            let (tx, mut rx) = tokio_mpsc::channel(SDK_COMMAND_QUEUE);
+            let state = BridgeState::new();
+            let change =
+                || SdkCommand::Primary(CollabRequest::document_incremental(vec![0; 1024 * 1024]));
+            while try_enqueue_sdk_command(&tx, change(), &state).is_ok() {}
+            assert_eq!(
+                wakes.load(Ordering::SeqCst),
+                0,
+                "a refusal on its own does not wake the owner"
+            );
+            drop(rx.try_recv().expect("admitted changes are queued"));
+            assert_eq!(
+                wakes.load(Ordering::SeqCst),
+                1,
+                "the shovel taking a change frees room, and the idle owner must hear of it \
+                 to retry the refused one"
+            );
+            assert_eq!(try_enqueue_sdk_command(&tx, change(), &state), Ok(()));
+            while rx.try_recv().is_ok() {}
+            assert_eq!(
+                wakes.load(Ordering::SeqCst),
+                1,
+                "an admitted send leaves nothing armed"
+            );
+        }
+
+        // Case `a_directory_request_wakes_the_idle_owner`.
+        {
+            let mut scope = crate::wake::WakeScope::new();
+            let wakes = Arc::new(AtomicUsize::new(0));
+            let count = wakes.clone();
+            scope
+                .bind(move |_| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                })
+                .unwrap();
+            let owner = scope.handle();
+            let (requests, pending) = mpsc::sync_channel(1);
+            let (reply, _response) = tokio::sync::oneshot::channel();
+            submit_directory_request(
+                &requests,
+                &owner,
+                ActionDirectoryRequest::Resolve {
+                    revision: String::new(),
+                    resource: String::new(),
+                    action: String::new(),
+                    reply,
+                },
+            )
+            .unwrap();
+            assert_eq!(wakes.load(Ordering::SeqCst), 1);
+            assert!(pending.try_recv().is_ok());
         }
 
         // Case `a_lone_document_larger_than_the_budget_still_makes_progress`.
