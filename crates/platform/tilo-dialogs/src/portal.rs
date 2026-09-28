@@ -1,5 +1,5 @@
-//! Host-native file choosing via the XDG Desktop Portal on Unix and Windows
-//! Common Item Dialogs on Windows.
+//! The file-chooser and URI-opening vocabulary: requests, outcomes and the
+//! URI → path rule every backend shares.
 //!
 //! # Why this is shared
 //!
@@ -25,20 +25,18 @@
 //!
 //! The portal round-trip is asynchronous and opens a real host window, so it
 //! must **never** run on the UI thread. [`PickRequest::send`] hands the request
-//! to the current host's [`crate::host::FilePicker`], which answers over an
-//! [`std::sync::mpsc`] channel — the native one from a worker thread with a
-//! Tokio runtime on Unix or a COM apartment on Windows. The app drains that
+//! to the current host's [`crate::FilePicker`], which answers over an
+//! [`std::sync::mpsc`] channel — the Linux portal from the app runtime, the
+//! macOS panels from the main run loop, the Windows dialogs from a COM
+//! apartment on a worker, the browser from a promise. The app drains that
 //! channel once per frame; the UI thread never blocks. Tests answer requests
-//! through [`crate::host::HostServices::recording`].
+//! through a recording host (`ui::host::HostServices::recording`).
 //!
-//! # Feature gating
+//! # Backends
 //!
-//! The `ashpd`/`tokio` machinery is behind the `portal` cargo feature so apps
-//! that never open a chooser (and hermetic `--shots` builds) do not pay for
-//! D-Bus. The pure URI→path mapping ([`map_uris`], [`map_uri`]) and the
-//! channel types compile unconditionally, so the security
-//! rule stays under test in every configuration and `--open PATH` style flags
-//! work without a portal.
+//! The crate selects the backend per target (see the crate docs). The pure
+//! URI→path mapping ([`map_uris`], [`map_uri`]) and the channel types are the
+//! same everywhere, so the security rule stays under test on every target.
 #![allow(
     clippy::disallowed_methods,
     reason = "native host runner: portal and file dialogs block on their own thread"
@@ -64,11 +62,7 @@ pub trait EffectGate: Send + 'static {
 }
 
 use std::fs::File;
-#[cfg(any(
-    all(feature = "portal", not(target_os = "android")),
-    all(feature = "native", target_os = "android"),
-    test
-))]
+#[cfg(any(unix, windows))]
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -154,9 +148,9 @@ impl LaunchRequest {
         self
     }
 
-    /// Hand the request to the current host's [`crate::host::FilePicker`].
+    /// Hand the request to the current host's [`crate::FilePicker`].
     pub fn send(self) -> LaunchChannel {
-        crate::host::current().files.launch(self)
+        crate::current_picker().launch(self)
     }
 
     /// The path to open, or whose containing folder to reveal.
@@ -172,7 +166,7 @@ impl LaunchRequest {
 }
 
 /// Hand a URI (a web page, a `mailto:` draft, a `settings:` pane) to the
-/// current host's [`crate::host::UriOpener`].
+/// current host's [`crate::UriOpener`].
 ///
 /// On the native desktop, Unix builds with the `portal` feature go through the
 /// XDG `OpenURI` portal: inside the app sandbox there is no host `xdg-open` to
@@ -188,21 +182,21 @@ impl LaunchRequest {
 /// otherwise silently truncate), and the host's error when it cannot parse or
 /// refuses the request.
 pub fn open_uri(uri: &str) -> std::io::Result<()> {
-    open_uri_with(&*crate::host::current().opener, uri)
+    open_uri_with(&*crate::current_opener(), uri)
 }
 
 /// Non-blocking [`open_uri`]: the outcome arrives on the returned channel,
 /// which the UI thread drains like any other portal result. The request runs
-/// through the host's [`crate::background::Background`]; a host that refuses
+/// through the host's [`tilo_rt::background::Background`]; a host that refuses
 /// background work reports it as a failed launch.
 pub fn send_open_uri(uri: &str) -> LaunchChannel {
     let (tx, rx) = std::sync::mpsc::channel();
     // Resolve the host here: a scoped host is only visible on this thread.
-    let opener = crate::host::current().opener;
+    let opener = crate::current_opener();
     let uri = uri.to_string();
     let refused = tx.clone();
     let spawned =
-        crate::background::Background::current().spawn("tilo-portal-open-uri", move || {
+        tilo_rt::background::Background::current().spawn("tilo-portal-open-uri", move || {
             let _ = tx.send(match open_uri_with(&*opener, &uri) {
                 Ok(()) => LaunchOutcome::Opened,
                 Err(error) => LaunchOutcome::Failed(error.to_string()),
@@ -216,13 +210,13 @@ pub fn send_open_uri(uri: &str) -> LaunchChannel {
     rx
 }
 
-/// [`open_uri`] through the host's [`crate::background::Background`]. A launch
+/// [`open_uri`] through the host's [`tilo_rt::background::Background`]. A launch
 /// failure is logged, not surfaced.
 pub fn open_uri_detached(uri: &str) {
-    let opener = crate::host::current().opener;
+    let opener = crate::current_opener();
     let uri = uri.to_string();
     let spawned =
-        crate::background::Background::current().spawn("tilo-portal-open-uri", move || {
+        tilo_rt::background::Background::current().spawn("tilo-portal-open-uri", move || {
             if let Err(error) = open_uri_with(&*opener, &uri) {
                 tracing::warn!("failed to open {uri:?}: {error}");
             }
@@ -238,7 +232,7 @@ pub fn open_uri_detached(uri: &str) {
 ///
 /// # Errors
 /// As [`open_uri`].
-pub fn open_uri_with(opener: &dyn crate::host::UriOpener, uri: &str) -> std::io::Result<()> {
+pub fn open_uri_with(opener: &dyn crate::UriOpener, uri: &str) -> std::io::Result<()> {
     if uri.contains('\0') {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -312,11 +306,11 @@ pub type WallpaperChannel = Receiver<Result<(), String>>;
 /// (typically from [`PickRequest::send_open_file`]), for `target`. Never
 /// blocks: the D-Bus round trip runs on the app runtime.
 pub fn send_set_wallpaper(file: File, target: WallpaperTarget) -> WallpaperChannel {
-    #[cfg(all(feature = "portal", freedesktop))]
+    #[cfg(target_os = "linux")]
     {
-        crate::native::portal::set_wallpaper(file, target)
+        crate::xdg::set_wallpaper(file, target)
     }
-    #[cfg(not(all(feature = "portal", freedesktop)))]
+    #[cfg(not(target_os = "linux"))]
     {
         let _ = (file, target);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -482,6 +476,11 @@ impl PickRequest {
         matches!(self.kind, PickKind::Open { multiple: true })
     }
 
+    /// Whether this opens existing files (single or multi-select).
+    pub fn is_open(&self) -> bool {
+        matches!(self.kind, PickKind::Open { .. })
+    }
+
     /// The filter dropdown labels, in order. Lets an app assert on the chooser
     /// it configured without opening one.
     pub fn filter_names(&self) -> Vec<&str> {
@@ -517,13 +516,13 @@ impl PickRequest {
         &self.thread_name
     }
 
-    /// Hand the request to the current host's [`crate::host::FilePicker`].
+    /// Hand the request to the current host's [`crate::FilePicker`].
     /// The UI thread is never blocked: the native picker runs the D-Bus
     /// round-trip and the host dialog entirely on a worker. A multi-select
     /// request should go through [`send_multiple`](Self::send_multiple)
     /// instead, so every pick is delivered.
     pub fn send(self) -> PortalChannel {
-        crate::host::current().files.pick(self)
+        crate::current_picker().pick(self)
     }
 
     /// Retain the original admitted caller through the actual chooser. The
@@ -534,7 +533,7 @@ impl PickRequest {
         if let Some(backend) = scoped_picker_fixture_backend() {
             return scoped_pick_worker(scope, move || backend(self));
         }
-        let files = crate::host::current().files;
+        let files = crate::current_picker();
         scoped_pick_worker(scope, move || {
             files.pick(self).recv().unwrap_or_else(|_| {
                 PortalOutcome::Failed("the file chooser closed without answering".into())
@@ -549,7 +548,7 @@ impl PickRequest {
     /// This is valid only for a single-file Open request. Calling it for Save
     /// or multi-select requests reports a normal failed outcome.
     pub fn send_open_file(self) -> OpenFileChannel {
-        crate::host::current().files.open_file(self)
+        crate::current_picker().open_file(self)
     }
 
     /// Save counterpart of [`send_open_file`](Self::send_open_file): the
@@ -558,13 +557,157 @@ impl PickRequest {
     /// there must come through here; hosts that answer Save with a path
     /// refuse it. Valid only for a Save request.
     pub fn send_save_file(self) -> OpenFileChannel {
-        crate::host::current().files.save_file(self)
+        crate::current_picker().save_file(self)
     }
 
     /// Multi-select counterpart of [`send`](Self::send).
     pub fn send_multiple(self) -> MultiChannel {
-        crate::host::current().files.pick_multiple(self)
+        crate::current_picker().pick_multiple(self)
     }
+
+    /// Deliver the chosen files' contents instead of paths, for callers that
+    /// only read what the user picked. Works where no local path exists (a
+    /// browser page). Open requests only; multi-select delivers every file.
+    pub fn send_contents(self) -> ContentsChannel {
+        crate::current_picker().pick_contents(self)
+    }
+
+    /// Save `bytes` where the user chooses. Save requests only. A browser
+    /// page downloads them under the suggested name.
+    pub fn send_save_contents(self, bytes: Vec<u8>) -> SaveChannel {
+        crate::current_picker().save_contents(self, bytes)
+    }
+}
+
+/// One chosen file's contents, as [`PickRequest::send_contents`] delivers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickedContents {
+    /// The name shown to the user; never a path to reopen.
+    pub name: String,
+    /// The MIME type the host reported, when it did.
+    pub media_type: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
+/// The result of [`PickRequest::send_contents`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContentsOutcome {
+    /// The chosen files, in the host's order. Never empty.
+    Picked(Vec<PickedContents>),
+    Cancelled,
+    Failed(String),
+}
+
+/// A pending contents pick, drained by the UI thread.
+pub type ContentsChannel = Receiver<ContentsOutcome>;
+
+/// The result of [`PickRequest::send_save_contents`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveOutcome {
+    Saved,
+    Cancelled,
+    Failed(String),
+}
+
+/// A pending contents save, drained by the UI thread.
+pub type SaveChannel = Receiver<SaveOutcome>;
+
+const CHOOSER_GONE: &str = "the file chooser went away";
+
+/// A path-based picker's pending answer.
+pub(crate) enum PickedPaths {
+    One(PortalChannel),
+    Many(MultiChannel),
+}
+
+/// The paths a path-based picker answered, read on the host's
+/// [`tilo_rt::background::Background`]: the default
+/// [`crate::FilePicker::pick_contents`] for hosts with local files.
+pub(crate) fn read_picked(paths: Option<PickedPaths>) -> ContentsChannel {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let Some(paths) = paths else {
+        let _ = tx.send(ContentsOutcome::Failed(
+            "only an Open chooser delivers contents".to_owned(),
+        ));
+        return rx;
+    };
+    let refused = tx.clone();
+    let spawned = tilo_rt::background::Background::current().spawn("tilo-portal-read", move || {
+        let paths = match paths {
+            PickedPaths::One(rx) => match rx.recv() {
+                Ok(PortalOutcome::Opened(path)) => Ok(vec![path]),
+                Ok(PortalOutcome::Cancelled) => Err(ContentsOutcome::Cancelled),
+                Ok(PortalOutcome::Failed(reason)) => Err(ContentsOutcome::Failed(reason)),
+                Err(_) => Err(ContentsOutcome::Failed(CHOOSER_GONE.to_owned())),
+            },
+            PickedPaths::Many(rx) => match rx.recv() {
+                Ok(MultiOutcome::Selected(paths)) => Ok(paths),
+                Ok(MultiOutcome::Cancelled) => Err(ContentsOutcome::Cancelled),
+                Ok(MultiOutcome::Failed(reason)) => Err(ContentsOutcome::Failed(reason)),
+                Err(_) => Err(ContentsOutcome::Failed(CHOOSER_GONE.to_owned())),
+            },
+        };
+        let outcome = paths.map_or_else(
+            |outcome| outcome,
+            |paths| {
+                paths
+                    .into_iter()
+                    .map(|path| {
+                        let bytes = std::fs::read(&path)
+                            .map_err(|error| format!("{}: {error}", path.display()))?;
+                        let name = path
+                            .file_name()
+                            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+                        Ok(PickedContents {
+                            name,
+                            media_type: None,
+                            bytes,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+                    .map_or_else(ContentsOutcome::Failed, ContentsOutcome::Picked)
+            },
+        );
+        let _ = tx.send(outcome);
+    });
+    if spawned.is_err() {
+        let _ = refused.send(ContentsOutcome::Failed(
+            "this host runs no background work".to_owned(),
+        ));
+    }
+    rx
+}
+
+/// Write `bytes` to the path a Save chooser answers, on the host's
+/// [`tilo_rt::background::Background`]: the default
+/// [`crate::FilePicker::save_contents`] for hosts with local files.
+pub(crate) fn write_picked(destination: Option<PortalChannel>, bytes: Vec<u8>) -> SaveChannel {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let Some(destination) = destination else {
+        let _ = tx.send(SaveOutcome::Failed(
+            "only a Save chooser saves contents".to_owned(),
+        ));
+        return rx;
+    };
+    let refused = tx.clone();
+    let spawned =
+        tilo_rt::background::Background::current().spawn("tilo-portal-write", move || {
+            let _ = tx.send(match destination.recv() {
+                Ok(PortalOutcome::Opened(path)) => match std::fs::write(&path, bytes) {
+                    Ok(()) => SaveOutcome::Saved,
+                    Err(error) => SaveOutcome::Failed(format!("{}: {error}", path.display())),
+                },
+                Ok(PortalOutcome::Cancelled) => SaveOutcome::Cancelled,
+                Ok(PortalOutcome::Failed(reason)) => SaveOutcome::Failed(reason),
+                Err(_) => SaveOutcome::Failed(CHOOSER_GONE.to_owned()),
+            });
+        });
+    if spawned.is_err() {
+        let _ = refused.send(SaveOutcome::Failed(
+            "this host runs no background work".to_owned(),
+        ));
+    }
+    rx
 }
 
 /// Run one scoped chooser request on a background worker, checking the
@@ -575,7 +718,7 @@ fn scoped_pick_worker(
 ) -> PortalChannel {
     let (sender, receiver) = std::sync::mpsc::channel();
     let failed = sender.clone();
-    let spawned = crate::background::Background::current().spawn("ui-portal-scoped", move || {
+    let spawned = tilo_rt::background::Background::current().spawn("ui-portal-scoped", move || {
         let outcome = scope
             .with_effect(|| Ok(pick()))
             .unwrap_or_else(PortalOutcome::Failed);
@@ -596,7 +739,7 @@ fn scoped_pick_worker(
 /// over) is simply dropped: the caller's receiver observes a closed
 /// channel, the same outward signal it must already handle for a worker
 /// that spawned but whose send lost the race with a dropped receiver.
-#[cfg(all(feature = "native", not(all(feature = "portal", freedesktop))))]
+#[cfg(windows)]
 pub(crate) fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
     let _ = std::thread::Builder::new()
         .name(name.to_string())
@@ -623,7 +766,7 @@ pub(crate) fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
 /// then reach outside the directory the user actually browsed. So we also
 /// require that the decoded path has exactly as many components as the URI had
 /// segments, and that none of them is `..` or `.`.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(unix, windows))]
 pub fn to_local_path(uri: &url::Url) -> Option<PathBuf> {
     use std::path::Component;
 
@@ -669,8 +812,10 @@ pub fn to_local_path(uri: &url::Url) -> Option<PathBuf> {
     Some(path)
 }
 
-/// The browser has no local file system for a URI to name.
-#[cfg(target_arch = "wasm32")]
+/// A host without a native filesystem has no local paths: every URI stays
+/// remote.
+#[cfg(not(any(unix, windows)))]
+#[must_use]
 pub fn to_local_path(_uri: &url::Url) -> Option<PathBuf> {
     None
 }
@@ -714,7 +859,7 @@ pub fn map_uris(uris: &[url::Url]) -> MultiOutcome {
 /// Turn an already validated portal URI into a descriptor-retaining outcome.
 /// This runs on the portal worker, immediately after the picker returns, so
 /// no UI-frame delay can turn an accepted path into a later reopen.
-#[cfg(any(all(feature = "portal", not(target_os = "android")), test))]
+#[cfg(any(unix, windows))]
 pub(crate) fn open_selected_uri(uri: &url::Url) -> OpenFileOutcome {
     let Some(path) = to_local_path(uri) else {
         return OpenFileOutcome::Failed(format!("not a local file: {uri}"));
@@ -728,7 +873,7 @@ pub(crate) fn open_selected_uri(uri: &url::Url) -> OpenFileOutcome {
     }
 }
 
-#[cfg(any(all(feature = "portal", not(target_os = "android")), test))]
+#[cfg(any(unix, windows))]
 fn display_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -740,14 +885,7 @@ fn display_name(path: &Path) -> String {
 /// the resulting descriptor is a regular file. Checking metadata on the open
 /// descriptor, rather than the path, keeps the type check bound to exactly
 /// what is handed to the caller.
-#[cfg(all(
-    any(
-        all(feature = "portal", not(target_os = "android")),
-        all(feature = "native", target_os = "android"),
-        test
-    ),
-    unix
-))]
+#[cfg(unix)]
 pub(crate) fn open_regular_file(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -766,7 +904,7 @@ pub(crate) fn open_regular_file(path: &Path) -> std::io::Result<File> {
 
 /// Bind the type and reparse checks to the opened Windows handle, so a link
 /// cannot be substituted between validation and opening the selected file.
-#[cfg(all(any(feature = "portal", test), windows))]
+#[cfg(windows)]
 pub(crate) fn open_regular_file(path: &Path) -> std::io::Result<File> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     use windows_sys::Win32::Storage::FileSystem::{
@@ -829,250 +967,32 @@ mod tests {
     }
 
     #[test]
-    fn picker_outcomes_keep_only_local_picks() {
-        // Case `directory_request_is_single_select_and_has_no_filename`.
-        {
-            let request = PickRequest::directory("Choose folder", "Choose");
-            assert!(!request.is_multiple());
-            assert_eq!(request.suggested_name(), None);
-            assert!(matches!(request.kind, PickKind::Directory));
-        }
-
-        // Case `empty_is_cancel`.
-        {
-            assert_eq!(map_uri(&[]), PortalOutcome::Cancelled);
-            assert_eq!(map_uris(&[]), MultiOutcome::Cancelled);
-        }
-
-        // Case `single_takes_the_first_local_file`.
-        {
-            let uris = [
-                u("file:///home/alice/photo.png"),
-                u("file:///home/alice/other.png"),
-            ];
-            assert_eq!(
-                map_uri(&uris),
-                PortalOutcome::Opened(local_path("/home/alice/photo.png"))
-            );
-        }
-
-        // Case `multi_collects_every_local_file`.
-        {
-            let uris = [
-                u("file:///home/alice/work.vcf"),
-                u("file:///home/alice/family.vcard"),
-            ];
-            assert_eq!(
-                map_uris(&uris),
-                MultiOutcome::Selected(vec![
-                    local_path("/home/alice/work.vcf"),
-                    local_path("/home/alice/family.vcard"),
-                ])
-            );
-        }
-
-        // Case `multi_skips_remote_but_keeps_local`.
-        {
-            let uris = [
-                u("https://example.com/remote.vcf"),
-                u("file:///home/alice/local.vcf"),
-            ];
-            assert_eq!(
-                map_uris(&uris),
-                MultiOutcome::Selected(vec![local_path("/home/alice/local.vcf")]),
-                "a mixed multi-selection keeps the files the user can actually read"
-            );
-        }
-
-        // Case `multi_all_remote_is_failure`.
-        {
-            assert!(matches!(
-                map_uris(&[
-                    u("https://example.com/a.vcf"),
-                    u("https://example.com/b.vcf")
-                ]),
-                MultiOutcome::Failed(_)
-            ));
-        }
-
-        // Case `outcome_path_accessor_reports_only_a_real_pick`.
-        {
-            assert_eq!(
-                PortalOutcome::Opened(PathBuf::from("/tmp/a")).path(),
-                Some(Path::new("/tmp/a"))
-            );
-            assert_eq!(PortalOutcome::Cancelled.path(), None);
-            assert_eq!(PortalOutcome::Failed("x".into()).path(), None);
-        }
-
-        // Case `launch_request_records_open_and_reveal_without_changing_the_path`.
-        {
-            let open = LaunchRequest::open("/tmp/archive.zip");
-            assert_eq!(open.path, Path::new("/tmp/archive.zip"));
-            assert_eq!(open.kind, LaunchKind::Open);
-            let reveal = LaunchRequest::reveal("/tmp/archive.zip");
-            assert_eq!(reveal.path, Path::new("/tmp/archive.zip"));
-            assert_eq!(reveal.kind, LaunchKind::Reveal);
-        }
+    fn directory_request_is_single_select_and_has_no_filename() {
+        let request = PickRequest::directory("Choose folder", "Choose");
+        assert!(!request.is_multiple());
+        assert_eq!(request.suggested_name(), None);
+        assert!(matches!(request.kind, PickKind::Directory));
     }
 
     // ---- the security rule -------------------------------------------
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn file_uris_resolve_only_to_local_normalised_paths() {
-        // Case `rejects_a_uri_that_names_a_remote_host`.
-        {
-            let uri = u("file://evil-host.example.com/etc/passwd");
+    fn rejects_a_uri_that_names_a_remote_host() {
+        let uri = u("file://evil-host.example.com/etc/passwd");
 
-            assert_eq!(
-                to_local_path(&uri),
-                None,
-                "a foreign host is not a local path"
-            );
-            assert!(
-                matches!(
-                    map_uri(std::slice::from_ref(&uri)),
-                    PortalOutcome::Failed(_)
-                ),
-                "a foreign-host URI must not become an openable path"
-            );
-            assert!(matches!(map_uris(&[uri]), MultiOutcome::Failed(_)));
-        }
-
-        // Case `a_rejected_host_never_yields_a_relative_path`.
-        {
-            // Independent of the enum: whatever we hand back must never be a path
-            // that would resolve against the working directory.
-            for s in [
-                "file://evil-host.example.com/etc/passwd",
-                "file://192.0.2.1/srv/secret",
-                "https://example.com/remote.png",
-                "smb://fileserver/share/doc.odt",
-            ] {
-                let out = map_uri(&[u(s)]);
-                if let PortalOutcome::Opened(p) = &out {
-                    panic!("{s} was accepted as {p:?}");
-                }
-                assert!(matches!(out, PortalOutcome::Failed(_)), "{s} must fail");
-            }
-        }
-
-        // Case `localhost_is_the_local_machine`.
-        {
-            // `file://localhost/...` is the spec's spelling of "this machine" and
-            // is equivalent to an empty host.
-            assert_eq!(
-                map_uri(&[u("file://localhost/home/alice/a.mkv")]),
-                PortalOutcome::Opened(local_path("/home/alice/a.mkv"))
-            );
-        }
-
-        // Case `percent_escapes_in_filenames_are_decoded`.
-        {
-            assert_eq!(
-                map_uri(&[u("file:///home/alice/My%20Clip.mp4")]),
-                PortalOutcome::Opened(local_path("/home/alice/My Clip.mp4"))
-            );
-            // Multi-byte UTF-8 escapes must survive too.
-            assert_eq!(
-                map_uri(&[u("file:///home/alice/%C3%A9t%C3%A9%20caf%C3%A9.mp3")]),
-                PortalOutcome::Opened(local_path("/home/alice/été café.mp3"))
-            );
-            assert_eq!(
-                map_uri(&[u("file:///home/alice/a%23b%3Fc%25d.txt")]),
-                PortalOutcome::Opened(local_path("/home/alice/a#b?c%d.txt"))
-            );
-        }
-
-        // Case `a_plus_in_a_path_stays_a_plus`.
-        {
-            // `+` means space only in query strings, not in a path component.
-            assert_eq!(
-                map_uri(&[u("file:///home/alice/my+song.mp3")]),
-                PortalOutcome::Opened(local_path("/home/alice/my+song.mp3"))
-            );
-        }
-
-        // Case `an_escaped_separator_does_not_become_a_new_path_component`.
-        {
-            // A bare `to_file_path` maps this to `/home/alice/a/b.txt` — one URI
-            // segment silently becoming two path components.
-            assert_eq!(
-                to_local_path(&u("file:///home/alice/a%2Fb.txt")),
-                None,
-                "an escaped separator must not add a path component"
-            );
-            assert!(matches!(
-                map_uri(&[u("file:///home/alice/a%2Fb.txt")]),
+        assert_eq!(
+            to_local_path(&uri),
+            None,
+            "a foreign host is not a local path"
+        );
+        assert!(
+            matches!(
+                map_uri(std::slice::from_ref(&uri)),
                 PortalOutcome::Failed(_)
-            ));
-        }
-
-        // Case `a_parent_hop_hidden_inside_one_segment_is_rejected`.
-        {
-            // The URI has three segments, the decoded path would have five: what
-            // the portal presented as one file name would climb two levels.
-            for s in [
-                "file:///home/alice/%2E%2E%2F%2E%2E%2Fetc/shadow",
-                "file:///var/workspace/%2E%2E%2Fetc/shadow",
-            ] {
-                assert_eq!(to_local_path(&u(s)), None, "{s} must not resolve");
-                assert!(matches!(map_uri(&[u(s)]), PortalOutcome::Failed(_)), "{s}");
-            }
-        }
-
-        // Case `a_dot_dot_segment_is_resolved_by_uri_normalisation_not_smuggled`.
-        {
-            // `%2E%2E` as a whole segment is not an escape hatch: RFC 3986 path
-            // normalisation happens when the URI is *parsed*, so the URI's own
-            // path is already `/etc/shadow`. Whether the app may read it is the
-            // sandbox's question, not this module's.
-            let uri = u("file:///home/alice/%2E%2E/%2E%2E/etc/shadow");
-            assert_eq!(
-                to_local_path(&uri),
-                Some(local_path("/etc/shadow")),
-                "the URI normalises on parse"
-            );
-            assert_eq!(to_local_path(&uri), Some(local_path("/etc/shadow")));
-        }
-
-        // Case `ordinary_nested_paths_still_resolve`.
-        {
-            // The hardening must not reject the everyday case it sits next to.
-            for (uri, want) in [
-                ("file:///a.txt", "/a.txt"),
-                (
-                    "file:///home/alice/Documents/report.pdf",
-                    "/home/alice/Documents/report.pdf",
-                ),
-                (
-                    "file:///var/workspace/deep/er/still/x.odp",
-                    "/var/workspace/deep/er/still/x.odp",
-                ),
-                (
-                    "file:///home/alice/dot.name.with.dots.tar.gz",
-                    "/home/alice/dot.name.with.dots.tar.gz",
-                ),
-            ] {
-                assert_eq!(
-                    to_local_path(&u(uri)),
-                    Some(local_path(want)),
-                    "{uri} must resolve normally"
-                );
-            }
-        }
-
-        // Case `workspace_paths_resolve_through_the_fuse_mount`.
-        {
-            assert_eq!(
-                map_uri(&[u("file:///var/workspace/media/a.mkv")]),
-                PortalOutcome::Opened(local_path("/var/workspace/media/a.mkv"))
-            );
-        }
+            ),
+            "a foreign-host URI must not become an openable path"
+        );
+        assert!(matches!(map_uris(&[uri]), MultiOutcome::Failed(_)));
     }
 
     #[cfg(windows)]
@@ -1097,115 +1017,244 @@ mod tests {
         }
     }
 
-    // ---- escaped filenames, which the nine copies disagreed about -----
-
-    // ---- the shape every copy implemented -----------------------------
-
     #[test]
-    fn portal_requests_reach_the_current_host_and_record_the_app_delta() {
-        // Case `requests_reach_the_current_host`:
-        // A request reaches whatever host is current: a recording host answers
-        // immediately, so a test never opens a chooser on the user's screen.
-        {
-            let (services, recorder) = crate::host::HostServices::recording();
-            recorder.respond_to_pick(PortalOutcome::Opened(local_path("/tmp/a.qvp")));
-            crate::host::scoped(&services, || {
-                let single = PickRequest::open("Open", "Open").send();
-                assert_eq!(
-                    single.try_recv(),
-                    Ok(PortalOutcome::Opened(local_path("/tmp/a.qvp")))
-                );
-                let save = PickRequest::save("Save", "Save", "x.qvp").send();
-                assert_eq!(save.try_recv(), Ok(PortalOutcome::Cancelled));
-                let many = PickRequest::open_multiple("Import", "Import").send_multiple();
-                assert_eq!(many.try_recv(), Ok(MultiOutcome::Cancelled));
-                let descriptor = PickRequest::open("Open", "Open").send_open_file();
-                assert!(matches!(
-                    descriptor.try_recv(),
-                    Ok(OpenFileOutcome::Cancelled)
-                ));
-                let launch = LaunchRequest::reveal("/tmp/a.qvp").send();
-                assert_eq!(launch.try_recv(), Ok(LaunchOutcome::Opened));
-            });
-            assert_eq!(recorder.pick_requests().len(), 4);
-            assert_eq!(recorder.launch_requests().len(), 1);
-        }
-
-        // Case `builder_records_the_per_app_delta`.
-        {
-            let r = PickRequest::open("Insert image", "Insert")
-                .thread_name("wp-portal-open")
-                .filter(
-                    FileFilter::new("Images")
-                        .glob("*.png")
-                        .mimetype("image/png"),
-                )
-                .all_files();
-            assert_eq!(r.title(), "Insert image");
-            assert!(!r.is_multiple());
-            assert_eq!(r.filters.len(), 2);
-            assert_eq!(r.filters[0].name(), "Images");
-            assert_eq!(r.filters[0].globs, ["*.png"]);
-            assert_eq!(r.filters[0].mimetypes, ["image/png"]);
-            assert_eq!(
-                r.filters[1],
-                FileFilter::all_files(),
-                "escape hatch is last"
-            );
-            assert_eq!(r.thread_name, "wp-portal-open");
-
-            assert!(PickRequest::open_multiple("Import contacts", "Import").is_multiple());
-            let s = PickRequest::save("Export contacts", "Export", "contacts.vcf");
-            assert!(!s.is_multiple());
-            assert_eq!(
-                s.kind,
-                PickKind::Save {
-                    suggested_name: "contacts.vcf".into()
-                }
-            );
+    fn a_rejected_host_never_yields_a_relative_path() {
+        // Independent of the enum: whatever we hand back must never be a path
+        // that would resolve against the working directory.
+        for s in [
+            "file://evil-host.example.com/etc/passwd",
+            "file://192.0.2.1/srv/secret",
+            "https://example.com/remote.png",
+            "smb://fileserver/share/doc.odt",
+        ] {
+            let out = map_uri(&[u(s)]);
+            if let PortalOutcome::Opened(p) = &out {
+                panic!("{s} was accepted as {p:?}");
+            }
+            assert!(matches!(out, PortalOutcome::Failed(_)), "{s} must fail");
         }
     }
 
     #[test]
-    fn descriptor_open_retains_regular_files_and_refuses_others() {
-        // Case `descriptor_open_retains_the_opened_file_and_a_separate_display_name`.
-        {
-            use std::io::{Read, Write};
+    fn localhost_is_the_local_machine() {
+        // `file://localhost/...` is the spec's spelling of "this machine" and
+        // is equivalent to an empty host.
+        assert_eq!(
+            map_uri(&[u("file://localhost/home/alice/a.mkv")]),
+            PortalOutcome::Opened(local_path("/home/alice/a.mkv"))
+        );
+    }
 
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("original-installer.msi");
-            let mut source = File::create(&path).unwrap();
-            source.write_all(b"installer bytes").unwrap();
-            source.flush().unwrap();
-            let uri = url::Url::from_file_path(&path).unwrap();
+    // ---- escaped filenames, which the nine copies disagreed about -----
 
-            let opened = match open_selected_uri(&uri) {
-                OpenFileOutcome::Opened(opened) => opened,
-                OpenFileOutcome::Cancelled | OpenFileOutcome::Failed(_) => {
-                    panic!("regular temporary file must open")
-                }
-            };
-            assert_eq!(opened.display_name(), "original-installer.msi");
-            // A later path-based reopen would observe these replacement bytes;
-            // the portal outcome instead keeps the descriptor it already opened.
-            std::fs::remove_file(&path).unwrap();
-            std::fs::write(&path, b"replacement bytes").unwrap();
-            let mut contents = String::new();
-            let mut file = opened.into_file();
-            file.read_to_string(&mut contents).unwrap();
-            assert_eq!(contents, "installer bytes");
+    #[test]
+    fn percent_escapes_in_filenames_are_decoded() {
+        assert_eq!(
+            map_uri(&[u("file:///home/alice/My%20Clip.mp4")]),
+            PortalOutcome::Opened(local_path("/home/alice/My Clip.mp4"))
+        );
+        // Multi-byte UTF-8 escapes must survive too.
+        assert_eq!(
+            map_uri(&[u("file:///home/alice/%C3%A9t%C3%A9%20caf%C3%A9.mp3")]),
+            PortalOutcome::Opened(local_path("/home/alice/été café.mp3"))
+        );
+        assert_eq!(
+            map_uri(&[u("file:///home/alice/a%23b%3Fc%25d.txt")]),
+            PortalOutcome::Opened(local_path("/home/alice/a#b?c%d.txt"))
+        );
+    }
+
+    #[test]
+    fn a_plus_in_a_path_stays_a_plus() {
+        // `+` means space only in query strings, not in a path component.
+        assert_eq!(
+            map_uri(&[u("file:///home/alice/my+song.mp3")]),
+            PortalOutcome::Opened(local_path("/home/alice/my+song.mp3"))
+        );
+    }
+
+    #[test]
+    fn an_escaped_separator_does_not_become_a_new_path_component() {
+        // A bare `to_file_path` maps this to `/home/alice/a/b.txt` — one URI
+        // segment silently becoming two path components.
+        assert_eq!(
+            to_local_path(&u("file:///home/alice/a%2Fb.txt")),
+            None,
+            "an escaped separator must not add a path component"
+        );
+        assert!(matches!(
+            map_uri(&[u("file:///home/alice/a%2Fb.txt")]),
+            PortalOutcome::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn a_parent_hop_hidden_inside_one_segment_is_rejected() {
+        // The URI has three segments, the decoded path would have five: what
+        // the portal presented as one file name would climb two levels.
+        for s in [
+            "file:///home/alice/%2E%2E%2F%2E%2E%2Fetc/shadow",
+            "file:///var/workspace/%2E%2E%2Fetc/shadow",
+        ] {
+            assert_eq!(to_local_path(&u(s)), None, "{s} must not resolve");
+            assert!(matches!(map_uri(&[u(s)]), PortalOutcome::Failed(_)), "{s}");
         }
+    }
 
-        // Case `descriptor_open_refuses_a_non_regular_file`.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let uri = url::Url::from_file_path(dir.path()).unwrap();
+    #[test]
+    fn a_dot_dot_segment_is_resolved_by_uri_normalisation_not_smuggled() {
+        // `%2E%2E` as a whole segment is not an escape hatch: RFC 3986 path
+        // normalisation happens when the URI is *parsed*, so the URI's own
+        // path is already `/etc/shadow`. Whether the app may read it is the
+        // sandbox's question, not this module's.
+        let uri = u("file:///home/alice/%2E%2E/%2E%2E/etc/shadow");
+        assert_eq!(
+            to_local_path(&uri),
+            Some(local_path("/etc/shadow")),
+            "the URI normalises on parse"
+        );
+        assert_eq!(to_local_path(&uri), Some(local_path("/etc/shadow")));
+    }
 
-            assert!(matches!(
-                open_selected_uri(&uri),
-                OpenFileOutcome::Failed(_)
-            ));
+    #[test]
+    fn ordinary_nested_paths_still_resolve() {
+        // The hardening must not reject the everyday case it sits next to.
+        for (uri, want) in [
+            ("file:///a.txt", "/a.txt"),
+            (
+                "file:///home/alice/Documents/report.pdf",
+                "/home/alice/Documents/report.pdf",
+            ),
+            (
+                "file:///var/workspace/deep/er/still/x.odp",
+                "/var/workspace/deep/er/still/x.odp",
+            ),
+            (
+                "file:///home/alice/dot.name.with.dots.tar.gz",
+                "/home/alice/dot.name.with.dots.tar.gz",
+            ),
+        ] {
+            assert_eq!(
+                to_local_path(&u(uri)),
+                Some(local_path(want)),
+                "{uri} must resolve normally"
+            );
         }
+    }
+
+    // ---- the shape every copy implemented -----------------------------
+
+    #[test]
+    fn empty_is_cancel() {
+        assert_eq!(map_uri(&[]), PortalOutcome::Cancelled);
+        assert_eq!(map_uris(&[]), MultiOutcome::Cancelled);
+    }
+
+    #[test]
+    fn single_takes_the_first_local_file() {
+        let uris = [
+            u("file:///home/alice/photo.png"),
+            u("file:///home/alice/other.png"),
+        ];
+        assert_eq!(
+            map_uri(&uris),
+            PortalOutcome::Opened(local_path("/home/alice/photo.png"))
+        );
+    }
+
+    #[test]
+    fn multi_collects_every_local_file() {
+        let uris = [
+            u("file:///home/alice/work.vcf"),
+            u("file:///home/alice/family.vcard"),
+        ];
+        assert_eq!(
+            map_uris(&uris),
+            MultiOutcome::Selected(vec![
+                local_path("/home/alice/work.vcf"),
+                local_path("/home/alice/family.vcard"),
+            ])
+        );
+    }
+
+    #[test]
+    fn multi_skips_remote_but_keeps_local() {
+        let uris = [
+            u("https://example.com/remote.vcf"),
+            u("file:///home/alice/local.vcf"),
+        ];
+        assert_eq!(
+            map_uris(&uris),
+            MultiOutcome::Selected(vec![local_path("/home/alice/local.vcf")]),
+            "a mixed multi-selection keeps the files the user can actually read"
+        );
+    }
+
+    #[test]
+    fn multi_all_remote_is_failure() {
+        assert!(matches!(
+            map_uris(&[
+                u("https://example.com/a.vcf"),
+                u("https://example.com/b.vcf")
+            ]),
+            MultiOutcome::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn workspace_paths_resolve_through_the_fuse_mount() {
+        assert_eq!(
+            map_uri(&[u("file:///var/workspace/media/a.mkv")]),
+            PortalOutcome::Opened(local_path("/var/workspace/media/a.mkv"))
+        );
+    }
+
+    #[test]
+    fn launch_request_records_open_and_reveal_without_changing_the_path() {
+        let open = LaunchRequest::open("/tmp/archive.zip");
+        assert_eq!(open.path, Path::new("/tmp/archive.zip"));
+        assert_eq!(open.kind, LaunchKind::Open);
+        let reveal = LaunchRequest::reveal("/tmp/archive.zip");
+        assert_eq!(reveal.path, Path::new("/tmp/archive.zip"));
+        assert_eq!(reveal.kind, LaunchKind::Reveal);
+    }
+
+    #[test]
+    fn outcome_path_accessor_reports_only_a_real_pick() {
+        assert_eq!(
+            PortalOutcome::Opened(PathBuf::from("/tmp/a")).path(),
+            Some(Path::new("/tmp/a"))
+        );
+        assert_eq!(PortalOutcome::Cancelled.path(), None);
+        assert_eq!(PortalOutcome::Failed("x".into()).path(), None);
+    }
+
+    #[test]
+    fn descriptor_open_retains_the_opened_file_and_a_separate_display_name() {
+        use std::io::{Read, Write};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("original-installer.msi");
+        let mut source = File::create(&path).unwrap();
+        source.write_all(b"installer bytes").unwrap();
+        source.flush().unwrap();
+        let uri = url::Url::from_file_path(&path).unwrap();
+
+        let opened = match open_selected_uri(&uri) {
+            OpenFileOutcome::Opened(opened) => opened,
+            OpenFileOutcome::Cancelled | OpenFileOutcome::Failed(_) => {
+                panic!("regular temporary file must open")
+            }
+        };
+        assert_eq!(opened.display_name(), "original-installer.msi");
+        // A later path-based reopen would observe these replacement bytes;
+        // the portal outcome instead keeps the descriptor it already opened.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, b"replacement bytes").unwrap();
+        let mut contents = String::new();
+        let mut file = opened.into_file();
+        file.read_to_string(&mut contents).unwrap();
+        assert_eq!(contents, "installer bytes");
     }
 
     #[cfg(unix)]
@@ -1226,19 +1275,51 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn descriptor_open_refuses_a_non_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = url::Url::from_file_path(dir.path()).unwrap();
+
+        assert!(matches!(
+            open_selected_uri(&uri),
+            OpenFileOutcome::Failed(_)
+        ));
+    }
+
     // ---- the request builder ------------------------------------------
 
-    #[cfg(all(feature = "native", not(feature = "portal")))]
     #[test]
-    fn without_the_feature_the_native_picker_fails_rather_than_hanging() {
-        use crate::host::FilePicker as _;
-        let picker = crate::native::portal::DesktopFilePicker;
-        let rx = picker.pick(PickRequest::open("Open", "Open"));
-        assert!(matches!(rx.recv(), Ok(PortalOutcome::Failed(_))));
-        let rx = picker.pick_multiple(PickRequest::open_multiple("Open", "Open"));
-        assert!(matches!(rx.recv(), Ok(MultiOutcome::Failed(_))));
-        let rx = picker.open_file(PickRequest::open("Open", "Open"));
-        assert!(matches!(rx.recv(), Ok(OpenFileOutcome::Failed(_))));
+    fn builder_records_the_per_app_delta() {
+        let r = PickRequest::open("Insert image", "Insert")
+            .thread_name("wp-portal-open")
+            .filter(
+                FileFilter::new("Images")
+                    .glob("*.png")
+                    .mimetype("image/png"),
+            )
+            .all_files();
+        assert_eq!(r.title(), "Insert image");
+        assert!(!r.is_multiple());
+        assert_eq!(r.filters.len(), 2);
+        assert_eq!(r.filters[0].name(), "Images");
+        assert_eq!(r.filters[0].globs, ["*.png"]);
+        assert_eq!(r.filters[0].mimetypes, ["image/png"]);
+        assert_eq!(
+            r.filters[1],
+            FileFilter::all_files(),
+            "escape hatch is last"
+        );
+        assert_eq!(r.thread_name, "wp-portal-open");
+
+        assert!(PickRequest::open_multiple("Import contacts", "Import").is_multiple());
+        let s = PickRequest::save("Export contacts", "Export", "contacts.vcf");
+        assert!(!s.is_multiple());
+        assert_eq!(
+            s.kind,
+            PickKind::Save {
+                suggested_name: "contacts.vcf".into()
+            }
+        );
     }
 }
 // A fixture is selected only by the current test UI thread. The selected Arc is
