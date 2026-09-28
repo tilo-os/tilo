@@ -713,6 +713,8 @@ impl Root {
     }
 }
 impl Widget for Root {
+    tilo_ui::provides!(dyn tilo_ui::widget::controls::ActionControls);
+
     fn record_intent(&self) -> Option<tilo_ui::record::RecordCheckout> {
         LEGACY_INTENT.with_borrow(Clone::clone)
     }
@@ -830,10 +832,6 @@ impl Widget for Root {
         );
         self.mark("external");
     }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.mark("control-drain");
-        QUEUED_CONTROL.with_borrow_mut(Option::take)
-    }
     fn view_state(&self) -> Option<tilo_ui::view::ViewContribution> {
         assert!(!PANIC_VIEW.replace(false), "controlled capture unwind");
         self.mark("capture-view");
@@ -867,6 +865,13 @@ impl Widget for Root {
         } else {
             self.0.children_mut()
         }
+    }
+}
+
+impl tilo_ui::widget::controls::ActionControls for Root {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.mark("control-drain");
+        QUEUED_CONTROL.with_borrow_mut(Option::take)
     }
 }
 impl AppWidget for Root {
@@ -1276,7 +1281,9 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                 Callback::Control => {
                     // A tile with its own document owner is drained through that
                     // owner's control custody, never by the generic outer drain.
-                    assert!(tile.take_control_invocation().is_none());
+                    assert!(
+                        tilo_ui::widget::controls::take_control_invocation(&mut tile).is_none()
+                    );
                     assert!(CAPTURES.with_borrow_mut(std::mem::take).is_empty());
                     continue;
                 }

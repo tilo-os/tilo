@@ -3129,7 +3129,10 @@ fn synth_logs(
 }
 
 impl Widget for VpnApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::widget::controls::ActionControls
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
@@ -3551,20 +3554,6 @@ impl Widget for VpnApp {
         None
     }
 
-    fn install_control_custody(
-        &mut self,
-        domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
-    ) {
-        let _ = self
-            .pending_control_invocation
-            .install_custody(domain, attachment);
-    }
-
-    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.pending_control_invocation.take_legacy_compatibility()
-    }
-
     fn test_id(&self) -> Option<&str> {
         Some("vpn_app")
     }
@@ -3814,6 +3803,21 @@ impl Widget for VpnApp {
         _permissions: &ui::permissions::PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::widget::controls::ActionControls for VpnApp {
+    fn install_control_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        let _ = self
+            .pending_control_invocation
+            .install_custody(domain, attachment);
+    }
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.pending_control_invocation.take_legacy_compatibility()
     }
 }
 
@@ -4149,7 +4153,10 @@ mod tests {
     }
 
     impl Widget for CustodyVpnRoot {
-        ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
+        ui::provides!(
+            dyn ui::history_mode::capability::DocumentHistory,
+            dyn ui::widget::controls::ActionControls
+        );
 
         fn name(&self) -> &'static str {
             "CustodyVpnRoot"
@@ -4194,11 +4201,14 @@ mod tests {
                 vec![self.child.as_mut()]
             }
         }
+    }
+
+    impl ui::widget::controls::ActionControls for CustodyVpnRoot {
         fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
             if self.denied.get() {
                 None
             } else {
-                self.child.take_control_invocation()
+                ui::widget::controls::take_control_invocation(self.child.as_mut())
             }
         }
     }
@@ -4613,23 +4623,24 @@ mod tests {
         assert_eq!(app.provision_target, None);
         app.queue_import(ConnKind::OpenVpn);
 
-        let replaced =
-            Widget::take_control_invocation(&mut app).expect("OpenVPN replaces WireGuard");
+        let replaced = ui::widget::controls::take_control_invocation(&mut app)
+            .expect("OpenVPN replaces WireGuard");
         assert_eq!(
             replaced.address,
             ActionAddress::new("vpn.vault", "import-openvpn")
         );
         assert!(replaced.arguments.is_empty());
-        assert!(Widget::take_control_invocation(&mut app).is_none());
+        assert!(ui::widget::controls::take_control_invocation(&mut app).is_none());
 
         app.queue_import(ConnKind::WireGuard);
-        let fresh = Widget::take_control_invocation(&mut app).expect("fresh post-drain import");
+        let fresh = ui::widget::controls::take_control_invocation(&mut app)
+            .expect("fresh post-drain import");
         assert_eq!(
             fresh.address,
             ActionAddress::new("vpn.vault", "import-wireguard")
         );
         assert!(fresh.arguments.is_empty());
-        assert!(Widget::take_control_invocation(&mut app).is_none());
+        assert!(ui::widget::controls::take_control_invocation(&mut app).is_none());
     }
 
     fn cursor_at(p: Point) -> WindowEvent {

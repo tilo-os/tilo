@@ -104,7 +104,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
             },
         );
         assert_eq!(widget.resources(&doc).len(), 1);
-        assert!(widget.take_control_invocation().is_none());
+        assert!(crate::widget::controls::take_control_invocation(widget).is_none());
         assert_eq!(
             start(widget, &mut doc),
             Some(ResourceOperationStart::Accepted)
@@ -279,6 +279,8 @@ impl Recorder {
 use vello::kurbo::{Point, Rect};
 
 impl Widget for Recorder {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.note("sync");
     }
@@ -327,11 +329,6 @@ impl Widget for Recorder {
         vec![tilo_actions::Resource::new("recorder", "test", "Recorder")]
     }
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.note("take_control_invocation");
-        None
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.dirty)
     }
@@ -350,6 +347,13 @@ impl Widget for Recorder {
         doc.put(path, "admitted", true)
             .map_err(|error| error.to_string())?;
         Ok(Some(ResourceOperationStart::Accepted))
+    }
+}
+
+impl crate::widget::controls::ActionControls for Recorder {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.note("take_control_invocation");
+        None
     }
 }
 

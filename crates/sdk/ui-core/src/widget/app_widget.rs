@@ -550,7 +550,8 @@ mod component_adapter {
             dyn crate::undo::CommittedActions,
             dyn crate::undo::UndoControl,
             dyn crate::undo::LocalUndo,
-            dyn crate::history_mode::capability::DocumentHistory
+            dyn crate::history_mode::capability::DocumentHistory,
+            dyn crate::widget::controls::ActionControls
         );
 
         // A component's diagnostic probe observes its own record, the
@@ -583,20 +584,6 @@ mod component_adapter {
         fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
             self.component.finish_admitted_close();
             self.component.take_close_reports()
-        }
-
-        fn install_control_custody(
-            &mut self,
-            parent: &crate::ControlDomain,
-            attachment: crate::control_custody::CustodyAttachment,
-        ) {
-            let binding = self.component.callback_binding();
-            if let Some(domain) = binding.control_domain.upgrade() {
-                let _ = domain.attach_to(parent);
-                if let Some(root) = self.component.root.as_deref_mut() {
-                    root.install_control_custody(&domain, attachment);
-                }
-            }
         }
 
         fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
@@ -637,12 +624,6 @@ mod component_adapter {
         // Local feedback belongs to the emitting component. The host delivers
         // bound results through with_live_component; generic tree recursion
         // must neither cross into another record nor revive a closed owner.
-        fn on_control_invocation_result(
-            &mut self,
-            _: &tilo_actions::ActionAddress,
-            _: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
-        ) {
-        }
         fn visit_components(
             &mut self,
             request: &mut crate::bound_dispatch::ComponentRequest<'_>,
@@ -1146,38 +1127,6 @@ mod component_adapter {
         fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
             // Consumed under the canonical record admission.
             None
-        }
-        fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref_mut()?;
-            if let Some(intent) = root.take_control_invocation() {
-                let mut queued = binding.queued_controls.borrow_mut();
-                if queued.len() >= 64 {
-                    queued.pop_front();
-                }
-                queued.push_back(intent);
-            }
-            // The private host sweep consumes the queue with this captured owner.
-            None
-        }
-        fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return Vec::new();
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return Vec::new();
-            };
-            root.control_action_bindings()
-        }
-        fn refresh_control_action_availability(
-            &mut self,
-            _allowed: &HashSet<tilo_actions::ActionAddress>,
-        ) {
-            // The private host sweep supplies this component's own authority.
         }
         fn on_commit(&mut self) {
             // Consumed under the canonical record admission.
@@ -1719,6 +1668,60 @@ mod component_adapter {
                 return;
             };
             root.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    impl crate::widget::controls::ActionControls for BoundAppWidget {
+        fn install_control_custody(
+            &mut self,
+            parent: &crate::ControlDomain,
+            attachment: crate::control_custody::CustodyAttachment,
+        ) {
+            let binding = self.component.callback_binding();
+            if let Some(domain) = binding.control_domain.upgrade() {
+                let _ = domain.attach_to(parent);
+                if let Some(root) = self.component.root.as_deref_mut() {
+                    crate::widget::controls::install_control_custody(root, &domain, attachment);
+                }
+            }
+        }
+        fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref_mut()?;
+            if let Some(intent) = crate::widget::controls::take_control_invocation(root) {
+                let mut queued = binding.queued_controls.borrow_mut();
+                if queued.len() >= 64 {
+                    queued.pop_front();
+                }
+                queued.push_back(intent);
+            }
+            // The private host sweep consumes the queue with this captured owner.
+            None
+        }
+        fn on_control_invocation_result(
+            &mut self,
+            _: &tilo_actions::ActionAddress,
+            _: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
+        ) {
+        }
+        fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return Vec::new();
+            };
+            let Some(root) = self.component.root.as_deref() else {
+                return Vec::new();
+            };
+            crate::widget::controls::control_action_bindings(root)
+        }
+        fn refresh_control_action_availability(
+            &mut self,
+            _allowed: &HashSet<tilo_actions::ActionAddress>,
+        ) {
+            // The private host sweep supplies this component's own authority.
         }
     }
 

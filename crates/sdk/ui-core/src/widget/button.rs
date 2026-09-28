@@ -1114,6 +1114,8 @@ impl Button {
 }
 
 impl Widget for Button {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
@@ -1624,57 +1626,6 @@ impl Widget for Button {
             }))
     }
 
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            let before = action.is_available();
-            action.refresh_availability(allowed);
-            if before != action.is_available() {
-                self.dirty = true;
-            }
-        }
-    }
-
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
-
-    fn has_action_control_bindings(&self) -> bool {
-        self.action.is_some()
-    }
-
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        use crate::widget::{ControlBindingKind, ControlBindingMetadata};
-        if let Some(action) = &self.action {
-            return vec![action.metadata(self.id.clone())];
-        }
-        let mut bindings = Vec::new();
-        if let Some(path) = &self.on_click_path {
-            bindings.push(ControlBindingMetadata {
-                control_id: self.id.clone(),
-                kind: ControlBindingKind::CollaborativeDocument(path.clone()),
-            });
-        }
-        if self.on_click.is_some() {
-            bindings.push(ControlBindingMetadata {
-                control_id: self.id.clone(),
-                kind: ControlBindingKind::LegacyCallback,
-            });
-        }
-        bindings
-    }
-
     /// Enter, Space, or an AccessKit `Activate` performs the same CRDT
     /// mutation + imperative callback as a mouse click.
     fn perform_action(
@@ -1773,6 +1724,56 @@ impl Widget for Button {
             && let Some(user) = peers.first()
         {
             presence.draw_peer_focus(scene, theme, user, self.rect);
+        }
+    }
+}
+
+impl crate::widget::controls::ActionControls for Button {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action.as_mut().and_then(ActionEmitter::take)
+    }
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        use crate::widget::{ControlBindingKind, ControlBindingMetadata};
+        if let Some(action) = &self.action {
+            return vec![action.metadata(self.id.clone())];
+        }
+        let mut bindings = Vec::new();
+        if let Some(path) = &self.on_click_path {
+            bindings.push(ControlBindingMetadata {
+                control_id: self.id.clone(),
+                kind: ControlBindingKind::CollaborativeDocument(path.clone()),
+            });
+        }
+        if self.on_click.is_some() {
+            bindings.push(ControlBindingMetadata {
+                control_id: self.id.clone(),
+                kind: ControlBindingKind::LegacyCallback,
+            });
+        }
+        bindings
+    }
+    fn has_action_control_bindings(&self) -> bool {
+        self.action.is_some()
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            let before = action.is_available();
+            action.refresh_availability(allowed);
+            if before != action.is_available() {
+                self.dirty = true;
+            }
         }
     }
 }
@@ -2522,13 +2523,17 @@ mod tests {
             button.activate(&mut doc, &automerge::ROOT);
             assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
             assert_eq!(calls.load(Ordering::SeqCst), 0);
-            let intent = button.take_control_invocation().expect("one intent");
+            let intent =
+                crate::widget::controls::take_control_invocation(&mut button).expect("one intent");
             assert_eq!(
                 intent.address,
                 tilo_actions::ActionAddress::new("doc:1", "save")
             );
             assert!(intent.arguments.is_empty());
-            assert_eq!(button.control_action_bindings().len(), 1);
+            assert_eq!(
+                crate::widget::controls::control_action_bindings(&button).len(),
+                1
+            );
         }
 
         fn action_availability_revokes_and_restores_without_overriding_authored_state() {
@@ -2545,16 +2550,16 @@ mod tests {
             let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
             let mut button = Button::new("save", "Save", None).on_action(binding);
             button.activate(&mut AutoCommit::new(), &automerge::ROOT);
-            Widget::refresh_control_action_availability(
+            crate::widget::controls::refresh_control_action_availability(
                 &mut button,
                 &std::collections::HashSet::new(),
             );
             assert!(!Widget::is_enabled(&button));
             assert!(
-                Widget::take_control_invocation(&mut button).is_none(),
+                crate::widget::controls::take_control_invocation(&mut button).is_none(),
                 "revocation drops queued authority"
             );
-            Widget::refresh_control_action_availability(
+            crate::widget::controls::refresh_control_action_availability(
                 &mut button,
                 &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                     "doc:1", "save",
@@ -2563,11 +2568,11 @@ mod tests {
             assert!(Widget::is_enabled(&button));
 
             button.set_enabled(false);
-            Widget::refresh_control_action_availability(
+            crate::widget::controls::refresh_control_action_availability(
                 &mut button,
                 &std::collections::HashSet::new(),
             );
-            Widget::refresh_control_action_availability(
+            crate::widget::controls::refresh_control_action_availability(
                 &mut button,
                 &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                     "doc:1", "save",
@@ -2581,7 +2586,7 @@ mod tests {
 
         fn legacy_button_paths_are_explicit_in_inventory() {
             let button = Button::new("legacy", "Legacy", Some("flag")).on_click(|| {});
-            let bindings = button.control_action_bindings();
+            let bindings = crate::widget::controls::control_action_bindings(&button);
             assert!(bindings.iter().any(|entry| matches!(
                 entry.kind,
                 crate::widget::ControlBindingKind::CollaborativeDocument(_)

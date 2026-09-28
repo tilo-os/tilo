@@ -226,20 +226,20 @@ fn control_presence_real_files_scroll_skips_file_accessibility_but_inventory_kee
         vp[0].as_f64().unwrap() + 50.0,
         vp[1].as_f64().unwrap() + 60.0,
     );
-    let expected =
-        h.w.control_action_bindings()
-            .iter()
-            .any(|b| matches!(b.kind, ui::widget::ControlBindingKind::Action(_)));
-    let body_expected =
-        h.w.nav
-            .control_action_bindings()
-            .iter()
-            .any(|b| matches!(b.kind, ui::widget::ControlBindingKind::Action(_)));
+    let expected = ui::widget::controls::control_action_bindings(&h.w)
+        .iter()
+        .any(|b| matches!(b.kind, ui::widget::ControlBindingKind::Action(_)));
+    let body_expected = ui::widget::controls::control_action_bindings(&h.w.nav)
+        .iter()
+        .any(|b| matches!(b.kind, ui::widget::ControlBindingKind::Action(_)));
     ACCESSIBILITY_BUILDS.with(|count| count.set(0));
     for _ in 0..4 {
-        assert_eq!(h.w.has_action_control_bindings(), expected);
         assert_eq!(
-            h.w.nav.has_action_control_bindings(),
+            ui::widget::controls::has_action_control_bindings(&h.w),
+            expected
+        );
+        assert_eq!(
+            ui::widget::controls::has_action_control_bindings(&h.w.nav),
             body_expected,
             "also exercise the file body without a toolbar emitter short-circuit"
         );
@@ -249,9 +249,12 @@ fn control_presence_real_files_scroll_skips_file_accessibility_but_inventory_kee
             phase: winit::event::TouchPhase::Moved,
         });
         h.w.apply_layout(&h.taffy, h.node, Point::ORIGIN);
-        assert_eq!(h.w.has_action_control_bindings(), expected);
         assert_eq!(
-            h.w.nav.has_action_control_bindings(),
+            ui::widget::controls::has_action_control_bindings(&h.w),
+            expected
+        );
+        assert_eq!(
+            ui::widget::controls::has_action_control_bindings(&h.w.nav),
             body_expected,
             "also exercise the file body without a toolbar emitter short-circuit"
         );
@@ -268,7 +271,7 @@ fn control_presence_real_files_scroll_skips_file_accessibility_but_inventory_kee
         0,
         "presence queries must not materialize all 1200 file nodes"
     );
-    let inventory = h.w.control_action_bindings();
+    let inventory = ui::widget::controls::control_action_bindings(&h.w);
     assert_eq!(
         inventory
             .iter()
@@ -291,11 +294,13 @@ fn control_presence_files_collaboration_panel_matches_inventory() {
             action: None,
             history: None,
         });
-        let expected =
-            h.w.control_action_bindings()
-                .iter()
-                .any(|b| matches!(b.kind, ui::widget::ControlBindingKind::Action(_)));
-        assert_eq!(h.w.has_action_control_bindings(), expected);
+        let expected = ui::widget::controls::control_action_bindings(&h.w)
+            .iter()
+            .any(|b| matches!(b.kind, ui::widget::ControlBindingKind::Action(_)));
+        assert_eq!(
+            ui::widget::controls::has_action_control_bindings(&h.w),
+            expected
+        );
         if modal {
             assert!(!expected, "collaboration panel hides underlying emitters");
         }

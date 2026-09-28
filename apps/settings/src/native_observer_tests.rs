@@ -239,7 +239,7 @@ impl Harness {
             // Match the live host's action-bound control dispatch boundary,
             // also exercised by tests/control_interaction.rs. Back is a View
             // action; emitting its intent alone does not activate it.
-            while let Some(intent) = self.app.take_control_invocation() {
+            while let Some(intent) = ui::widget::controls::take_control_invocation(&mut self.app) {
                 let control = intent
                     .address
                     .resource

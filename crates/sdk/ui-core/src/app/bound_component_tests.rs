@@ -213,19 +213,10 @@ impl crate::search::SearchProvider for LazyProbe {
     }
 }
 impl Widget for Probe {
-    crate::provides!(dyn crate::undo::CommittedActions);
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        CONTROL_AUTHORITY.with_borrow_mut(|seen| {
-            seen.push((
-                self.strict,
-                allowed.contains(&tilo_actions::ActionAddress::new("bound:probe", "apply")),
-            ));
-        });
-    }
+    crate::provides!(
+        dyn crate::undo::CommittedActions,
+        dyn crate::widget::controls::ActionControls
+    );
 
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         if let Some(counts) = PAGED_SEARCH_COUNTS.with_borrow(Clone::clone) {
@@ -495,6 +486,20 @@ impl Widget for Probe {
         doc.put(ROOT, "action", true).unwrap();
         Self::capture("action");
         true
+    }
+}
+
+impl crate::widget::controls::ActionControls for Probe {
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        CONTROL_AUTHORITY.with_borrow_mut(|seen| {
+            seen.push((
+                self.strict,
+                allowed.contains(&tilo_actions::ActionAddress::new("bound:probe", "apply")),
+            ));
+        });
     }
 }
 

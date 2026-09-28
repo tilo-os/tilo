@@ -10173,7 +10173,8 @@ impl Widget for WordProcessorWidget {
         dyn ui::collaboration::participants::Participants,
         dyn ui::undo::CommittedActions,
         dyn ui::undo::LocalUndo,
-        dyn ui::history_mode::capability::DocumentHistory
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls
     );
 
     fn action_directory_invocation_domain(
@@ -10193,46 +10194,6 @@ impl Widget for WordProcessorWidget {
         &crate::semantic_read::action::READERS
     }
 
-    fn install_control_custody(
-        &mut self,
-        domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
-    ) {
-        self.file_choice_domain = Some(domain.clone());
-        if let Some(offer) = &mut self.file_choice {
-            offer.install_custody(domain, attachment);
-        }
-        for child in self.children_mut() {
-            child.install_control_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        if let Some(offer) = &mut self.file_choice {
-            return offer.take();
-        }
-        self.children_mut()
-            .into_iter()
-            .find_map(Widget::take_control_invocation)
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(offer) = &mut self.file_choice {
-            offer.refresh(allowed);
-        }
-        for child in self.children_mut() {
-            child.refresh_control_action_availability(allowed);
-        }
-    }
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        if let Some(offer) = &self.file_choice {
-            return offer.bindings();
-        }
-        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        self.for_each_child(&mut |child| bindings.extend(child.control_action_bindings()));
-        bindings
-    }
     fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<ui::close_admission::UnsavedDocument> {
         // A canonical or hosted document is saved as it is edited.
         if self.canonical || self.hosted() {
@@ -11478,6 +11439,51 @@ impl Widget for WordProcessorWidget {
     /// toolbars and panels are positioned inside `self.rect` by hand.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
+    }
+}
+
+impl ui::widget::controls::ActionControls for WordProcessorWidget {
+    fn install_control_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        self.file_choice_domain = Some(domain.clone());
+        if let Some(offer) = &mut self.file_choice {
+            offer.install_custody(domain, attachment);
+        }
+        for child in self.children_mut() {
+            ui::widget::controls::install_control_custody(child, domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if let Some(offer) = &mut self.file_choice {
+            return offer.take();
+        }
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        if let Some(offer) = &self.file_choice {
+            return offer.bindings();
+        }
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        self.for_each_child(&mut |child| {
+            bindings.extend(ui::widget::controls::control_action_bindings(child));
+        });
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(offer) = &mut self.file_choice {
+            offer.refresh(allowed);
+        }
+        for child in self.children_mut() {
+            ui::widget::controls::refresh_control_action_availability(child, allowed);
+        }
     }
 }
 

@@ -56,6 +56,8 @@ impl LiveStore {
 }
 
 impl Widget for LiveStore {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         self.inner.local_resource_operation_handlers()
     }
@@ -280,10 +282,6 @@ impl Widget for LiveStore {
         self.inner.children_mut()
     }
 
-    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.inner.take_control_invocation()
-    }
-
     fn name(&self) -> &'static str {
         "LiveStore"
     }
@@ -302,6 +300,12 @@ impl Widget for LiveStore {
 
     fn needs_animation_frame(&self) -> bool {
         self.worker.has_pending() || self.inner.needs_animation_frame()
+    }
+}
+
+impl ui::widget::controls::ActionControls for LiveStore {
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.inner.take_control_invocation()
     }
 }
 

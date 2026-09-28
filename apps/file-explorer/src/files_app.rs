@@ -7265,7 +7265,7 @@ impl FileExplorerWidget {
         let mut found = false;
         self.for_each_child(&mut |child| {
             if !found {
-                found = child.has_action_control_bindings();
+                found = ui::widget::controls::has_action_control_bindings(child);
             }
         });
         found
@@ -7388,12 +7388,9 @@ impl Collaborative for FileExplorerWidget {
 impl Widget for FileExplorerWidget {
     ui::provides!(
         dyn ui::widget::Collaborative,
-        dyn ui::history_mode::capability::DocumentHistory
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls
     );
-
-    fn has_action_control_bindings(&self) -> bool {
-        self.has_action_control_bindings_impl()
-    }
 
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
         let (doc, path) = ui::doc::document_ref(doc, path);
@@ -8407,17 +8404,6 @@ impl Widget for FileExplorerWidget {
         v
     }
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        if let Some(invocation) = self.app_chooser.take_control_invocation() {
-            return Some(invocation);
-        }
-        self.state_retry.take_control_invocation().or_else(|| {
-            self.children_mut()
-                .into_iter()
-                .find_map(Widget::take_control_invocation)
-        })
-    }
-
     fn name(&self) -> &'static str {
         "FileExplorerWidget"
     }
@@ -8565,6 +8551,22 @@ impl Widget for FileExplorerWidget {
             return false;
         }
         false
+    }
+}
+
+impl ui::widget::controls::ActionControls for FileExplorerWidget {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if let Some(invocation) = self.app_chooser.take_control_invocation() {
+            return Some(invocation);
+        }
+        self.state_retry.take_control_invocation().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
+    }
+    fn has_action_control_bindings(&self) -> bool {
+        self.has_action_control_bindings_impl()
     }
 }
 

@@ -2222,7 +2222,10 @@ impl OskWidget {
 }
 
 impl Widget for OskWidget {
-    ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["osk.suggestions"]
@@ -2256,9 +2259,6 @@ impl Widget for OskWidget {
                     ui::tilo_actions::ActionOutput::default(),
                 )
             }))
-    }
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.drafts.take()
     }
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
@@ -2723,6 +2723,12 @@ impl Widget for OskWidget {
     }
 }
 
+impl ui::widget::controls::ActionControls for OskWidget {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.drafts.take()
+    }
+}
+
 impl ui::history_mode::capability::DocumentHistory for OskWidget {
     fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
         if scope == crate::framework_history::SCOPE && self.drafts.pending() {
@@ -3119,13 +3125,17 @@ mod tests {
             assert_eq!(q.role, Role::Button);
             assert!(q.bounds.is_some());
             let target = q.action_target.as_deref().expect("stable action target");
-            assert!(osk.control_action_bindings().iter().any(|binding| {
-                binding.control_id == target
-                    && matches!(
-                        binding.kind,
-                        ui::widget::ControlBindingKind::SemanticAction(_)
-                    )
-            }));
+            assert!(
+                ui::widget::controls::control_action_bindings(&osk)
+                    .iter()
+                    .any(|binding| {
+                        binding.control_id == target
+                            && matches!(
+                                binding.kind,
+                                ui::widget::ControlBindingKind::SemanticAction(_)
+                            )
+                    })
+            );
             assert!(osk.perform_semantic_action(
                 target,
                 &AccessibilityAction::Activate,
@@ -4389,8 +4399,7 @@ mod tests {
         assert!(activate(&mut osk, &format!("osk:emoji:{first}")));
         // Recents are saved through the keyboard's preference action.
         osk.sync(&mut doc, &automerge::ROOT);
-        let offer = osk
-            .take_control_invocation()
+        let offer = ui::widget::controls::take_control_invocation(&mut osk)
             .expect("the recents are offered as a preference action");
         let encoded = ui::tilo_actions::door::encode_json(
             &osk.resources(&doc),
