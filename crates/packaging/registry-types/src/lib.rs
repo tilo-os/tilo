@@ -65,6 +65,7 @@ pub mod entry;
 pub mod handshake;
 pub mod moderation;
 pub mod namespace;
+pub mod pending;
 pub mod snapshot;
 pub mod target;
 pub mod upload;
