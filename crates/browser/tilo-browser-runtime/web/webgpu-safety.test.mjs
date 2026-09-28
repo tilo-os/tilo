@@ -17,6 +17,8 @@ test('Safari and every iOS browser are WebKit; Chrome, Edge and Firefox are not'
   assert.equal(isWebKit({userAgent: CHROME_MAC, vendor: 'Google Inc.'}), false);
   assert.equal(isWebKit({userAgent: EDGE_MAC, vendor: 'Google Inc.'}), false);
   assert.equal(isWebKit({userAgent: FIREFOX_MAC, vendor: ''}), false);
+  // Safari's Develop menu claiming Chrome keeps Apple's vendor.
+  assert.equal(isWebKit({userAgent: CHROME_MAC, vendor: 'Apple Computer, Inc.'}), true);
 });
 
 // Catches a guard keyed on navigator.vendor alone, which a spoofed Safari

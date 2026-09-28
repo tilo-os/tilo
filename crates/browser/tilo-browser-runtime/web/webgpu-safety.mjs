@@ -14,9 +14,11 @@ export function isWebKit({userAgent = '', vendor = '', maxTouchPoints = 0} = {})
   if (/\b(iPhone|iPad|iPod)\b/.test(userAgent)) return true;
   // iPadOS reports itself as a Mac; touch points tell them apart.
   if (/\bMacintosh\b/.test(userAgent) && maxTouchPoints > 1 && /AppleWebKit\//.test(userAgent)) return true;
-  if (/AppleWebKit\//.test(userAgent) && !/\b(Chrome|Chromium|Edg|OPR|Firefox)\//.test(userAgent)) return true;
-  // Chrome's user agent string can be overridden; the vendor cannot.
-  return vendor === 'Apple Computer, Inc.' && !/\b(Chrome|Chromium|Edg|OPR|Firefox)\//.test(userAgent);
+  // WebKit froze its token at 605.1.15; Blink (and jsdom) report 537.36.
+  if (/AppleWebKit\/6\d\d/.test(userAgent) && !/\b(Chrome|Chromium|Edg|OPR|Firefox)\//.test(userAgent)) return true;
+  // Safari's Develop menu can claim Chrome's user agent; its vendor stays
+  // Apple's. jsdom imitates that vendor.
+  return vendor === 'Apple Computer, Inc.' && !/\bjsdom\//.test(userAgent);
 }
 
 /** The refusal to show instead of starting WebGPU, or `undefined` when it is safe to start. */
