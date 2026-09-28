@@ -90,9 +90,10 @@ pub struct PeerPresence {
     /// and while nothing is shown to anchor it to.
     cursor: Arc<Mutex<Option<PointerAnchor>>>,
     /// Every peer pointer received, as sent: which room, which tab, what
-    /// offset. Placed again on every [`Self::pump`], because where a tab's
-    /// tile is on this device changes as it scrolls and lays out.
-    anchored: Mutex<HashMap<String, (String, PointerAnchor)>>,
+    /// offset, and when it was last heard. Placed again on every
+    /// [`Self::pump`], because where a tab's tile is on this device changes
+    /// as it scrolls and lays out.
+    anchored: Mutex<AnchoredPointers>,
     /// Inbound presence from other hosts, filled by [`ShellNetwork::tick`].
     inbound: Arc<Mutex<Vec<crate::shell::network::InboundPresence>>>,
     /// Tab location, follow cues, short statuses, and semantic work arrive through the
@@ -392,6 +393,14 @@ impl PeerPresence {
     /// device shows right now — and hidden while no such tile is shown. Who
     /// is *in* the room is answered separately by `refresh_roster`.
     pub fn pump(&self, presence: &mut PresenceCtx, tiles: &TabTiles) -> bool {
+        self.pump_at(presence, tiles, Instant::now())
+    }
+
+    /// [`Self::pump`] with the clock supplied, so a peer going quiet can be
+    /// exercised without sleeping. A pointer nobody has restated for
+    /// [`ui::presence::POINTER_IDLE`] fades out and is retired; while one is
+    /// fading this returns `true`, so the fade is painted frame by frame.
+    pub fn pump_at(&self, presence: &mut PresenceCtx, tiles: &TabTiles, now: Instant) -> bool {
         let drained: Vec<_> = {
             let Ok(mut buf) = self.inbound.lock() else {
                 return false;
@@ -401,15 +410,16 @@ impl PeerPresence {
         let net = Arc::clone(&self.net);
         let mine: Vec<String> = self.rooms.lock().map(|g| g.clone()).unwrap_or_default();
         let cursor_changed = self.anchored.lock().is_ok_and(|mut anchored| {
-            anchored.retain(|_, (room, _)| mine.iter().any(|r| r == room));
+            anchored.retain(|_, (room, _, _)| mine.iter().any(|r| r == room));
             let fresh = fold_inbound(
                 drained,
                 &mut anchored,
                 presence,
                 &|room| net.peer_labels(room),
                 &|room| mine.iter().any(|r| r == room),
+                now,
             );
-            place_pointers(&anchored, &fresh, presence, tiles)
+            place_pointers(&anchored, &fresh, presence, tiles, now)
         });
         let typed = self
             .typed_inbound
@@ -496,7 +506,7 @@ impl PeerPresence {
                 arrived.extend(
                     anchored
                         .iter()
-                        .filter(|(_, (r, _))| *r == room)
+                        .filter(|(_, (r, _, _))| *r == room)
                         .filter_map(|(user, _)| user.strip_prefix("peer@")?.parse::<u64>().ok()),
                 );
             }
@@ -589,8 +599,10 @@ fn cursor_coord_to_f32(v: f64) -> f32 {
 }
 
 /// Every peer pointer received and not yet superseded, by presence id
-/// (`peer@<handle>`): the room it was sent in and where it is anchored.
-pub type AnchoredPointers = HashMap<String, (String, PointerAnchor)>;
+/// (`peer@<handle>`): the room it was sent in, where it is anchored, and
+/// when it was last heard. Kept after it goes quiet — somebody who pointed
+/// at the room's work is still in the room — but no longer placed.
+pub type AnchoredPointers = HashMap<String, (String, PointerAnchor, Instant)>;
 
 /// Fold inbound presence into `anchored`, naming each sender in
 /// `presence`, and return the ids of the peers whose pointer arrived.
@@ -607,6 +619,7 @@ pub fn fold_inbound(
     presence: &mut PresenceCtx,
     labels: &dyn Fn(&str) -> PeerLabels,
     member_of: &dyn Fn(&str) -> bool,
+    now: Instant,
 ) -> Vec<String> {
     let mut arrived = Vec::new();
     // Entries in one drain are nearly always the same room.
@@ -637,7 +650,7 @@ pub fn fold_inbound(
             x: entry.point.0,
             y: entry.point.1,
         };
-        anchored.insert(user.clone(), (room, anchor));
+        anchored.insert(user.clone(), (room, anchor, now));
         arrived.push(user);
     }
     arrived
@@ -647,15 +660,24 @@ pub fn fold_inbound(
 /// (`tiles`), filed under its room the way the overlay paints them, and
 /// take off screen any whose tab this device doesn't show. `fresh` peers
 /// are restated even when they haven't moved, so a keepalive keeps them
-/// current. Returns whether anything landed, moved or went.
+/// current. Each is stamped with when it was last *heard*, not placed, so
+/// a pointer riding a scrolling tile still goes quiet on time: one not
+/// heard for [`ui::presence::POINTER_IDLE`] is retired
+/// ([`PresenceCtx::prune_pointers`]) and not placed again until it is.
+/// Returns whether anything landed, moved, went, or is fading out.
 pub fn place_pointers(
     anchored: &AnchoredPointers,
     fresh: &[String],
     presence: &mut PresenceCtx,
     tiles: &TabTiles,
+    now: Instant,
 ) -> bool {
+    use ui::presence::{POINTER_FADE, POINTER_IDLE};
     let mut changed = false;
-    for (user, (room, anchor)) in anchored {
+    for (user, (room, anchor, heard)) in anchored {
+        if now.saturating_duration_since(*heard) >= POINTER_IDLE {
+            continue;
+        }
         let Some((x, y)) = place_pointer(tiles, *anchor) else {
             changed |= presence.clear_pointer(user);
             continue;
@@ -672,12 +694,19 @@ pub fn place_pointers(
         }
         presence.apply_remote_presence(
             user.clone(),
-            key,
+            key.clone(),
             PresencePayload::Pointer { x: at.0, y: at.1 },
         );
+        // Stamp it with when it was heard rather than now, which the fold
+        // above used: moving with a tile is not the peer saying anything.
+        let uid = ui::permissions::UserId(user.clone());
+        if presence.pointer_for(&key, &uid) == Some(at) {
+            presence.set_pointer_at(&key, uid, at, *heard);
+        }
         changed = true;
     }
-    changed
+    changed |= presence.prune_pointers(now, POINTER_IDLE);
+    changed || presence.pointers_fading(now, POINTER_IDLE, POINTER_FADE)
 }
 
 /// The people in `ws`'s room. Two sources, neither sufficient alone:
@@ -1010,8 +1039,9 @@ mod tests {
         member_of: &dyn Fn(&str) -> bool,
     ) -> bool {
         let mut anchored = AnchoredPointers::new();
-        let fresh = fold_inbound(entries, &mut anchored, presence, labels, member_of);
-        place_pointers(&anchored, &fresh, presence, &DESK_TILES)
+        let now = Instant::now();
+        let fresh = fold_inbound(entries, &mut anchored, presence, labels, member_of, now);
+        place_pointers(&anchored, &fresh, presence, &DESK_TILES, now)
     }
 
     #[test]
@@ -1069,12 +1099,14 @@ mod tests {
             let key = PresenceKey::Workspace { id: room.into() };
             let mut presence = PresenceCtx::default();
             let mut anchored = AnchoredPointers::new();
+            let now = Instant::now();
             let fresh = fold_inbound(
                 vec![arrived("bob", 7, room, (30.0, 20.0))],
                 &mut anchored,
                 &mut presence,
                 &unnamed,
                 &any_room,
+                now,
             );
             let at = |presence: &PresenceCtx| {
                 presence
@@ -1084,18 +1116,24 @@ mod tests {
                     .map(|p| p.1)
             };
             let here = [(TAB, Rect::new(1300.0, 50.0, 1900.0, 700.0))];
-            assert!(place_pointers(&anchored, &fresh, &mut presence, &here));
+            assert!(place_pointers(&anchored, &fresh, &mut presence, &here, now));
             assert_eq!(at(&presence), Some((1330.0, 70.0)));
 
             let scrolled = [(TAB, Rect::new(900.0, 50.0, 1500.0, 700.0))];
-            assert!(place_pointers(&anchored, &[], &mut presence, &scrolled));
+            assert!(place_pointers(
+                &anchored,
+                &[],
+                &mut presence,
+                &scrolled,
+                now
+            ));
             assert_eq!(at(&presence), Some((930.0, 70.0)), "it rides the tile");
             assert!(
-                !place_pointers(&anchored, &[], &mut presence, &scrolled),
+                !place_pointers(&anchored, &[], &mut presence, &scrolled, now),
                 "and a frame where nothing moved changes nothing",
             );
 
-            assert!(place_pointers(&anchored, &[], &mut presence, &[]));
+            assert!(place_pointers(&anchored, &[], &mut presence, &[], now));
             assert_eq!(
                 at(&presence),
                 None,
@@ -1103,13 +1141,81 @@ mod tests {
             );
             assert!(presence.remote_cursors.is_empty());
 
-            assert!(place_pointers(&anchored, &[], &mut presence, &here));
+            assert!(place_pointers(&anchored, &[], &mut presence, &here, now));
             assert_eq!(at(&presence), Some((1330.0, 70.0)));
         }
 
         a_pointer_anchors_to_the_tile_under_it_or_the_nearest();
         a_desktop_coordinate_pointer_is_refused();
         a_placed_pointer_follows_the_tile_and_hides_with_it();
+    }
+
+    /// A peer that stops saying where it points — crashed, or pointing
+    /// at nothing this room shares — fades out and is retired, however
+    /// its tile moves meanwhile, and comes back when heard from again.
+    /// It stays in the room: the anchor is kept for the roster.
+    #[test]
+    fn a_quiet_peers_pointer_fades_out_and_is_retired() {
+        use ui::presence::{POINTER_FADE, POINTER_IDLE};
+        use vello::kurbo::Rect;
+        let room = "3f2b1c00-0000-4000-8000-000000000001";
+        let key = PresenceKey::Workspace { id: room.into() };
+        let bob = ui::permissions::UserId("peer@7".into());
+        let mut presence = PresenceCtx::default();
+        let mut anchored = AnchoredPointers::new();
+        let t0 = Instant::now();
+        let heard = |anchored: &mut AnchoredPointers, presence: &mut PresenceCtx, at| {
+            fold_inbound(
+                vec![arrived("bob", 7, room, (30.0, 20.0))],
+                anchored,
+                presence,
+                &unnamed,
+                &any_room,
+                at,
+            )
+        };
+        let fresh = heard(&mut anchored, &mut presence, t0);
+        let here = [(TAB, Rect::new(100.0, 50.0, 700.0, 700.0))];
+        assert!(place_pointers(&anchored, &fresh, &mut presence, &here, t0));
+        assert!(presence.pointer_for(&key, &bob).is_some());
+
+        // The desk scrolls while the peer stays silent: the pointer rides
+        // the tile but is not thereby heard from.
+        let fading = t0 + POINTER_IDLE.saturating_sub(POINTER_FADE / 2);
+        let scrolled = [(TAB, Rect::new(40.0, 50.0, 640.0, 700.0))];
+        assert!(
+            place_pointers(&anchored, &[], &mut presence, &scrolled, fading),
+            "a fading pointer asks for the next frame",
+        );
+        assert_eq!(presence.pointer_for(&key, &bob), Some((70.0, 70.0)));
+        let opacity = presence.pointer_opacity(&key, &bob, fading, POINTER_IDLE, POINTER_FADE);
+        assert!(opacity > 0.0 && opacity < 1.0, "half faded: {opacity}");
+
+        let quiet = t0 + POINTER_IDLE;
+        assert!(place_pointers(
+            &anchored,
+            &[],
+            &mut presence,
+            &scrolled,
+            quiet
+        ));
+        assert_eq!(presence.pointer_for(&key, &bob), None, "retired");
+        assert!(
+            !place_pointers(&anchored, &[], &mut presence, &scrolled, quiet),
+            "and not placed again while quiet",
+        );
+        assert!(anchored.contains_key("peer@7"), "still in the room");
+
+        let back = quiet + Duration::from_secs(1);
+        let fresh = heard(&mut anchored, &mut presence, back);
+        assert!(place_pointers(
+            &anchored,
+            &fresh,
+            &mut presence,
+            &scrolled,
+            back
+        ));
+        assert_eq!(presence.pointer_for(&key, &bob), Some((70.0, 70.0)));
     }
 
     fn unnamed(_room: &str) -> PeerLabels {

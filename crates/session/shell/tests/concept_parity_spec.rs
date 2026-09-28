@@ -1610,11 +1610,19 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
 
         let mut presence = PresenceCtx::default();
         let mut anchored = AnchoredPointers::new();
-        let arrived = fold_inbound(frames, &mut anchored, &mut presence, &room_says, &this_room);
+        let now = std::time::Instant::now();
+        let arrived = fold_inbound(
+            frames,
+            &mut anchored,
+            &mut presence,
+            &room_says,
+            &this_room,
+            now,
+        );
         assert_eq!(arrived.len(), 2, "two room-scoped frames must land");
         let tiles = [(1u64, vello::kurbo::Rect::new(0.0, 40.0, 800.0, 700.0))];
         assert!(
-            place_pointers(&anchored, &arrived, &mut presence, &tiles),
+            place_pointers(&anchored, &arrived, &mut presence, &tiles, now),
             "and be placed over this desk's tile for their tab"
         );
         for (peer, name) in [(0x11u64, "bob"), (0x22u64, "dana")] {
