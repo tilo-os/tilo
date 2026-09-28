@@ -173,8 +173,7 @@ fn create_adapted(
             )),
         }
     })?;
-    let own_history = root
-        .history_registration()
+    let own_history = crate::history_mode::capability::history_registration(root.as_ref())
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     let mut registry = tilo_actions::ActionRegistry::new();
     if let Some(register) = adapted.actions {
