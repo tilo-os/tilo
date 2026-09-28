@@ -133,7 +133,20 @@ export interface MountOptions {
   profile?: string;
   device?: string;
   room?: string;
+  /**
+   * Who the mount's edits and actions are attributed to. With `agent`, an
+   * agent task participant: `agent-task:<task>` (printable ASCII, no spaces).
+   */
   author?: string;
+  /**
+   * The mount acts as an agent with this display name (1 to 64 bytes): the
+   * app admits `author` as an agent task participant, as a host admits a
+   * delivered task. Chat then posts as that agent (`Name · agent` beside its
+   * messages, on every mount) and lets it record its work on its own
+   * messages (`set-work`). A mount whose `author` is not
+   * `agent-task:<task>` is refused.
+   */
+  agent?: string;
   instance?: number;
   record?: string;
   newDocument?: boolean;
@@ -202,9 +215,11 @@ export interface DesktopMount {
   /**
    * The actions the mounted application publishes now, with its permissions
    * applied. `resource` narrows to one resource and its children, including
-   * one the application resolves only on request. On a local desktop, those
-   * of one window's app (`window`, else the focused window). Throws for a
-   * peer's canonical desktop.
+   * one the application resolves only on request; the application's own
+   * resolution wins over what the full listing shows (a Chat channel asked
+   * for by name lists its latest messages). On a local desktop, those of one
+   * window's app (`window`, else the focused window). Throws for a peer's
+   * canonical desktop.
    */
   actions(resource?: string, options?: WindowOption): ActionDescriptor[];
   /**
