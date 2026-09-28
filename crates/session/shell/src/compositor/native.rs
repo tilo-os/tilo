@@ -1358,9 +1358,9 @@ fn spawn_agent_mcp(
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
         .map(|cache| cache.join("tilo").join("computer"));
     let Some(scratch) = scratch.filter(|path| {
-        path.parent()
-            .is_some_and(|parent| std::fs::create_dir_all(parent).is_ok())
-            && tilo_runtime::unix::private_directory(path).is_ok()
+        std::fs::create_dir_all(path).is_ok()
+            && std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+                .is_ok()
     }) else {
         eprintln!("tilo compositor: agent MCP endpoint: no private screenshot directory");
         return;
