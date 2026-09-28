@@ -6,11 +6,9 @@
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
-use ui::tilo_actions::{
-    ControlInvocation, InvocationId, InvocationUpdate, OperationKind, Resource,
-};
+use ui::tilo_actions::{ControlInvocation, InvocationId, InvocationUpdate, Resource};
 use ui::widget::{AppModel, ModelPath};
-use ui::widget::{ResourceOperationStart, Widget};
+use ui::widget::{ResourceOperation, ResourceOperationStart, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -66,29 +64,13 @@ impl Widget for LiveStore {
         self.inner.resources(doc)
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<bool, String> {
-        self.inner
-            .invoke_resource_operation(kind, type_id, payload, doc, path)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        self.inner
-            .start_resource_operation(invocation, kind, type_id, payload, doc, path)
+        self.inner.start_operation(op, doc, path)
     }
 
     fn poll_resource_operation(
