@@ -12321,8 +12321,10 @@ pub mod tests {
     }
 
     /// Governs every room for one device; admits every certificate.
+    #[cfg(test)]
     struct GovernedBy([u8; 32]);
 
+    #[cfg(test)]
     impl crate::peer_actions::CertificateAuthority for GovernedBy {
         fn authorize(
             &self,
