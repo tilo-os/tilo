@@ -307,7 +307,7 @@ pub fn publisher_identity() -> std::io::Result<(u32, u64)> {
 /// When this process's start time is unreadable, or the lease cannot be
 /// created or locked.
 pub fn publisher_identity_in(dir: &std::path::Path) -> std::io::Result<(u32, u64)> {
-    static LEASES: std::sync::Mutex<Vec<(std::path::PathBuf, std::fs::File)>> =
+    static LEASES: std::sync::Mutex<Vec<(std::path::PathBuf, advisory_lock::FileLock)>> =
         std::sync::Mutex::new(Vec::new());
     let pid = std::process::id();
     let start_ticks = process_start_ticks(pid)
@@ -318,19 +318,16 @@ pub fn publisher_identity_in(dir: &std::path::Path) -> std::io::Result<(u32, u64
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if !leases.iter().any(|(held, _)| *held == path) {
         std::fs::create_dir_all(dir)?;
-        let lease = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&path)?;
-        lease.try_lock().map_err(|error| match error {
-            std::fs::TryLockError::WouldBlock => {
-                std::io::Error::other("another open file already holds this publisher's lease")
-            }
-            std::fs::TryLockError::Error(error) => error,
-        })?;
+        let lease = advisory_lock::FileLock::try_open(&path, advisory_lock::LockMode::Exclusive)
+            .map_err(|error| match error {
+                advisory_lock::TryLockError::WouldBlock => {
+                    std::io::Error::other("another open file already holds this publisher's lease")
+                }
+                advisory_lock::TryLockError::Error(error) => error,
+            })?;
         leases.push((path, lease));
     }
+    drop(leases);
     Ok((pid, start_ticks))
 }
 
@@ -343,8 +340,8 @@ pub fn publisher_live_in(dir: &std::path::Path, pid: u32, start_ticks: u64) -> b
         return false;
     };
     matches!(
-        lease.try_lock_shared(),
-        Err(std::fs::TryLockError::WouldBlock)
+        advisory_lock::FileLock::try_shared(lease),
+        Err(advisory_lock::TryLockError::WouldBlock)
     )
 }
 
@@ -3159,7 +3156,7 @@ mod tests {
             !publisher_live_in(dir.path(), pid, start_ticks),
             "a lease file its publisher no longer locks is a dead publisher's"
         );
-        lease.try_lock().unwrap();
+        let lease = advisory_lock::FileLock::try_exclusive(lease).unwrap();
         assert!(publisher_live_in(dir.path(), pid, start_ticks));
         assert!(!publisher_live_in(dir.path(), pid, start_ticks + 1));
         assert!(!publisher_live_in(dir.path(), 0, start_ticks));

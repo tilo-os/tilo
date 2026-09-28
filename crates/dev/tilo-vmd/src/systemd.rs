@@ -101,9 +101,10 @@ fn await_png(path: &Path, timeout: std::time::Duration) -> Result<Vec<u8>, Daemo
 fn png_complete(bytes: &[u8]) -> bool {
     const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
     const IEND: &[u8] = b"\0\0\0\0IEND\xae\x42\x60\x82";
-    bytes.len() >= SIGNATURE.len() + IEND.len()
-        && bytes.starts_with(SIGNATURE)
-        && bytes.ends_with(IEND)
+    bytes.starts_with(SIGNATURE)
+        && bytes
+            .get(SIGNATURE.len()..)
+            .is_some_and(|rest| rest.ends_with(IEND))
 }
 
 fn uid_of(user: &str) -> Option<u32> {
