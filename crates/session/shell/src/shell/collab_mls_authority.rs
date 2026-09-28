@@ -522,14 +522,13 @@ fn secret_service_load(locator: &str) -> Result<Zeroizing<[u8; 32]>, MlsAuthorit
     let stored = mls_secrets().get_blocking(locator).map_err(|error| {
         MlsAuthorityError::VaultUnavailable(format!("MLS key lookup unavailable: {error}"))
     })?;
-    let bytes = match stored {
-        Some(secret) => Zeroizing::new(secret.expose().to_vec()),
-        None => {
-            let legacy = legacy_secret_tool_load(locator)?
-                .ok_or_else(|| MlsAuthorityError::VaultUnavailable("MLS key unavailable".into()))?;
-            secret_service_store(locator, &legacy)?;
-            legacy
-        }
+    let bytes = if let Some(secret) = stored {
+        Zeroizing::new(secret.expose().to_vec())
+    } else {
+        let legacy = legacy_secret_tool_load(locator)?
+            .ok_or_else(|| MlsAuthorityError::VaultUnavailable("MLS key unavailable".into()))?;
+        secret_service_store(locator, &legacy)?;
+        legacy
     };
     let key: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
         MlsAuthorityError::VaultUnavailable("stored MLS key has invalid length".into())
