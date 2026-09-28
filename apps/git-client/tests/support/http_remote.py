@@ -7,6 +7,7 @@ import pathlib
 import ssl
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 
@@ -113,7 +114,11 @@ if "--tls" in sys.argv[2:]:
     context.load_cert_chain(root / "certificate.pem", root / "key.pem")
     server.socket = context.wrap_socket(server.socket, server_side=True)
 server.denials = 0
+# Accept in a worker before advertising readiness so a client that races the
+# ready file cannot see connection-refused (libgit2 Net/12) before serve_forever.
+serving = threading.Thread(target=server.serve_forever, name="git-http-fixture", daemon=True)
+serving.start()
 temporary = ready.with_suffix(".tmp")
 temporary.write_text(json.dumps({"port": server.server_port}), encoding="utf-8")
 temporary.replace(ready)
-server.serve_forever()
+serving.join()
