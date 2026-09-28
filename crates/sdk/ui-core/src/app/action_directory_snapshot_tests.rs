@@ -671,8 +671,10 @@ fn connected_declared_directory() -> (App, std::rc::Rc<Cell<usize>>) {
     app.init_layout();
     // Join delivers an initial catalogue event. Drain it before measuring an
     // otherwise idle pump, so startup traffic cannot mask missing refresh.
+    app.collaboration.manager.wait_for_commands_for_test();
     app.pump_collab_presence();
     app.publish_action_surface();
+    app.collaboration.manager.wait_for_commands_for_test();
     assert!(
         !app.pump_collab_presence(),
         "fixture must be idle after the join baseline"
