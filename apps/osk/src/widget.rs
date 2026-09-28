@@ -75,6 +75,7 @@ use ui::tilo_actions::{OperationKind, Resource};
 use ui::widget::Widget;
 
 use crate::autocorrect::{Autocorrector, KeyAdjacency};
+use crate::dict::Language;
 use crate::emoji_panel::{EMOJI_SUGGESTIONS, EmojiPanel, PanelBands, PanelHit, PanelMode};
 use crate::futo::FutoSwipeModel;
 use crate::i18n;
@@ -201,8 +202,11 @@ pub struct OskWidget {
     // --- swipe / prediction ---
     /// Decoder behind the [`SwipeModel`] seam (geometric today; FUTO later).
     swipe_model: Box<dyn SwipeModel>,
-    /// Offline next-word predictor.
+    /// Offline next-word predictor, for `language`.
     predictor: Predictor,
+    /// The language the preferred letter layout types; the predictor, the
+    /// autocorrector and the swipe decoder all serve it.
+    language: Language,
     /// The current ranked suggestion chips (swipe candidates or next-word
     /// predictions). Empty → the bar collapses to a hint row.
     suggestions: Vec<Suggestion>,
@@ -332,6 +336,7 @@ impl OskWidget {
             // models are present; otherwise fall back to the geometric one.
             swipe_model,
             predictor: Predictor::english(),
+            language: Language::English,
             suggestions: Vec::new(),
             current_word: String::new(),
             word_from_swipe: false,
@@ -419,7 +424,8 @@ impl OskWidget {
     }
 
     /// Replace the next-word predictor (e.g. a custom-corpus or a future
-    /// neural [`Predictor`]).
+    /// neural [`Predictor`]). Selecting a letter layout of another language
+    /// replaces it with that language's embedded predictor.
     #[must_use]
     pub fn with_predictor(mut self, predictor: Predictor) -> Self {
         self.predictor = predictor;
@@ -665,6 +671,13 @@ impl OskWidget {
         self.showing_symbols
     }
 
+    /// The language the keyboard predicts, corrects and decodes swipes in:
+    /// the one the preferred letter layout types (QWERTY English, AZERTY
+    /// French).
+    pub fn language(&self) -> Language {
+        self.language
+    }
+
     /// The name of the currently *displayed* layout (`"symbols"` when the
     /// symbol layer is up, otherwise the active letter layout).
     pub fn active_layout_name(&self) -> &str {
@@ -804,7 +817,27 @@ impl OskWidget {
         self.shift = ShiftState::Off;
         self.structure_dirty = true;
         self.drafts.stage(Preference::Layout(name.into()));
+        self.follow_layout_language();
         true
+    }
+
+    /// Switch the word data to the language the preferred letter layout
+    /// types. The previous language's context, corrections and learned words
+    /// do not carry over.
+    fn follow_layout_language(&mut self) {
+        let Some(language) = Language::for_layout(&self.preferred_text_layout) else {
+            return;
+        };
+        if language == self.language {
+            return;
+        }
+        self.language = language;
+        self.predictor = Predictor::for_language(language);
+        self.swipe_model.set_language(language);
+        self.autocorrect = None;
+        self.last_correction = None;
+        self.prev_word = None;
+        self.refresh_completion_suggestions();
     }
 
     fn select_text_layout_from_sync(&mut self, name: &str) {
@@ -821,6 +854,7 @@ impl OskWidget {
             self.shift = ShiftState::Off;
             self.structure_dirty = true;
         }
+        self.follow_layout_language();
     }
 
     fn set_suggestions_enabled_from_sync(&mut self, enabled: bool) {
@@ -2901,6 +2935,23 @@ mod tests {
             assert_eq!(osk.pending_text(), "a");
         }
 
+        eprintln!("phase letter_layout_selects_the_word_language");
+        {
+            let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
+            assert_eq!(osk.language(), Language::English);
+            lay_out(&mut osk, 800.0, 360.0);
+            osk.apply_action(KeyAction::Layout("azerty".into()));
+            assert_eq!(osk.language(), Language::French);
+            lay_out(&mut osk, 800.0, 360.0);
+            for letter in ["t", "r", "e", "s"] {
+                assert!(osk.activate_label(letter));
+            }
+            let words: Vec<&str> = osk.suggestions().iter().map(|s| s.word.as_str()).collect();
+            assert!(words.contains(&"très"), "French completes tres: {words:?}");
+            osk.apply_action(KeyAction::Layout("qwerty".into()));
+            assert_eq!(osk.language(), Language::English);
+        }
+
         eprintln!("phase hidden_keyboard_ignores_pointer_events");
         {
             // A hidden keyboard must not consume taps meant for the app behind it:
@@ -3681,7 +3732,7 @@ mod tests {
             registry
         },
         resources: |doc| Widget::resources(&OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())), doc),
-        palette: ["Use QWERTY layout", "Use AZERTY layout", "Clear learned suggestions"],
+        palette: ["English (QWERTY)", "French (AZERTY)", "Clear learned suggestions"],
     }
 
     fn semantic(osk: &mut OskWidget, target: &str, action: &AccessibilityAction) -> bool {

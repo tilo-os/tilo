@@ -118,8 +118,8 @@ pub(crate) fn resources(layouts: Vec<String>, preferred: &str) -> Vec<Resource> 
         },
     ));
     for (id, label) in [
-        ("qwerty", "Use QWERTY layout"),
-        ("azerty", "Use AZERTY layout"),
+        ("qwerty", "English (QWERTY)"),
+        ("azerty", "French (AZERTY)"),
     ] {
         layout.actions.push(ActionSpec::immediate_encoded(
             id,
