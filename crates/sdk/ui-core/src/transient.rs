@@ -37,25 +37,40 @@ pub fn declare(transform: Affine, rect: Rect) {
     });
 }
 
-/// Start collecting the declarations of one frame. The app's frame pass
-/// (`draw_frame_content`) runs it; a host without that pass collects nothing.
-#[cfg(any(feature = "native", test))]
-pub(crate) fn begin_frame() {
-    FRAME.with(|frame| *frame.borrow_mut() = Some(Vec::new()));
+/// The declarations of one frame being painted, collected from
+/// [`Frame::begin`] to [`Frame::finish`]. Every host's frame pass collects
+/// through it — the native runner's and the portable frame harness's that
+/// the browser and Cloud clients paint with — so a declaration reaches the
+/// semantic tree the same way wherever the app is painted. A frame abandoned
+/// part-way (dropped) keeps nothing.
+#[must_use = "a frame collects until it is finished"]
+pub(crate) struct Frame(());
+
+impl Frame {
+    /// Start collecting the declarations of one frame.
+    pub(crate) fn begin() -> Self {
+        FRAME.with(|frame| *frame.borrow_mut() = Some(Vec::new()));
+        Self(())
+    }
+
+    /// Stop collecting, returning what the frame declared in the logical
+    /// coordinates `base` (the frame's composite transform) maps from.
+    pub(crate) fn finish(self, base: Affine) -> Vec<Rect> {
+        let declared = FRAME
+            .with(|frame| frame.borrow_mut().take())
+            .unwrap_or_default();
+        let back = base.inverse();
+        declared
+            .into_iter()
+            .map(|rect| back.transform_rect_bbox(rect))
+            .collect()
+    }
 }
 
-/// Stop collecting, returning what the frame declared in the logical
-/// coordinates `base` (the frame's composite transform) maps from.
-#[cfg(any(feature = "native", test))]
-pub(crate) fn end_frame(base: Affine) -> Vec<Rect> {
-    let declared = FRAME
-        .with(|frame| frame.borrow_mut().take())
-        .unwrap_or_default();
-    let back = base.inverse();
-    declared
-        .into_iter()
-        .map(|rect| back.transform_rect_bbox(rect))
-        .collect()
+impl Drop for Frame {
+    fn drop(&mut self) {
+        FRAME.with(|frame| *frame.borrow_mut() = None);
+    }
 }
 
 #[cfg(test)]
@@ -66,13 +81,19 @@ mod tests {
     fn declarations_are_kept_only_inside_a_frame_in_logical_coordinates() {
         declare(Affine::IDENTITY, Rect::new(0.0, 0.0, 10.0, 10.0));
         let base = Affine::scale(2.0);
-        begin_frame();
+        let frame = Frame::begin();
         declare(
             base.pre_translate((5.0, 5.0).into()),
             Rect::new(0.0, 0.0, 10.0, 4.0),
         );
         declare(base, Rect::new(3.0, 3.0, 3.0, 9.0));
-        assert_eq!(end_frame(base), vec![Rect::new(5.0, 5.0, 15.0, 9.0)]);
-        assert!(end_frame(base).is_empty(), "the frame is over");
+        assert_eq!(frame.finish(base), vec![Rect::new(5.0, 5.0, 15.0, 9.0)]);
+        let abandoned = Frame::begin();
+        declare(base, Rect::new(0.0, 0.0, 4.0, 4.0));
+        drop(abandoned);
+        assert!(
+            Frame::begin().finish(base).is_empty(),
+            "an abandoned frame keeps nothing"
+        );
     }
 }

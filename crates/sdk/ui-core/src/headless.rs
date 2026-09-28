@@ -495,6 +495,9 @@ pub struct FrameHarness {
     framework_input: std::rc::Rc<std::cell::Cell<bool>>,
     taffy: TaffyTree<()>,
     node_map: HashMap<NodeId, *mut dyn Widget>,
+    /// Where the last painted frame showed transient feedback (see
+    /// [`crate::transient`]), published by [`Self::inspect`].
+    transient: Vec<Rect>,
     bindings: crate::bound_dispatch::BoundNodeMap,
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
     root_node: NodeId,
@@ -1286,6 +1289,7 @@ impl FrameHarness {
             root,
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
+            transient: Vec::new(),
             bindings: crate::bound_dispatch::BoundNodeMap::new(),
             history: None,
             action_palette: None,
@@ -2622,6 +2626,7 @@ impl FrameHarness {
         self.publish_undo_status();
 
         let t_draw = self.profiler.as_ref().map(|_| crate::time::now());
+        let transient = crate::transient::Frame::begin();
         self.scene.reset();
         // Cull against the window exactly as the live host does, so offscreen
         // frames paint (and cost) what a window would.
@@ -2722,6 +2727,7 @@ impl FrameHarness {
         self.draw_caller_palette();
         self.refresh_system_search();
         self.draw_system_search();
+        self.transient = transient.finish(Affine::IDENTITY);
 
         if self
             .action_palette
@@ -4441,6 +4447,7 @@ impl FrameHarness {
             f64::from(self.viewport.0),
             f64::from(self.viewport.1),
         )));
+        semantics.set_transient(self.transient.clone());
         semantics.refresh_bound(
             self.root.as_ref(),
             &self.node_map,
@@ -7678,6 +7685,32 @@ fn write_headless_output(
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
+
+    #[test]
+    fn the_frame_harness_publishes_what_its_frame_painted_as_transient() {
+        // The browser and Cloud clients paint through this harness: a busy
+        // bar's sweep there must reach inspection as it does natively.
+        let mut harness = FrameHarness::new(
+            State::new(),
+            Box::new(crate::widget::ProgressBar::indeterminate()),
+            (320, 240),
+        );
+        harness.relayout();
+        let reply = harness.inspect(&crate::inspect::InspectRequest::new(
+            crate::inspect::InspectQuery::Subtree {
+                root: None,
+                depth: 8,
+            },
+            crate::a11y::Audience::LocalSession,
+        ));
+        assert!(
+            reply
+                .nodes
+                .iter()
+                .any(|node| node.pixels == tilo_reference::inspect::Pixels::Transient),
+            "{reply:#?}"
+        );
+    }
 
     #[test]
     fn late_browser_font_install_rebuilds_layout_without_mutating_document_or_focus() {

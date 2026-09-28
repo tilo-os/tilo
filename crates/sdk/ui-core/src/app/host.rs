@@ -28,7 +28,7 @@ fn draw_frame_content(
 ) -> (Affine, KurboRect, u128) {
     let __prof_resources = app.profiler.as_ref().map(|_| crate::time::now());
     app.mark_semantics_dirty();
-    crate::transient::begin_frame();
+    let transient = crate::transient::Frame::begin();
     app.refresh_control_action_availability();
     if let Some(p) = app.profiler.as_mut() {
         p.record_since(
@@ -152,7 +152,7 @@ fn draw_frame_content(
     draw_visible_tooltip(app, scene, transform, width, height, scale_factor);
     app.accessibility
         .semantic_tree
-        .set_transient(crate::transient::end_frame(transform));
+        .set_transient(transient.finish(transform));
 
     if let Some(p) = app.profiler.as_mut() {
         p.record_since(crate::profiling::Pass::Draw, __prof_draw);
