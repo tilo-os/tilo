@@ -519,9 +519,8 @@ struct ProbeRoot {
     rect: vello::kurbo::Rect,
 }
 impl Widget for ProbeRoot {
-    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn NativeViewLifecycle> {
-        Some(self)
-    }
+    tilo_ui::provides!(dyn tilo_ui::widget::NativeViewLifecycle);
+
     fn set_motion_reduced(&mut self, reduced: bool) {
         PRESENTATION.with_borrow(|slot| {
             if let Some(observations) = slot {

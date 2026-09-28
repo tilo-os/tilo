@@ -1675,6 +1675,8 @@ impl FloatingSurfaceProvider for WindowGroup {
 }
 
 impl Widget for WindowGroup {
+    crate::provides!(dyn crate::widget::FloatingSurfaceProvider);
+
     fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
         (!self.is_closing()).then(|| self.active_tab_id())
     }
@@ -2163,13 +2165,6 @@ impl Widget for WindowGroup {
         self.rect
     }
 
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
-
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
     /// Mirrors the inter-group [`crate::widget::ResizeHandle`] so both
     /// affordances give the same feedback.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {

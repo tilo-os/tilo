@@ -734,8 +734,8 @@ impl Decorator for Door {
         self.content.update(state, path)
     }
 
-    fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
-        Some(&mut self.remote)
+    fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
+        request.provide::<dyn Collaborative>(&mut self.remote);
     }
 
     fn name(&self) -> &'static str {
