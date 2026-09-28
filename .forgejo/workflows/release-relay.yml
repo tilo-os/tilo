@@ -183,29 +183,10 @@ concurrency:
 
 jobs:
   applicability:
-    if: ${{ github.event_name == 'pull_request' }}
-    runs-on: runner-quality
-    timeout-minutes: 5
-    container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
-    outputs:
-      applicable: ${{ steps.compare.outputs.applicable }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 2
-          sparse-checkout: |
-            tools/ci/prepare_pr_history.py
-            tools/ci/workflow_applicability.py
-            .forgejo/workflows/release-relay.yml
-          sparse-checkout-cone-mode: false
-          token: ${{ secrets.REGISTRY_TOKEN }}
-      - name: Prepare targeted PR history
-        run: python3 -I tools/ci/prepare_pr_history.py
-      - name: Require an exact relevant PR diff before native work
-        id: compare
-        run: python3 -I tools/ci/workflow_applicability.py --workflow .forgejo/workflows/release-relay.yml
+    uses: ./.forgejo/workflows/applicability.yml
+    with:
+      workflow: .forgejo/workflows/release-relay.yml
+      event: ${{ github.event_name }}
 
   signing-preflight:
     if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
