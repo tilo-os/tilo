@@ -657,33 +657,11 @@ mod tests {
     }
 
     /// Minimal tempdir helper (avoids pulling `tempfile` as a dev-dep — the only test in `quick-shell` that needs one).
-    struct TmpDir(PathBuf);
-    impl TmpDir {
-        fn new(name: &str) -> Self {
-            let base = std::env::temp_dir();
-            let pid = std::process::id();
-            let nonce = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos());
-            let path = base.join(format!("tilo-desktop-firstboot-{name}-{pid}-{nonce}"));
-            std::fs::create_dir_all(&path).expect("create tmpdir");
-            TmpDir(path)
-        }
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-    impl Drop for TmpDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
     #[test]
     fn firstboot_run_creates_the_desktop_dir_and_never_provisions_identity() {
         // Phase `run_with_xdg_creates_tilo_desktop_dir`.
         {
-            let tmp = TmpDir::new("xdg");
+            let tmp = tempfile::tempdir().expect("tempdir");
             run_with_env(Some(tmp.path().as_os_str()), None).expect("firstboot succeeds");
             let expected = tmp.path().join("tilo-desktop");
             assert!(
@@ -693,7 +671,7 @@ mod tests {
         }
         // Phase `run_with_home_falls_back_to_dot_config`.
         {
-            let tmp = TmpDir::new("home");
+            let tmp = tempfile::tempdir().expect("tempdir");
             run_with_env(None, Some(tmp.path().as_os_str())).expect("firstboot succeeds via HOME");
             let expected = tmp.path().join(".config").join("tilo-desktop");
             assert!(
@@ -703,7 +681,7 @@ mod tests {
         }
         // Phase `run_is_idempotent_on_existing_dir`.
         {
-            let tmp = TmpDir::new("idempotent");
+            let tmp = tempfile::tempdir().expect("tempdir");
             run_with_env(Some(tmp.path().as_os_str()), None).expect("first run ok");
             run_with_env(Some(tmp.path().as_os_str()), None).expect("second run ok");
             let expected = tmp.path().join("tilo-desktop");
@@ -717,7 +695,7 @@ mod tests {
         }
         // Phase `run_does_not_provision_identity_when_missing`.
         {
-            let tmp = TmpDir::new("no-mint-identity");
+            let tmp = tempfile::tempdir().expect("tempdir");
             run_with_env(Some(tmp.path().as_os_str()), None).expect("firstboot ok");
             let identity_file = tmp
                 .path()
@@ -731,7 +709,7 @@ mod tests {
         }
         // Phase `run_does_not_touch_an_existing_identity`.
         {
-            let tmp = TmpDir::new("existing-identity");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let dir = tmp.path().join("tilo").join("identity");
             std::fs::create_dir_all(&dir).unwrap();
             let identity_file = dir.join(PRIMARY_IDENTITY_FILE);
