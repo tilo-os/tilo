@@ -437,6 +437,9 @@ pub struct RetainedGpuTarget {
     band: Option<(wgpu::Texture, wgpu::TextureView, u32)>,
     /// Current native extent; resize recreates the target texture.
     size: (u32, u32),
+    /// The latest render covered the whole target. Its scratch buffers are
+    /// sized for that and stay pooled until trimmed.
+    last_frame_full: bool,
     /// Base color used to clear when the caller's scene is empty; matches the winit backend's fallback so the host window doesn't flash white.
     base_color: Color,
     /// The target contains a complete settled frame, independent of CPU staging validity.
@@ -515,6 +518,7 @@ impl RetainedGpuTarget {
             #[cfg(test)]
             phase_wait_override: None,
             size: (width, height),
+            last_frame_full: false,
             base_color: Color::from_rgb8(0x1A, 0x1B, 0x26),
             retained_target_valid: false,
             last_successful_revision: None,
@@ -622,6 +626,9 @@ impl RetainedGpuTarget {
         if (width, height) != self.size {
             (self.texture, self.view) = Self::allocate_texture(&self.device, width, height);
             self.band = None;
+            // Pooled scratch is sized for the old extent; a session that
+            // changed mode never renders at it again.
+            self.renderer.trim_pooled_buffers();
             self.size = (width, height);
             self.geometry_generation = self.geometry_generation.saturating_add(1);
         }
@@ -1002,6 +1009,13 @@ impl RetainedGpuTarget {
         mut timing: Option<&mut BridgePhaseTiming>,
         post_render: impl Fn(&wgpu::Device, &mut wgpu::CommandEncoder, &wgpu::TextureView),
     ) -> Result<(Option<wgpu::BufferView>, bool), BridgeError> {
+        // A full frame (a lock screen, an overlay's first paint) leaves
+        // full-target scratch pooled; damage frames after it never reuse it.
+        let full = sparse.is_none();
+        if !full && self.last_frame_full {
+            self.renderer.trim_pooled_buffers();
+        }
+        self.last_frame_full = full;
         while self.last_render_attempts < RESILIENT_RENDER_ATTEMPTS {
             self.check_live(policy)?;
             let regions = sparse.take();
@@ -4555,6 +4569,100 @@ mod tests {
         let rect = vello::kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
         scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
         scene
+    }
+
+    /// Scratch pooled for a full frame or an old size is released once the
+    /// session stops rendering that way, so the shell's memory comes back
+    /// down after a lock screen, an overlay or a mode change.
+    #[test]
+    fn pooled_scratch_follows_the_frames_the_session_still_renders() {
+        let busy = |w: u32, h: u32| {
+            let mut scene = Scene::new();
+            for i in 0..400_u32 {
+                let x = f64::from(i * 37 % w);
+                let y = f64::from(i * 53 % h);
+                let rect = vello::kurbo::Rect::new(x, y, x + 24.0, y + 24.0);
+                let color = Color::from_rgb8(u8::try_from(i % 251).expect("below 256"), 0x40, 0x80);
+                scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
+            }
+            scene
+        };
+        let pooled = |bridge: &VelloDrmBridge| bridge.target.memory_stats().pooled_buffer_bytes;
+        let mut bridge = required_bridge(1024, 768);
+        let mut pixels = vec![0; 1024 * 768 * 4];
+        let scene = busy(1024, 768);
+        bridge
+            .paint_damage_into_xrgb8888(
+                &scene,
+                SceneDamage {
+                    revision: 1,
+                    previous_revision: None,
+                    regions: None,
+                },
+                &mut pixels,
+                1024 * 4,
+            )
+            .expect("full frame");
+        let after_full = pooled(&bridge);
+        assert!(after_full > 0, "a full frame pools its scratch");
+
+        let rects = [vello::FineDamageRect {
+            x: 16,
+            y: 16,
+            width: 32,
+            height: 32,
+        }];
+        bridge
+            .paint_damage_into_xrgb8888(
+                &scene,
+                SceneDamage {
+                    revision: 2,
+                    previous_revision: Some(1),
+                    regions: Some(&rects),
+                },
+                &mut pixels,
+                1024 * 4,
+            )
+            .expect("damage frame");
+        assert_eq!(bridge.last_sparse_render_attempts(), 1);
+        let after_damage = pooled(&bridge);
+        assert!(
+            after_damage < after_full,
+            "damage frames must not keep the full frame's scratch: {after_damage} >= {after_full}"
+        );
+
+        bridge
+            .paint_damage_into_xrgb8888(
+                &scene,
+                SceneDamage {
+                    revision: 3,
+                    previous_revision: Some(2),
+                    regions: None,
+                },
+                &mut pixels,
+                1024 * 4,
+            )
+            .expect("full frame again");
+        let before_resize = pooled(&bridge);
+        bridge.resize(320, 240).expect("resize");
+        let mut small = vec![0; 320 * 240 * 4];
+        bridge
+            .paint_damage_into_xrgb8888(
+                &Scene::new(),
+                SceneDamage {
+                    revision: 4,
+                    previous_revision: None,
+                    regions: None,
+                },
+                &mut small,
+                320 * 4,
+            )
+            .expect("frame at the new size");
+        let after_resize = pooled(&bridge);
+        assert!(
+            after_resize < before_resize,
+            "a mode change must not keep the old size's scratch: {after_resize} >= {before_resize}"
+        );
     }
 
     #[test]
