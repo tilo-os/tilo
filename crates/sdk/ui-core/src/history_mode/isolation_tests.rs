@@ -209,9 +209,7 @@ impl crate::widget::Collaborative for LiveOwner {
 }
 
 impl Widget for LiveOwner {
-    fn collaborative_mut(&mut self) -> Option<&mut dyn crate::widget::Collaborative> {
-        Some(self)
-    }
+    crate::provides!(dyn crate::widget::Collaborative);
 
     fn name(&self) -> &str {
         "Live owner"

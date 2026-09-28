@@ -2459,13 +2459,8 @@ impl FullscreenProvider for TubeApp {
 }
 
 impl Widget for TubeApp {
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        Some(self)
-    }
+    ui::provides!(dyn ui::widget::FullscreenProvider);
 
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        Some(self)
-    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::TUBE_OPERATION_TYPE]
     }

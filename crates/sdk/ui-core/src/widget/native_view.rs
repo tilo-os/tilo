@@ -331,9 +331,7 @@ impl NativeViewLifecycle for NativeView {
 }
 
 impl Widget for NativeView {
-    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn NativeViewLifecycle> {
-        Some(self)
-    }
+    crate::provides!(dyn crate::widget::NativeViewLifecycle);
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;

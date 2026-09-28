@@ -4755,13 +4755,7 @@ impl Continuable for BooksApp {
 }
 
 impl Widget for BooksApp {
-    fn continuable(&self) -> Option<&dyn Continuable> {
-        Some(self)
-    }
-
-    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
-        Some(self)
-    }
+    ui::provides!(dyn ui::widget::Continuable);
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::EBOOK_OPERATION_TYPE]
