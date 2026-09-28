@@ -59,65 +59,15 @@ impl SavedInstanceView {
     }
 }
 
-// Postcard is positional: preserve the exact original eight-field schema.
-#[derive(serde::Deserialize)]
-struct SavedInstanceViewV1 {
-    version: u32,
-    app_id: String,
-    device_id: String,
-    workspace_id: String,
-    instance_id: u64,
-    record_id: String,
-    record_kind: String,
-    view: View,
-}
-impl SavedInstanceViewV1 {
-    fn upgrade(self) -> Result<SavedInstanceView, ThawError> {
-        if self.version != 1 {
-            return Err(ThawError::UnsupportedVersion {
-                found: self.version,
-                supported: 1,
-            });
-        }
-        for identity in [
-            &self.app_id,
-            &self.device_id,
-            &self.workspace_id,
-            &self.record_id,
-            &self.record_kind,
-        ] {
-            validate_identity(identity)?;
-        }
-        self.view.validate()?;
-        Ok(SavedInstanceView {
-            version: 2,
-            app_id: self.app_id,
-            device_id: self.device_id,
-            workspace_id: self.workspace_id,
-            instance_id: self.instance_id,
-            record_id: self.record_id,
-            record_kind: self.record_kind,
-            view: self.view,
-            application: None,
-        })
-    }
-}
 fn decode_envelope(bytes: &[u8]) -> Result<SavedInstanceView, ThawError> {
     let (version, _): (u32, _) = postcard::take_from_bytes(bytes).map_err(ThawError::Envelope)?;
-    let (instance, remainder) = match version {
-        1 => {
-            let (old, remainder): (SavedInstanceViewV1, _) =
-                postcard::take_from_bytes(bytes).map_err(ThawError::Envelope)?;
-            (old.upgrade()?, remainder)
-        }
-        2 => postcard::take_from_bytes(bytes).map_err(ThawError::Envelope)?,
-        found => {
-            return Err(ThawError::UnsupportedVersion {
-                found,
-                supported: 2,
-            });
-        }
-    };
+    if version != 2 {
+        return Err(ThawError::UnsupportedVersion {
+            found: version,
+            supported: 2,
+        });
+    }
+    let (instance, remainder) = postcard::take_from_bytes(bytes).map_err(ThawError::Envelope)?;
     if !remainder.is_empty() {
         return Err(ThawError::InvalidView("trailing envelope bytes".into()));
     }
