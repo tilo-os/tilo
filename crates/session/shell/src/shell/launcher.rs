@@ -3499,38 +3499,6 @@ mod tests {
             assert_eq!(LAUNCH_FAILURE_NOTICE_LIFETIME, Duration::from_secs(8));
         }
 
-        fn a_recognised_cause_is_named_without_quoting_the_process() {
-            let cases = [
-                (
-                    Some(127),
-                    "/usr/libexec/tilo/apps/terminal: error while loading shared libraries: \
-                     libstd-8f2c.so: cannot open shared object file: No such file or directory",
-                    "The app needs a library this system doesn't have, so it stopped before opening.",
-                ),
-                (
-                    Some(1),
-                    "bwrap: Can't make overlay mount on /newroot/usr with options \
-                     upperdir=/proc/self/fd/13,userxattr: Invalid argument",
-                    "The app's sandbox could not be set up, so it stopped before opening.",
-                ),
-                (
-                    None,
-                    "",
-                    "The app crashed before opening. Open Applications and try again.",
-                ),
-            ];
-            for (code, stderr, body) in cases {
-                let notice = launch_event(LaunchEventKind::Failed {
-                    code,
-                    stderr_tail: stderr.into(),
-                })
-                .failure_notice()
-                .expect("failure has a notice");
-                assert_eq!(notice.body, body);
-                assert!(!notice.body.contains('/'), "no path reaches the banner");
-            }
-        }
-
         fn spawn_failure_and_non_failure_events_have_sensible_banner_copy() {
             let event = launch_event(LaunchEventKind::SpawnFailed {
                 detail: "No such file or directory (os error 2)".into(),
@@ -3607,11 +3575,43 @@ mod tests {
         }
 
         failed_launch_banner_never_contains_raw_stderr();
-        a_recognised_cause_is_named_without_quoting_the_process();
         spawn_failure_and_non_failure_events_have_sensible_banner_copy();
         launch_failure_title_normalises_and_bounds_untrusted_app_names();
         preflight_notification_copy_excludes_paths_and_backend_detail();
         untrusted_app_log_lines_are_memory_bounded_and_stream_label_safe();
+    }
+
+    #[test]
+    fn a_recognised_cause_is_named_without_quoting_the_process() {
+        let cases = [
+            (
+                Some(127),
+                "/usr/libexec/tilo/apps/terminal: error while loading shared libraries: \
+                 libstd-8f2c.so: cannot open shared object file: No such file or directory",
+                "The app needs a library this system doesn't have, so it stopped before opening.",
+            ),
+            (
+                Some(1),
+                "bwrap: Can't make overlay mount on /newroot/usr with options \
+                 upperdir=/proc/self/fd/13,userxattr: Invalid argument",
+                "The app's sandbox could not be set up, so it stopped before opening.",
+            ),
+            (
+                None,
+                "",
+                "The app crashed before opening. Open Applications and try again.",
+            ),
+        ];
+        for (code, stderr, body) in cases {
+            let notice = launch_event(LaunchEventKind::Failed {
+                code,
+                stderr_tail: stderr.into(),
+            })
+            .failure_notice()
+            .expect("failure has a notice");
+            assert_eq!(notice.body, body);
+            assert!(!notice.body.contains('/'), "no path reaches the banner");
+        }
     }
 
     /// The startup metrics of `package_id`'s launches. The metrics registry

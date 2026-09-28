@@ -39,7 +39,7 @@ pub fn get_volume() -> Result<f32, String> {
 }
 
 /// Whether the default sink is a real output. With no audio device
-/// WirePlumber still offers a "Dummy Output" (`auto_null`) whose volume reads
+/// `WirePlumber` still offers a "Dummy Output" (`auto_null`) whose volume reads
 /// and sets fine and does nothing, so a control over it has no device behind it.
 pub fn has_output_device() -> bool {
     run_capture("wpctl", &["inspect", "@DEFAULT_AUDIO_SINK@"]).is_ok_and(|out| !is_dummy_sink(&out))
