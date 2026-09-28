@@ -188,9 +188,7 @@ impl Writer {
                 ));
             }
             let disk: DiskAuthority = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-            if disk.schema_version > crate::shell::persist::NATIVE_STATE_SCHEMA_VERSION
-                || (disk.schema_version < 2 && !disk.native_authority.is_empty())
-            {
+            if disk.schema_version != crate::shell::persist::NATIVE_STATE_SCHEMA_VERSION {
                 return Err(io::Error::other(
                     "unsupported native authority state-file layout",
                 ));
