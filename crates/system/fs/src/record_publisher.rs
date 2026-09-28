@@ -1056,7 +1056,6 @@ impl RecordPublisherError {
                         | RecordRepositoryError::TooManyOperations
                         | RecordRepositoryError::TooManyConflicts
                         | RecordRepositoryError::TooManyRecords
-                        | RecordRepositoryError::RecordFileTooLarge
                 )
         )
     }

@@ -103,9 +103,7 @@ impl ContentStore {
         }
         let tier = self.tier_of(previous).await;
         let manifest = match known {
-            Some(m) if m.total_len() == len && m.format() == content::Format::V2 => {
-                Arc::unwrap_or_clone(m)
-            }
+            Some(m) if m.total_len() == len => Arc::unwrap_or_clone(m),
             _ => {
                 let reader = File::open(path)?;
                 tokio::task::spawn_blocking(move || {
@@ -157,7 +155,7 @@ impl ContentStore {
 
     /// The chunk tier of `previous`'s manifest, for tier stickiness.
     async fn tier_of(&self, previous: Option<Hash>) -> Option<ChunkTier> {
-        self.manifest(previous?).await?.tier()
+        Some(self.manifest(previous?).await?.tier())
     }
 
     /// A file-backed chunk's bytes, checked against its hash.
@@ -349,19 +347,5 @@ mod tests {
             bytes,
             "the area holds the published bytes"
         );
-    }
-
-    #[tokio::test]
-    async fn legacy_content_stays_readable() {
-        let store = ContentStore::memory();
-        let data = pseudo(100_000, 4);
-        let (manifest, chunks) = content::legacy::manifest(&data);
-        for chunk in chunks {
-            store.ingest(Bytes::copy_from_slice(chunk)).await.unwrap();
-        }
-        let id = store.ingest(Bytes::from(manifest.encode())).await.unwrap();
-        let m = store.manifest(id).await.unwrap();
-        assert_eq!(m.format(), content::Format::Legacy);
-        assert_eq!(store.read_local(id, &m, 0..100_000).await.unwrap(), data);
     }
 }
