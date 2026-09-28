@@ -8,6 +8,10 @@
 //! under the app's route, but only in a resource kind the app's installed
 //! manifest declares; in dev mode, an app that is not installed is trusted
 //! with the kind its own build names.
+//!
+//! Apps seal their writes; this device stewards the room's channels, so the
+//! owner opens each sealed write only after the sealed envelope passed every
+//! check, and admits the plaintext it verified.
 
 use super::workspace::ProfileWorkspace;
 use ed25519_dalek::SigningKey;
@@ -18,6 +22,8 @@ use std::{
     sync::{Arc, Mutex},
     time::SystemTime,
 };
+use tilo_action_broker::channel_encryption::ChannelKeyProvider;
+use tilo_desktop_model::RoomId;
 use tilo_peer_state::{
     SeedState, StatePeer,
     owner_commit::{
@@ -59,6 +65,8 @@ pub(super) struct RoomOwner {
     governor: DeviceCert,
     creation: RecordCreation,
     workspace: Arc<ProfileWorkspace>,
+    /// The channel keys this device holds as the room's steward.
+    keys: ChannelKeyProvider,
     committed: Mutex<Committed>,
 }
 
@@ -90,6 +98,7 @@ impl RoomOwner {
         (key, device): (SigningKey, DeviceCert),
         creation: RecordCreation,
         workspace: Arc<ProfileWorkspace>,
+        keys: ChannelKeyProvider,
     ) -> io::Result<Self> {
         let path = profile.join(ROOM_OWNER);
         let now = SystemTime::now();
@@ -109,6 +118,7 @@ impl RoomOwner {
             governor,
             creation,
             workspace,
+            keys,
             committed: Mutex::new(committed),
         })
     }
@@ -180,7 +190,22 @@ impl RoomOwner {
         if candidate.document(app, record).is_none() {
             self.create_record(&mut candidate, app, record, record_kind, now)?;
         }
-        candidate.admit_new_local_document(app, record, envelope, now)?;
+        if envelope.encryption.is_some() {
+            let channels = self
+                .keys
+                .get()
+                .ok_or("the room's channel keys are not available")?;
+            let room = RoomId::parse(&self.room).ok_or("invalid runtime room")?;
+            candidate.admit_new_opened_local_document(
+                app,
+                record,
+                envelope,
+                &mut |sealed| channels.open_new_write(room, sealed),
+                now,
+            )?;
+        } else {
+            candidate.admit_new_local_document(app, record, envelope, now)?;
+        }
         let next = Committed {
             durable: candidate.durable()?,
             peer: candidate,

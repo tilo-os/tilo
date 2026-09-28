@@ -13,6 +13,8 @@
 
 #[path = "content_history.rs"]
 mod content_history;
+#[path = "current_epoch_only.rs"]
+mod current_epoch_only;
 #[path = "governance_journal.rs"]
 mod governance_journal;
 #[path = "interop_with_signed_op.rs"]
