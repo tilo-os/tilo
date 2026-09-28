@@ -6,7 +6,7 @@ use super::{
     SenderStorageCode as Code, codec,
 };
 use crate::host_worker::managed_sender::{NativeSenderOutboxV1, OutboxFailure};
-use atomic_file::{
+use tilo_files::native::atomic::{
     ExistingCommitError, FileIdentity, PublicationError, PublicationState, PublishMode,
     StorageDirectory,
     bounded::FreshChildError,
@@ -451,7 +451,7 @@ impl Operation {
                         self.fresh_child = false;
                     }
                     Err(error)
-                        if matches!(&error, atomic_file::bounded::ChildOpenError::Open(e) if e.kind() == io::ErrorKind::NotFound)
+                        if matches!(&error, tilo_files::native::atomic::bounded::ChildOpenError::Open(e) if e.kind() == io::ErrorKind::NotFound)
                             && self.expectation == AdministrativeExpectation::Prepared =>
                     {
                         let fresh = self.root()?.create_fresh_child(OsStr::new(CHILD_NAME))?;
