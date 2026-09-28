@@ -13179,6 +13179,7 @@ dependencies = [
  "thumbnail",
  "tilo-action-broker",
  "tilo-actions",
+ "tilo-agent-control-protocol",
  "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-isolate",

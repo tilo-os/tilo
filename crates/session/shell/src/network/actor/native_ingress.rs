@@ -16,6 +16,9 @@ struct Route {
     serial: u64,
     pending: Option<tokio::task::JoinHandle<()>>,
 }
+/// A governed room's relay session is not up (yet): the caller may retry.
+pub(crate) const NOT_CONNECTED: &str = "the governed room is not connected";
+
 impl Drop for Route {
     fn drop(&mut self) {
         if let Some(task) = &self.pending {
@@ -89,9 +92,7 @@ impl ActorState {
                 (*topic == ws && runtime.native_scope.is_some()).then_some(runtime)
             })
         else {
-            let _ = request
-                .reply
-                .send(Err("the governed room is not connected".into()));
+            let _ = request.reply.send(Err(NOT_CONNECTED.into()));
             return;
         };
         runtime
@@ -126,6 +127,9 @@ impl ActorState {
         };
         for (&ws, route) in &mut self.native_routes.entries {
             let material = route.connect.material(identity);
+            if let Err(error) = &material {
+                tracing::debug!(%error, ws, "native room custody unusable for its host");
+            }
             if material.is_err() {
                 self.host_sessions.retain(|(topic, _), _| *topic != ws);
                 if let Some(task) = route.pending.take() {
@@ -206,7 +210,13 @@ impl ActorState {
         {
             return;
         }
-        let Ok(session) = *result else { return };
+        let session = match *result {
+            Ok(session) => session,
+            Err(error) => {
+                tracing::debug!(%error, ws, "native host dial failed; retrying");
+                return;
+            }
+        };
         let Ok((payload, _)) = IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint) else {
             return;
         };
