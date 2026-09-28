@@ -1,5 +1,7 @@
-//! Publishing one build: upload the package, then ask for the entry that
-//! lists it. Both wait for the registry owner's review.
+//! Publishing builds: upload each package, then ask for one entry per package
+//! id that lists them all. Both wait for the registry owner's review.
+
+use std::collections::BTreeMap;
 
 use anyhow::{Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
@@ -8,69 +10,96 @@ use registry_types::EntryAction;
 use crate::client::RegistryClient;
 use crate::entry::{EntryMetadata, Platform, build_entry, check_package};
 
-/// What [`publish`] asked the registry for.
+/// One package [`publish`] uploaded.
 #[derive(Clone, Debug)]
 pub struct Published {
     pub package_id: String,
     pub version: String,
     pub platform: &'static str,
     pub url: String,
-    /// `None` when the published entry already lists this build unchanged.
+    /// What the registry was asked to do with the entry listing this build;
+    /// `None` when the published entry already lists it unchanged.
     pub action: Option<EntryAction>,
 }
 
-/// Upload `tapp_bytes` and ask for the entry that lists them: `add` for a
-/// package the catalogue does not have yet, `update` otherwise.
+/// Upload every package in `packages` and ask for the entries that list
+/// them, answering one [`Published`] per package in the same order: `add` for a package id the catalogue does not have yet, `update`
+/// otherwise. Builds of one package id — its platforms and architectures —
+/// go into a single request, because a newer request for a package replaces
+/// the one waiting for review.
 ///
 /// # Errors
 ///
-/// When the package would be refused, the published entry belongs to
-/// another publisher, or the registry refuses a request.
+/// When a package would be refused, a published entry belongs to another
+/// publisher, or the registry refuses a request. Every package is checked
+/// before anything is uploaded.
 pub fn publish(
     client: &RegistryClient,
     key: &SigningKey,
-    tapp_bytes: &[u8],
+    packages: &[Vec<u8>],
     arch: Option<&str>,
     metadata: Option<&EntryMetadata>,
-) -> Result<Published> {
-    let checked = check_package(tapp_bytes, key.verifying_key().to_bytes())?;
-    let platform = Platform::of(&checked.manifest).ok_or_else(|| {
-        anyhow!("the package's [target] names a platform this tool does not publish")
-    })?;
-    let package_id = checked.manifest.package.id.clone();
-    let previous = client.entry(&package_id)?;
-    if let Some(previous) = &previous
-        && !previous
-            .publisher_pubkey_hex
-            .eq_ignore_ascii_case(&crate::key::public_hex(key))
-    {
-        bail!("{package_id} is published by another key");
+) -> Result<Vec<Published>> {
+    let mut by_id: BTreeMap<String, Vec<(usize, Platform, String)>> = BTreeMap::new();
+    for (index, bytes) in packages.iter().enumerate() {
+        let checked = check_package(bytes, key.verifying_key().to_bytes())?;
+        let platform = Platform::of(&checked.manifest).ok_or_else(|| {
+            anyhow!("the package's [target] names a platform this tool does not publish")
+        })?;
+        by_id.entry(checked.manifest.package.id).or_default().push((
+            index,
+            platform,
+            checked.manifest.package.version,
+        ));
     }
-    let url = client.upload(key, tapp_bytes)?;
-    let entry = build_entry(
-        tapp_bytes,
-        &url,
-        key,
-        platform,
-        arch,
-        previous.as_ref(),
-        metadata,
-    )?;
-    let action = if previous.as_ref() == Some(&entry) {
-        None
-    } else if previous.is_some() {
-        Some(EntryAction::Update)
-    } else {
-        Some(EntryAction::Add)
-    };
-    if let Some(action) = action {
+    let mut published: Vec<Option<Published>> = vec![None; packages.len()];
+    for (package_id, builds) in by_id {
+        let previous = client.entry(&package_id)?;
+        if let Some(previous) = &previous
+            && !previous
+                .publisher_pubkey_hex
+                .eq_ignore_ascii_case(&crate::key::public_hex(key))
+        {
+            bail!("{package_id} is published by another key");
+        }
+        let mut entry = previous.clone();
+        let indices: Vec<usize> = builds.iter().map(|(index, ..)| *index).collect();
+        for (index, platform, version) in builds {
+            let bytes = packages.get(index).map_or(&[][..], Vec::as_slice);
+            let url = client.upload(key, bytes)?;
+            entry = Some(build_entry(
+                bytes,
+                &url,
+                key,
+                platform,
+                arch,
+                entry.as_ref(),
+                metadata,
+            )?);
+            if let Some(slot) = published.get_mut(index) {
+                *slot = Some(Published {
+                    package_id: package_id.clone(),
+                    version,
+                    platform: platform.wire(),
+                    url,
+                    action: None,
+                });
+            }
+        }
+        let Some(entry) = entry.filter(|entry| previous.as_ref() != Some(entry)) else {
+            continue;
+        };
+        let action = if previous.is_some() {
+            EntryAction::Update
+        } else {
+            EntryAction::Add
+        };
         client.submit(action, entry, key)?;
+        for index in indices {
+            if let Some(Some(build)) = published.get_mut(index) {
+                build.action = Some(action);
+            }
+        }
     }
-    Ok(Published {
-        package_id,
-        version: checked.manifest.package.version,
-        platform: platform.wire(),
-        url,
-        action,
-    })
+    Ok(published.into_iter().flatten().collect())
 }
