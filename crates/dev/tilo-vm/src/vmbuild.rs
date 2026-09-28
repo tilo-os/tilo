@@ -47,6 +47,47 @@ pub fn sh_quote(word: &str) -> String {
     }
 }
 
+/// rsync on Windows is MSYS2, so its SSH child must come from the same
+/// runtime. Native Windows OpenSSH loses the rsync pipe before any bytes are
+/// sent (ERROR from cb :87). Its key and known-hosts paths must be MSYS paths.
+pub fn rsync_rsh(endpoint: &SshEndpoint, key: Option<&str>) -> Result<String, CliError> {
+    let _rsync = crate::host::rsync_program().ok_or_else(|| CliError::ToolMissing {
+        tool: "rsync".into(),
+        purpose: "sync worktree and image layers into a VM".into(),
+    })?;
+    let ssh = remote::ssh_command(endpoint, key, &[], false);
+    #[cfg(windows)]
+    let mut ssh = ssh;
+    #[cfg(windows)]
+    {
+        let sibling = crate::host::rsync_ssh_program().ok_or_else(|| CliError::ToolMissing {
+            tool: "MSYS2 OpenSSH (pacman -S openssh)".into(),
+            purpose: format!("run as the SSH transport for {}", _rsync),
+        })?;
+        use_msys_ssh(&mut ssh, &sibling);
+    }
+    let mut words = vec![sh_quote(&ssh.program)];
+    let options = ssh.args.len().saturating_sub(1);
+    words.extend(ssh.args.iter().take(options).map(|arg| sh_quote(arg)));
+    Ok(words.join(" "))
+}
+
+#[cfg(windows)]
+fn use_msys_ssh(ssh: &mut CommandLine, sibling: &Path) {
+    ssh.program = rsync_source(sibling);
+    let mut key_next = false;
+    for arg in &mut ssh.args {
+        if key_next {
+            *arg = rsync_source(Path::new(arg));
+            key_next = false;
+        } else if arg == "-i" {
+            key_next = true;
+        } else if let Some(path) = arg.strip_prefix("UserKnownHostsFile=") {
+            *arg = format!("UserKnownHostsFile={}", rsync_source(Path::new(path)));
+        }
+    }
+}
+
 /// `rsync` that mirrors the worktree into `SRC_DIR/<id>/` in the VM:
 /// `.gitignore` rules apply, `.git` and `target/` stay behind (the VM's
 /// `target/` is its own build dir and is never deleted by the sync), and
@@ -56,12 +97,8 @@ pub fn rsync_command(
     endpoint: &SshEndpoint,
     key: Option<&str>,
     id: &str,
-) -> CommandLine {
-    let ssh = remote::ssh_command(endpoint, key, &[], false);
-    let mut words = vec![sh_quote(&ssh.program)];
-    // ssh_args ends with user@host, which rsync puts in the destination.
-    let options = ssh.args.len().saturating_sub(1);
-    words.extend(ssh.args.iter().take(options).map(|a| sh_quote(a)));
+) -> Result<CommandLine, CliError> {
+    let rsh = rsync_rsh(endpoint, key)?;
     let dest_dir = format!("{SRC_DIR}/{id}");
     let locks = "/var/lib/tilo-vm/locks";
     let rsync_path =
@@ -70,7 +107,7 @@ pub fn rsync_command(
     if !source.ends_with('/') {
         source.push('/');
     }
-    CommandLine::new(
+    Ok(CommandLine::new(
         &crate::host::rsync_program().unwrap_or_else(|| "rsync".into()),
         &[
             "--archive",
@@ -83,11 +120,11 @@ pub fn rsync_command(
         ],
     )
     .arg("--rsh")
-    .arg(words.join(" "))
+    .arg(rsh)
     .arg("--rsync-path")
     .arg(rsync_path)
     .arg(source)
-    .arg(format!("{}@{}:{dest_dir}/", endpoint.user, endpoint.host))
+    .arg(format!("{}@{}:{dest_dir}/", endpoint.user, endpoint.host)))
 }
 
 /// MSYS2 rsync parses `C:\...` as a remote `host:path` operand. Use its
@@ -228,7 +265,8 @@ mod tests {
 
         // Phase: rsync_respects_gitignore_and_leaves_target_alone.
         {
-            let line = rsync_command(Path::new("/w/tilo"), &endpoint(), Some("/k/id x"), "wt-1");
+            let line =
+                rsync_command(Path::new("/w/tilo"), &endpoint(), Some("/k/id x"), "wt-1").unwrap();
             let text = line.display();
             assert!(line.args.contains(&"--filter=:- .gitignore".to_owned()));
             assert!(line.args.contains(&"--exclude=/target/".to_owned()));
@@ -255,19 +293,28 @@ mod tests {
         // Phase: windows_worktree_is_a_local_msys2_rsync_operand.
         #[cfg(windows)]
         {
-            let line = rsync_command(
-                Path::new(r"C:\Users\bob\tilo-tilo-main"),
-                &endpoint(),
-                None,
-                "wt-1",
-            );
             assert_eq!(
-                line.args[line.args.len() - 2],
-                "/c/Users/user/tilo-tilo-main/"
+                rsync_source(Path::new(r"C:\Users\bob\tilo-tilo-main")),
+                "/c/Users/user/tilo-tilo-main"
             );
-            if let Some(found) = crate::host::which_all("rsync").first() {
-                assert_eq!(line.program, found.display().to_string());
-            }
+            let mut ssh = remote::ssh_command(
+                &endpoint(),
+                Some(r"C:\Users\bob\keys\vm_ed25519"),
+                &[],
+                false,
+            );
+            use_msys_ssh(
+                &mut ssh,
+                Path::new(r"C:\Users\bob\msys64\usr\bin\ssh.exe"),
+            );
+            assert_eq!(ssh.program, "/c/Users/user/msys64/usr/bin/ssh.exe");
+            assert!(ssh.args.contains(&"-i".into()));
+            assert!(ssh.args.contains(&"/c/Users/user/keys/vm_ed25519".into()));
+            assert!(
+                ssh.args.contains(
+                    &"UserKnownHostsFile=/c/Users/user/keys/vm_ed25519.known_hosts".into()
+                )
+            );
         }
 
         // Phase: job_commands_follow_the_configured_daemon.
