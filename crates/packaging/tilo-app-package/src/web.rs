@@ -343,7 +343,7 @@ pub(crate) mod tests {
 
     const ABI: &str = "tilo-runtime/2026.07+wasm.00112233445566778899aabbccddeeff";
 
-    fn authored(kind: &str, runtime: Option<&str>) -> Manifest {
+    pub(crate) fn authored(kind: &str, runtime: Option<&str>) -> Manifest {
         let runtime = runtime.map_or(String::new(), |r| format!("runtime = \"{r}\""));
         Manifest::from_toml_str(&format!(
             r#"
