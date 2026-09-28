@@ -773,14 +773,16 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
                 delta: 0.2,
                 phase: TouchPhase::Moved,
             },
-            1.0,
-            &no_modifiers,
-            &mut doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &no_modifiers,
+                state: &mut doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
         assert!(handled);
         let after_pinch = app.timeline_density;
@@ -793,14 +795,16 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
                 delta: MouseScrollDelta::LineDelta(0.0, -1.0),
                 phase: TouchPhase::Moved,
             },
-            1.0,
-            &ctrl,
-            &mut doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &ctrl,
+                state: &mut doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
         assert!(handled);
         assert_eq!(app.timeline_density, after_pinch + 1);
@@ -967,17 +971,21 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
             },
         )
         .unwrap();
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::Effect,
-                PHOTOS_OPERATION_TYPE,
-                &payload.payload,
-                &doc,
-                &ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    PHOTOS_OPERATION_TYPE,
+                    &payload.payload
+                ),
+                &mut doc,
+                &ROOT
             )
-            .unwrap()
-        );
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert!(app.library_mode);
         assert_eq!(app.active_album.as_deref(), Some("photos.album:trip"));
         assert_eq!(
@@ -994,13 +1002,16 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
         )
         .unwrap();
         assert!(
-            Widget::invoke_resource_operation(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::Effect,
-                PHOTOS_OPERATION_TYPE,
-                &stale.payload,
-                &doc,
-                &ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    PHOTOS_OPERATION_TYPE,
+                    &stale.payload
+                ),
+                &mut doc,
+                &ROOT
             )
             .is_err()
         );
@@ -1028,17 +1039,21 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
             &PhotosOperation::ViewFavorites,
         )
         .expect("favorite view operation encodes");
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::View,
-                PHOTOS_OPERATION_TYPE,
-                &payload.payload,
-                &doc,
-                &ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    PHOTOS_OPERATION_TYPE,
+                    &payload.payload
+                ),
+                &mut doc,
+                &ROOT
             )
-            .expect("favorite collection is present")
-        );
+            .expect("favorite collection is present"),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert!(app.library_mode);
         assert!(app.active_favorites);
         assert_eq!(
@@ -1049,13 +1064,16 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
 
         PhotosDoc::set_library(&mut doc, &crate::model::PhotoLibrary::default());
         assert!(
-            Widget::invoke_resource_operation(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::View,
-                PHOTOS_OPERATION_TYPE,
-                &payload.payload,
-                &doc,
-                &ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    PHOTOS_OPERATION_TYPE,
+                    &payload.payload
+                ),
+                &mut doc,
+                &ROOT
             )
             .is_err()
         );
@@ -1527,12 +1545,15 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
         )
         .expect("share operation encodes");
 
-        let error = Widget::invoke_resource_operation(
+        let error = Widget::start_operation(
             &mut app,
-            tilo_actions::OperationKind::Effect,
-            PHOTOS_OPERATION_TYPE,
-            &payload.payload,
-            &doc,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
+                PHOTOS_OPERATION_TYPE,
+                &payload.payload,
+            ),
+            &mut doc,
             &ROOT,
         )
         .expect_err("a missing resource cannot claim that its reference was shared");
@@ -2385,14 +2406,16 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
             let mut handled = false;
             app.handle_event(
                 &event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &ROOT,
-                &mut handled,
-                &mut focus,
-                node,
-                &tree,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
         }
         let invocation = Widget::take_control_invocation(&mut app)
@@ -2404,11 +2427,13 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
         assert_eq!(invocation.address.action, "invoke");
         let payload = serde_json::to_vec("photos-directory-stop").unwrap();
         let started = app
-            .start_resource_operation_with_document(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                "tilo.ui.control.invoke",
-                &payload,
+            .start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &payload,
+                ),
                 &mut doc,
                 &ROOT,
             )
@@ -2607,13 +2632,15 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
         )
         .expect("export operation encodes");
         let mut app = PhotosApp::with_content(store.clone());
-        let started = Widget::start_resource_operation(
+        let started = Widget::start_operation(
             &mut app,
-            tilo_actions::InvocationId::new(),
-            tilo_actions::OperationKind::Effect,
-            PHOTOS_OPERATION_TYPE,
-            &payload.payload,
-            &doc,
+            &ui::widget::ResourceOperation::local(
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
+                PHOTOS_OPERATION_TYPE,
+                &payload.payload,
+            ),
+            &mut doc,
             &ROOT,
         )
         .expect("export succeeds")
@@ -2646,14 +2673,16 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
 
         PhotosDoc::set_edits(&mut doc, &crate::model::Edits::default());
         assert!(
-            Widget::start_resource_operation(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                PHOTOS_OPERATION_TYPE,
-                &payload.payload,
-                &doc,
-                &ROOT,
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    PHOTOS_OPERATION_TYPE,
+                    &payload.payload
+                ),
+                &mut doc,
+                &ROOT
             )
             .is_err(),
             "a stale edit snapshot must not produce different content"
@@ -2685,14 +2714,16 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
             encoded("photos.image:wrong-target".into()),
         ] {
             assert!(
-                Widget::start_resource_operation(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    PHOTOS_OPERATION_TYPE,
-                    &payload.payload,
-                    &doc,
-                    &ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        PHOTOS_OPERATION_TYPE,
+                        &payload.payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
                 .is_err()
             );

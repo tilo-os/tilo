@@ -16,6 +16,7 @@
 //! editor.set_text("fn main() {\n    println!(\"hi\");\n}\n");
 //! ```
 
+use crate::widget::{AppModel, ModelPath};
 use std::ops::Range;
 
 use automerge::{AutoCommit, ObjId};
@@ -400,11 +401,11 @@ impl CodeEditor {
 }
 
 impl Widget for CodeEditor {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.inner.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.inner.update(state, path)
     }
 
@@ -491,33 +492,8 @@ impl Widget for CodeEditor {
             .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the Widget event signature is forwarded intact to the inner text editor with CRDT, focus and layout context"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.inner.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.inner.handle_event(event, ctx);
     }
 
     fn name(&self) -> &'static str {
@@ -571,8 +547,8 @@ impl Widget for CodeEditor {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.inner.perform_action(action, state, path)
     }
@@ -901,14 +877,16 @@ mod tests {
         let node = taffy.leaf_node(Style::default());
         ed.handle_event(
             ev,
-            1.0,
-            &m,
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

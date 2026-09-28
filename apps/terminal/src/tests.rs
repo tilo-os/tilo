@@ -379,14 +379,16 @@ fn send_left_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
     };
     widget.handle_event(
         &ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -405,14 +407,16 @@ fn send_left_release(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
     };
     widget.handle_event(
         &ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -431,14 +435,16 @@ fn send_cursor_move(widget: &mut TerminalWidget, doc: &mut AutoCommit, x: f64, y
     };
     widget.handle_event(
         &ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -467,14 +473,16 @@ fn send_mouse_button_mods(
     };
     widget.handle_event(
         &ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        taffy::NodeId::new(0),
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: taffy::NodeId::new(0),
+            taffy: &taffy,
+        },
     );
 }
 
@@ -486,14 +494,16 @@ fn send_focus(widget: &mut TerminalWidget, doc: &mut AutoCommit, focused: bool) 
     let taffy = taffy::TaffyTree::<()>::new();
     widget.handle_event(
         &WindowEvent::Focused(focused),
-        1.0,
-        &Modifiers::default(),
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        taffy::NodeId::new(0),
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: taffy::NodeId::new(0),
+            taffy: &taffy,
+        },
     );
 }
 
@@ -570,14 +580,16 @@ fn send_key_with_modifiers(
     };
     widget.handle_event(
         &win_ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -1427,8 +1439,18 @@ fn clipboard_gestures_route_through_confirmed_actions() {
         ui::clipboard_copy_primary("SUBSTITUTED");
         let encoded = spec.build_json(&intent.arguments).unwrap();
         assert!(
-            w.invoke_resource_operation(spec.kind, &encoded.type_id, &encoded.payload, &doc, &ROOT)
-                .unwrap()
+            w.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    spec.kind,
+                    &encoded.type_id,
+                    &encoded.payload
+                ),
+                &mut doc,
+                &ROOT
+            )
+            .map(|started| started.is_some())
+            .unwrap()
         );
         assert_eq!(
             drain_writes(&write_rx),
@@ -2051,13 +2073,17 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
         // tests cover denial, confirmation and live role revocation.
         assert!(
             widget
-                .invoke_resource_operation(
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        spec.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
                     &ROOT
                 )
+                .map(|started| started.is_some())
                 .unwrap()
         );
         assert_eq!(
@@ -2536,13 +2562,17 @@ fn menu_and_paste_actions_recheck_live_permissions() {
         let encoded = spec.build_json(&intent.arguments).unwrap();
         assert!(
             widget
-                .invoke_resource_operation(
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
-                    &ROOT,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        spec.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
+                .map(|started| started.is_some())
                 .unwrap()
         );
         assert_eq!(
@@ -3042,14 +3072,16 @@ fn ime_and_accessibility_expose_terminal_semantics() {
         let taffy = taffy::TaffyTree::<()>::new();
         w.handle_event(
             &WindowEvent::Ime(winit::event::Ime::Commit("漢字".into())),
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            taffy::NodeId::new(0),
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: taffy::NodeId::new(0),
+                taffy: &taffy,
+            },
         );
 
         assert!(handled, "focused terminal consumes an IME commit");
@@ -4086,14 +4118,16 @@ fn send_left_press_mods(widget: &mut TerminalWidget, doc: &mut AutoCommit, shift
     };
     widget.handle_event(
         &ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -4113,14 +4147,16 @@ fn send_middle_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
     };
     widget.handle_event(
         &ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -4312,14 +4348,16 @@ fn mouse_selection_gestures_select_extend_and_stay_anchored() {
         };
         widget.handle_event(
             &ev,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
 
         // The highlight span exists in the SAME event that moved the pointer —
@@ -4923,14 +4961,18 @@ fn windows_native_and_hosted_terminal_paths() {
         let command = r#"powershell.exe -NoProfile -Command "$s=$Host.UI.RawUI.WindowSize; 'NATIVE_SIZE={0}x{1}' -f $s.Width,$s.Height""#;
         let arguments = serde_json::to_vec(command).unwrap();
         assert!(
-            ui::Widget::invoke_resource_operation(
+            ui::Widget::start_operation(
                 &mut widget,
-                ui::tilo_actions::OperationKind::Effect,
-                "terminal.run",
-                &arguments,
-                &document,
-                &ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    ui::tilo_actions::OperationKind::Effect,
+                    "terminal.run",
+                    &arguments
+                ),
+                &mut document,
+                &ROOT
             )
+            .map(|started| started.is_some())
             .expect("invoke native command through action API")
         );
         let expected = format!("NATIVE_SIZE={columns}x{rows}");

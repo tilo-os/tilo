@@ -9,6 +9,7 @@ use crate::LocalState;
 use crate::theme::Theme;
 use crate::time::SystemTime;
 use crate::tokens::TextRole;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
     Button, ButtonStyle, Checkbox, Column, Container, Element, Row, Scrollable, Spacer, Text,
     TextInput, Toggle, Widget, labeled_check, labeled_field,
@@ -1198,19 +1199,8 @@ impl UiGraphHandle {
 }
 
 fn write_live_graph_atomic(path: &Path, json: &str) -> Result<(), UiGraphError> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let temporary = parent.join(format!(
-        ".{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("ui-graph.json")
-    ));
-    std::fs::write(&temporary, json)
-        .map_err(|error| UiGraphError::Io(format!("writing {}: {error}", temporary.display())))?;
-    std::fs::rename(&temporary, path).map_err(|error| {
-        let _ = std::fs::remove_file(&temporary);
-        UiGraphError::Io(format!("publishing {}: {error}", path.display()))
-    })
+    atomic_file::write(path, json.as_bytes())
+        .map_err(|error| UiGraphError::Io(format!("publishing {}: {error}", path.display())))
 }
 
 fn advance_graph_revision(revision: &mut u64) -> Result<(), UiGraphError> {
@@ -1436,12 +1426,12 @@ impl LiveUi {
 }
 
 impl Widget for LiveUi {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.rebuild_if_changed();
         self.child.update(state, path)
     }
@@ -1497,32 +1487,12 @@ impl Widget for LiveUi {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if let Ok(children) = taffy.children(node_id)
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(child) = children.first()
         {
-            self.child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                *child,
-                taffy,
-            );
+            self.child
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
         }
     }
 
@@ -1583,6 +1553,28 @@ impl Widget for LiveUi {
         resources
     }
 
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op
+            .unscoped()
+            .filter(|request| request.type_id.starts_with(LIVE_GRAPH_OPERATION))
+            .filter(|request| request.kind != crate::tilo_actions::OperationKind::Document)
+        else {
+            return Ok(None);
+        };
+        self.invoke_graph_operation(request.type_id, request.payload)
+            .map(|output| Some(crate::widget::ResourceOperationStart::Completed(output)))
+    }
+
+    /// Legacy adapter: apps not yet on [`Widget::start_operation`] still reach
+    /// the live graph through their read-only routing.
     fn invoke_resource_operation_v2(
         &mut self,
         kind: crate::tilo_actions::OperationKind,
@@ -3120,12 +3112,12 @@ fn delete_button(
 }
 
 impl Widget for UiGraphEditor {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.rebuild_if_changed();
         self.child.update(state, path)
     }
@@ -3181,32 +3173,12 @@ impl Widget for UiGraphEditor {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if let Ok(children) = taffy.children(node_id)
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(child) = children.first()
         {
-            self.child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                *child,
-                taffy,
-            );
+            self.child
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
         }
     }
 
@@ -3301,6 +3273,22 @@ mod tests {
     use crate::a11y::{Action, Role};
     use automerge::transaction::Transactable;
     use automerge::{ObjType, ROOT};
+
+    fn run_operation(
+        live: &mut impl Widget,
+        kind: crate::tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<Option<crate::tilo_actions::ActionOutput>, String> {
+        crate::widget::ResourceOperation::local(
+            crate::tilo_actions::InvocationId::new(),
+            kind,
+            type_id,
+            payload,
+        )
+        .start(live, &mut AutoCommit::new(), &ROOT)
+        .map(|started| started.and_then(crate::widget::ResourceOperationStart::completed))
+    }
 
     fn sample() -> UiDocument {
         UiDocument::new(UiNode::Column {
@@ -3912,15 +3900,13 @@ mod tests {
         let before = handle.to_json_pretty().unwrap();
         let edits = r#"[{"op":"set-property","id":"save","property":"label","value":""}]"#;
         let payload = serde_json::to_vec(&serde_json::json!({ "edits": edits })).unwrap();
-        let error = live
-            .invoke_resource_operation_v2(
-                crate::tilo_actions::OperationKind::Effect,
-                "tilo.ui.graph.apply",
-                &payload,
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .unwrap_err();
+        let error = run_operation(
+            &mut live,
+            crate::tilo_actions::OperationKind::Effect,
+            "tilo.ui.graph.apply",
+            &payload,
+        )
+        .unwrap_err();
         assert!(
             error.contains("edit") || error.contains("Unknown") || error.contains("missing"),
             "rejected apply must surface an error, got {error}"
@@ -3974,31 +3960,27 @@ mod tests {
         );
         let edits = r#"[{"op":"set-property","id":"save","property":"label","value":"Publish"}]"#;
         let payload = serde_json::to_vec(&serde_json::json!({ "edits": edits })).unwrap();
-        let output = live
-            .invoke_resource_operation_v2(
-                crate::tilo_actions::OperationKind::Effect,
-                "tilo.ui.graph.apply",
-                &payload,
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .unwrap()
-            .unwrap();
+        let output = run_operation(
+            &mut live,
+            crate::tilo_actions::OperationKind::Effect,
+            "tilo.ui.graph.apply",
+            &payload,
+        )
+        .unwrap()
+        .unwrap();
         assert!(output.value.is_none());
         assert!(matches!(
             handle.node("save"),
             Ok(UiNode::Button { label, .. }) if label == "Publish"
         ));
-        let dumped = live
-            .invoke_resource_operation_v2(
-                crate::tilo_actions::OperationKind::View,
-                "tilo.ui.graph.dump",
-                b"null",
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .unwrap()
-            .unwrap();
+        let dumped = run_operation(
+            &mut live,
+            crate::tilo_actions::OperationKind::View,
+            "tilo.ui.graph.dump",
+            b"null",
+        )
+        .unwrap()
+        .unwrap();
         assert!(
             dumped
                 .value

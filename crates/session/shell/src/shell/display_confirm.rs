@@ -1,16 +1,18 @@
-//! Keep or revert a display change a tool made.
+//! Keep or revert a risky display change a tool made.
 //!
 //! A layout tool on the privileged display socket (`kanshi`, `wlr-randr`)
-//! stages the same display transaction Settings does, and the backend
-//! restores the previous layout unless someone keeps it. Settings and the
-//! Super+P sheet ask in their own UI; for a tool's change the compositor
-//! asks here: a compact card with the countdown, Keep and Revert on every
-//! display, so it is visible even when the new layout blanked one of them.
-//! Enter keeps, Escape reverts, and running out of time reverts.
+//! stages the same display transaction Settings does. Most of its changes
+//! are kept as soon as they apply; one that could leave a screen blank or
+//! turn off the one in use waits for the person, and the backend restores
+//! the previous layout unless they keep it. Settings and the Super+P sheet
+//! ask in their own UI; for a tool's change the compositor asks here: a
+//! compact card with the countdown, Keep and Revert on every display, so it
+//! is visible even when the new layout blanked one of them. Enter keeps,
+//! Escape reverts, and running out of time reverts.
 //!
-//! When the tool is known, a third button keeps the change and trusts the
-//! tool from then on ([`TrustedDisplayTools`]), which Settings › Displays
-//! can revoke.
+//! When the tool is known, a third button keeps the change and stops asking
+//! about that tool's risky changes ([`TrustedDisplayTools`]), which
+//! Settings › Displays can revoke.
 //!
 //! The Keep/Revert band is the one the Super+P sheet shows
 //! ([`paint_keep_revert_band`]), so a staged layout looks and reads the same
@@ -31,6 +33,9 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
 use crate::shell::i18n::{t, t_args};
+use crate::shell::overlay_host::layers::{
+    LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer,
+};
 
 /// How often a shown prompt re-reads the transaction, so it follows the
 /// backend (applied elsewhere, restored on timeout) without per-frame I/O.
@@ -582,6 +587,66 @@ impl DisplayConfirmPrompt {
             }
         }
         text_renderer.set_text_scale(renderer_scale);
+    }
+}
+
+/// Above every desktop surface while it waits; Escape reverts, as in its
+/// own keyboard model.
+impl ShellLayer for DisplayConfirmPrompt {
+    fn id(&self) -> LayerId {
+        LayerId::DisplayConfirmation
+    }
+
+    fn is_open(&self) -> bool {
+        self.visible()
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, cx: &mut LayerCx<'_, '_>) -> Routed {
+        if Self::handle_event(self, event, cx.cursor, cx.geometry.outputs) {
+            cx.request(LayerIntent::Repaint);
+            Routed::Consumed
+        } else {
+            Routed::Pass
+        }
+    }
+
+    fn draw(&mut self, cx: &mut LayerPaint<'_>) {
+        Self::draw(
+            self,
+            cx.scene,
+            cx.transform,
+            cx.text_renderer,
+            cx.theme,
+            cx.geometry.outputs,
+        );
+    }
+
+    fn accessibility(&self, geometry: LayerGeometry<'_>) -> Option<ui::a11y::AccessNode> {
+        Self::accessibility(self, geometry.outputs)
+    }
+
+    fn accessibility_rect(&self, _geometry: LayerGeometry<'_>, _path: &[usize]) -> Option<Rect> {
+        None
+    }
+
+    fn focus_accessibility(&mut self, _path: &[usize]) -> bool {
+        false
+    }
+
+    fn dismiss(&mut self) -> bool {
+        let open = self.visible();
+        self.revert();
+        open
+    }
+
+    fn is_animating(&self, _now: Instant) -> bool {
+        self.needs_frame()
+    }
+
+    /// Follows the transaction between polls: the prompt closes when it is
+    /// answered elsewhere or its time runs out.
+    fn tick(&mut self, now: Instant) -> bool {
+        self.poll(now, false)
     }
 }
 

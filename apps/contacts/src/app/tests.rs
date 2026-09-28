@@ -3,6 +3,7 @@ use automerge::ROOT;
 use automerge::ReadDoc;
 use taffy::{AvailableSpace, Dimension, Size, Style};
 use tilo_automerge::ApplyIncoming;
+use ui::headless::Framed;
 use vello::kurbo::Point;
 
 /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
@@ -595,20 +596,20 @@ fn single_pane_push_navigation_follows_width() {
         app.sync(&mut doc, &ROOT);
 
         // Lay the SAME instance out wide, then narrow, then wide again.
-        apply_at(&mut app, 1280, 800);
+        let mut app = frame_at(app, doc, 1280, 800);
         assert!(!app.narrow, "wide viewport is the docked split");
         assert!(
             app.list_rect.x1 <= app.detail_rect.x0 + 0.001,
             "list sits left of detail"
         );
 
-        apply_at(&mut app, 560, 720);
+        rerender_at(&mut app, 560, 720);
         assert!(
             app.narrow,
             "shrinking below the breakpoint reflows to single-pane push"
         );
 
-        apply_at(&mut app, 1280, 800);
+        rerender_at(&mut app, 1280, 800);
         assert!(
             !app.narrow,
             "growing back above the breakpoint restores the docked split"
@@ -857,110 +858,44 @@ fn device_id() -> DeviceId {
     unsafe { std::mem::zeroed() }
 }
 
-/// Owns a laid-out app + its taffy tree so tests can pump events through
-/// the production `Widget::handle_event`.
+/// Mounts the app in the production frame host so tests can pump events
+/// through the production `Widget::handle_event`.
 struct Harness {
-    app: ContactsApp,
-    doc: AutoCommit,
-    taffy: TaffyTree<()>,
-    node: NodeId,
-    w: u32,
-    h: u32,
+    app: Framed<ContactsApp>,
 }
 
 impl Harness {
     fn new(w: u32, h: u32) -> Self {
-        let mut app = ContactsApp::sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-        let mut h = Harness {
-            app,
-            doc,
-            taffy: TaffyTree::new(),
-            node: NodeId::new(0),
-            w,
-            h,
-        };
-        h.relayout();
-        h
+        Harness {
+            app: Framed::new(
+                ui::State::new(),
+                ContactsApp::sample(),
+                (w, h),
+                Theme::dark(),
+            ),
+        }
     }
 
-    /// Re-run build/compute/apply layout (after the model changed).
+    /// Rebuild, lay out and draw a whole frame (after the model changed). The
+    /// draw populates draw-time hit rects (e.g. `detail_field_hits` for
+    /// double-click-to-edit), exactly as the live renderer does each frame.
     fn relayout(&mut self) {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        self.taffy = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = self
-            .app
-            .build_layout(&mut self.taffy, &theme, &mut node_map);
-        self.node = child;
-        let root = self
-            .taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(self.w as f32),
-                        height: Dimension::length(self.h as f32),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        {
-            let measure_map = node_map.clone();
-            let trr = &mut tr;
-            self.taffy
-                .compute_layout_with_measure(
-                    root,
-                    Size {
-                        width: AvailableSpace::Definite(self.w as f32),
-                        height: AvailableSpace::Definite(self.h as f32),
-                    },
-                    |known, avail, node_id, _, _| {
-                        if let Some(&ptr) = measure_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, avail, trr) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
-        }
-        self.app.apply_layout(&self.taffy, child, Point::ORIGIN);
-        // A draw pass populates draw-time hit rects (e.g.
-        // `detail_field_hits` for double-click-to-edit), exactly as the
-        // live renderer does each frame.
-        let presence = PresenceCtx::empty();
-        let permission = PermissionContext::permissive();
-        let mut scene = Scene::new();
-        self.app.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence,
-            &permission,
-        );
+        Framed::harness_mut(&mut self.app)
+            .recompose()
+            .expect("contacts frame lays out");
+    }
+
+    fn doc(&self) -> &AutoCommit {
+        &Framed::harness(&self.app).state().doc
+    }
+
+    fn parts(&mut self) -> (&mut ContactsApp, &mut AutoCommit) {
+        let (app, state) = Framed::split(&mut self.app);
+        (app, &mut state.doc)
     }
 
     fn dispatch(&mut self, event: &WindowEvent) -> bool {
-        let mods = Modifiers::default();
-        let mut handled = false;
-        let mut focus = None;
-        self.app.handle_event(
-            event,
-            1.0,
-            &mods,
-            &mut self.doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            self.node,
-            &self.taffy,
-        );
-        handled
+        Framed::harness_mut(&mut self.app).dispatch_to_root_with(event, &Modifiers::default())
     }
 
     fn move_to(&mut self, p: Point) {
@@ -1007,21 +942,7 @@ impl Harness {
     /// Dispatch a key event with explicit modifier state through the real
     /// `handle_event` path.
     fn dispatch_key_mods(&mut self, event: &WindowEvent, mods: ModifiersState) -> bool {
-        let modifiers: Modifiers = mods.into();
-        let mut handled = false;
-        let mut focus = None;
-        self.app.handle_event(
-            event,
-            1.0,
-            &modifiers,
-            &mut self.doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            self.node,
-            &self.taffy,
-        );
-        handled
+        Framed::harness_mut(&mut self.app).dispatch_to_root_with(event, &mods.into())
     }
 
     /// Press a single `Named` key (no modifiers).
@@ -1099,7 +1020,7 @@ impl Harness {
 
     /// The stored (committed) contact for `id`, read back from the CRDT doc.
     fn doc_contact(&self, id: ContactId) -> Option<Contact> {
-        ContactsDoc::list_contacts(&self.doc)
+        ContactsDoc::list_contacts(self.doc())
             .into_iter()
             .find(|c| c.id == id)
     }
@@ -1583,7 +1504,7 @@ fn context_menu_opens_canonical_contact_actions() {
             "store flag flipped"
         );
         assert_eq!(
-            fav_in_doc(&h.doc, id),
+            fav_in_doc(h.doc(), id),
             !before,
             "CRDT favorite flag flipped"
         );
@@ -1613,7 +1534,7 @@ fn context_menu_opens_canonical_contact_actions() {
             .popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 200.0);
         h.press_left(rows[fav_idx].center());
         assert_eq!(
-            fav_in_doc(&h.doc, id),
+            fav_in_doc(h.doc(), id),
             before,
             "second toggle restores the CRDT flag"
         );
@@ -1628,7 +1549,7 @@ fn delete_confirmation_dispatches_the_palette_action() {
         let mut h = Harness::new(1280, 800);
         let id = h.row_id(0);
         h.app.confirm_delete = Some(id);
-        let before = ContactsDoc::list_contacts(&h.doc).len();
+        let before = ContactsDoc::list_contacts(h.doc()).len();
         h.relayout();
         let del = h
             .app
@@ -1642,14 +1563,14 @@ fn delete_confirmation_dispatches_the_palette_action() {
             h.app.confirm_delete.is_none(),
             "the modal closes after confirming"
         );
-        let after = ContactsDoc::list_contacts(&h.doc).len();
+        let after = ContactsDoc::list_contacts(h.doc()).len();
         assert_eq!(
             after,
             before - 1,
             "Delete removes the contact from the CRDT doc"
         );
         assert!(
-            !ContactsDoc::list_contacts(&h.doc)
+            !ContactsDoc::list_contacts(h.doc())
                 .iter()
                 .any(|c| c.id == id),
             "the deleted contact is gone from the document"
@@ -1681,7 +1602,7 @@ fn delete_confirmation_dispatches_the_palette_action() {
             "the confirm-delete button and the palette build the identical EncodedAction",
         );
         assert!(
-            !ContactsDoc::list_contacts(&h.doc)
+            !ContactsDoc::list_contacts(h.doc())
                 .iter()
                 .any(|c| c.id == id),
             "and it actually deleted the contact",
@@ -1724,7 +1645,7 @@ fn delete_confirmation_dispatches_the_palette_action() {
         assert!(h.app.confirm_delete.is_none(), "Cancel closes the dialog");
         assert!(h.app.store.get(id).is_some(), "Cancel never deletes");
         assert!(
-            ContactsDoc::list_contacts(&h.doc)
+            ContactsDoc::list_contacts(h.doc())
                 .iter()
                 .any(|c| c.id == id),
             "Cancel leaves the document untouched"
@@ -1785,13 +1706,14 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         let action = crate::actions::delete_contact_action(id.to_string());
         let encoded = crate::actions::encode(&action);
         let mut tx = tilo_actions::LocalTransport::new();
-        tilo_actions::dispatch(&mut h.doc, &action, encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(h.parts().1, &action, encoded, &mut tx).unwrap();
         // The store hasn't seen it yet — it still holds the contact.
         assert!(
             h.app.store.get(id).is_some(),
             "store is stale before the reconciling sync"
         );
-        h.app.sync(&mut h.doc, &ROOT);
+        let (app, doc) = h.parts();
+        app.sync(doc, &ROOT);
         assert!(
             h.app.store.get(id).is_none(),
             "the reconciling sync dropped the deleted contact"
@@ -1920,7 +1842,7 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
             Some(other_id),
             "switched to the clicked contact"
         );
-        let stored = ContactsDoc::list_contacts(&h.doc);
+        let stored = ContactsDoc::list_contacts(h.doc());
         let edited = stored.iter().find(|x| x.id == cur).unwrap();
         assert_eq!(
             edited.title, "Brand New Title",
@@ -1952,7 +1874,7 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
         let g = h.app.unsaved_geometry();
         h.press_left(g.discard.center());
         assert_eq!(h.app.selected, Some(other_id));
-        let stored = ContactsDoc::list_contacts(&h.doc);
+        let stored = ContactsDoc::list_contacts(h.doc());
         let unchanged = stored.iter().find(|x| x.id == cur).unwrap();
         assert_eq!(
             unchanged.title, original_title,
@@ -2085,7 +2007,7 @@ fn edits_commit_only_on_save_and_cancel_discards() {
     {
         let mut h = Harness::new(1280, 800);
         let store_before = h.app.store.len();
-        let doc_before = ContactsDoc::list_contacts(&h.doc).len();
+        let doc_before = ContactsDoc::list_contacts(h.doc()).len();
         // Start a new contact via the keyboard shortcut, focus the name, type.
         assert!(h.press_char("n"), "'n' starts a new contact");
         assert_eq!(h.app.mode, Mode::Edit);
@@ -2100,7 +2022,7 @@ fn edits_commit_only_on_save_and_cancel_discards() {
             "a half-typed new contact isn't in the store"
         );
         assert_eq!(
-            ContactsDoc::list_contacts(&h.doc).len(),
+            ContactsDoc::list_contacts(h.doc()).len(),
             doc_before,
             "nor in the doc",
         );
@@ -2645,9 +2567,9 @@ fn split_divider_and_compact_toolbar_fit_their_space() {
         assert!(h.app.hit.import.x1 < h.app.hit.export.x0);
         assert!(h.app.hit.export.x1 < h.app.hit.new.x0);
         h.app.last_mouse = h.app.hit.import.center();
-        assert_eq!(Widget::tooltip(&h.app), Some("Import contacts"));
+        assert_eq!(Widget::tooltip(&*h.app), Some("Import contacts"));
         h.app.last_mouse = h.app.hit.new.center();
-        assert_eq!(Widget::tooltip(&h.app), Some("Create contact"));
+        assert_eq!(Widget::tooltip(&*h.app), Some("Create contact"));
     }
 }
 
@@ -2950,7 +2872,8 @@ fn vcf_export_writes_the_selected_book() {
 
         // Drain the destination the Save dialog returned through one real
         // frame's sync — which writes the file.
-        h.app.sync(&mut h.doc, &ROOT);
+        let (app, doc) = h.parts();
+        app.sync(doc, &ROOT);
         assert!(
             h.app.pending_export.is_none(),
             "the parked selection was consumed"
@@ -3772,8 +3695,8 @@ fn duplicate_and_conflict_review_is_accessible() {
 
         // Wide rendering exposes a real modal rather than only a toast or a
         // palette resource, and its two decisions are in the semantic tree.
-        let (mut app, mut doc, original, _) = conflicting_app();
-        apply_at(&mut app, 1280, 800);
+        let (app, doc, original, _) = conflicting_app();
+        let mut app = frame_at(app, doc, 1280, 800);
         let token = app.import_conflicts[0].token;
         let keep = import_conflict_target(token, "keep-existing");
         let import_as_new = import_conflict_target(token, "import-as-new");
@@ -3784,14 +3707,15 @@ fn duplicate_and_conflict_review_is_accessible() {
         assert!(access_target(&tree, &import_as_new).is_some());
         app.ensure_import_conflict_dialog();
         let mut tr = TextRenderer::new();
+        let rect = app.rect;
         app.import_conflict_dialog
             .as_mut()
             .unwrap()
             .dialog
-            .layout_in(app.rect, &Theme::dark(), &mut tr);
+            .layout_in(rect, &Theme::dark(), &mut tr);
         assert!(app.modal_capture().is_some(), "review dialog is painted");
-        assert!(app.perform_semantic_action(&keep, &ui::a11y::Action::Activate, &mut doc, &ROOT));
-        app.sync(&mut doc, &ROOT);
+        assert!(perform(&mut app, &keep, &ui::a11y::Action::Activate));
+        sync_doc(&mut app);
         assert!(app.import_conflicts.is_empty());
         assert_eq!(app.store.len(), 1);
         assert_eq!(
@@ -3802,28 +3726,28 @@ fn duplicate_and_conflict_review_is_accessible() {
         // Import-as-new is the destructive, confirmation-labelled decision.
         // It mints a fresh local id and dispatches the normal CreateContact
         // action, never patching the contact identified by the untrusted UID.
-        let (mut app, mut doc, original, incoming) = conflicting_app();
-        apply_at(&mut app, 560, 720);
+        let (app, doc, original, incoming) = conflicting_app();
+        let mut app = frame_at(app, doc, 560, 720);
         let token = app.import_conflicts[0].token;
         let import_as_new = import_conflict_target(token, "import-as-new");
         app.ensure_import_conflict_dialog();
         let mut tr = TextRenderer::new();
+        let rect = app.rect;
         app.import_conflict_dialog
             .as_mut()
             .unwrap()
             .dialog
-            .layout_in(app.rect, &Theme::dark(), &mut tr);
+            .layout_in(rect, &Theme::dark(), &mut tr);
         assert!(
             app.modal_capture().is_some(),
             "review is also rendered narrow"
         );
-        assert!(app.perform_semantic_action(
+        assert!(perform(
+            &mut app,
             &import_as_new,
             &ui::a11y::Action::Activate,
-            &mut doc,
-            &ROOT,
         ));
-        app.sync(&mut doc, &ROOT);
+        sync_doc(&mut app);
         assert!(app.import_conflicts.is_empty());
         assert_eq!(app.store.len(), 2);
         assert_eq!(
@@ -3845,7 +3769,7 @@ fn duplicate_and_conflict_review_is_accessible() {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
         app.shots_show_duplicate_review();
-        apply_at(&mut app, 390, 844);
+        let mut app = frame_at(app, doc, 390, 844);
         app.text_scale = 2.0;
 
         let review = app.duplicate_review.as_ref().expect("review is open");
@@ -3872,13 +3796,13 @@ fn duplicate_and_conflict_review_is_accessible() {
         let other = "contacts.duplicate.field:Organization:other";
         assert!(access_target(&tree, current).is_some());
         assert!(access_target(&tree, other).is_some());
-        assert!(app.perform_semantic_action(other, &ui::a11y::Action::Activate, &mut doc, &ROOT));
+        assert!(perform(&mut app, other, &ui::a11y::Action::Activate));
         assert!(app.duplicate_review.as_ref().is_some_and(|review| {
             review
                 .take_from_source
                 .contains(&crate::actions::MergeField::Organization)
         }));
-        assert!(app.perform_semantic_action(current, &ui::a11y::Action::Activate, &mut doc, &ROOT));
+        assert!(perform(&mut app, current, &ui::a11y::Action::Activate));
         assert!(app.duplicate_review.as_ref().is_some_and(|review| {
             !review
                 .take_from_source
@@ -3911,7 +3835,7 @@ fn duplicate_and_conflict_review_is_accessible() {
 
         // The wide toolbar reserves a separate hit target, so its action never
         // crowds import/export/new and is exposed with the safety explanation.
-        apply_at(&mut app, 1_280, 800);
+        let mut app = frame_at(app, doc, 1_280, 800);
         assert!(app.hit.duplicates.area() > 0.0);
         for other in [app.hit.import, app.hit.export, app.hit.new] {
             assert!(
@@ -3921,7 +3845,7 @@ fn duplicate_and_conflict_review_is_accessible() {
         }
         app.last_mouse = app.hit.duplicates.center();
         assert_eq!(
-            Widget::tooltip(&app),
+            Widget::tooltip(&*app),
             Some("Review possible duplicate — nothing merges automatically")
         );
         let tree = app.accessibility().expect("toolbar has semantics");
@@ -3936,11 +3860,10 @@ fn duplicate_and_conflict_review_is_accessible() {
 
         // Semantic activation serializes the same typed View operation published
         // by the exact duplicate resource, then opens the field-level review.
-        assert!(app.perform_semantic_action(
+        assert!(perform(
+            &mut app,
             "contacts.duplicates",
             &ui::a11y::Action::Activate,
-            &mut doc,
-            &ROOT,
         ));
         let opened = app.duplicate_review.as_ref().expect("review opened");
         assert_eq!(opened.survivor.id, candidate.survivor_id);
@@ -4005,10 +3928,11 @@ fn modals_and_editors_expose_semantic_action_routes() {
         assert!(h.press_named(NamedKey::Space));
         assert_eq!(h.app.export_dialog.selection().len(), h.app.store.len());
 
-        assert!(h.app.perform_semantic_action(
+        let (app, doc) = h.parts();
+        assert!(app.perform_semantic_action(
             "contacts.export.select-none",
             &ui::a11y::Action::Activate,
-            &mut h.doc,
+            doc,
             &ROOT,
         ));
         assert!(h.app.export_dialog.selection().is_empty());
@@ -4019,12 +3943,8 @@ fn modals_and_editors_expose_semantic_action_routes() {
             .rows[0]
             .0;
         let target = format!("contacts.export.row:{id}");
-        assert!(h.app.perform_semantic_action(
-            &target,
-            &ui::a11y::Action::ToggleCheck,
-            &mut h.doc,
-            &ROOT,
-        ));
+        let (app, doc) = h.parts();
+        assert!(app.perform_semantic_action(&target, &ui::a11y::Action::ToggleCheck, doc, &ROOT,));
         assert!(h.app.export_dialog.selection().contains(&id));
 
         h.app.store.contacts = (0..1_000)
@@ -4080,10 +4000,11 @@ fn modals_and_editors_expose_semantic_action_routes() {
         assert!(access_target(&tree, "contacts.unsaved.discard").is_some());
         assert!(h.press_named(NamedKey::Tab));
         assert_eq!(h.app.unsaved_focus, UnsavedFocus::Discard);
-        assert!(h.app.perform_semantic_action(
+        let (app, doc) = h.parts();
+        assert!(app.perform_semantic_action(
             "contacts.unsaved.discard",
             &ui::a11y::Action::Activate,
-            &mut h.doc,
+            doc,
             &ROOT,
         ));
         assert!(h.app.pending_switch.is_none());
@@ -4095,7 +4016,7 @@ fn modals_and_editors_expose_semantic_action_routes() {
         let mut app = ContactsApp::sample();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
-        apply_at(&mut app, 1280, 800);
+        let mut app = frame_at(app, doc, 1280, 800);
 
         let id = app.selected.expect("sample contact is selected");
         let favorite = app.store.get(id).expect("selected contact exists").favorite;
@@ -4106,11 +4027,10 @@ fn modals_and_editors_expose_semantic_action_routes() {
         assert_eq!(favorite_button.role, Role::ToggleButton);
         assert_eq!(favorite_button.state.checked, Some(favorite));
 
-        assert!(app.perform_semantic_action(
+        assert!(perform(
+            &mut app,
             &favorite_target,
             &ui::a11y::Action::Activate,
-            &mut doc,
-            &ROOT,
         ));
         assert_eq!(
             app.store.get(id).map(|contact| contact.favorite),
@@ -4118,7 +4038,7 @@ fn modals_and_editors_expose_semantic_action_routes() {
             "semantic activation updates the visible model"
         );
         assert_eq!(
-            ContactsDoc::list_contacts(&doc)
+            ContactsDoc::list_contacts(doc_of(&app))
                 .into_iter()
                 .find(|contact| contact.id == id)
                 .map(|contact| contact.favorite),
@@ -4128,7 +4048,7 @@ fn modals_and_editors_expose_semantic_action_routes() {
 
         let contact = app.store.get(id).cloned().unwrap();
         app.begin_edit(contact.clone(), false);
-        apply_at(&mut app, 1280, 800);
+        rerender_at(&mut app, 1280, 800);
         let first_target = form_field_target(id, Slot::First);
         let save_target = format!("contacts.form.save:{id}");
         let tree = app.accessibility().expect("editor semantics are exposed");
@@ -4139,25 +4059,19 @@ fn modals_and_editors_expose_semantic_action_routes() {
         );
         assert!(access_target(&tree, &save_target).is_some());
 
-        assert!(app.perform_semantic_action(
+        assert!(perform(
+            &mut app,
             &first_target,
             &ui::a11y::Action::SetValue("Augusta".into()),
-            &mut doc,
-            &ROOT,
         ));
         assert_eq!(
             app.form.as_ref().map(|form| form.draft.first.as_str()),
             Some(contact.first.as_str()),
             "SetValue remains a cancellable local draft until Save"
         );
-        assert!(app.perform_semantic_action(
-            &save_target,
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &ROOT,
-        ));
+        assert!(perform(&mut app, &save_target, &ui::a11y::Action::Activate,));
         assert_eq!(
-            ContactsDoc::list_contacts(&doc)
+            ContactsDoc::list_contacts(doc_of(&app))
                 .into_iter()
                 .find(|stored| stored.id == id)
                 .map(|stored| stored.first),
@@ -4185,16 +4099,11 @@ fn modals_and_editors_expose_semantic_action_routes() {
         app.sync(&mut doc, &ROOT);
         let id = app.selected.unwrap();
         app.begin_edit(app.store.get(id).cloned().unwrap(), false);
-        apply_at(&mut app, 1280, 800);
+        let mut app = frame_at(app, doc, 1280, 800);
 
         let (type_row, _) = app.hit.type_chips[0];
         let type_target = type_chip_target(id, type_row);
-        assert!(app.perform_semantic_action(
-            &type_target,
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &ROOT,
-        ));
+        assert!(perform(&mut app, &type_target, &ui::a11y::Action::Activate,));
         assert!(matches!(app.popup, Some(Popup::TypeMenu { .. })));
         let option_target = type_option_target(id, type_row, "other");
         let tree = app.accessibility().unwrap();
@@ -4202,11 +4111,10 @@ fn modals_and_editors_expose_semantic_action_routes() {
             access_target(&tree, &option_target).map(|node| node.role),
             Some(Role::RadioButton)
         );
-        assert!(app.perform_semantic_action(
+        assert!(perform(
+            &mut app,
             &option_target,
             &ui::a11y::Action::Activate,
-            &mut doc,
-            &ROOT,
         ));
         assert_eq!(
             type_label(&app.form.as_ref().unwrap().draft, type_row),
@@ -4215,22 +4123,16 @@ fn modals_and_editors_expose_semantic_action_routes() {
 
         let before = app.form.as_ref().unwrap().draft.phones.len();
         let remove_target = remove_type_target(id, type_row);
-        assert!(app.perform_semantic_action(
+        assert!(perform(
+            &mut app,
             &remove_target,
             &ui::a11y::Action::Activate,
-            &mut doc,
-            &ROOT,
         ));
         assert_eq!(app.form.as_ref().unwrap().draft.phones.len(), before - 1);
 
-        apply_at(&mut app, 1280, 800);
+        rerender_at(&mut app, 1280, 800);
         let calendar = calendar_target(id);
-        assert!(app.perform_semantic_action(
-            &calendar,
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &ROOT,
-        ));
+        assert!(perform(&mut app, &calendar, &ui::a11y::Action::Activate,));
         let Some(Popup::Calendar { year, month, .. }) = app.popup else {
             panic!("semantic calendar button opens the date picker");
         };
@@ -4240,7 +4142,7 @@ fn modals_and_editors_expose_semantic_action_routes() {
             access_target(&tree, &day).is_some(),
             "calendar days are exposed"
         );
-        assert!(app.perform_semantic_action(&day, &ui::a11y::Action::Activate, &mut doc, &ROOT,));
+        assert!(perform(&mut app, &day, &ui::a11y::Action::Activate));
         assert_eq!(
             app.form
                 .as_ref()
@@ -4253,12 +4155,11 @@ fn modals_and_editors_expose_semantic_action_routes() {
         );
 
         app.cancel_edit();
-        apply_at(&mut app, 1280, 800);
-        assert!(app.perform_semantic_action(
+        rerender_at(&mut app, 1280, 800);
+        assert!(perform(
+            &mut app,
             "contacts.group",
             &ui::a11y::Action::Expand,
-            &mut doc,
-            &ROOT,
         ));
         let group = "Friends";
         let group_target = group_option_target(group);
@@ -4267,11 +4168,10 @@ fn modals_and_editors_expose_semantic_action_routes() {
             access_target(&tree, &group_target).map(|node| node.role),
             Some(Role::RadioButton)
         );
-        assert!(app.perform_semantic_action(
+        assert!(perform(
+            &mut app,
             &group_target,
             &ui::a11y::Action::Activate,
-            &mut doc,
-            &ROOT,
         ));
         assert_eq!(app.group_filter.as_deref(), Some(group));
 
@@ -4289,48 +4189,37 @@ fn live_message<'a>(node: &'a AccessNode, message: &str) -> Option<&'a AccessNod
         .find_map(|child| live_message(child, message))
 }
 
-/// Lay a single app instance out at `w`x`h` without rebuilding it, to
-/// simulate a live window resize (the ui loop re-runs compute+apply layout
-/// on the existing widget when the allocation changes).
-fn apply_at(app: &mut ContactsApp, w: u32, h: u32) {
-    let theme = Theme::dark();
-    let mut tr = TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = app.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-    {
-        let measure_map = node_map.clone();
-        let trr = &mut tr;
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, trr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .unwrap();
-    }
-    app.apply_layout(&taffy, child, Point::ORIGIN);
+/// Mount `app` over the case's `doc` in the production frame host and run one
+/// frame at `w`x`h`.
+fn frame_at(app: ContactsApp, doc: AutoCommit, w: u32, h: u32) -> Framed<ContactsApp> {
+    let mut state = ui::State::new();
+    assert!(
+        state.adopt_doc(doc),
+        "the harness adopts the case's document"
+    );
+    Framed::new(state, app, (w, h), Theme::dark())
+}
+
+/// Lay the same instance out at `w`x`h`, to simulate a live window resize (the
+/// ui loop re-runs layout on the existing widget when the allocation changes).
+fn rerender_at(app: &mut Framed<ContactsApp>, w: u32, h: u32) {
+    Framed::harness_mut(app)
+        .relayout_themed((w, h), Theme::dark())
+        .expect("contacts frame lays out");
+}
+
+fn perform(app: &mut Framed<ContactsApp>, target: &str, action: &ui::a11y::Action) -> bool {
+    let (app, state) = Framed::split(app);
+    app.perform_semantic_action(target, action, &mut state.doc, &ROOT)
+}
+
+fn sync_doc(app: &mut Framed<ContactsApp>) {
+    let (app, state) = Framed::split(app);
+    app.sync(&mut state.doc, &ROOT);
+}
+
+fn doc_of(app: &Framed<ContactsApp>) -> &AutoCommit {
+    &Framed::harness(app).state().doc
 }
 
 /// Form rows, pills, panel lifts, rows and toolbar faces are authored at 1x and grow with the text scale on every preset.

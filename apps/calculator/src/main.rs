@@ -247,14 +247,16 @@ fn bench_dispatch(
     let t = Instant::now();
     app.handle_event(
         ev,
-        1.0,
-        &winit::event::Modifiers::default(),
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus,
-        child,
-        taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &winit::event::Modifiers::default(),
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: child,
+            taffy,
+        },
     );
     t.elapsed().as_secs_f64() * 1e6
 }

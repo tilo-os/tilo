@@ -134,10 +134,12 @@ impl App {
             &[],
         );
         complete.extend(semantics.action_resources());
+        complete.extend(self.history_action_resources());
         trace.finish(CacheResult::NotApplicable);
         let trace = self.trace_resource_stage(Stage::SurfaceValidation);
         let mut operation_handlers = self.root_widget.resource_operation_handlers();
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
+        operation_handlers.insert(history_actions::OPERATION.to_string());
         let violations = tilo_actions::validate_surface(
             &complete,
             &self.actions.action_registry,
@@ -679,6 +681,7 @@ impl App {
         }
         let mut operation_handlers = self.root_widget.resource_operation_handlers();
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
+        operation_handlers.insert(history_actions::OPERATION.to_string());
         // Bound components have already been validated against their own registries
         // by publication_resources. Only legacy resources use the host registry.
         let unbound_resources = resources
@@ -1077,39 +1080,11 @@ impl App {
         }
 
         let mut rows = Vec::new();
-        let mut estimated_bytes = 0usize;
+        let mut estimated_bytes = DIRECTORY_PAGE_WIRE_BYTES.saturating_add(revision.len());
         let add = |row: runtime_collab::ActionDirectoryRow,
                    rows: &mut Vec<runtime_collab::ActionDirectoryRow>,
                    bytes: &mut usize| {
-            let descriptor_bytes = row.descriptor.as_ref().map_or(0, |descriptor| {
-                let input_bytes = match &descriptor.input {
-                    runtime_collab::ExportedInput::None => 0,
-                    runtime_collab::ExportedInput::Text {
-                        prompt,
-                        placeholder,
-                        ..
-                    } => prompt.len() + placeholder.len() + 8,
-                };
-                descriptor.resource.len()
-                    + descriptor.action.len()
-                    + descriptor.resource_kind.len()
-                    + descriptor.resource_label.len()
-                    + descriptor.action_label.len()
-                    + descriptor.description.as_ref().map_or(0, String::len)
-                    + descriptor.params_json.len()
-                    + descriptor.contract_json.len()
-                    + input_bytes
-            });
-            *bytes += row.parent_resource.len()
-                + row.resource.len()
-                + row.resource_kind.len()
-                + row.resource_label.len()
-                + row.resource_presentation_json.len()
-                + row.action.as_ref().map_or(0, String::len)
-                + row.visibility_action.as_ref().map_or(0, String::len)
-                + row.visibility_contract_json.len()
-                + descriptor_bytes
-                + 64;
+            *bytes = bytes.saturating_add(directory_row_wire_bytes(&row));
             rows.push(row);
         };
 
@@ -2584,6 +2559,45 @@ impl App {
             return Ok(crate::widget::ResourceOperationStart::Accepted);
         }
         let operation_invocation = invocation.unwrap_or_default();
+        if encoded.type_id == history_actions::OPERATION {
+            let result = self
+                .invoke_history_action(&encoded, actor)
+                .and_then(|output| {
+                    resolved
+                        .contract
+                        .result
+                        .validate(&output)
+                        .map_err(tilo_actions::DoorError::Failed)?;
+                    Ok(output)
+                });
+            if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
+                let update = match &result {
+                    Ok(output) => tilo_actions::InvocationUpdate::Succeeded {
+                        invocation: operation_invocation,
+                        output: output.clone(),
+                    },
+                    Err(error) => tilo_actions::InvocationUpdate::Failed {
+                        invocation: operation_invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: crate::bound_dispatch::door_error_code(error).to_string(),
+                            message: error.to_string(),
+                            details: None,
+                            retryable: false,
+                        },
+                    },
+                };
+                self.collaboration
+                    .manager
+                    .send(CollabRequest::RecordLocalEffect {
+                        address: address.clone(),
+                        update,
+                    });
+            }
+            self.needs_sync = true;
+            self.layout.layout_dirty = true;
+            self.invalidate_widget_resource_cache();
+            return result.map(crate::widget::ResourceOperationStart::Completed);
+        }
         if encoded.type_id == crate::a11y_tree::SEMANTIC_OPERATION_TYPE {
             let semantic_result = self.invoke_semantic_operation_encoded(&encoded);
             let handled = match semantic_result {
@@ -3427,6 +3441,7 @@ impl App {
             .and_then(|cache| cache.resources.clone())
             .unwrap_or_default();
         resources.extend(self.history_local_resources());
+        history_actions::without_duplicate_launcher(&mut resources);
         let cached_open_resources = {
             self.actions
                 .open_resource_search_cache
@@ -3652,6 +3667,7 @@ impl App {
             .and_then(|cache| cache.resources.clone())
             .unwrap_or_default();
         resources.extend(self.history_local_resources());
+        history_actions::without_duplicate_launcher(&mut resources);
         if let Ok(legacy) = crate::bound_dispatch::legacy_document::legacy_resources(
             self.root_widget.as_ref(),
             &self.permission_ctx,
@@ -4060,4 +4076,50 @@ impl App {
         self.rebuild_action_palette_admission();
         consumed
     }
+}
+
+/// Room for a directory page's own fields (revision, cursor, flags and the
+/// row list) beyond its rows, on the wire.
+const DIRECTORY_PAGE_WIRE_BYTES: usize = 512;
+
+/// An upper bound on `row`'s Cap'n Proto size, which the broker checks the
+/// page against: every text field costs its bytes, a NUL, padding to a word
+/// and an 8-byte pointer; every struct a fixed allowance for its data words,
+/// pointer and list tag.
+pub(crate) fn directory_row_wire_bytes(row: &runtime_collab::ActionDirectoryRow) -> usize {
+    const STRUCT: usize = 64;
+    fn text(value: &str) -> usize {
+        value.len().saturating_add(8) / 8 * 8 + 8
+    }
+    let descriptor = row.descriptor.as_ref().map_or(0, |descriptor| {
+        let input = match &descriptor.input {
+            runtime_collab::ExportedInput::None => 0,
+            runtime_collab::ExportedInput::Text {
+                prompt,
+                placeholder,
+                ..
+            } => STRUCT + text(prompt) + text(placeholder),
+        };
+        STRUCT
+            + text(&descriptor.resource)
+            + text(&descriptor.action)
+            + text(&descriptor.resource_kind)
+            + text(&descriptor.resource_label)
+            + text(&descriptor.action_label)
+            + text(descriptor.description.as_deref().unwrap_or(""))
+            + text(&descriptor.operation_kind)
+            + text(&descriptor.params_json)
+            + text(&descriptor.contract_json)
+            + input
+    });
+    STRUCT
+        + text(&row.parent_resource)
+        + text(&row.resource)
+        + text(&row.resource_kind)
+        + text(&row.resource_label)
+        + text(&row.resource_presentation_json)
+        + text(row.action.as_deref().unwrap_or(""))
+        + text(row.visibility_action.as_deref().unwrap_or(""))
+        + text(&row.visibility_contract_json)
+        + descriptor
 }

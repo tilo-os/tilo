@@ -45,9 +45,13 @@ use registry_types::{
     VerifyError, verify_change_request,
 };
 
+use crate::applications::{
+    self, ApplicationFailure, ApplicationStatus, NetworkProofs, ProofSource, StoredApplication,
+};
 use crate::moderation::{ModerationError, ModerationService};
 use crate::moderation_api::{ModerationApiError, ModerationApiService};
 use crate::storage::{ServerIdentity, Storage, StorageError};
+use registry_types::application::PublisherApplication;
 
 const MAX_CHANGE_REQUEST_BYTES: usize = 1024 * 1024;
 
@@ -63,6 +67,7 @@ struct AppStateInner {
     moderation_api: ModerationApiService,
     identity: ServerIdentity,
     options: ServeOptions,
+    proofs: Arc<dyn ProofSource + Send + Sync>,
 }
 
 /// Serving policy beyond the data directory.
@@ -104,6 +109,21 @@ impl AppState {
 
     /// Build the shared state.
     pub fn with_options(storage: Storage, identity: ServerIdentity, options: ServeOptions) -> Self {
+        Self::with_proof_source(
+            storage,
+            identity,
+            options,
+            Arc::new(NetworkProofs::default()),
+        )
+    }
+
+    /// Build the shared state, reading namespace proofs from `proofs`.
+    pub fn with_proof_source(
+        storage: Storage,
+        identity: ServerIdentity,
+        options: ServeOptions,
+        proofs: Arc<dyn ProofSource + Send + Sync>,
+    ) -> Self {
         let moderation = ModerationService::new(storage.clone());
         let moderation_api = ModerationApiService::new(storage.clone(), identity.clone());
         Self {
@@ -113,6 +133,7 @@ impl AppState {
                 moderation_api,
                 identity,
                 options,
+                proofs,
             }),
         }
     }
@@ -163,6 +184,14 @@ pub async fn handle(
             })
             .await
         }
+        (Method::GET, p) if p.starts_with("/entries/") && p.ends_with("/pending") => {
+            let id = p
+                .trim_start_matches("/entries/")
+                .trim_end_matches("/pending")
+                .to_owned();
+            let read = PendingRead::from_request(&req);
+            read_file(&state, move |state| handle_get_pending(state, &id, &read)).await
+        }
         (Method::GET, p) if p.starts_with("/entries/") => {
             let id = p.trim_start_matches("/entries/").to_owned();
             read_file(&state, move |state| handle_get_entry(state, &id)).await
@@ -184,6 +213,15 @@ pub async fn handle(
                 content_addressed(&name, |digest| state.inner.storage.load_artifact(digest))
             })
             .await
+        }
+        (Method::PUT, p) if p.starts_with("/uploads/") => {
+            let name = p.trim_start_matches("/uploads/").to_owned();
+            handle_put_upload(&state, &name, req).await
+        }
+        (Method::POST, "/publishers/applications") => handle_post_application(&state, req).await,
+        (Method::GET, p) if p.starts_with("/publishers/applications/") => {
+            let pubkey = p.trim_start_matches("/publishers/applications/").to_owned();
+            blocking(&state, move |state| handle_get_application(state, &pubkey)).await
         }
         (Method::POST, "/moderation/mutations") => handle_post_moderation(&state, req).await,
         (Method::GET, p) if p.starts_with("/moderation/cases/") => {
@@ -265,6 +303,112 @@ where
     tokio::task::spawn_blocking(move || op(&state))
         .await
         .map_err(|error| HandlerError::Blocking(std::io::Error::other(error.to_string())))?
+}
+
+async fn handle_post_application(
+    state: &AppState,
+    req: Request<Incoming>,
+) -> Result<Response<Full<Bytes>>, HandlerError> {
+    const MAX_APPLICATION_BYTES: usize = 16 * 1024;
+    let body = match Limited::new(req.into_body(), MAX_APPLICATION_BYTES)
+        .collect()
+        .await
+    {
+        Ok(body) => body.to_bytes(),
+        Err(error) if error.downcast_ref::<LengthLimitError>().is_some() => {
+            return Ok(text_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "publisher application is too large",
+            ));
+        }
+        Err(error) => return Err(HandlerError::Body(error.to_string())),
+    };
+    let Ok(application) = serde_json::from_slice::<PublisherApplication>(&body) else {
+        return Ok(text_response(
+            StatusCode::BAD_REQUEST,
+            "invalid publisher application JSON",
+        ));
+    };
+    blocking(state, move |state| {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        match applications::submit(
+            &state.inner.storage,
+            application,
+            now,
+            state.inner.proofs.as_ref(),
+        ) {
+            Ok(stored) => Ok(json_response(
+                StatusCode::ACCEPTED,
+                &ApplicationStatusBody::from(&stored),
+            )),
+            Err(ApplicationFailure::Rejected(rejection)) => Ok(text_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                &rejection.to_string(),
+            )),
+            Err(ApplicationFailure::QueueFull) => Ok(text_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the registry is not taking publisher applications right now",
+            )),
+            Err(ApplicationFailure::Storage(error)) => Err(HandlerError::Storage(error)),
+            Err(other) => Ok(text_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &other.to_string(),
+            )),
+        }
+    })
+    .await
+}
+
+/// What anyone may learn about an application: not the applicant's contact.
+#[derive(serde::Serialize)]
+struct ApplicationStatusBody<'a> {
+    pubkey_hex: &'a str,
+    status: ApplicationStatus,
+    namespaces: Vec<&'a str>,
+    received_at_unix: u64,
+    decided_at_unix: Option<u64>,
+    reason: Option<&'a str>,
+}
+
+impl<'a> From<&'a StoredApplication> for ApplicationStatusBody<'a> {
+    fn from(stored: &'a StoredApplication) -> Self {
+        Self {
+            pubkey_hex: &stored.application.pubkey_hex,
+            status: stored.status,
+            namespaces: stored
+                .verified
+                .iter()
+                .map(|claim| claim.namespace.as_str())
+                .collect(),
+            received_at_unix: stored.received_at_unix,
+            decided_at_unix: stored.decided_at_unix,
+            reason: stored.reason.as_deref(),
+        }
+    }
+}
+
+fn handle_get_application(
+    state: &AppState,
+    pubkey_hex: &str,
+) -> Result<Response<Full<Bytes>>, HandlerError> {
+    match state.inner.storage.load_publisher_application(pubkey_hex) {
+        Ok(Some(stored)) => Ok(json_response(
+            StatusCode::OK,
+            &ApplicationStatusBody::from(&stored),
+        )),
+        Ok(None) => Ok(text_response(
+            StatusCode::NOT_FOUND,
+            "no application from this key",
+        )),
+        Err(StorageError::Parse(_)) => Ok(text_response(
+            StatusCode::BAD_REQUEST,
+            "expected a 32-byte hex public key",
+        )),
+        Err(error) => Err(HandlerError::Storage(error)),
+    }
 }
 
 async fn handle_post_moderation(
@@ -463,6 +607,80 @@ fn handle_get_entry(
     }
 }
 
+/// The signed headers of a pending-entry read.
+struct PendingRead {
+    publisher: Option<String>,
+    signed_at: Option<String>,
+    signature: Option<String>,
+}
+
+impl PendingRead {
+    fn from_request(req: &Request<Incoming>) -> Self {
+        let text = |name: &'static str| header_text(req, header::HeaderName::from_static(name));
+        Self {
+            publisher: text(registry_types::upload::UPLOAD_PUBLISHER_HEADER),
+            signed_at: text(registry_types::pending::PENDING_TIME_HEADER),
+            signature: text(registry_types::upload::UPLOAD_SIGNATURE_HEADER),
+        }
+    }
+}
+
+/// A publisher's own pending change for `package_id`. Anyone else, and a
+/// publisher with nothing pending, gets the same 404.
+fn handle_get_pending(
+    state: &AppState,
+    package_id: &str,
+    read: &PendingRead,
+) -> Result<Response<Full<Bytes>>, HandlerError> {
+    if !registry_types::namespace::valid_package_id(package_id) {
+        return Ok(text_response(StatusCode::NOT_FOUND, "no such entry"));
+    }
+    let Some(publisher) = read
+        .publisher
+        .as_deref()
+        .and_then(|hex_key| hex::decode(hex_key).ok())
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+    else {
+        return Ok(text_response(
+            StatusCode::UNAUTHORIZED,
+            "a pending read names its publisher key",
+        ));
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let verified = read
+        .signed_at
+        .as_deref()
+        .and_then(|text| text.parse::<u64>().ok())
+        .zip(read.signature.as_deref())
+        .is_some_and(|(signed_at, signature)| {
+            registry_types::pending::verify_pending_read(
+                &publisher, package_id, signed_at, signature, now,
+            )
+        });
+    if !verified {
+        return Ok(text_response(
+            StatusCode::FORBIDDEN,
+            "pending read signature does not verify",
+        ));
+    }
+    let pending = state
+        .inner
+        .storage
+        .load_pending(package_id)
+        .map_err(HandlerError::Storage)?
+        .filter(|pending| {
+            hex::decode(&pending.change.entry.publisher_pubkey_hex)
+                .is_ok_and(|owner| owner == publisher)
+        });
+    Ok(match pending {
+        Some(pending) => json_response(StatusCode::OK, &pending.change),
+        None => text_response(StatusCode::NOT_FOUND, "no pending entry of yours"),
+    })
+}
+
 fn snapshot_is_current(
     state: &AppState,
     snapshot: &registry_types::SignedRegistrySnapshot,
@@ -556,10 +774,24 @@ fn apply_change(
     state: &AppState,
     change: EntryChangeRequest,
 ) -> Result<Response<Full<Bytes>>, HandlerError> {
-    if change.action == EntryAction::Add && !publisher_may_add_new(state, &change.entry) {
+    let publisher = publisher_row(state, &change.entry);
+    if change.action == EntryAction::Add && !publisher.as_ref().is_some_and(|row| row.can_add_new) {
         return Ok(text_response(
             StatusCode::FORBIDDEN,
             "publisher not allowed to submit new entries",
+        ));
+    }
+    if change.action != EntryAction::Delete
+        && !publisher
+            .as_ref()
+            .is_some_and(|row| row.owns_package_id(&change.entry.package_id))
+    {
+        return Ok(text_response(
+            StatusCode::FORBIDDEN,
+            &format!(
+                "package id {} is outside this publisher's verified namespaces",
+                change.entry.package_id
+            ),
         ));
     }
     let submitted_at = SystemTime::now()
@@ -598,24 +830,129 @@ fn moderation_status(error: &ModerationError) -> Option<StatusCode> {
     }
 }
 
-/// Cheap async lookup: is this publisher allowed to POST a new
-/// entry (rather than only editing an existing one)?
-fn publisher_may_add_new(state: &AppState, entry: &RegistryEntry) -> bool {
-    let Ok(bytes) = hex::decode(&entry.publisher_pubkey_hex) else {
-        return false;
+/// `PUT /uploads/<blake3>.tapp`: an allowlisted publisher's signed upload of
+/// a package it signed, kept privately for review
+/// (`registry_types::upload`). Answers `201` with the artifact URL a version
+/// binding these bytes names.
+async fn handle_put_upload(
+    state: &AppState,
+    name: &str,
+    req: Request<Incoming>,
+) -> Result<Response<Full<Bytes>>, HandlerError> {
+    let Some(digest) = name
+        .strip_suffix(".tapp")
+        .filter(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase)
+    else {
+        return Ok(empty_response(StatusCode::NOT_FOUND));
     };
-    if bytes.len() != 32 {
-        return false;
+    let publisher = header_text(
+        &req,
+        header::HeaderName::from_static(registry_types::upload::UPLOAD_PUBLISHER_HEADER),
+    );
+    let signature = header_text(
+        &req,
+        header::HeaderName::from_static(registry_types::upload::UPLOAD_SIGNATURE_HEADER),
+    );
+    let Some(publisher) = publisher
+        .and_then(|hex_key| hex::decode(hex_key).ok())
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+    else {
+        return Ok(text_response(
+            StatusCode::UNAUTHORIZED,
+            "an upload names its publisher key",
+        ));
+    };
+    if !signature.is_some_and(|signature| {
+        registry_types::upload::verify_upload(&publisher, &digest, &signature)
+    }) {
+        return Ok(text_response(
+            StatusCode::FORBIDDEN,
+            "upload signature does not verify",
+        ));
     }
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&bytes);
+    let allowlisted = state
+        .inner
+        .storage
+        .load_allowlist()
+        .map_err(HandlerError::Storage)?
+        .get(&publisher)
+        .is_some();
+    if !allowlisted {
+        return Ok(text_response(
+            StatusCode::FORBIDDEN,
+            "publisher not in allowlist",
+        ));
+    }
+    let limit = usize::try_from(
+        tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES.max(tilo_app_package::MAX_APP_TAPP_BYTES),
+    )
+    .unwrap_or(usize::MAX);
+    let body = match Limited::new(req.into_body(), limit).collect().await {
+        Ok(body) => body.to_bytes(),
+        Err(error) if error.downcast_ref::<LengthLimitError>().is_some() => {
+            return Ok(text_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "upload is too large",
+            ));
+        }
+        Err(error) => return Err(HandlerError::Body(error.to_string())),
+    };
+    blocking(state, move |state| {
+        store_upload(state, &publisher, &digest, &body)
+    })
+    .await
+}
+
+fn store_upload(
+    state: &AppState,
+    publisher: &[u8; 32],
+    digest: &str,
+    body: &[u8],
+) -> Result<Response<Full<Bytes>>, HandlerError> {
+    if !blake3::hash(body).to_hex().eq_ignore_ascii_case(digest) {
+        return Ok(text_response(
+            StatusCode::BAD_REQUEST,
+            "upload does not hash to its name",
+        ));
+    }
+    let signed_by_publisher = app_registry::tapp::load(body).is_ok_and(|meta| {
+        app_registry::verify_bytes(body, meta.package_id, *publisher).is_ok()
+            && tilo_app_package::app_size_limit(&meta.manifest)
+                .is_none_or(|limit| body.len() as u64 <= limit)
+    });
+    if !signed_by_publisher {
+        return Ok(text_response(
+            StatusCode::BAD_REQUEST,
+            "upload is not a package this publisher signed, within its size limit",
+        ));
+    }
+    state
+        .inner
+        .storage
+        .save_upload(body)
+        .map_err(HandlerError::Storage)?;
+    Ok(json_response(
+        StatusCode::CREATED,
+        &serde_json::json!({
+            "blake3": digest,
+            "url": crate::moderation::artifact_url(&state.inner.identity.base_url, digest),
+        }),
+    ))
+}
+
+/// The allowlist row of the entry's publisher, if it has one.
+fn publisher_row(state: &AppState, entry: &RegistryEntry) -> Option<crate::PublisherRow> {
+    let key: [u8; 32] = hex::decode(&entry.publisher_pubkey_hex)
+        .ok()?
+        .try_into()
+        .ok()?;
     state
         .inner
         .storage
         .load_allowlist()
         .ok()
         .and_then(|allowlist| allowlist.get(&key).cloned())
-        .is_some_and(|row| row.can_add_new)
 }
 
 // ---- response helpers ------------------------------------------

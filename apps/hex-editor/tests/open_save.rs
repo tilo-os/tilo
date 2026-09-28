@@ -130,14 +130,16 @@ fn open_via_portal_loads_real_bytes_through_the_drain_path() {
         let mut focus = None;
         view.handle_event(
             &key_press(Key::Character("o".into())),
-            1.0,
-            &ctrl,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &ctrl,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert!(handled, "Ctrl+O is consumed in the empty state");
     });
@@ -186,14 +188,16 @@ fn edit_then_save_writes_back_to_disk() {
         let mut focus = None;
         view.handle_event(
             &key_press(Key::Character(ch.into())),
-            1.0,
-            &no_mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &no_mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
     assert_eq!(
@@ -208,14 +212,16 @@ fn edit_then_save_writes_back_to_disk() {
     let mut focus = None;
     view.handle_event(
         &key_press(Key::Character("s".into())),
-        1.0,
-        &ctrl,
-        &mut doc,
-        &root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &ctrl,
+            state: &mut doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 
     let on_disk = std::fs::read(&path).unwrap();
@@ -249,14 +255,16 @@ fn keystroke_keeps_raw_bytes_local() {
     let mut focus = None;
     view.handle_event(
         &key_press(Key::Character("a".into())),
-        1.0,
-        &no_mods,
-        &mut doc,
-        &root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &no_mods,
+            state: &mut doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     assert!(handled, "the hex-digit keystroke was consumed");
 

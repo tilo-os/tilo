@@ -1,23 +1,12 @@
 //! Production keyboard routing across shaped rows and block boundaries.
-use std::collections::HashMap;
-use taffy::prelude::*;
-use ui::presence::PresenceCtx;
+use ui::headless::Framed;
 use ui::theme::Theme;
 use ui::widget::{BlockEditor, CursorPlacement, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
 use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-#[allow(
-    clippy::struct_field_names,
-    reason = "the fixture's editor field distinguishes the widget from its layout and renderer"
-)]
 struct Editor {
-    editor: BlockEditor,
-    tree: TaffyTree<()>,
-    node: NodeId,
-    renderer: ui::TextRenderer,
+    editor: Framed<BlockEditor>,
 }
 
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
@@ -134,47 +123,18 @@ fn vertical_navigation_and_selection_keep_anchor_column_and_content() {
 
 impl Editor {
     fn new(markdown: &str, width: f32, block: usize, byte: usize) -> Self {
-        let mut editor = BlockEditor::from_markdown(markdown).with_wrap_lines(true);
-        let mut tree = TaffyTree::new();
-        let mut nodes = HashMap::new();
-        let node = editor.build_layout(&mut tree, &Theme::dark(), &mut nodes);
-        let mut renderer = crate::component_support::renderer();
-        tree.compute_layout_with_measure(
-            node,
-            Size {
-                width: AvailableSpace::Definite(width),
-                height: AvailableSpace::MaxContent,
-            },
-            |known, available, node, _, _| {
-                nodes.get(&node).map_or(Size::ZERO, |ptr| unsafe {
-                    (**ptr).measure(known, available, &mut renderer)
-                })
-            },
-        )
-        .unwrap();
-        editor.apply_layout(&tree, node, Point::new(50.0, 50.0));
+        let mut editor = crate::component_support::framed_block_editor(
+            BlockEditor::from_markdown(markdown).with_wrap_lines(true),
+            width,
+            (50.0, 50.0),
+            Theme::dark(),
+        );
         editor.set_focus(true);
         editor.focus_block(block, CursorPlacement::Byte(byte));
-        let mut fixture = Self {
-            editor,
-            tree,
-            node,
-            renderer,
-        };
-        fixture.draw();
-        fixture
+        Self { editor }
     }
 
-    fn draw(&mut self) {
-        self.editor.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut self.renderer,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
-    }
-
+    /// Run the frame the last input left pending, then press `key`.
     fn key(&mut self, key: NamedKey, shift: bool) {
         // winit keeps platform fields private; this matches the existing
         // headless keyboard fixtures used throughout the integration suite.
@@ -196,19 +156,9 @@ impl Editor {
         } else {
             ModifiersState::empty()
         });
-        let mut handled = false;
-        self.editor.handle_event(
-            &event,
-            1.0,
-            &modifiers,
-            &mut automerge::AutoCommit::new(),
-            &automerge::ROOT,
-            &mut handled,
-            &mut None,
-            self.node,
-            &self.tree,
-        );
+        let harness = Framed::harness_mut(&mut self.editor);
+        harness.relayout();
+        let handled = harness.dispatch_to_root_with(&event, &modifiers);
         assert!(handled, "editor must consume {key:?}");
-        self.draw();
     }
 }

@@ -21,7 +21,8 @@
 )]
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ROOT, ReadDoc};
+use automerge::{AutoCommit, ROOT, ReadDoc};
+use tilo_ui::widget::{AppModel, ModelPath};
 
 use crate::support::typed_collab::TypedBroker;
 use tilo_ui::app::App;
@@ -58,7 +59,7 @@ impl Widget for AgentTarget {
         true
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.inner.sync(state, path);
     }
     fn build_layout(
@@ -88,33 +89,12 @@ impl Widget for AgentTarget {
         self.inner
             .draw(scene, transform, text_renderer, theme, presence);
     }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the test widget implements the framework event contract"
-    )]
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<taffy::NodeId>,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
+        ctx: &mut tilo_ui::widget::EventCtx<'_>,
     ) {
-        self.inner.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+        self.inner.handle_event(event, ctx);
     }
     fn name(&self) -> &'static str {
         "AgentTarget"

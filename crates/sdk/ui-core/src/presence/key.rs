@@ -59,10 +59,10 @@ pub enum PresenceKey {
 /// silently misreads every pointer scope rather than failing to build.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum PointerSpace {
-    /// Compositor scene coordinates on `room`'s desktop — the only space
-    /// that spans more than one window, so the only one a pointer can be
-    /// followed across the strip and window gaps in, and therefore the
-    /// only space a *person's* pointer is ever in.
+    /// Compositor scene coordinates on this device's own desktop. Only
+    /// meaningful on the device that measured them: its monitors decide
+    /// where anything is, so a collaborator's desktop is a different shape.
+    /// A person's pointer goes to other devices as [`Self::Tile`] instead.
     Desktop { room: String },
     /// Content coordinates inside the surface `surface` names — the app id
     /// that surface announces ([`crate::local_surface_id`]). Named by the
@@ -70,6 +70,13 @@ pub enum PointerSpace {
     /// document are comparable content, but a file manager and a word
     /// processor are not, even when the broker hands both the same frame.
     Surface { surface: String },
+    /// Logical pixels from the top-left corner of the tile that shows tab
+    /// `tab` of `room`. Tabs are the room's, shared by every device in it,
+    /// while which monitor shows a tab and where is each device's own
+    /// layout — so this is how a person's desktop pointer travels: every
+    /// receiver places it over its own tile for that tab, above every
+    /// window, whatever its monitors look like.
+    Tile { room: String, tab: u64 },
 }
 
 /// First path field of a [`PresenceKey::digest_form`] key.
@@ -152,6 +159,17 @@ impl PresenceKey {
         }
     }
 
+    /// The key a pointer placed relative to the tile of `room`'s tab `tab`
+    /// is published under.
+    pub fn tile_pointer(room: impl Into<String>, tab: u64) -> Self {
+        PresenceKey::Pointer {
+            space: PointerSpace::Tile {
+                room: room.into(),
+                tab,
+            },
+        }
+    }
+
     /// The key a pointer measured inside `surface`'s content is published
     /// under.
     pub fn surface_pointer(surface: impl Into<String>) -> Self {
@@ -208,7 +226,10 @@ impl PresenceKey {
     /// about the *scope*, not the transport: a pointer with no key at all
     /// never comes through here and stays the window's to paint.
     pub fn scopes_a_desktop_pointer(&self) -> bool {
-        matches!(self.pointer_space(), Some(PointerSpace::Desktop { .. }))
+        matches!(
+            self.pointer_space(),
+            Some(PointerSpace::Desktop { .. } | PointerSpace::Tile { .. })
+        )
     }
 
     /// The canonical `PresenceKey` used to attribute a pointer publish that
@@ -356,6 +377,11 @@ mod view_key_tests {
                 vec![5u8, 1, 1, b's'],
                 "PointerSpace::Surface must stay variant 1",
             );
+            assert_eq!(
+                postcard::to_stdvec(&PresenceKey::tile_pointer("r", 7)).unwrap(),
+                vec![5u8, 2, 1, b'r', 7],
+                "PointerSpace::Tile must stay variant 2",
+            );
         }
         // phase: a_pointer_key_carries_its_space_across_the_wire_encoding
         // The space is what a pointer key is *for*, and it has to survive the
@@ -365,6 +391,7 @@ mod view_key_tests {
             for key in [
                 PresenceKey::desktop_pointer("room-7"),
                 PresenceKey::surface_pointer("so.tilo.word-processor"),
+                PresenceKey::tile_pointer("room-7", 0x1234_5678_9abc),
             ] {
                 let bytes = postcard::to_stdvec(&key).expect("a pointer key encodes");
                 let back: PresenceKey =
@@ -395,6 +422,9 @@ mod view_key_tests {
             assert!(PresenceKey::desktop_pointer("r").scopes_a_desktop_pointer());
             assert!(PresenceKey::Workspace { id: "r".into() }.scopes_a_desktop_pointer());
             assert!(PresenceKey::pointer_default().scopes_a_desktop_pointer());
+            // A pointer placed over a tab's tile is drawn by the compositor
+            // above every window, like any desktop pointer.
+            assert!(PresenceKey::tile_pointer("r", 1).scopes_a_desktop_pointer());
             // A position inside a document is not a position on a screen.
             assert!(
                 !PresenceKey::Widget {

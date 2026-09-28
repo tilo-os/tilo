@@ -8,12 +8,11 @@
 //! both `entry.name` and `entry.space_name` so typing a space prefix
 //! narrows the list.
 
-use crate::search::list_filter::ListFilter;
+use crate::search::ListIndex;
 use crate::time::SystemTime;
 use std::collections::HashMap;
 use tilo_search::FieldWeight;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -108,9 +107,9 @@ pub type DismissCallback = Box<dyn FnMut()>;
 
 pub struct ChannelBrowser {
     entries: Vec<ChannelEntry>,
-    /// Names and space names of `entries`, indexed on the first query after
-    /// they change.
-    entry_filter: Option<ListFilter>,
+    /// Names and space names of `entries`, indexed while they stay the
+    /// same.
+    entry_index: ListIndex,
     query: String,
     /// Mirrors the command-palette model so the same keyboard contract
     /// (arrow, shift+arrow, Ctrl+A/C/V/X) works inside the search input.
@@ -148,7 +147,7 @@ impl ChannelBrowser {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
-            entry_filter: None,
+            entry_index: ListIndex::default(),
             query: String::new(),
             query_selection: crate::text_selection::Selection::collapsed(0),
             query_composition: QueryComposition::new(),
@@ -177,7 +176,6 @@ impl ChannelBrowser {
     /// typing.
     pub fn set_entries(&mut self, entries: Vec<ChannelEntry>) {
         self.entries = entries;
-        self.entry_filter = None;
         self.rebuild();
     }
 
@@ -281,31 +279,22 @@ impl ChannelBrowser {
         self.visible.clear();
         // A hit on the channel name or the parent space name, so typing a
         // space prefix drills in.
-        let matching = if self.query.trim().is_empty() {
-            None
-        } else {
-            let entries = &self.entries;
-            self.entry_filter
-                .get_or_insert_with(|| {
-                    ListFilter::new(entries.iter().map(|entry| {
-                        [
-                            (entry.name.as_str(), FieldWeight::TITLE),
-                            (entry.space_name.as_str(), FieldWeight::SUBTITLE),
-                        ]
-                    }))
-                })
-                .matching(&self.query)
-        };
+        let ranks = self.entry_index.ranks(
+            &self.query,
+            self.entries.iter().map(|entry| {
+                [
+                    (entry.name.as_str(), FieldWeight::TITLE),
+                    (entry.space_name.as_str(), FieldWeight::SUBTITLE),
+                ]
+            }),
+        );
         for (i, e) in self.entries.iter().enumerate() {
             if let Some(filter) = &self.space_filter
                 && &e.space_name != filter
             {
                 continue;
             }
-            if matching
-                .as_ref()
-                .is_some_and(|matching| !matching.contains(&i))
-            {
+            if ranks.get(i).is_none_or(Option::is_none) {
                 continue;
             }
             self.visible.push(i);
@@ -1094,8 +1083,6 @@ fn px(v: f64) -> f32 {
 }
 
 impl Widget for ChannelBrowser {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1231,21 +1218,10 @@ impl Widget for ChannelBrowser {
         self.dirty = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Mouse branches go first so click-to-select on pills/rows
         // works even when the input has focus.
-        self.handle_pointer_event(event, scale_factor, handled);
+        self.handle_pointer_event(event, ctx.scale_factor, ctx.handled);
 
         if !self.is_focused {
             return;
@@ -1263,7 +1239,7 @@ impl Widget for ChannelBrowser {
             } else {
                 self.dirty = true;
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         let WindowEvent::KeyboardInput {
@@ -1281,10 +1257,10 @@ impl Widget for ChannelBrowser {
         if *element_state != ElementState::Pressed {
             return;
         }
-        let mods = modifiers.state();
+        let mods = ctx.modifiers.state();
         let shift = mods.shift_key();
         let ctrl = mods.control_key() || mods.super_key();
-        self.handle_key_press(event, logical_key, shift, ctrl, handled);
+        self.handle_key_press(event, logical_key, shift, ctrl, ctx.handled);
     }
 
     fn name(&self) -> &'static str {
@@ -1346,6 +1322,7 @@ impl Widget for ChannelBrowser {
 mod tests {
     use super::*;
     use crate::time::Duration;
+    use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use winit::event::Modifiers;
@@ -1623,14 +1600,16 @@ mod tests {
         let root = automerge::ROOT;
         b.handle_event(
             event,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

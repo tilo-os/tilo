@@ -7,6 +7,7 @@ use crate::time::{Duration, Instant};
 use crate::widget::Spinner;
 use crate::widget::TaffyTreeExt;
 use crate::widget::app_widget::AppWidget;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
     AudiencePresentationProvider, AudiencePresentationWidgetExt, CompleteContentWidgetExt as _,
     Continuable, FloatingSurfaceProvider, FloatingSurfaceWidgetExt, FullscreenProvider,
@@ -1789,7 +1790,7 @@ impl Widget for TileHost {
             TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
         }
     }
-    fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {
+    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
         if let TileContent::App(app) = &mut self.content {
             app.on_external_event(payload, state, root);
         }
@@ -1823,71 +1824,20 @@ impl Widget for TileHost {
             _ => Vec::new(),
         }
     }
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, path: &ObjId) {
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
         if let TileContent::App(app) = &mut self.content {
             app.activate_search_result(action_id, doc, path);
         }
     }
 
-    fn start_resource_operation_scoped(
+    fn start_operation(
         &mut self,
-        scope: &crate::invocation_scope::ResourceInvocationScope,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        scope.check()?;
-        if !matches!(&self.content, TileContent::App(_)) {
-            return Ok(None);
-        }
-        if !self.history_lifetime.active.get() {
-            return Err("The current document owner is closed".into());
-        }
-        let live = self.resolve_record()?;
-        let owner = self.history_owner();
-        let TileContent::App(app) = &mut self.content else {
-            return Ok(None);
-        };
-        let started = if let (Some(live), Some(binding)) = (live, &self.binding) {
-            binding
-                .store
-                .with_checked(&live, |document| {
-                    scope.with_document_mutation(document, |document| {
-                        app.start_resource_operation_scoped(
-                            scope, kind, type_id, payload, document, &ROOT,
-                        )
-                    })
-                })
-                .map_err(|error| error.to_string())??
-        } else {
-            scope.with_document_mutation(doc, |doc| {
-                app.start_resource_operation_scoped(scope, kind, type_id, payload, doc, path)
-            })?
-        };
-        if matches!(
-            started,
-            Some(crate::widget::ResourceOperationStart::Accepted)
-        ) && let Some(owner) = owner
-        {
-            self.retained_invocations
-                .insert(scope.invocation(), owner.clone());
-            self.owner_bound_work = true;
-            self.owner_bound_custody.get_or_insert(owner);
-        }
-        Ok(started)
-    }
-
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let (_, scope) = op.with_custody();
+        op.check()?;
         if !matches!(&self.content, TileContent::App(_)) {
             return Ok(None);
         }
@@ -1897,32 +1847,57 @@ impl Widget for TileHost {
         // Resolve a requested legacy binding before exposing any document.
         // Failure must not advance/announce its scope or fall back to the host.
         let live = self.resolve_record()?;
-        self.announce_scope();
+        if scope.is_none() {
+            self.announce_scope();
+        }
         let owner = self.history_owner();
         let TileContent::App(app) = &mut self.content else {
             return Ok(None);
         };
-        if let (Some(live), Some(binding)) = (live, &self.binding) {
-            let started = binding
+        let mut start = |document: &mut AutoCommit, root: &ObjId| match scope {
+            Some(scope) => scope.with_document_mutation(document, |document| {
+                app.start_operation(op, document, root)
+            }),
+            None => app.start_operation(op, document, root),
+        };
+        let started = match live.zip(self.binding.as_ref()) {
+            Some((live, binding)) => binding
                 .store
-                .with_checked(&live, |document| {
-                    app.start_resource_operation_with_document(
-                        invocation, kind, type_id, payload, document, &ROOT,
-                    )
-                })
-                .map_err(|error| error.to_string())??;
-            if matches!(
-                started,
-                Some(crate::widget::ResourceOperationStart::Accepted)
-            ) && let Some(owner) = owner
-            {
-                self.retained_invocations.insert(invocation, owner.clone());
-                self.owner_bound_work = true;
-                self.owner_bound_custody.get_or_insert(owner);
-            }
-            return Ok(started);
+                .with_checked(&live, |document| start(document, &ROOT))
+                .map_err(|error| error.to_string())??,
+            // Unbound local work is polled straight from the app rather than
+            // through retained owner custody.
+            None if scope.is_none() => return start(doc, path),
+            None => start(doc, path)?,
+        };
+        if matches!(
+            started,
+            Some(crate::widget::ResourceOperationStart::Accepted)
+        ) && let Some(owner) = owner
+        {
+            self.retained_invocations
+                .insert(op.invocation(), owner.clone());
+            self.owner_bound_work = true;
+            self.owner_bound_custody.get_or_insert(owner);
         }
-        app.start_resource_operation_with_document(invocation, kind, type_id, payload, doc, path)
+        Ok(started)
+    }
+
+    /// Legacy adapter: offered through [`Widget::start_operation`].
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        self.start_operation(
+            &crate::widget::ResourceOperation::local(invocation, kind, type_id, payload),
+            doc,
+            path,
+        )
     }
 
     fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
@@ -2122,7 +2097,7 @@ impl Widget for TileHost {
         children
     }
 
-    fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
+    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
         if !self.history_lifetime.active.get()
             || crate::history_mode::frame::FrameworkInputFrame::active()
         {
@@ -2152,7 +2127,7 @@ impl Widget for TileHost {
         }
     }
 
-    fn update(&mut self, s: &mut AutoCommit, p: &ObjId) -> bool {
+    fn update(&mut self, s: &mut AppModel, p: &ModelPath) -> bool {
         // This custody is independent of the outer App State and remains
         // durable while History hides the live widget.
         if let Some(binding) = &self.binding {
@@ -2329,26 +2304,15 @@ impl Widget for TileHost {
         }
         self.draw_steady_state(scene, transform, tr, theme, presence);
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        mods: &winit::event::Modifiers,
-        s: &mut AutoCommit,
-        p: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if *handled {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if *ctx.handled {
             return;
         }
         let live = if let Ok(live) = self.resolve_record() {
             live
         } else {
             let Some(live) = self.checked_old_owner_for_recovery() else {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             };
             Some(live)
@@ -2356,25 +2320,25 @@ impl Widget for TileHost {
         self.install_declared_history();
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
         if self.record_error.is_some() {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         let TileContent::App(app) = &mut self.content else {
             return;
         };
         if let Some(history) = &mut self.history {
-            history.observe_pointer(event, scale_factor);
-            if history.controls_event(event, scale_factor) {
+            history.observe_pointer(event, ctx.scale_factor);
+            if history.controls_event(event, ctx.scale_factor) {
                 history.route_event(
                     app.as_mut(),
                     event,
-                    scale_factor,
-                    mods,
-                    s,
-                    p,
-                    handled,
-                    focus_target,
-                    taffy,
+                    ctx.scale_factor,
+                    ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                    ctx.focus_target,
+                    ctx.taffy,
                 );
                 return;
             }
@@ -2383,7 +2347,7 @@ impl Widget for TileHost {
             }
         }
         // Same structural-mismatch guard as apply_layout above.
-        let children = taffy.children(node_id).unwrap_or_default();
+        let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         let Some(child_node) = self
             .live_callback_node
             .or_else(|| children.first().copied())
@@ -2391,24 +2355,14 @@ impl Widget for TileHost {
             return;
         };
         let (Some(id), Some(bind)) = (live, &self.binding) else {
-            app.handle_event(
-                event,
-                scale_factor,
-                mods,
-                s,
-                p,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
+            app.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
             return;
         };
         // An `UndoEntry` is a pair of change hashes inside *this* record's
         // change graph, so running it against another tab's document
         // either does nothing or reverts the wrong thing.
         if app.is_focused()
-            && let Some(step) = undo_step(event, *mods)
+            && let Some(step) = undo_step(event, *ctx.modifiers)
         {
             bind.store.with_history(&id, |doc, history| {
                 let author = crate::collaboration::local_user_id();
@@ -2434,20 +2388,22 @@ impl Widget for TileHost {
                 })
             });
             app.on_commit();
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         bind.store.with(&id, |doc| {
             app.handle_event(
                 event,
-                scale_factor,
-                mods,
-                doc,
-                &ROOT,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state: doc,
+                    path: &ROOT,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: child_node,
+                    taffy: ctx.taffy,
+                },
             );
         });
     }
@@ -3274,8 +3230,9 @@ mod tests {
     }
 
     impl Widget for Scribe {
-        fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
             use automerge::transaction::Transactable;
+            let (state, path) = crate::doc::document(state, path);
             let _ = state.put(path, "body", self.text.as_str());
         }
         fn build_layout(
@@ -3296,19 +3253,6 @@ mod tests {
             _tr: &mut TextRenderer,
             _th: &Theme,
             _p: &PresenceCtx,
-        ) {
-        }
-        fn handle_event(
-            &mut self,
-            _event: &WindowEvent,
-            _scale: f64,
-            _m: &winit::event::Modifiers,
-            _state: &mut AutoCommit,
-            _path: &ObjId,
-            _handled: &mut bool,
-            _focus: &mut Option<NodeId>,
-            _node: NodeId,
-            _taffy: &TaffyTree<()>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -3389,7 +3333,6 @@ mod tests {
             Some(self)
         }
 
-        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -3408,19 +3351,6 @@ mod tests {
             _tr: &mut TextRenderer,
             _theme: &Theme,
             _presence: &PresenceCtx,
-        ) {
-        }
-        fn handle_event(
-            &mut self,
-            _event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &winit::event::Modifiers,
-            _state: &mut AutoCommit,
-            _path: &ObjId,
-            _handled: &mut bool,
-            _focus_target: &mut Option<NodeId>,
-            _node_id: NodeId,
-            _taffy: &TaffyTree<()>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -3490,14 +3420,16 @@ mod tests {
             let mut handled = true;
             host.handle_event(
                 &WindowEvent::Focused(true),
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut AutoCommit::new(),
-                &ROOT,
-                &mut handled,
-                &mut None,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut AutoCommit::new(),
+                    path: &ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut None,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert_eq!(calls.get(), 0);
         }
@@ -3836,7 +3768,6 @@ mod tests {
         fn set_focus(&mut self, focused: bool) {
             self.focused = focused;
         }
-        fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
         fn build_layout(
             &mut self,
             tree: &mut TaffyTree<()>,
@@ -3855,19 +3786,6 @@ mod tests {
             _: &mut TextRenderer,
             _: &Theme,
             _: &PresenceCtx,
-        ) {
-        }
-        fn handle_event(
-            &mut self,
-            _: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut AutoCommit,
-            _: &ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
         ) {
         }
         fn get_rect(&self) -> Rect {
@@ -4221,7 +4139,6 @@ mod tests {
     struct EventProbe(std::rc::Rc<std::cell::Cell<usize>>);
 
     impl Widget for EventProbe {
-        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -4242,18 +4159,7 @@ mod tests {
             _presence: &PresenceCtx,
         ) {
         }
-        fn handle_event(
-            &mut self,
-            _event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &winit::event::Modifiers,
-            _state: &mut AutoCommit,
-            _path: &ObjId,
-            _handled: &mut bool,
-            _focus_target: &mut Option<NodeId>,
-            _node_id: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
             self.0.set(self.0.get().checked_add(1).unwrap());
         }
         fn name(&self) -> &'static str {
@@ -4483,7 +4389,6 @@ mod tests {
     }
     const FLOOD: vello::peniko::Color = vello::peniko::Color::from_rgb8(0xFF, 0x00, 0x00);
     impl Widget for FloodFill {
-        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -4510,19 +4415,6 @@ mod tests {
                 None,
                 &self.rect,
             );
-        }
-        fn handle_event(
-            &mut self,
-            _event: &WindowEvent,
-            _scale: f64,
-            _m: &winit::event::Modifiers,
-            _state: &mut AutoCommit,
-            _path: &ObjId,
-            _handled: &mut bool,
-            _focus: &mut Option<NodeId>,
-            _node: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
         }
         fn name(&self) -> &'static str {
             "FloodFill"
@@ -4553,7 +4445,6 @@ mod tests {
         color: vello::peniko::Color,
     }
     impl Widget for Flood {
-        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -4580,19 +4471,6 @@ mod tests {
                 None,
                 &self.rect,
             );
-        }
-        fn handle_event(
-            &mut self,
-            _event: &WindowEvent,
-            _scale: f64,
-            _m: &winit::event::Modifiers,
-            _state: &mut AutoCommit,
-            _path: &ObjId,
-            _handled: &mut bool,
-            _focus: &mut Option<NodeId>,
-            _node: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
         }
         fn name(&self) -> &'static str {
             "Flood"
@@ -4630,7 +4508,6 @@ mod tests {
             Some(self)
         }
 
-        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -4656,19 +4533,6 @@ mod tests {
                 None,
                 &self.rect,
             );
-        }
-        fn handle_event(
-            &mut self,
-            _event: &WindowEvent,
-            _scale: f64,
-            _m: &winit::event::Modifiers,
-            _state: &mut AutoCommit,
-            _path: &ObjId,
-            _handled: &mut bool,
-            _focus: &mut Option<NodeId>,
-            _node: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
         }
         fn name(&self) -> &'static str {
             "Starting"
@@ -4937,14 +4801,16 @@ mod tests {
                 let mut handled = false;
                 host.handle_event(
                     event,
-                    scale,
-                    &winit::event::Modifiers::default(),
-                    &mut doc,
-                    &ROOT,
-                    &mut handled,
-                    &mut None,
-                    node,
-                    &tree,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: scale,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: &mut doc,
+                        path: &ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut None,
+                        node_id: node,
+                        taffy: &tree,
+                    },
                 );
                 (handled, calls.get())
             };

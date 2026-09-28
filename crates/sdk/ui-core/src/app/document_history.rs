@@ -166,14 +166,16 @@ impl App {
         {
             self.root_widget.handle_event(
                 event,
-                scale,
-                &self.input.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                handled,
-                focus,
-                root,
-                &self.layout.taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &self.input.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled,
+                    focus_target: focus,
+                    node_id: root,
+                    taffy: &self.layout.taffy,
+                },
             );
         }
         history_handled
@@ -269,20 +271,21 @@ impl App {
         if encoded.type_id == HISTORY_OPERATION {
             return self.invoke_history_local(encoded);
         }
-        let doc = &self.state.doc;
-        let path = &self.state.root;
-        let result = self
+        let pane = self
             .document_history
             .pane_mut()
-            .ok_or("History is not open")?
-            .start_resource_operation(
+            .ok_or("History is not open")?;
+        let result = crate::widget::start_without_document_writes(
+            pane,
+            &crate::widget::ResourceOperation::local(
                 tilo_actions::InvocationId::new(),
                 tilo_actions::OperationKind::View,
                 &encoded.type_id,
                 &encoded.payload,
-                doc,
-                path,
-            )?;
+            ),
+            &mut self.state.doc,
+            &self.state.root,
+        )?;
         if result.is_none() {
             return Err("Unknown History operation".into());
         }
@@ -340,8 +343,20 @@ impl App {
         let Some(confirmed) = self.document_history.take_confirmed_restore() else {
             return;
         };
-        let author = Some(self.local_author().clone());
-        let result = crate::standalone_history::apply_restore(&mut self.state, &confirmed, author);
+        let author = self.local_author().clone();
+        let result = self.apply_history_restore(&confirmed, author);
+        self.document_history.report_restore(&result);
+    }
+
+    /// The one write behind every restore, from the History pane or an
+    /// action: one attributed, undoable change, persisted like any other.
+    pub(super) fn apply_history_restore(
+        &mut self,
+        confirmed: &crate::standalone_history::ConfirmedHistoryRestore,
+        author: crate::permissions::UserId,
+    ) -> Result<bool, HistoryError> {
+        let result =
+            crate::standalone_history::apply_restore(&mut self.state, confirmed, Some(author));
         if matches!(result, Ok(true)) {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
@@ -355,7 +370,7 @@ impl App {
             }
         }
         let _ = self.with_history_host(StandaloneHistoryHost::refresh);
-        self.document_history.report_restore(&result);
+        result
     }
 
     #[cfg(feature = "native")]
@@ -628,14 +643,16 @@ impl App {
                     |widget, doc, path| {
                         widget.handle_event(
                             event,
-                            scale,
-                            &self.input.modifiers,
-                            doc,
-                            path,
-                            handled,
-                            focus,
-                            node,
-                            &self.layout.taffy,
+                            &mut crate::widget::EventCtx {
+                                scale_factor: scale,
+                                modifiers: &self.input.modifiers,
+                                state: doc,
+                                path,
+                                handled,
+                                focus_target: focus,
+                                node_id: node,
+                                taffy: &self.layout.taffy,
+                            },
                         );
                     },
                 )
@@ -645,14 +662,16 @@ impl App {
         if !keyboard || self.focused_node == Some(layout.toolbar) {
             self.document_history.toolbar_mut().handle_event(
                 event,
-                scale,
-                &self.input.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                handled,
-                focus,
-                layout.toolbar,
-                &self.layout.taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &self.input.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled,
+                    focus_target: focus,
+                    node_id: layout.toolbar,
+                    taffy: &self.layout.taffy,
+                },
             );
         }
         if !*handled
@@ -661,14 +680,16 @@ impl App {
         {
             search.handle_event(
                 event,
-                scale,
-                &self.input.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                handled,
-                focus,
-                node,
-                &self.layout.taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &self.input.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled,
+                    focus_target: focus,
+                    node_id: node,
+                    taffy: &self.layout.taffy,
+                },
             );
         }
         let pane_focused = self
@@ -681,14 +702,16 @@ impl App {
         {
             pane.handle_event(
                 event,
-                scale,
-                &self.input.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                handled,
-                focus,
-                node,
-                &self.layout.taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &self.input.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled,
+                    focus_target: focus,
+                    node_id: node,
+                    taffy: &self.layout.taffy,
+                },
             );
         }
         if !*handled
@@ -698,14 +721,16 @@ impl App {
         {
             preview.handle_event(
                 event,
-                scale,
-                &self.input.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                handled,
-                focus,
-                node,
-                &self.layout.taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &self.input.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled,
+                    focus_target: focus,
+                    node_id: node,
+                    taffy: &self.layout.taffy,
+                },
             );
         }
         if !layout.app_visible && !keyboard {
@@ -836,6 +861,8 @@ impl App {
             return;
         }
         self.history_chrome_enabled = true;
+        // The published History resource exists only where History does.
+        self.invalidate_widget_resource_cache();
         self.document_history.enable_search(self.input.platform);
         self.remember_history_content();
         self.layout.structure_dirty = true;
@@ -1087,7 +1114,7 @@ mod tests {
             assert!(!app.action_ui_routes(&open).is_empty());
         }
 
-        // Case `native_history_local_door_preserves_root_and_excludes_broker_resources`.
+        // Case `native_history_chrome_stays_local_while_history_is_published_gated`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1122,10 +1149,36 @@ mod tests {
                 original,
                 std::ptr::from_ref(app.root_widget.as_ref())
             ));
+            let published = app.publication_resources();
             assert!(
-                app.collect_resources()
+                published
                     .iter()
-                    .all(|resource| !resource.id.as_str().starts_with("tilo.host:"))
+                    .chain(app.collect_resources().iter())
+                    .all(|resource| !resource.id.as_str().starts_with("tilo.host:")),
+                "the pane's session, selection and review controls stay local"
+            );
+            let history = tilo_actions::door::survey(&published)
+                .into_iter()
+                .filter(|descriptor| {
+                    descriptor.address.resource == super::super::history_actions::RESOURCE
+                })
+                .map(|descriptor| (descriptor.address.action, descriptor.contract.permission))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            use tilo_actions::PermissionRequirement::{Read, Write};
+            assert_eq!(
+                history,
+                [
+                    ("history.close", Write),
+                    ("history.compare", Write),
+                    ("history.list", Read),
+                    ("history.open", Read),
+                    ("history.restore", Write),
+                    ("history.view_at", Write),
+                ]
+                .into_iter()
+                .map(|(action, permission)| (action.to_owned(), permission))
+                .collect(),
+                "the broker gates each History action on the permission it declares"
             );
             let snapshot = app.document_history_snapshot().unwrap().unwrap();
             app.select_document_history(&[snapshot.entries[0].id])
@@ -1554,7 +1607,6 @@ struct FrameworkPresentation<'a> {
     layout_root: taffy::NodeId,
 }
 impl Widget for FrameworkPresentation<'_> {
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         _: &mut taffy::TaffyTree<()>,
@@ -1572,19 +1624,6 @@ impl Widget for FrameworkPresentation<'_> {
         _: &mut crate::text_render::TextRenderer,
         _: &crate::Theme,
         _: &crate::presence::PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<taffy::NodeId>,
-        _: taffy::NodeId,
-        _: &taffy::TaffyTree<()>,
     ) {
     }
     fn children(&self) -> Vec<&dyn Widget> {

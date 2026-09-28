@@ -176,13 +176,8 @@ fn free_rdp_command(arguments: &[std::ffi::OsString], read_only_drives: &[PathBu
 }
 
 fn runtime_directory() -> Result<PathBuf, String> {
-    let runtime = env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .ok_or_else(|| "XDG_RUNTIME_DIR is not set".to_string())?;
-    if !runtime.is_absolute() {
-        return Err("XDG_RUNTIME_DIR is not absolute".to_string());
-    }
-    Ok(runtime)
+    xdg_paths::xdg::runtime_dir()
+        .ok_or_else(|| "XDG_RUNTIME_DIR is not an absolute path".to_string())
 }
 
 fn private_runtime_root() -> Result<PathBuf, String> {

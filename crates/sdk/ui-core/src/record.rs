@@ -1207,6 +1207,7 @@ pub struct RecordSet {
 
 struct Reserved {
     generation: u64,
+    kind: RecordKind,
     /// The durable owner reserved for a store-backed record; `None` for a
     /// portable reservation, whose cache has no single-writer owner.
     store: Option<Rc<app_state::DocOwner>>,
@@ -1363,6 +1364,20 @@ impl RecordSet {
     /// the record currently checked out — its document is the live one.
     pub fn peek(&self, id: &RecordId) -> Option<&AutoCommit> {
         self.open.get(id).and_then(|p| p.doc.as_ref())
+    }
+
+    /// Primary stays `record=None` on every host.
+    fn wire_route(
+        &self,
+        id: &RecordId,
+    ) -> Result<crate::collaboration::RouteSpec, RecordOpenError> {
+        let room =
+            uuid::Uuid::parse_str(&self.home).map_err(|_| RecordOpenError::IdentityMismatch)?;
+        Ok(if id.is_package_primary() {
+            crate::collaboration::RouteSpec::app(&self.package_id, room)
+        } else {
+            crate::collaboration::RouteSpec::record(&self.package_id, room, id.as_str())
+        })
     }
 
     /// Native caller has already read this exact route through its admitted SDK
@@ -1582,7 +1597,7 @@ impl RecordSet {
             .as_ref()
             .map(|bridge| {
                 bridge
-                    .record(&self.package_id, &self.home, &want.id)
+                    .record(&self.package_id, &self.home, want)
                     .map_err(|error| {
                         crate::collaboration::native_initial::fail(&error);
                         RecordOpenError::Initialization(error)
@@ -1921,7 +1936,7 @@ impl RecordSet {
         }
         if let Some(bridge) = &self.native_initial {
             let read = bridge
-                .record(&self.package_id, &self.home, &want.id)
+                .record(&self.package_id, &self.home, want)
                 .map_err(RecordOpenError::Initialization)?;
             let store = app_state::DocStore::exclusive(backend, key)?;
             let (mut doc, autosave) =
@@ -2511,13 +2526,26 @@ impl RecordStore {
             .peek(&checkout.id)
             .ok_or(RecordOpenError::MissingRecord)?;
         validate_identity(doc, checkout, &set.home)?;
-        let room =
-            uuid::Uuid::parse_str(&set.home).map_err(|_| RecordOpenError::IdentityMismatch)?;
-        Ok(if checkout.id.is_package_primary() {
-            crate::collaboration::RouteSpec::app(&set.package_id, room)
-        } else {
-            crate::collaboration::RouteSpec::record(&set.package_id, room, checkout.id.as_str())
-        })
+        set.wire_route(&checkout.id)
+    }
+
+    /// The route native component admission joins before the factory runs:
+    /// the open record's, or a live New reservation's, whose genesis the
+    /// factory has yet to write. The reservation is the custody proof there.
+    pub(crate) fn admission_route(
+        &self,
+        checkout: &RecordCheckout,
+    ) -> Result<crate::collaboration::RouteSpec, RecordOpenError> {
+        {
+            let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
+            if let Some(reserved) = set.pending.get(&checkout.id) {
+                if reserved.kind != checkout.kind {
+                    return Err(RecordOpenError::IdentityMismatch);
+                }
+                return set.wire_route(&checkout.id);
+            }
+        }
+        self.route(checkout)
     }
 
     /// Schedule this already committed History result through its existing writer.
@@ -2660,6 +2688,7 @@ impl RecordStore {
             want.id.clone(),
             Reserved {
                 generation,
+                kind: want.kind.clone(),
                 store: Some(Rc::new(owner)),
                 actor: None,
             },
@@ -3476,20 +3505,16 @@ impl std::fmt::Debug for RecordStore {
 /// live one, park it and check the named one out. `tilo_ui::App` calls this
 /// once per frame, before `sync`, so a widget that opened a file last
 /// frame is editing that file's document by the time it next reads state.
-/// The return value is the caller's cue to re-announce its collaboration
-/// channel — a checkout is a change of address.
+/// The checkout it returns is the caller's cue to re-announce its
+/// collaboration channel — a checkout is a change of address.
 pub fn tick(
     set: &mut RecordSet,
     state: &mut crate::state::State,
     room: Option<&mut AutoCommit>,
     widget: &dyn crate::widget::Widget,
-) -> Option<RecordId> {
+) -> Option<RecordCheckout> {
     let want = widget.record_intent()?;
-    if set.checkout(state, room, &want) {
-        Some(want.id)
-    } else {
-        None
-    }
+    set.checkout(state, room, &want).then_some(want)
 }
 
 #[cfg(all(test, target_os = "linux"))]

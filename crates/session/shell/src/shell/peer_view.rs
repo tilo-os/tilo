@@ -15,7 +15,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -90,6 +89,9 @@ pub struct PeerView {
     /// Cached `peniko::ImageData` derived from `latest`; rebuilt only
     /// when `latest` changes.
     cached_image: Option<vello::peniko::ImageData>,
+    /// `latest` at full precision when it carries an HDR signal; composited
+    /// in place of `cached_image` where the output shows HDR.
+    cached_hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
     /// Pending input events to ship back to the owner.
     pending_inputs: Vec<InputEvent>,
     /// Production sends directly through this non-blocking bridge; tests
@@ -154,6 +156,7 @@ impl PeerView {
             latest: None,
             hdr_tonemap: None,
             cached_image: None,
+            cached_hdr: None,
             pending_inputs: Vec::new(),
             input_sink: None,
             pointer_inside: false,
@@ -217,6 +220,7 @@ impl PeerView {
             latest: None,
             hdr_tonemap,
             cached_image: None,
+            cached_hdr: None,
             pending_inputs: Vec::new(),
             input_sink: None,
             pointer_inside: false,
@@ -312,6 +316,7 @@ impl PeerView {
 
         self.latest = Some(frame);
         self.cached_image = None;
+        self.cached_hdr = None;
         self.dirty = true;
 
         self.metrics.record_received(latency_ns.unwrap_or(0));
@@ -423,6 +428,20 @@ impl PeerView {
                     uv_stride,
                 } => {
                     let cfg = self.hdr_tonemap.as_ref().copied().unwrap_or_default();
+                    self.cached_hdr = crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
+                        frame.colorimetry,
+                        cfg,
+                    )
+                    .and_then(|signal| {
+                        crate::shell::hdr_surface::HdrPlane::p010(
+                            y,
+                            uv,
+                            (*y_stride, *uv_stride),
+                            (frame.width, frame.height),
+                            signal,
+                        )
+                    })
+                    .map(Arc::new);
                     tonemap_p010_to_rgba8(
                         y,
                         uv,
@@ -449,8 +468,6 @@ impl PeerView {
 }
 
 impl Widget for PeerView {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -517,7 +534,9 @@ impl Widget for PeerView {
 
         let rect = self.content_rect();
 
-        if let Some(image) = self.ensure_image() {
+        let image = self.ensure_image().cloned();
+        let hdr_plane = self.cached_hdr.clone();
+        if let Some(image) = &image {
             // Scale + translate so the natural-size image fills `rect`.
             let img_w = f64::from(image.width);
             let img_h = f64::from(image.height);
@@ -532,6 +551,14 @@ impl Widget for PeerView {
                 let placement = transform
                     .pre_translate((rect.x0, rect.y0).into())
                     .pre_scale_non_uniform(sx, sy);
+                if let Some(plane) = &hdr_plane {
+                    crate::shell::hdr_surface::record(
+                        plane,
+                        image,
+                        placement,
+                        transform.transform_rect_bbox(rect),
+                    );
+                }
                 scene.draw_image(image, placement);
             }
         } else {
@@ -551,18 +578,7 @@ impl Widget for PeerView {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        _scale_factor: f64,
-        modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let point = Point::new(position.x, position.y);
@@ -579,7 +595,7 @@ impl Widget for PeerView {
                     let y = ((point.y - content.y0) / content.height() * height)
                         .clamp(0.0, height.max(1.0) - 1.0);
                     self.record_pointer_motion(x, y);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::CursorLeft { .. } => self.set_pointer_inside(false),
@@ -592,9 +608,9 @@ impl Widget for PeerView {
                     && let Some(button) = crate::shell::input_policy::evdev_button(*button)
                 {
                     self.record_pointer_button(button, pressed);
-                    *handled = true;
+                    *ctx.handled = true;
                     if pressed {
-                        *focus_target = Some(node_id);
+                        *ctx.focus_target = Some(ctx.node_id);
                     }
                 }
             }
@@ -603,9 +619,9 @@ impl Widget for PeerView {
                     self.record_key(
                         keycode,
                         matches!(event.state, winit::event::ElementState::Pressed),
-                        Self::modifier_bits(*modifiers),
+                        Self::modifier_bits(*ctx.modifiers),
                     );
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::Focused(false) => self.set_keyboard_focused(false),

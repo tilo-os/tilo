@@ -15,8 +15,8 @@
 //! while becoming fully navigable.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -144,8 +144,6 @@ impl NavRow {
 }
 
 impl Widget for NavRow {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -305,22 +303,12 @@ impl Widget for NavRow {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
-        if *handled {
+        if *ctx.handled {
             return;
         }
         match event {
@@ -332,9 +320,9 @@ impl Widget for NavRow {
                 // `MouseInput` carries no position, so gate on the cursor we
                 // tracked from `CursorMoved` — only the row under the pointer
                 // activates.
-                *focus_target = Some(node_id);
+                *ctx.focus_target = Some(ctx.node_id);
                 self.activate();
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -355,7 +343,7 @@ impl Widget for NavRow {
                         && let Some(adjust) = &mut self.on_adjust
                     {
                         adjust(delta);
-                        *handled = true;
+                        *ctx.handled = true;
                         return;
                     }
                 }
@@ -363,7 +351,7 @@ impl Widget for NavRow {
                     || matches!(key, Key::Character(s) if s.as_str() == " ");
                 if is_activate {
                     self.activate();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -433,13 +421,18 @@ impl Widget for NavRow {
         &mut self,
         target: &str,
         action: &Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         target == self.id && self.perform_action(action, state, path)
     }
 
-    fn perform_action(&mut self, action: &Action, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn perform_action(
+        &mut self,
+        action: &Action,
+        _state: &mut AppModel,
+        _path: &ModelPath,
+    ) -> bool {
         if let Some(adjust) = &mut self.on_adjust {
             match action {
                 Action::Increment => {

@@ -303,14 +303,16 @@ impl FileExplorerWidget {
         let mut handled = false;
         self.app_chooser.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut handled,
-            focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers: &modifiers,
+                state,
+                path,
+                handled: &mut handled,
+                focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         self.structure_dirty = true;
     }

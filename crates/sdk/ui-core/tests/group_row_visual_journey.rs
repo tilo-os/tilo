@@ -322,14 +322,16 @@ fn group_row_maximize_and_reorder_paint_visibly() {
                 let mut focus: Option<NodeId> = None;
                 row.handle_event(
                     &ev,
-                    1.0,
-                    &modifiers,
-                    &mut state,
-                    &path,
-                    &mut handled,
-                    &mut focus,
-                    root,
-                    taffy,
+                    &mut tilo_ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &modifiers,
+                        state: &mut state,
+                        path: &path,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: root,
+                        taffy,
+                    },
                 );
             };
             // Press on group 100's bar background, then move past group 200's

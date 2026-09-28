@@ -92,6 +92,55 @@ pub(crate) enum Command {
         region: String,
         action: ScrollAction,
     },
+    /// Open an installed app in a new window of the active workspace, as
+    /// the launcher's `desktop:requests#open-<app>` does.
+    Open {
+        generation: String,
+        app: String,
+    },
+    /// Show the active workspace's settings on `tab`, as the top bar does.
+    WorkspaceSettings {
+        generation: String,
+        workspace: String,
+        tab: SettingsTab,
+    },
+    CloseWorkspaceSettings {
+        generation: String,
+        workspace: String,
+    },
+}
+/// A tab of the workspace settings.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum SettingsTab {
+    General,
+    Members,
+    Agents,
+    Permissions,
+    Apps,
+}
+impl From<SettingsTab> for tilo_desktop::workspace_settings::WsTab {
+    fn from(tab: SettingsTab) -> Self {
+        match tab {
+            SettingsTab::General => Self::General,
+            SettingsTab::Members => Self::Members,
+            SettingsTab::Agents => Self::Agents,
+            SettingsTab::Permissions => Self::Permissions,
+            SettingsTab::Apps => Self::Apps,
+        }
+    }
+}
+impl From<tilo_desktop::workspace_settings::WsTab> for SettingsTab {
+    fn from(tab: tilo_desktop::workspace_settings::WsTab) -> Self {
+        use tilo_desktop::workspace_settings::WsTab;
+        match tab {
+            WsTab::General => Self::General,
+            WsTab::Members => Self::Members,
+            WsTab::Agents => Self::Agents,
+            WsTab::Permissions => Self::Permissions,
+            WsTab::Apps => Self::Apps,
+        }
+    }
 }
 impl Command {
     pub fn generation(&self) -> &str {
@@ -106,7 +155,10 @@ impl Command {
             | Self::Strip { generation, .. }
             | Self::Width { generation, .. }
             | Self::Maximize { generation, .. }
-            | Self::Scroll { generation, .. } => generation,
+            | Self::Scroll { generation, .. }
+            | Self::Open { generation, .. }
+            | Self::WorkspaceSettings { generation, .. }
+            | Self::CloseWorkspaceSettings { generation, .. } => generation,
         }
     }
 }

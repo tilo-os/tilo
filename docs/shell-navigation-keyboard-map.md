@@ -36,6 +36,8 @@ strip changes context; switching a window or tab changes focus within it.
 | Spatial previous/next window | Super+Left/Right | Select group/tab |
 | Focus the Nth window of the strip | Super+1 … Super+9 | Select group/tab |
 | Summon/dismiss workspace wheel | Super+S | — |
+| Quick Settings | Super+Q | Top bar |
+| Keyboard guide | F1, Super+Shift+/ | — |
 | Capture Studio (choose what to capture) | Print | Capture action |
 | Screenshot the whole screen now | Shift+Print | — |
 | Screenshot the focused window now | Alt+Print | — |
@@ -55,8 +57,9 @@ chooser.
 
 Ctrl+Left/Right is deliberately never captured: text fields and editors retain
 word-wise movement. Ctrl+Up/Down likewise remains application-owned. Escape is
-captured only while shell chrome is open. Alt+Tab wraps at the strip edges;
-Super+Left/Right clamps because it describes a spatial direction.
+captured only while shell chrome is open. Alt+Tab is not spatial: it walks
+every window of the current workspace, most recently used first (see "Overlay
+behavior"). Super+Left/Right clamps because it describes a spatial direction.
 
 ## Window and tab actions
 
@@ -74,6 +77,9 @@ Super+Left/Right clamps because it describes a spatial direction.
 | Maximize/restore focused window group | Super+Up | Frame maximize/restore |
 | Move active tab into a new group | Super+Shift+Enter | Drag tab into a gap |
 | Move active tab into adjacent group | Super+[/] | Drag tab onto adjacent group |
+| Move focused window group left/right in the strip | Super+Shift+Left/Right | Drag the group |
+| Move focused window group to the previous/next display | Super+Ctrl+Shift+Left/Right | Drag the group onto the display |
+| Make focused window group narrower/wider | Super+- / Super+= | — |
 | Previous/next tab in current group | Ctrl+Shift+Tab / Ctrl+Tab | Tab strip |
 | Choose where the desktop appears (extend, mirror, one screen, wireless) | Super+P | Search "mirror displays" / Settings › Displays |
 
@@ -82,7 +88,9 @@ click or scroll in between; any chord disarms it. Super+N is already the
 adjacent-window chord, so notifications take Super+A (the Windows Action
 Center key). Super+F makes a Wayland client full screen through
 `xdg_toplevel`; a Tilo app, which has no protocol fullscreen, maximizes its
-window group instead. Super+1 … 9, Super+E, Ctrl+Alt+T, Super+V, Super+A,
+window group instead. Each resize step is 5% of the display's width. With
+one display, the move-to-display chords do nothing; displays are ordered left
+to right, then top to bottom. Super+1 … 9, Super+E, Ctrl+Alt+T, Super+V, Super+A,
 Super+F, Super+Alt+8, Super+Alt+=, Super+Alt+- and Ctrl+Alt+Delete are
 defaults, rebindable in Settings → Keyboard shortcuts.
 
@@ -91,6 +99,20 @@ Super+Alt+8 turns it back on at the zoom it had. Each change shows the zoom
 on screen. It follows the pointer, or the keyboard focus when that moved
 last, so tabbing through a form keeps the focused control in view. Settings
 → Accessibility chooses between a lens and full-screen magnification.
+
+## Vim navigation
+
+Settings → Keyboard shortcuts → "Vim navigation (H J K L)" adds a Super+Ctrl
+layer alongside the arrow bindings, which keep working:
+
+| Intent | Keyboard |
+|---|---|
+| Previous/next window | Super+Ctrl+H / Super+Ctrl+L |
+| Previous/next strip | Super+Ctrl+K / Super+Ctrl+J |
+| Move focused window group left/right | Super+Ctrl+Shift+H / Super+Ctrl+Shift+L |
+
+The layer is off by default and never takes a bare or Ctrl-only letter, so
+terminals and editors keep H/J/K/L.
 
 Application Ctrl shortcuts stay application-owned; shell-level window actions
 use Super so a browser, terminal or editor does not lose familiar bindings.

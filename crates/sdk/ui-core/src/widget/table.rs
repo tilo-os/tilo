@@ -27,6 +27,7 @@
 //! row height); the widget paints the grid lines, header band, row banding,
 //! and the insert / delete / resize affordances in the gutters on top.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use crate::widget::TaffyTreeExt;
@@ -696,27 +697,15 @@ impl Table {
         }
     }
 
-    #[allow(clippy::too_many_arguments, reason = "shared TextInput event context")]
-    #[allow(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "the Widget event interface supplies modifiers by reference"
-    )]
     pub(super) fn handle_projected_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) -> Option<(usize, usize, String)> {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Some(Point::new(
-                position.x / scale_factor,
-                position.y / scale_factor,
+                position.x / ctx.scale_factor,
+                position.y / ctx.scale_factor,
             ));
         }
         if matches!(
@@ -735,7 +724,7 @@ impl Table {
                 if let Some((row, column)) = self.projected_position(index) {
                     self.focus_projected_cell(row, column);
                 }
-                *focus_target = Some(node);
+                *ctx.focus_target = Some(ctx.node_id);
             } else {
                 self.blur_projection();
             }
@@ -745,11 +734,12 @@ impl Table {
         if let WindowEvent::KeyboardInput { event, .. } = event
             && event.state == ElementState::Pressed
         {
-            let backwards = modifiers.state().shift_key();
+            let backwards = ctx.modifiers.state().shift_key();
             let step = match event.logical_key {
                 Key::Named(NamedKey::Tab) => Some(1),
                 Key::Named(NamedKey::Enter)
-                    if !modifiers.state().control_key() && !modifiers.state().super_key() =>
+                    if !ctx.modifiers.state().control_key()
+                        && !ctx.modifiers.state().super_key() =>
                 {
                     Some(self.n_cols())
                 }
@@ -771,28 +761,18 @@ impl Table {
                     self.blur_projection();
                     self.projection_exit = Some(!backwards);
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return None;
             }
             if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
                 self.blur_projection();
                 self.projection_exit = Some(true);
-                *handled = true;
+                *ctx.handled = true;
                 return None;
             }
         }
         let input = self.cells.get_mut(focused)?;
-        input.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node,
-            taffy,
-        );
+        input.handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
         input.take_dirty().map(|text| (row, column, text))
     }
 
@@ -1258,21 +1238,11 @@ impl Table {
     /// Forward an event to the cell editors: a pointer-capture short-circuit
     /// to whichever cell is mid-drag, otherwise each cell is tried in order
     /// until one consumes the event.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "thin pass-through of `handle_event`'s own parameters plus the child-node \
-                  ids it already resolved"
-    )]
     fn forward_to_cells(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
+        ctx: &mut crate::widget::EventCtx<'_>,
         child_nodes: &[NodeId],
-        taffy: &TaffyTree<()>,
     ) {
         let Some(cells_obj) = self.cells_obj.clone() else {
             return;
@@ -1286,32 +1256,12 @@ impl Table {
             && let Some(&cn) = child_nodes.get(idx)
             && let Some(cell) = self.cells.get_mut(idx)
         {
-            cell.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                &cells_obj,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            cell.handle_event(event, &mut ctx.reborrow(&cells_obj, cn));
             return;
         }
         for (cell, &cn) in self.cells.iter_mut().zip(child_nodes.iter()) {
-            cell.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                &cells_obj,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
-            if *handled {
+            cell.handle_event(event, &mut ctx.reborrow(&cells_obj, cn));
+            if *ctx.handled {
                 break;
             }
         }
@@ -1359,7 +1309,8 @@ fn cross(scene: &mut Scene, transform: Affine, c: Point, r: f64, color: Color, w
 }
 
 impl Widget for Table {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document(state, path);
         ensure(state, path);
         // First-run seed.
         if let Some((r, c)) = self.seed.take() {
@@ -1559,32 +1510,22 @@ impl Widget for Table {
         self.draw_hover_affordance(scene, transform, theme, &xs, &ys, gl, gt, gr, gb);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let child_nodes = taffy.children(node_id).unwrap_or_default();
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let child_nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
 
         // ---- active column resize captures the pointer ----
         if let Some(rz) = self.resize.as_ref() {
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
-                    let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                    let p =
+                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                     let new_w = (rz.orig_w + (p.x - rz.start_x)).max(MIN_COL_W);
                     if let Some(cid) = self.col_ids.get(rz.col).cloned() {
-                        set_col_width(state, path, &cid, new_w);
+                        set_col_width(ctx.state, ctx.path, &cid, new_w);
                     }
                     self.structure_dirty = true; // re-run build_layout with new tracks
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 WindowEvent::MouseInput {
@@ -1593,7 +1534,7 @@ impl Widget for Table {
                 } => {
                     self.resize = None;
                     self.pending_commit = true;
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 _ => {}
@@ -1602,7 +1543,7 @@ impl Widget for Table {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = Some(p);
                 let h = self.hit(p);
                 if h != self.hover {
@@ -1617,7 +1558,7 @@ impl Widget for Table {
                 ..
             } => {
                 if let Some(p) = self.last_cursor
-                    && self.handle_press(p, state, path, handled)
+                    && self.handle_press(p, ctx.state, ctx.path, ctx.handled)
                 {
                     return;
                 }
@@ -1630,7 +1571,7 @@ impl Widget for Table {
                     && let Some(focused) = self.cells.iter().position(super::Widget::is_focused)
                 {
                     let cols = self.n_cols().max(1);
-                    let up = modifiers.state().shift_key();
+                    let up = ctx.modifiers.state().shift_key();
                     let target = if up {
                         focused.checked_sub(cols)
                     } else {
@@ -1639,8 +1580,8 @@ impl Widget for Table {
                     if let Some(t) = target
                         && let Some(&tn) = child_nodes.get(t)
                     {
-                        *focus_target = Some(tn);
-                        *handled = true;
+                        *ctx.focus_target = Some(tn);
+                        *ctx.handled = true;
                         return;
                     }
                 }
@@ -1648,16 +1589,7 @@ impl Widget for Table {
             _ => {}
         }
 
-        self.forward_to_cells(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            handled,
-            focus_target,
-            &child_nodes,
-            taffy,
-        );
+        self.forward_to_cells(event, ctx, &child_nodes);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1987,14 +1919,16 @@ mod tests {
         let mut focus_target = None;
         table.handle_event(
             ev,
-            1.0,
-            &mods,
-            doc,
-            root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: doc,
+                path: root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy,
+            },
         );
         (handled, focus_target)
     }

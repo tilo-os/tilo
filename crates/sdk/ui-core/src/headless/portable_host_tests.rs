@@ -1,5 +1,6 @@
 use super::*;
 use crate::time::{Duration, Instant};
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Column, Container, Widget};
 use std::{cell::Cell, rc::Rc};
 
@@ -93,7 +94,7 @@ struct OverlayProbe {
 }
 
 impl Widget for OverlayProbe {
-    crate::testing::inert_widget_methods!(sync, draw, name = "overlay-probe");
+    crate::testing::inert_widget_methods!(draw, name = "overlay-probe");
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -197,7 +198,6 @@ struct Scheduled {
 }
 impl Widget for Scheduled {
     crate::testing::inert_widget_methods!(
-        sync,
         leaf_layout,
         apply_layout,
         draw,
@@ -209,7 +209,7 @@ impl Widget for Scheduled {
         None
     }
 
-    fn update(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) -> bool {
+    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
         self.updates.set(self.updates.get() + 1);
         false
     }
@@ -321,18 +321,7 @@ impl Widget for Gate {
             self.content.draw(scene, transform, text, theme, presence);
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        t: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.open.get() {
             return;
         }
@@ -350,11 +339,10 @@ impl Widget for Gate {
             )
         {
             self.delivered.set(self.delivered.get() + 1);
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
-        self.content
-            .handle_event(event, scale, modifiers, doc, path, handled, focus, node, t);
+        self.content.handle_event(event, ctx);
     }
     fn children(&self) -> Vec<&dyn Widget> {
         if self.open.get() {

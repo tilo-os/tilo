@@ -15,8 +15,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -511,8 +511,6 @@ impl PlacesSidebar {
 }
 
 impl Widget for PlacesSidebar {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn is_layout_dirty(&self) -> bool {
         // This leaf fills its assigned pane on both axes. Favorite and hover
         // changes affect painted rows, never the pane's intrinsic size.
@@ -587,18 +585,7 @@ impl Widget for PlacesSidebar {
         clippy::too_many_lines,
         reason = "one event dispatcher keeps keyboard focus, pointer capture and favourite drag transitions in order"
     )] // Central event dispatcher keeps gesture state transitions ordered.
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && self.favs.borrow().focused =>
@@ -609,38 +596,38 @@ impl Widget for PlacesSidebar {
                 match &event.logical_key {
                     Key::Named(NamedKey::ArrowUp) => {
                         self.set_keyboard_index(current.saturating_sub(1));
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowDown) => {
                         self.set_keyboard_index((current + 1).min(count.saturating_sub(1)));
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::Home) => {
                         self.set_keyboard_index(0);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::End) => {
                         if count > 0 {
                             self.set_keyboard_index(count - 1);
                         }
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::Enter) => {
-                        *handled = self.activate_keyboard_place();
+                        *ctx.handled = self.activate_keyboard_place();
                     }
                     Key::Named(NamedKey::ContextMenu) => {
                         if current < self.fav_count()
                             && let Some((_, path)) = self.place_at_index(current)
                         {
                             push(&self.sink, FileCommand::OpenFavoriteMenu(path));
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                     _ => {}
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = pt;
                 self.hover_fav = self.favorite_at(pt);
                 self.hover_sys = self.system_at(pt);
@@ -648,7 +635,7 @@ impl Widget for PlacesSidebar {
                 let mut favs = self.favs.borrow_mut();
                 if favs.drag.is_pending() {
                     favs.drag.pointer_moved(pt, &metrics);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -660,21 +647,21 @@ impl Widget for PlacesSidebar {
                 if let Some(i) = self.favorite_at(pt) {
                     self.set_keyboard_index(i);
                     self.favs.borrow_mut().focused = true;
-                    *focus_target = Some(node_id);
+                    *ctx.focus_target = Some(ctx.node_id);
                     let metrics = self.metrics();
                     let grab = pt.y - metrics.slot_lead(i);
                     let mut favs = self.favs.borrow_mut();
                     favs.drag.begin(i, i, grab, pt);
                     favs.pressed = Some(i);
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if let Some(i) = self.system_at(pt)
                     && let Some((_, _, path)) = self.system.get(i)
                 {
                     self.set_keyboard_index(self.fav_count() + i);
                     self.favs.borrow_mut().focused = true;
-                    *focus_target = Some(node_id);
+                    *ctx.focus_target = Some(ctx.node_id);
                     push(&self.sink, FileCommand::Navigate(path.clone()));
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -689,7 +676,7 @@ impl Widget for PlacesSidebar {
                     let path = self.favs.borrow().favorites.get(i).map(|f| f.path.clone());
                     if let Some(p) = path {
                         push(&self.sink, FileCommand::OpenFavoriteMenu(p));
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
             }
@@ -708,7 +695,7 @@ impl Widget for PlacesSidebar {
                 drop(favs);
                 if let Some((from, to)) = commit {
                     push(&self.sink, FileCommand::ReorderFavorite { from, to });
-                    *handled = true;
+                    *ctx.handled = true;
                 } else {
                     if !was_active && let Some(i) = pressed {
                         let path = self.favs.borrow().favorites.get(i).map(|f| f.path.clone());
@@ -716,7 +703,7 @@ impl Widget for PlacesSidebar {
                             push(&self.sink, FileCommand::Navigate(p));
                         }
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -813,8 +800,8 @@ impl Widget for PlacesSidebar {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         match action {
             ui::a11y::Action::Activate => self.activate_keyboard_place(),
@@ -1048,6 +1035,7 @@ mod tests {
     use super::*;
     use crate::command::new_sink;
     use crate::favorites;
+    use automerge::AutoCommit;
     use std::path::Path;
 
     fn lay_out(sb: &mut PlacesSidebar) -> (TaffyTree<()>, NodeId) {
@@ -1094,14 +1082,16 @@ mod tests {
         let mods = winit::event::Modifiers::default();
         sb.handle_event(
             ev,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: tree,
+            },
         );
         handled
     }

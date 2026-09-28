@@ -11,21 +11,12 @@ use tilo_desktop::search::{
     WINDOWS_PROVIDER_ID, WindowAction, WindowRowKind, window_rows, window_rows_revision,
     windows_provider_name,
 };
-use ui::search::{FieldWeight, RankField};
+use ui::search::{FieldWeight, ListIndex};
 
 use crate::shell::chrome_state::Chrome;
 use crate::shell::search::action_api::{ActionArgs, ActionError};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 use crate::shell::state::{GroupId, TabId, WorkspaceId};
-
-/// The shared ranker over a window's names, every one of which names it.
-fn score(needle: &str, fields: &[&str]) -> Option<i32> {
-    let fields: Vec<RankField<'_>> = fields
-        .iter()
-        .map(|field| RankField::new(field, FieldWeight::TITLE))
-        .collect();
-    crate::shell::search::rank_fields(needle, &fields)
-}
 
 fn close_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
@@ -169,20 +160,18 @@ fn invoke(chrome: &Chrome, action: WindowAction) -> Result<(), ActionError> {
     }
 }
 
-pub struct DesktopWindowsProvider;
+#[derive(Default)]
+pub struct DesktopWindowsProvider {
+    /// The rows' names, indexed while they stay the same.
+    ranker: ListIndex,
+}
 
 static KINDS: std::sync::LazyLock<Vec<ResourceKind>> =
     std::sync::LazyLock::new(|| vec![ResourceKind::Tab, ResourceKind::WindowGroup]);
 
 impl DesktopWindowsProvider {
     pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for DesktopWindowsProvider {
-    fn default() -> Self {
-        Self::new()
+        Self::default()
     }
 }
 
@@ -209,9 +198,21 @@ impl SearchProvider for DesktopWindowsProvider {
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         let tree = ctx.chrome.tree();
-        let rows = window_rows(&tree.desktop, |fields| score(ctx.needle, fields));
+        // Every row is listed with its names, each of which names it; ranking
+        // them together keeps the matches.
+        let names = std::cell::RefCell::new(Vec::new());
+        let rows = window_rows(&tree.desktop, |fields| {
+            names.borrow_mut().push(
+                fields
+                    .iter()
+                    .map(|field| ((*field).to_owned(), FieldWeight::TITLE))
+                    .collect(),
+            );
+            Some(0)
+        });
         drop(tree);
-        rows.into_iter()
+        let rows = rows
+            .into_iter()
             .map(|row| {
                 let action = row.action;
                 SearchResult {
@@ -235,7 +236,8 @@ impl SearchProvider for DesktopWindowsProvider {
                     on_begin_invoke: None,
                 }
             })
-            .collect()
+            .collect();
+        crate::shell::search::rank_rows(&self.ranker, ctx.needle, rows, &names.into_inner())
     }
 
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {

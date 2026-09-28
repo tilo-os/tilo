@@ -377,6 +377,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
         app_id: APP.into(),
         cluster_id: room,
         record: Some(RECORD.into()),
+        record_kind: None,
         handle: Some("ada".into()),
     };
     peer.announce(&sock, &hello).unwrap();

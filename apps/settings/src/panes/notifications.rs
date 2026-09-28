@@ -19,6 +19,7 @@
 use std::collections::{BTreeMap, HashMap};
 use tilo_clock::unix_now_i64;
 use ui::doc::{read_bool, read_str};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
@@ -28,7 +29,7 @@ use ui::theme::Theme;
 use ui::widget::{Dropdown, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
 use crate::prefs::{NotificationPrefs, SystemPrefs};
@@ -861,7 +862,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for NotificationsPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.seed_if_needed(state, root);
 
         let mut changed = self.reconcile_dnd_and_focus_days(state, root);
@@ -931,33 +933,12 @@ impl Widget for NotificationsPane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
     }
 

@@ -7,7 +7,7 @@
 
 use std::rc::Rc;
 
-use ui::search::{FieldWeight, RankField};
+use ui::search::{FieldWeight, ListIndex};
 
 use super::actions::ACTION_ID_WEIGHT;
 
@@ -28,6 +28,7 @@ use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
+use crate::shell::speaker_group_runtime::SpeakerConsentKind;
 
 pub const DEVICE_PROVIDER_ID: &str = "continuity.devices";
 pub const CALL_PROVIDER_ID: &str = "continuity.calls";
@@ -92,16 +93,13 @@ pub(crate) fn audio_route_action_id(node_id: u32) -> String {
     )
 }
 
-/// The shared ranker over an action's title, identity and description.
-fn matches(needle: &str, title: &str, subtitle: &str, id: &str) -> Option<i32> {
-    crate::shell::search::rank_fields(
-        needle,
-        &[
-            RankField::new(title, FieldWeight::TITLE),
-            RankField::new(id, ACTION_ID_WEIGHT),
-            RankField::new(subtitle, FieldWeight::SUBTITLE),
-        ],
-    )
+/// An action row's searchable title, identity and description.
+fn action_fields(title: &str, subtitle: &str, id: &str) -> Vec<(String, FieldWeight)> {
+    vec![
+        (title.to_owned(), FieldWeight::TITLE),
+        (id.to_owned(), ACTION_ID_WEIGHT),
+        (subtitle.to_owned(), FieldWeight::SUBTITLE),
+    ]
 }
 
 fn confirmation_params(confirm: bool) -> Vec<ActionParam> {
@@ -443,29 +441,23 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         opaque("so.tilo.continuity.speaker-group.v1", &group.0)
     };
     for consent in &view.speaker_groups.consents {
-        for (approved, title_key) in [
-            (true, "search-continuity-speaker-join"),
-            (false, "search-continuity-speaker-decline"),
-        ] {
+        let kind = consent.scope.kind();
+        for approved in [true, false] {
             actions.push(DeviceAction {
                 id: format!(
-                    "speakers.consent.{}.{}",
+                    "speakers.{}.{}.{}",
+                    match kind {
+                        SpeakerConsentKind::Play => "consent",
+                        SpeakerConsentKind::Listen => "listen",
+                    },
                     if approved { "allow" } else { "decline" },
                     speaker_id(consent.group)
                 ),
-                title: t_args(
-                    title_key,
-                    &[
-                        ("group", consent.name.as_str().into()),
-                        ("role", consent.role.describe().into()),
-                    ],
-                ),
-                subtitle: t_args(
-                    "search-continuity-speaker-consent-subtitle",
-                    &[("device", consent.leader_label.as_str().into())],
-                ),
+                title: consent.action_title(approved),
+                subtitle: consent.action_subtitle(),
                 action: DeviceFabricUiAction::ResolveSpeakerGroupConsent {
                     group: consent.group,
+                    kind,
                     approved,
                 },
                 confirm: approved,
@@ -473,18 +465,21 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         }
     }
     for membership in &view.speaker_groups.memberships {
+        let kind = membership.scope.kind();
         actions.push(DeviceAction {
-            id: format!("speakers.leave.{}", speaker_id(membership.group)),
-            title: t_args(
-                "search-continuity-speaker-leave",
-                &[("group", membership.name.as_str().into())],
-            ),
-            subtitle: t_args(
-                "search-continuity-speaker-leave-subtitle",
-                &[("role", membership.role.describe().into())],
-            ),
+            id: match kind {
+                SpeakerConsentKind::Play => {
+                    format!("speakers.leave.{}", speaker_id(membership.group))
+                }
+                SpeakerConsentKind::Listen => {
+                    format!("speakers.listen.stop.{}", speaker_id(membership.group))
+                }
+            },
+            title: membership.leave_title(),
+            subtitle: membership.leave_subtitle(),
             action: DeviceFabricUiAction::LeaveSpeakerGroup {
                 group: membership.group,
+                kind,
             },
             confirm: false,
         });
@@ -1102,6 +1097,7 @@ fn page_results(
 
 fn device_projection(
     bridge: &DeviceFabricBridge,
+    ranker: &ListIndex,
     ctx: SearchContext<'_>,
     view: &DeviceFabricView,
 ) -> (String, Vec<SearchResult>) {
@@ -1119,14 +1115,17 @@ fn device_projection(
             )
         }),
     );
+    let fields: Vec<_> = actions
+        .iter()
+        .map(|entry| action_fields(&entry.title, &entry.subtitle, &entry.id))
+        .collect();
     let results = actions
         .into_iter()
-        .filter_map(|entry| {
-            let score = matches(ctx.needle, &entry.title, &entry.subtitle, &entry.id)?;
+        .map(|entry| {
             let bridge = Rc::clone(bridge);
             let expected = entry.action.clone();
             let confirm = entry.confirm;
-            Some(SearchResult {
+            SearchResult {
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: DEVICE_PROVIDER_ID.into(),
@@ -1134,7 +1133,7 @@ fn device_projection(
                 title: entry.title,
                 subtitle: Some(entry.subtitle),
                 badge: None,
-                score,
+                score: 0,
                 params: confirmation_params(confirm),
                 contract: Some(contract(confirm)),
                 on_open: Rc::new(move |_doc, _root, _chrome, args| {
@@ -1143,19 +1142,27 @@ fn device_projection(
                 }),
                 on_invoke: None,
                 on_begin_invoke: None,
-            })
+            }
         })
         .collect();
-    (revision, results)
+    (
+        revision,
+        crate::shell::search::rank_rows(ranker, ctx.needle, results, &fields),
+    )
 }
 
 pub struct DeviceContinuityActionsProvider {
     bridge: DeviceFabricBridge,
+    /// The rows' searchable text, indexed while it stays the same.
+    ranker: ListIndex,
 }
 
 impl DeviceContinuityActionsProvider {
     pub fn new(bridge: DeviceFabricBridge) -> Self {
-        Self { bridge }
+        Self {
+            bridge,
+            ranker: ListIndex::default(),
+        }
     }
 }
 
@@ -1176,7 +1183,7 @@ impl SearchProvider for DeviceContinuityActionsProvider {
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
         (self.bridge)(DeviceFabricUiAction::Snapshot).map_or_else(
             |_| "continuity-device-unavailable".into(),
-            |view| device_projection(&self.bridge, *ctx, &view).0,
+            |view| device_projection(&self.bridge, &self.ranker, *ctx, &view).0,
         )
     }
 
@@ -1187,7 +1194,7 @@ impl SearchProvider for DeviceContinuityActionsProvider {
         let Ok(view) = (self.bridge)(DeviceFabricUiAction::Snapshot) else {
             return Vec::new();
         };
-        device_projection(&self.bridge, ctx, &view).1
+        device_projection(&self.bridge, &self.ranker, ctx, &view).1
     }
 
     fn query_page(
@@ -1202,7 +1209,7 @@ impl SearchProvider for DeviceContinuityActionsProvider {
         let Ok(view) = (self.bridge)(DeviceFabricUiAction::Snapshot) else {
             return SearchPage::exhausted("continuity-device-unavailable", Vec::new());
         };
-        let (revision, results) = device_projection(&self.bridge, ctx, &view);
+        let (revision, results) = device_projection(&self.bridge, &self.ranker, ctx, &view);
         page_results(revision, results, cursor, budget)
     }
 }
@@ -1276,6 +1283,7 @@ fn call_actions(
 fn call_projection(
     realtime: &RealtimeContinuityBridge,
     device_bridge: &DeviceFabricBridge,
+    ranker: &ListIndex,
     ctx: SearchContext<'_>,
     view: &crate::shell::collab_broker_capnp::RealtimeContinuityUiView,
     devices: &DeviceFabricView,
@@ -1294,15 +1302,18 @@ fn call_projection(
             )
         }),
     );
+    let fields: Vec<_> = actions
+        .iter()
+        .map(|entry| action_fields(&entry.title, &entry.subtitle, &entry.id))
+        .collect();
     let results = actions
         .into_iter()
-        .filter_map(|entry| {
-            let score = matches(ctx.needle, &entry.title, &entry.subtitle, &entry.id)?;
+        .map(|entry| {
             let realtime = Rc::clone(realtime);
             let device_bridge = Rc::clone(device_bridge);
             let expected = entry.action.clone();
             let confirm = entry.confirm;
-            Some(SearchResult {
+            SearchResult {
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: CALL_PROVIDER_ID.into(),
@@ -1310,7 +1321,7 @@ fn call_projection(
                 title: entry.title,
                 subtitle: Some(entry.subtitle),
                 badge: None,
-                score,
+                score: 0,
                 params: confirmation_params(confirm),
                 contract: Some(contract(confirm)),
                 on_open: Rc::new(move |_doc, _root, _chrome, args| {
@@ -1332,20 +1343,29 @@ fn call_projection(
                 }),
                 on_invoke: None,
                 on_begin_invoke: None,
-            })
+            }
         })
         .collect();
-    (revision, results)
+    (
+        revision,
+        crate::shell::search::rank_rows(ranker, ctx.needle, results, &fields),
+    )
 }
 
 pub struct CallContinuityActionsProvider {
     realtime: RealtimeContinuityBridge,
     devices: DeviceFabricBridge,
+    /// The rows' searchable text, indexed while it stays the same.
+    ranker: ListIndex,
 }
 
 impl CallContinuityActionsProvider {
     pub fn new(realtime: RealtimeContinuityBridge, devices: DeviceFabricBridge) -> Self {
-        Self { realtime, devices }
+        Self {
+            realtime,
+            devices,
+            ranker: ListIndex::default(),
+        }
     }
 }
 
@@ -1370,7 +1390,15 @@ impl SearchProvider for CallContinuityActionsProvider {
         let Ok(devices) = (self.devices)(DeviceFabricUiAction::Snapshot) else {
             return "continuity-call-devices-unavailable".into();
         };
-        call_projection(&self.realtime, &self.devices, *ctx, &view, &devices).0
+        call_projection(
+            &self.realtime,
+            &self.devices,
+            &self.ranker,
+            *ctx,
+            &view,
+            &devices,
+        )
+        .0
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
@@ -1383,7 +1411,15 @@ impl SearchProvider for CallContinuityActionsProvider {
         let Ok(devices) = (self.devices)(DeviceFabricUiAction::Snapshot) else {
             return Vec::new();
         };
-        call_projection(&self.realtime, &self.devices, ctx, &view, &devices).1
+        call_projection(
+            &self.realtime,
+            &self.devices,
+            &self.ranker,
+            ctx,
+            &view,
+            &devices,
+        )
+        .1
     }
 
     fn query_page(
@@ -1401,8 +1437,14 @@ impl SearchProvider for CallContinuityActionsProvider {
         let Ok(devices) = (self.devices)(DeviceFabricUiAction::Snapshot) else {
             return SearchPage::exhausted("continuity-call-devices-unavailable", Vec::new());
         };
-        let (revision, results) =
-            call_projection(&self.realtime, &self.devices, ctx, &view, &devices);
+        let (revision, results) = call_projection(
+            &self.realtime,
+            &self.devices,
+            &self.ranker,
+            ctx,
+            &view,
+            &devices,
+        );
         page_results(revision, results, cursor, budget)
     }
 }
@@ -1413,7 +1455,11 @@ const CONTINUE_DISMISS_ID: &str = "continuity.continue.dismiss";
 
 /// The palette's door to the top bar's "Continue <app> from <device>"
 /// offer: accept it (focus that tab here) or dismiss it.
-pub struct ContinueFromDeviceProvider;
+#[derive(Default)]
+pub struct ContinueFromDeviceProvider {
+    /// The rows' searchable text, indexed while it stays the same.
+    ranker: ListIndex,
+}
 
 impl ContinueFromDeviceProvider {
     fn row(
@@ -1526,12 +1572,15 @@ impl SearchProvider for ContinueFromDeviceProvider {
                 ),
             ),
         ];
-        rows.into_iter()
-            .filter_map(|(id, title, subtitle)| {
-                let score = matches(ctx.needle, &title, &subtitle, id)?;
-                Some(Self::row(id, title, subtitle, score, &offer))
-            })
-            .collect()
+        let fields: Vec<_> = rows
+            .iter()
+            .map(|(id, title, subtitle)| action_fields(title, subtitle, id))
+            .collect();
+        let rows = rows
+            .into_iter()
+            .map(|(id, title, subtitle)| Self::row(id, title, subtitle, 0, &offer))
+            .collect();
+        crate::shell::search::rank_rows(&self.ranker, ctx.needle, rows, &fields)
     }
 }
 
@@ -1705,7 +1754,8 @@ mod tests {
                 StereoSide,
             };
             use crate::shell::speaker_group_runtime::{
-                SpeakerConsentView, SpeakerGroupView, SpeakerMemberView, SpeakerMembershipView,
+                SpeakerConsentKind, SpeakerConsentScope, SpeakerConsentView, SpeakerGroupView,
+                SpeakerMemberView, SpeakerMembershipView,
             };
             let mut view = fixture();
             let group = SpeakerGroupId([0x51; 16]);
@@ -1722,14 +1772,28 @@ mod tests {
                 name: "Living room".into(),
                 leader: device("desk"),
                 leader_label: "Desk".into(),
-                role: right,
-                output_label: Some("Speakers".into()),
+                scope: SpeakerConsentScope::Play(right),
+                endpoint_label: Some("Speakers".into()),
+            });
+            view.speaker_groups.consents.push(SpeakerConsentView {
+                group,
+                name: "Living room".into(),
+                leader: device("desk"),
+                leader_label: "Desk".into(),
+                scope: SpeakerConsentScope::Listen,
+                endpoint_label: Some("Microphone".into()),
             });
             view.speaker_groups.memberships.push(SpeakerMembershipView {
                 group,
                 name: "Living room".into(),
                 leader_label: "Desk".into(),
-                role: right,
+                scope: SpeakerConsentScope::Play(right),
+            });
+            view.speaker_groups.memberships.push(SpeakerMembershipView {
+                group,
+                name: "Living room".into(),
+                leader_label: "Desk".into(),
+                scope: SpeakerConsentScope::Listen,
             });
             view.speaker_groups.groups.push(SpeakerGroupView {
                 id: group,
@@ -1754,6 +1818,7 @@ mod tests {
                     action.action
                         == DeviceFabricUiAction::ResolveSpeakerGroupConsent {
                             group,
+                            kind: SpeakerConsentKind::Play,
                             approved: true,
                         }
                 })
@@ -1761,8 +1826,35 @@ mod tests {
             assert!(join.confirm, "joining needs explicit confirmation");
             assert_eq!(join.title, "Join Living room as the right speaker");
             assert!(actions.iter().any(|action| {
-                action.action == DeviceFabricUiAction::LeaveSpeakerGroup { group }
+                action.action
+                    == DeviceFabricUiAction::LeaveSpeakerGroup {
+                        group,
+                        kind: SpeakerConsentKind::Play,
+                    }
                     && !action.confirm
+            }));
+            let listen = actions
+                .iter()
+                .find(|action| {
+                    action.action
+                        == DeviceFabricUiAction::ResolveSpeakerGroupConsent {
+                            group,
+                            kind: SpeakerConsentKind::Listen,
+                            approved: true,
+                        }
+                })
+                .unwrap();
+            assert!(listen.confirm, "a microphone needs explicit confirmation");
+            assert_eq!(
+                listen.title,
+                "Let Living room calibrate with this microphone"
+            );
+            assert!(actions.iter().any(|action| {
+                action.action
+                    == DeviceFabricUiAction::LeaveSpeakerGroup {
+                        group,
+                        kind: SpeakerConsentKind::Listen,
+                    }
             }));
             assert!(actions.iter().any(|action| {
                 action.action
@@ -1964,7 +2056,7 @@ mod tests {
             devices: std::collections::BTreeMap::from([(laptop, "Laptop".to_string())]),
         });
         let mut registry = SearchRegistry::new();
-        registry.register(Rc::new(ContinueFromDeviceProvider));
+        registry.register(Rc::new(ContinueFromDeviceProvider::default()));
         let mut doc = AutoCommit::new();
         let catalog = {
             let state = chrome.borrow();

@@ -16,16 +16,17 @@ fn gap(gap_index: usize) -> DropTarget {
     DropTarget::GroupGap { gap_index }
 }
 
-// Captures the native persisted contract, including a legacy pixel width and
-// an id beyond JavaScript's exact numeric range. This fixture is not generated
+// Captures the native persisted contract, including an id beyond
+// JavaScript's exact numeric range. This fixture is not generated
 // by the model under test.
-fn legacy_tree() -> DesktopTree {
+fn persisted_tree() -> DesktopTree {
     serde_json::from_value(json!({
+        "schema_version": 1,
         "workspaces": [{
             "id": 10, "name": "Research", "strips": [{
                 "id": 11, "name": "Main", "window_groups": [{
                     "id": 12, "active_tab": 9_007_199_254_741_001_u64,
-                    "width": {"Custom": 600}, "tabs": [
+                    "width": {"Fraction": 500}, "tabs": [
                         {"id": 13, "title": "Notes", "tile": {"AppPlaceholder": {"kind": {"Other": "Notes"}, "label": "Notes"}}},
                         {"id": 9_007_199_254_741_001_u64, "title": "Draft", "tile": {"AppPlaceholder": {"kind": {"Other": "Word"}, "label": "Writer"}}}
                     ]
@@ -38,8 +39,8 @@ fn legacy_tree() -> DesktopTree {
 }
 
 #[test]
-fn legacy_state_preserves_ids_defaults_and_record_binding() {
-    let tree = legacy_tree();
+fn persisted_state_preserves_ids_defaults_and_record_binding() {
+    let tree = persisted_tree();
     assert_eq!(tree.schema_version, 1);
     assert!(tree.workspaces[0].room.is_nil());
     assert!(tree.workspaces[0].collaborators.is_empty());
@@ -59,7 +60,7 @@ fn legacy_state_preserves_ids_defaults_and_record_binding() {
 
 #[test]
 fn peer_local_selection_does_not_change_another_desktop_or_topology() {
-    let mut one = legacy_tree();
+    let mut one = persisted_tree();
     let two = one.clone();
     one.set_active(WorkspaceId(20));
     one.set_active_group(StripId(11), 12);
@@ -81,7 +82,7 @@ fn peer_local_selection_does_not_change_another_desktop_or_topology() {
 
 #[test]
 fn reordering_keeps_tab_identity_selection_and_geometry() {
-    let mut tree = legacy_tree();
+    let mut tree = persisted_tree();
     let reorder = |tree: &mut DesktopTree, tab: u64| {
         apply_command(
             &mut tree.workspaces[0],
@@ -114,7 +115,7 @@ fn reordering_keeps_tab_identity_selection_and_geometry() {
 
 #[test]
 fn split_and_cross_strip_move_preserve_order_and_local_defaults() {
-    let mut tree = legacy_tree();
+    let mut tree = persisted_tree();
     let split = tree
         .split_tab_into_new_group(StripId(11), 13, 1, &mut IdMinter::new(7))
         .unwrap();
@@ -149,7 +150,7 @@ fn native_flattening_keeps_numeric_local_selection_keys_loadable() {
         #[serde(flatten)]
         desktop: DesktopTree,
     }
-    let mut desktop = legacy_tree();
+    let mut desktop = persisted_tree();
     desktop.set_active_group(StripId(11), 12);
     let bytes = serde_json::to_vec(&Host { desktop }).unwrap();
     let loaded: Host = serde_json::from_slice(&bytes).unwrap();

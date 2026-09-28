@@ -10,9 +10,9 @@
 //!
 //! Every colour, radius, and gap is read from the [`Theme`].
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{flex, fr, length, minmax, percent, repeat};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -133,11 +133,7 @@ fn surface(title: Option<String>, action: Option<Element>, body: Element) -> Ele
 }
 
 impl Widget for Card {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.inner.sync(state, path);
-    }
-
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.inner.update(state, path)
     }
 
@@ -242,33 +238,18 @@ impl Widget for Card {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
-        let Some(child_node) = taffy
-            .children(node_id)
+        let Some(child_node) = ctx
+            .taffy
+            .children(ctx.node_id)
             .ok()
             .and_then(|nodes| nodes.first().copied())
         else {
             return;
         };
-        self.inner.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            child_node,
-            taffy,
-        );
+        self.inner
+            .handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -437,13 +418,7 @@ impl CardGrid {
 }
 
 impl Widget for CardGrid {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        for card in &mut self.cards {
-            card.sync(state, path);
-        }
-    }
-
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for card in &mut self.cards {
             changed |= card.update(state, path);
@@ -535,28 +510,11 @@ impl Widget for CardGrid {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
         for (card, &node) in self.cards.iter_mut().zip(self.child_nodes.iter()) {
-            card.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
-            );
-            if *handled {
+            card.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled {
                 break;
             }
         }

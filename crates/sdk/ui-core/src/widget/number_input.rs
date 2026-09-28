@@ -24,9 +24,10 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::binding::{BoxedBinding, Pulled};
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{TextInput, TextInputKind};
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -169,9 +170,8 @@ pub struct NumberInput {
     /// where we lack the `state` handle (blur via `set_focus(false)`);
     /// flushed on the next `sync`.
     pending_write: Option<f64>,
-    on_change_path: String,
-    crdt_bound: bool,
-    local_state: Option<crate::local_state::LocalBinding<f64>>,
+    /// Where the committed value lives: a document key or process-local state.
+    binding: Option<BoxedBinding<f64>>,
     action: Option<ActionEmitter<f64>>,
     enabled: bool,
     width: f64,
@@ -209,9 +209,7 @@ impl NumberInput {
             plus_hover: false,
             changed: None,
             pending_write: None,
-            on_change_path: String::new(),
-            crdt_bound: false,
-            local_state: None,
+            binding: None,
             action: None,
             enabled: true,
             width: DEFAULT_WIDTH,
@@ -232,9 +230,9 @@ impl NumberInput {
     /// on the next synchronization pass. [`Self::take_changed`] remains a
     /// user-intent signal and does not report model synchronization.
     pub fn from_state(state: &crate::LocalState<f64>) -> Self {
-        let (value, binding) = crate::local_state::LocalBinding::new(state);
+        let (value, binding) = super::binding::local(state);
         Self {
-            local_state: Some(binding),
+            binding: Some(binding),
             ..Self::new(value)
         }
     }
@@ -304,9 +302,7 @@ impl NumberInput {
     /// widget self-contained (poll [`take_changed`](NumberInput::take_changed)).
     #[must_use]
     pub fn with_on_change_path(mut self, path: &str) -> Self {
-        self.local_state = None;
-        self.on_change_path = path.to_string();
-        self.crdt_bound = !path.is_empty();
+        self.binding = (!path.is_empty()).then(|| crate::doc_binding::number_key(path));
         self
     }
 
@@ -484,20 +480,16 @@ impl NumberInput {
     }
 
     /// Flush a pending committed value to the bound CRDT field, if any.
-    fn flush_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn flush_crdt(&mut self, state: &mut AppModel, root: &ModelPath) {
         if let Some(v) = self.pending_write.take()
-            && self.crdt_bound
+            && let Some(binding) = &mut self.binding
         {
-            let _ = state.put(
-                root,
-                self.on_change_path.as_str(),
-                automerge::ScalarValue::F64(v),
-            );
+            binding.push(state, root, &v);
         }
     }
 
     fn publish_local_state(&mut self) {
-        if let Some(binding) = &mut self.local_state {
+        if let Some(binding) = &mut self.binding {
             binding.publish(&self.value);
         }
     }
@@ -524,52 +516,21 @@ impl Widget for NumberInput {
         self.plus_hover &= environment.supports_hover();
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         // Flush a value committed while we lacked the state handle (blur).
         self.flush_crdt(state, root);
-        if self.local_state.is_some() {
-            // Don't clobber a partially typed value. A later user commit wins;
-            // otherwise the model is adopted as soon as editing ends.
-            if !self.field.is_focused()
-                && let Some(value) = self
-                    .local_state
-                    .as_mut()
-                    .and_then(crate::local_state::LocalBinding::poll)
-            {
-                self.value = value.clamp(self.min, self.max);
-                self.sync_field();
-            }
-            return;
-        }
-        if !self.crdt_bound {
-            return;
-        }
-        // Don't clobber the field while the user is mid-edit.
+        // Don't clobber the field while the user is mid-edit; the model is
+        // adopted as soon as editing ends.
         if self.field.is_focused() {
             return;
         }
-        if let Ok(Some((val, _))) = state.get(root, self.on_change_path.as_str())
-            && let Value::Scalar(s) = val
+        if let Some(binding) = &mut self.binding
+            && let Pulled::Value(v) = binding.pull(state, root)
         {
-            // A CRDT-stored integer read as this widget's f64: relative
-            // error is at most 1 part in 2^52, invisible for any realistic
-            // UI range (font size, margins, opacity) this field displays.
-            #[allow(
-                clippy::cast_precision_loss,
-                reason = "the widget's value is an f64 throughout; converting a CRDT-stored i64/u64 loses only sub-visible precision for realistic UI ranges"
-            )]
-            let v = match s.as_ref() {
-                automerge::ScalarValue::F64(f) => Some(*f),
-                automerge::ScalarValue::Int(i) => Some(*i as f64),
-                automerge::ScalarValue::Uint(u) => Some(*u as f64),
-                _ => None,
-            };
-            if let Some(v) = v {
-                let clamped = v.clamp(self.min, self.max);
-                if (clamped - self.value).abs() > f64::EPSILON {
-                    self.value = clamped;
-                    self.sync_field();
-                }
+            let clamped = v.clamp(self.min, self.max);
+            if (clamped - self.value).abs() > f64::EPSILON {
+                self.value = clamped;
+                self.sync_field();
             }
         }
     }
@@ -702,18 +663,7 @@ impl Widget for NumberInput {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.effectively_enabled() {
             return;
         }
@@ -721,32 +671,22 @@ impl Widget for NumberInput {
         // Forward to the embedded field first (click-to-focus, typing, IME).
         // The field isn't in the parent's node_map, so a focus request it
         // makes sets *our* node id — redirect it onto the field in set_focus.
-        let prev_focus = *focus_target;
-        self.field.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            root,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
-        if *focus_target != prev_focus && self.field_rect.contains(self.last_cursor) {
+        let prev_focus = *ctx.focus_target;
+        self.field.handle_event(event, ctx);
+        if *ctx.focus_target != prev_focus && self.field_rect.contains(self.last_cursor) {
             self.field_focus_pending = true;
         }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = p;
                 let mh = self.minus_rect.contains(p);
                 let ph = self.plus_rect.contains(p);
                 if mh != self.minus_hover || ph != self.plus_hover {
                     self.minus_hover = mh;
                     self.plus_hover = ph;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -762,23 +702,23 @@ impl Widget for NumberInput {
                         self.field.set_focus(false);
                     }
                     self.step_by(-self.step);
-                    self.flush_crdt(state, root);
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    self.flush_crdt(ctx.state, ctx.path);
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 } else if self.plus_rect.contains(self.last_cursor) {
                     if self.field.is_focused() {
                         self.commit_local();
                         self.field.set_focus(false);
                     }
                     self.step_by(self.step);
-                    self.flush_crdt(state, root);
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    self.flush_crdt(ctx.state, ctx.path);
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 } else if !self.field_rect.contains(self.last_cursor) && self.field.is_focused() {
                     // Press landed outside the field while it was focused —
                     // commit the typed value and release focus.
                     self.commit_local();
-                    self.flush_crdt(state, root);
+                    self.flush_crdt(ctx.state, ctx.path);
                     self.field.set_focus(false);
                 }
             }
@@ -788,20 +728,20 @@ impl Widget for NumberInput {
                 match &key_event.logical_key {
                     Key::Named(NamedKey::Enter) => {
                         self.commit_local();
-                        self.flush_crdt(state, root);
-                        *handled = true;
+                        self.flush_crdt(ctx.state, ctx.path);
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowUp) => {
                         self.commit_local();
                         self.step_by(self.step);
-                        self.flush_crdt(state, root);
-                        *handled = true;
+                        self.flush_crdt(ctx.state, ctx.path);
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowDown) => {
                         self.commit_local();
                         self.step_by(-self.step);
-                        self.flush_crdt(state, root);
-                        *handled = true;
+                        self.flush_crdt(ctx.state, ctx.path);
+                        *ctx.handled = true;
                     }
                     _ => {}
                 }
@@ -845,10 +785,10 @@ impl Widget for NumberInput {
         let control_id = self.test_id().unwrap_or("number_input");
         if let Some(action) = &self.action {
             vec![action.metadata(control_id)]
-        } else if self.crdt_bound {
+        } else if let Some(key) = self.binding.as_ref().and_then(|b| b.document_key()) {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
-                kind: ControlBindingKind::CollaborativeDocument(self.on_change_path.clone()),
+                kind: ControlBindingKind::CollaborativeDocument(key.to_owned()),
             }]
         } else {
             vec![ControlBindingMetadata {
@@ -951,8 +891,8 @@ impl Widget for NumberInput {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         if !self.effectively_enabled() {
@@ -990,6 +930,7 @@ impl Widget for NumberInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::{AutoCommit, ReadDoc, Value, transaction::Transactable};
     use winit::event::{KeyEvent, Modifiers};
     use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
 
@@ -1184,14 +1125,16 @@ mod tests {
         let root = automerge::ROOT;
         n.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

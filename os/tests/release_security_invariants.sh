@@ -12,12 +12,12 @@ fail=0
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
-# Every publishing trigger (tags, protected manual main publication, nightly
-# main) must resolve to the one series lock; only validation builds may use a
-# per-ref group.
-grep -Fq "group: \${{ (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}" "$workflow" \
+# Generic publication triggers share the generation-series lock. A protected
+# Lenovo dispatch uses its own source-specific group because it never allocates
+# a generic genN; validation builds remain per-ref.
+grep -Fq "group: \${{ (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}" "$workflow" \
   && ! grep -Eq 'CONTINUOUS_RELEASE: "1"' "$workflow" \
-  && ok 'OS generation publication is globally serialized' \
+  && ok 'generic generation publication is serialized separately from Lenovo' \
   || bad 'release jobs can race and reuse one generation'
 
 kernel_verify_line="$(grep -n './os/dev/verify-kernel-provenance.sh "$ref"' "$workflow" | tail -1 | cut -d: -f1)"
@@ -54,6 +54,14 @@ grep -Fq 'Independently rebuild the release candidate' "$workflow" \
   && ok 'release compares uncached base and final sealed OS rebuilds' \
   || bad 'reproducibility is claimed without a release-blocking comparison'
 
+# BuildKit applies SOURCE_DATE_EPOCH to file mtimes only when the exporter
+# rewrites them; without it COPY keeps checkout times and RUN the wall clock.
+oci_exports="$(grep -Ec 'type=oci,dest=/var/tmp/tilo-image' "$workflow")"
+[ "$oci_exports" -ge 3 ] \
+  && [ "$(grep -Ec "type=oci,dest=/var/tmp/tilo-image[^ ',]*,rewrite-timestamp=true" "$workflow")" -eq "$oci_exports" ] \
+  && ok 'every OS image export clamps file mtimes to SOURCE_DATE_EPOCH' \
+  || bad 'an OS image export keeps build-time file mtimes'
+
 # Integration images skip the second uncached build, but every publication
 # (tag, nightly or protected manual main release) must still run it. The third
 # publication branch unbinds the shared compiler cache
@@ -66,9 +74,11 @@ grep -A1 -F -- '- name: Independently rebuild the release candidate' "$workflow"
   && grep -Fq "echo '::error::a reproduction lane runs only for a publication'" "$workflow" \
   && grep -A2 -F -- '- name: Wait for the independent rebuild' "$workflow" \
     | grep -Fq "if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'" \
-  && grep -Fq "second_manifest='\${{ steps.reproduction.outputs.manifest }}'" "$workflow" \
+  && grep -A2 -F -- '- name: Compare with the independent rebuild' "$workflow" \
+    | grep -Fq "if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'" \
+  && grep -Fq 'REPRO_MANIFEST: ${{ steps.reproduction.outputs.manifest }}' "$workflow" \
   && grep -Fq 'PUBLISH: ${{ steps.release-mode.outputs.publish }}' "$workflow" \
-  && test "$(grep -Fc 'if [[ $PUBLISH == true ]]; then' "$workflow")" -eq 4 \
+  && test "$(grep -Fc 'if [[ $PUBLISH == true ]]; then' "$workflow")" -eq 3 \
   && ok 'every publication, and only a publication, pays for the uncached rebuild' \
   || bad 'the uncached reproducibility rebuild no longer gates exactly the publications'
 

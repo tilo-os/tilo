@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{ReadDoc, transaction::Transactable};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{Action, ActionError, ActionTransport, ExecutionLocus};
@@ -56,17 +57,20 @@ impl Widget for Owner {
                 .into(),
         ));
     }
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        _: tilo_actions::OperationKind,
-        _: &str,
-        _: &[u8],
-        _: &AutoCommit,
-        _: &ObjId,
-    ) -> Result<bool, String> {
-        Ok(true)
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        Ok(op.unscoped().map(|_| {
+            crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+        }))
     }
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {}
     fn build_layout(
         &mut self,
         t: &mut taffy::TaffyTree<()>,
@@ -84,19 +88,6 @@ impl Widget for Owner {
         _: &mut crate::TextRenderer,
         _: &crate::Theme,
         _: &crate::presence::PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<taffy::NodeId>,
-        _: taffy::NodeId,
-        _: &taffy::TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &str {

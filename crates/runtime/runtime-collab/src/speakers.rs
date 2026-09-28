@@ -35,22 +35,6 @@ pub enum SpeakerRoleSpec {
     },
 }
 
-impl SpeakerRoleSpec {
-    /// Short human description, as consent prompts phrase it.
-    #[must_use]
-    pub const fn describe(self) -> &'static str {
-        match self {
-            Self::Left => "left speaker",
-            Self::Right => "right speaker",
-            Self::Center => "centre speaker",
-            Self::Lfe => "subwoofer",
-            Self::SurroundLeft => "left surround speaker",
-            Self::SurroundRight => "right surround speaker",
-            Self::Room { .. } => "room speaker",
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SpeakerMemberSpec {
@@ -83,11 +67,15 @@ pub enum SpeakerCommand {
         device: String,
         output: String,
     },
-    /// Measure every member of a group with one microphone.
+    /// Measure every member of a group with every usable microphone of
+    /// the person's devices, one per device.
     StartCalibration {
         group: String,
-        microphone_device: String,
-        microphone: String,
+        /// Devices whose microphone sits this run out.
+        excluded: Vec<String>,
+        /// Device at the listening position; `None` is the middle of the
+        /// microphones.
+        listening: Option<String>,
     },
     CancelCalibration {
         group: String,
@@ -138,20 +126,6 @@ pub enum SpeakerMemberStatus {
     NotCertified,
 }
 
-impl SpeakerMemberStatus {
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Ready => "Ready",
-            Self::AwaitingConsent => "Waiting for approval on that device",
-            Self::Offline => "Offline",
-            Self::OutputMissing => "Output unplugged",
-            Self::Unavailable => "Media continuity is off there",
-            Self::NotCertified => "Not one of your devices",
-        }
-    }
-}
-
 /// A member's calibration correction in display units.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -173,6 +147,58 @@ pub struct SpeakerMemberInfo {
     pub trim: SpeakerTrimInfo,
 }
 
+/// A session playing on the group right now, most urgent state first.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum SpeakerPlaybackInfo {
+    Playing,
+    /// A member has not admitted the session yet.
+    Connecting,
+    /// A member does not have the playing device's clock yet, and plays
+    /// nothing until it does.
+    SyncingClocks,
+    /// A member could not get the playing device's clock in time.
+    ClockFailed {
+        reason: String,
+    },
+}
+
+/// Whether one device's microphone can listen while a group is calibrated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MicrophoneStatus {
+    /// This device, or a device that already allowed it.
+    Ready,
+    /// Starting a calibration asks on that device.
+    NotAsked,
+    /// Asked; not yet answered on that device.
+    AwaitingConsent,
+    Declined,
+    Offline,
+    /// Media continuity is off there.
+    Unavailable,
+}
+
+impl MicrophoneStatus {
+    /// Whether a microphone in this state can take part in a run.
+    #[must_use]
+    pub const fn usable(self) -> bool {
+        matches!(self, Self::Ready | Self::NotAsked | Self::AwaitingConsent)
+    }
+}
+
+/// One device's microphone as a calibration candidate for a group.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CalibrationMicrophoneInfo {
+    pub device: String,
+    pub device_label: String,
+    /// The microphone's own label on that device.
+    pub label: String,
+    pub local: bool,
+    pub status: MicrophoneStatus,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SpeakerGroupInfo {
@@ -182,6 +208,11 @@ pub struct SpeakerGroupInfo {
     /// Only the device that created a group can edit, calibrate or delete it.
     pub led_here: bool,
     pub members: Vec<SpeakerMemberInfo>,
+    /// A session this device plays to the group, or plays in as a member.
+    pub playback: Option<SpeakerPlaybackInfo>,
+    /// Microphones that can calibrate this group, one per device; only for
+    /// groups led here.
+    pub microphones: Vec<CalibrationMicrophoneInfo>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -189,8 +220,18 @@ pub struct SpeakerGroupInfo {
 pub enum CalibrationMemberState {
     Waiting,
     Measuring,
-    Measured { delay_ms: f64, level_db: f64 },
-    Failed { reason: String },
+    /// `delay_ms` is when the speaker's sound arrives at the listening
+    /// position. With that speaker's own device's microphone listening too,
+    /// the arrival splits into its output latency and the flight time.
+    Measured {
+        delay_ms: f64,
+        level_db: f64,
+        output_latency_ms: Option<f64>,
+        acoustic_ms: Option<f64>,
+    },
+    Failed {
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -207,6 +248,8 @@ pub struct CalibrationMemberInfo {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CalibrationPhaseInfo {
+    /// Remote microphones were asked and have not all answered.
+    WaitingForMicrophones,
     Measuring,
     /// Measured; nothing changes until the person applies it.
     Proposed,
@@ -215,12 +258,45 @@ pub enum CalibrationPhaseInfo {
     Failed,
 }
 
+/// What one microphone contributed to a run.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum CalibrationMicrophoneState {
+    AwaitingConsent,
+    Declined,
+    Listening,
+    /// Heard `heard` speakers; `rejected` of its readings disagreed with the
+    /// other microphones and were set aside.
+    Used {
+        heard: u8,
+        rejected: u8,
+    },
+    /// Heard none of the speakers: too far away.
+    NotHeard,
+    Failed {
+        reason: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CalibrationMicrophoneRun {
+    pub device: String,
+    pub label: String,
+    /// This microphone is at the listening position.
+    pub listening: bool,
+    pub state: CalibrationMicrophoneState,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CalibrationInfo {
     pub group: String,
     pub phase: CalibrationPhaseInfo,
     pub members: Vec<CalibrationMemberInfo>,
+    pub microphones: Vec<CalibrationMicrophoneRun>,
+    /// Where delays are aligned for; `None` is the middle of the microphones.
+    pub listening_label: Option<String>,
     pub message: Option<String>,
 }
 
@@ -291,9 +367,14 @@ impl SpeakerCommand {
             Self::Identify { device, output } => valid_id(device) && valid_hex16(output),
             Self::StartCalibration {
                 group,
-                microphone_device,
-                microphone,
-            } => valid_hex16(group) && valid_id(microphone_device) && valid_hex16(microphone),
+                excluded,
+                listening,
+            } => {
+                valid_hex16(group)
+                    && excluded.len() <= MAX_SPEAKER_DEVICES
+                    && excluded.iter().all(|device| valid_id(device))
+                    && listening.as_deref().is_none_or(valid_id)
+            }
         }
     }
 }
@@ -311,10 +392,29 @@ impl SpeakerReply {
                             && device.outputs.len() <= MAX_SPEAKER_ENDPOINTS
                             && device.microphones.len() <= MAX_SPEAKER_ENDPOINTS
                     })
-                    && snapshot
-                        .groups
-                        .iter()
-                        .all(|group| group.members.len() <= MAX_SPEAKER_MEMBERS)
+                    && snapshot.groups.iter().all(|group| {
+                        group.members.len() <= MAX_SPEAKER_MEMBERS
+                            && match &group.playback {
+                                Some(SpeakerPlaybackInfo::ClockFailed { reason }) => {
+                                    valid_label(reason)
+                                }
+                                _ => true,
+                            }
+                            && group.microphones.len() <= MAX_SPEAKER_DEVICES
+                            && group.microphones.iter().all(|microphone| {
+                                valid_label(&microphone.device_label)
+                                    && valid_label(&microphone.label)
+                            })
+                    })
+                    && snapshot.calibrations.iter().all(|run| {
+                        run.members.len() <= MAX_SPEAKER_MEMBERS
+                            && run.microphones.len() <= MAX_SPEAKER_DEVICES
+                            && run
+                                .microphones
+                                .iter()
+                                .all(|microphone| valid_label(&microphone.label))
+                            && run.listening_label.as_deref().is_none_or(valid_label)
+                    })
             }
             Self::Done { group } => group.as_deref().is_none_or(valid_hex16),
             Self::Rejected { reason } => !reason.is_empty() && valid_label(reason),
@@ -363,6 +463,83 @@ mod tests {
                 r#"{"command":"identify","device":"desk","output":"00","node":57}"#
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn calibration_commands_name_devices_not_nodes() {
+        let start = SpeakerCommand::StartCalibration {
+            group: "0f".repeat(16),
+            excluded: vec!["phone".into()],
+            listening: Some("desk".into()),
+        };
+        assert!(start.valid());
+        let json = serde_json::to_vec(&start).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<SpeakerCommand>(&json).unwrap(),
+            start
+        );
+        assert!(
+            !SpeakerCommand::StartCalibration {
+                group: "0f".repeat(16),
+                excluded: vec!["alsa input 57".into()],
+                listening: None,
+            }
+            .valid()
+        );
+        assert!(
+            !SpeakerCommand::StartCalibration {
+                group: "0f".repeat(16),
+                excluded: Vec::new(),
+                listening: Some(String::new()),
+            }
+            .valid()
+        );
+    }
+
+    #[test]
+    fn snapshots_with_microphones_round_trip() {
+        let snapshot = SpeakerSnapshot {
+            media_enabled: true,
+            devices: Vec::new(),
+            groups: vec![SpeakerGroupInfo {
+                id: "0f".repeat(16),
+                name: "Living room".into(),
+                leader_label: "Desk".into(),
+                led_here: true,
+                members: Vec::new(),
+                playback: None,
+                microphones: vec![CalibrationMicrophoneInfo {
+                    device: "phone".into(),
+                    device_label: "Phone".into(),
+                    label: "Microphone".into(),
+                    local: false,
+                    status: MicrophoneStatus::AwaitingConsent,
+                }],
+            }],
+            calibrations: vec![CalibrationInfo {
+                group: "0f".repeat(16),
+                phase: CalibrationPhaseInfo::WaitingForMicrophones,
+                members: Vec::new(),
+                microphones: vec![CalibrationMicrophoneRun {
+                    device: "phone".into(),
+                    label: "Phone".into(),
+                    listening: true,
+                    state: CalibrationMicrophoneState::Used {
+                        heard: 2,
+                        rejected: 1,
+                    },
+                }],
+                listening_label: Some("Phone".into()),
+                message: None,
+            }],
+        };
+        let reply = SpeakerReply::Snapshot { snapshot };
+        assert!(reply.valid());
+        let json = serde_json::to_vec(&reply).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<SpeakerReply>(&json).unwrap(),
+            reply
         );
     }
 

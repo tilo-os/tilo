@@ -35,6 +35,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
@@ -2072,7 +2073,8 @@ impl Widget for TypstApp {
             .flatten()
     }
 
-    fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = ui::doc::document(doc, path);
         self.background_poll_deadline.set(None);
         if let Some((invocation, operation)) = self.pending_resource_io.take() {
             let result = match operation {
@@ -2244,21 +2246,10 @@ impl Widget for TypstApp {
         self.draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        doc: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let src_id = match &self.source_id {
             Some(id) => id.clone(),
-            None => self.ensure_source_obj(doc),
+            None => self.ensure_source_obj(ctx.state),
         };
 
         // --- application-level keyboard shortcuts ---
@@ -2272,12 +2263,26 @@ impl Widget for TypstApp {
             ..
         } = event
         {
-            self.handle_keyboard_shortcut(logical_key, event, *modifiers, doc, &src_id, handled);
+            self.handle_keyboard_shortcut(
+                logical_key,
+                event,
+                *ctx.modifiers,
+                ctx.state,
+                &src_id,
+                ctx.handled,
+            );
             return;
         }
 
         // --- pointer ---
-        self.handle_pointer_event(event, scale_factor, *modifiers, doc, &src_id, handled);
+        self.handle_pointer_event(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            &src_id,
+            ctx.handled,
+        );
     }
 
     fn name(&self) -> &'static str {
@@ -2329,9 +2334,10 @@ impl Widget for TypstApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        doc: &mut AutoCommit,
-        _path: &ObjId,
+        doc: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (doc, _) = ui::doc::document(doc, path);
         if let Some((operation, _, _)) = TOOLBAR_ACTIONS.iter().find(|(_, id, _)| *id == target) {
             return match action {
                 ui::a11y::Action::Focus => true,
@@ -2901,14 +2907,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &Modifiers::default(),
-            doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            NodeId::new(0),
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -3401,14 +3409,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &mods,
-            doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            NodeId::new(0),
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+            },
         );
         handled
     }

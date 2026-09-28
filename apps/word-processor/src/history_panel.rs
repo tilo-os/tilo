@@ -345,14 +345,16 @@ impl HistoryPanel {
         };
         self.scrubber.handle_event(
             event,
-            scale_factor,
-            modifiers,
-            doc,
-            root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &scratch,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers,
+                state: doc,
+                path: root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &scratch,
+            },
         );
 
         let mut out = HistoryOutcome {

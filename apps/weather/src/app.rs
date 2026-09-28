@@ -30,6 +30,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{NodeId, TaffyTree};
@@ -757,7 +758,8 @@ impl Widget for WeatherApp {
         )
     }
 
-    fn update(&mut self, state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         // Semantic actions reach the owning pane directly, so finish their
         // canonical writes and navigation here as well as on pointer input.
         let changed = self.flush_durable_actions(state);
@@ -768,7 +770,8 @@ impl Widget for WeatherApp {
         changed || navigate.is_some()
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         if !self.seeded_doc {
             // Only the explicit shot constructor seeds examples. A live blank
             // document is valid; its first deliberate add creates the schema.
@@ -854,32 +857,11 @@ impl Widget for WeatherApp {
             .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.adopt_document_changes(state);
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.adopt_document_changes(ctx.state);
         self.ensure_service();
-        self.nav.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
-        self.flush_durable_actions(state);
+        self.nav.handle_event(event, ctx);
+        self.flush_durable_actions(ctx.state);
 
         // The overview raises a push intent when a city is selected.
         if let Some(NavIntent::ShowDetail) = self.core.borrow_mut().take_nav_request() {
@@ -988,6 +970,7 @@ mod interaction_tests {
     use crate::interaction::{EntryAction, SWIPE_COMMIT_DX};
     use crate::net::Request;
     use tilo_automerge::ApplyIncoming;
+    use ui::headless::Framed;
     use ui::widget::ContentLayout;
     use ui::widget::ShellMode;
     use vello::kurbo::Point as KPoint;
@@ -1023,108 +1006,63 @@ mod interaction_tests {
     }
 
     struct Harness {
-        app: WeatherApp,
-        taffy: TaffyTree<()>,
-        node: NodeId,
-        state: ui::State,
-        theme: Theme,
+        app: Framed<WeatherApp>,
         tr: TextRenderer,
-        w: f64,
-        h: f64,
     }
 
     impl Harness {
         fn new(w: f64, h: f64) -> Self {
-            let app = WeatherApp::new();
             let mut harness = Self {
-                app,
-                taffy: TaffyTree::new(),
-                node: NodeId::new(0),
-                state: ui::State::new(),
-                theme: Theme::dark(),
+                app: Framed::new(
+                    ui::State::new(),
+                    WeatherApp::new(),
+                    ui::headless::viewport((w, h)),
+                    Theme::dark(),
+                ),
                 tr: TextRenderer::new(),
-                w,
-                h,
             };
-            harness.layout(w, h);
             harness.redraw();
             harness
         }
 
-        /// Full sync → build → compute → apply cycle at a size, so the same
+        /// The production frame — sync, layout, draw — at a size, so the same
         /// instance can be re-laid-out to simulate a window resize.
         fn layout(&mut self, w: f64, h: f64) {
-            use taffy::prelude::*;
-            self.w = w;
-            self.h = h;
-            self.app.sync(&mut self.state.doc, &self.state.root);
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let child = self
-                .app
-                .build_layout(&mut taffy, &self.theme, &mut node_map);
-            let root = taffy
-                .new_with_children(
-                    Style {
-                        size: Size {
-                            width: Dimension::length(w as f32),
-                            height: Dimension::length(h as f32),
-                        },
-                        ..Default::default()
-                    },
-                    &[child],
-                )
-                .unwrap();
-            let measure_map = node_map.clone();
-            let tr = &mut self.tr;
-            taffy
-                .compute_layout_with_measure(
-                    root,
-                    Size {
-                        width: AvailableSpace::Definite(w as f32),
-                        height: AvailableSpace::Definite(h as f32),
-                    },
-                    |known, available, node_id, _, _| {
-                        if let Some(&ptr) = measure_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, available, tr) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
-            self.app.apply_layout(&taffy, child, Point::ORIGIN);
-            self.taffy = taffy;
-            self.node = child;
+            Framed::harness_mut(&mut self.app)
+                .relayout_at(ui::headless::viewport((w, h)))
+                .expect("layout settles");
+        }
+
+        /// The app's live document, read-only.
+        fn doc(&self) -> &AutoCommit {
+            &Framed::harness(&self.app).state().doc
+        }
+
+        /// The app's live document.
+        fn state(&mut self) -> &mut ui::State {
+            Framed::harness_mut(&mut self.app).state_mut()
+        }
+
+        /// The app and its live document, for calls that take both.
+        fn parts(&mut self) -> (&mut WeatherApp, &mut ui::State) {
+            Framed::split(&mut self.app)
         }
 
         fn redraw(&mut self) {
             let presence = PresenceCtx::empty();
             let mut scene = Scene::new();
+            let theme = Framed::harness(&self.app).theme().clone();
             self.app.draw(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut self.tr,
-                &self.theme,
+                &theme,
                 &presence,
             );
         }
 
         fn dispatch(&mut self, ev: &WindowEvent) {
-            let mods = Modifiers::default();
-            let mut handled = false;
-            let mut focus = None;
-            self.app.handle_event(
-                ev,
-                1.0,
-                &mods,
-                &mut self.state.doc,
-                &self.state.root,
-                &mut handled,
-                &mut focus,
-                self.node,
-                &self.taffy,
-            );
+            Framed::harness_mut(&mut self.app).dispatch_to_root_with(ev, &Modifiers::default());
         }
 
         fn move_to(&mut self, x: f64, y: f64) {
@@ -1395,17 +1333,18 @@ mod interaction_tests {
                 .action_target
                 .as_deref()
                 .unwrap();
-            assert!(h.app.nav.children_mut()[0].perform_semantic_action(
+            let (app, state) = h.parts();
+            assert!(app.nav.children_mut()[0].perform_semantic_action(
                 target,
                 &ui::a11y::Action::Activate,
-                &mut h.state.doc,
-                &h.state.root,
+                &mut state.doc,
+                &state.root,
             ));
-            assert!(h.app.update(&mut h.state.doc, &h.state.root));
-            let persisted = WeatherDoc::read_model(&h.state.doc);
+            assert!(app.update(&mut state.doc, &state.root));
+            let persisted = WeatherDoc::read_model(&state.doc);
             assert_eq!(persisted.selected_location().unwrap().id, chosen);
-            assert!(h.app.nav.is_detail_shown());
-            assert!(!h.app.update(&mut h.state.doc, &h.state.root));
+            assert!(app.nav.is_detail_shown());
+            assert!(!app.update(&mut state.doc, &state.root));
         }
         // Case `arrow_keys_navigate_cities_and_fetch`.
         {
@@ -1430,7 +1369,7 @@ mod interaction_tests {
                 .any(|r| matches!(r, Request::Forecast { .. }));
             assert!(fetched, "moving to a city queues its forecast fetch");
             assert_eq!(
-                WeatherDoc::read_model(&h.state.doc).selected,
+                WeatherDoc::read_model(h.doc()).selected,
                 0,
                 "navigating this window does not move a collaborator's durable default"
             );
@@ -1818,7 +1757,7 @@ mod interaction_tests {
             );
             // The deletion is written through to the shared document.
             assert_eq!(
-                WeatherDoc::read_model(&h.state.doc).locations.len(),
+                WeatherDoc::read_model(h.doc()).locations.len(),
                 before - 1,
                 "the mutation persisted to the CRDT"
             );
@@ -2102,7 +2041,7 @@ mod interaction_tests {
         // Case `remote_location_change_preserves_device_local_provider_cache`.
         {
             let mut h = Harness::new(1280.0, 720.0);
-            let mut remote = AutoCommit::load(&h.state.doc.save()).unwrap();
+            let mut remote = AutoCommit::load(&h.state().doc.save()).unwrap();
             let oslo = crate::model::SavedLocation::new(
                 "Oslo",
                 "Oslo",
@@ -2114,8 +2053,8 @@ mod interaction_tests {
             );
             WeatherDoc::upsert_location(&mut remote, &oslo);
             remote.commit();
-            let changes = remote.get_changes(&h.state.doc.get_heads());
-            h.state.doc.apply_incoming(changes).unwrap();
+            let changes = remote.get_changes(&h.state().doc.get_heads());
+            h.state().doc.apply_incoming(changes).unwrap();
 
             let local_id = h.app.core.borrow().model.locations[0].id;
             let local_temperature = 37.5;
@@ -2129,7 +2068,8 @@ mod interaction_tests {
                     .temperature = local_temperature;
             }
 
-            h.app.sync(&mut h.state.doc, &h.state.root);
+            let (app, state) = h.parts();
+            app.sync(&mut state.doc, &state.root);
 
             let core = h.app.core.borrow();
             assert!(
@@ -2144,7 +2084,7 @@ mod interaction_tests {
                 "local pending provider cache survived the durable-state adoption"
             );
             drop(core);
-            let persisted = WeatherDoc::read_model(&h.state.doc);
+            let persisted = WeatherDoc::read_model(h.doc());
             assert!(
                 persisted
                     .locations
@@ -2156,8 +2096,9 @@ mod interaction_tests {
         }
         // Case `location_resources_separate_view_default_and_reorder_actions`.
         {
-            let h = Harness::new(1280.0, 720.0);
-            let resources = Widget::resources(&h.app, &h.state.doc);
+            let mut h = Harness::new(1280.0, 720.0);
+            let (app, state) = h.parts();
+            let resources = Widget::resources(&*app, &state.doc);
             let handlers: std::collections::HashSet<String> = h
                 .app
                 .local_resource_operation_handlers()
@@ -2233,13 +2174,13 @@ mod interaction_tests {
 
             h.key(Key::Named(NamedKey::ArrowDown), None);
 
-            assert_eq!(WeatherDoc::read_model(&h.state.doc).selected, 0);
+            assert_eq!(WeatherDoc::read_model(h.doc()).selected, 0);
             assert_eq!(
                 h.app.core.borrow().model.snapshots[&id].current.temperature,
                 31.25,
                 "an action dispatch must not discard an already-renderable local forecast"
             );
-            assert!(WeatherDoc::read_model(&h.state.doc).snapshots.is_empty());
+            assert!(WeatherDoc::read_model(h.doc()).snapshots.is_empty());
         }
     }
 

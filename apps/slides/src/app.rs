@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use taffy::prelude::*;
@@ -4032,14 +4033,16 @@ impl SlidesApp {
         let mut h = false;
         self.title_input.handle_event(
             routed.event,
-            routed.scale_factor,
-            &routed.modifiers,
-            routed.state,
-            routed.path,
-            &mut h,
-            routed.focus_target,
-            routed.node_id,
-            routed.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: routed.scale_factor,
+                modifiers: &routed.modifiers,
+                state: routed.state,
+                path: routed.path,
+                handled: &mut h,
+                focus_target: routed.focus_target,
+                node_id: routed.node_id,
+                taffy: routed.taffy,
+            },
         );
         // Live-splice each edit into the CRDT title (the mirror is refreshed on
         // commit; while editing, the field is the source of truth).
@@ -4095,14 +4098,16 @@ impl SlidesApp {
         let mut input_handled = false;
         self.notes_input.handle_event(
             routed.event,
-            routed.scale_factor,
-            &routed.modifiers,
-            routed.state,
-            routed.path,
-            &mut input_handled,
-            routed.focus_target,
-            routed.node_id,
-            routed.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: routed.scale_factor,
+                modifiers: &routed.modifiers,
+                state: routed.state,
+                path: routed.path,
+                handled: &mut input_handled,
+                focus_target: routed.focus_target,
+                node_id: routed.node_id,
+                taffy: routed.taffy,
+            },
         );
         if self.notes_input.take_dirty().is_some() {
             self.mark();
@@ -5830,7 +5835,8 @@ impl Widget for SlidesApp {
         None
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         self.reconcile_canonical(state);
         if let Some((save, file)) = self.resource_file.take() {
             let queued = if save {
@@ -6052,22 +6058,11 @@ impl Widget for SlidesApp {
         self.draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.reconcile_canonical(state);
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.reconcile_canonical(ctx.state);
         // Restore replaces Text object identities; the first event may precede sync.
         if self.editing_notes {
-            self.sync_notes_input(state, false);
+            self.sync_notes_input(ctx.state, false);
         }
         if matches!(
             event,
@@ -6086,16 +6081,16 @@ impl Widget for SlidesApp {
         }
         let mut routed = RoutedEvent {
             event,
-            scale_factor,
-            modifiers: *modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
+            scale_factor: ctx.scale_factor,
+            modifiers: *ctx.modifiers,
+            state: ctx.state,
+            path: ctx.path,
+            focus_target: ctx.focus_target,
+            node_id: ctx.node_id,
+            taffy: ctx.taffy,
         };
         if self.route_notes_edit(&mut routed) {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         // A right-press (re)opens a context menu — handled before the modal
@@ -6106,27 +6101,27 @@ impl Widget for SlidesApp {
             ..
         } = routed.event
         {
-            self.on_right_press(routed.state, self.last_mouse, handled);
+            self.on_right_press(routed.state, self.last_mouse, ctx.handled);
             return;
         }
         // While a context menu is open it is modal: every other event goes to it.
         if self.route_context_menu(&mut routed) {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         // The inline title editor owns input while renaming.
         if self.route_title_edit(&mut routed) {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         // The inspector's embedded widgets (font-size field, fill picker) get
         // first refusal on events over them.
         if self.route_inspector_widgets(&mut routed) {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         // The text box being edited owns the keyboard and its own pointer.
-        if self.route_text_edit(&mut routed, handled) {
+        if self.route_text_edit(&mut routed, ctx.handled) {
             return;
         }
         self.dispatch_unmodal_event(
@@ -6134,7 +6129,7 @@ impl Widget for SlidesApp {
             routed.scale_factor,
             routed.modifiers,
             routed.state,
-            handled,
+            ctx.handled,
         );
     }
 
@@ -6358,9 +6353,10 @@ impl Widget for SlidesApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         self.reconcile_canonical(state);
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
@@ -7197,14 +7193,16 @@ impl SlidesApp {
         let mut menu_handled = false;
         self.ctx_menu.handle_event(
             routed.event,
-            routed.scale_factor,
-            &routed.modifiers,
-            routed.state,
-            routed.path,
-            &mut menu_handled,
-            routed.focus_target,
-            routed.node_id,
-            routed.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: routed.scale_factor,
+                modifiers: &routed.modifiers,
+                state: routed.state,
+                path: routed.path,
+                handled: &mut menu_handled,
+                focus_target: routed.focus_target,
+                node_id: routed.node_id,
+                taffy: routed.taffy,
+            },
         );
         if let Some(idx) = self.ctx_menu.take_selection()
             && let Some(Some(hit)) = self.ctx_hits.get(idx).cloned()
@@ -7268,14 +7266,16 @@ impl SlidesApp {
         let mut h = false;
         self.fill_picker.handle_event(
             routed.event,
-            routed.scale_factor,
-            &routed.modifiers,
-            routed.state,
-            routed.path,
-            &mut h,
-            routed.focus_target,
-            routed.node_id,
-            routed.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: routed.scale_factor,
+                modifiers: &routed.modifiers,
+                state: routed.state,
+                path: routed.path,
+                handled: &mut h,
+                focus_target: routed.focus_target,
+                node_id: routed.node_id,
+                taffy: routed.taffy,
+            },
         );
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
@@ -7306,14 +7306,16 @@ impl SlidesApp {
                 let mut h = false;
                 self.font_input.handle_event(
                     routed.event,
-                    routed.scale_factor,
-                    &routed.modifiers,
-                    routed.state,
-                    routed.path,
-                    &mut h,
-                    routed.focus_target,
-                    routed.node_id,
-                    routed.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: routed.scale_factor,
+                        modifiers: &routed.modifiers,
+                        state: routed.state,
+                        path: routed.path,
+                        handled: &mut h,
+                        focus_target: routed.focus_target,
+                        node_id: routed.node_id,
+                        taffy: routed.taffy,
+                    },
                 );
                 if let Some(v) = self.font_input.take_changed() {
                     self.set_sel_f64(routed.state, "font_size", v);
@@ -7330,14 +7332,16 @@ impl SlidesApp {
                     let mut h = false;
                     self.font_input.handle_event(
                         routed.event,
-                        routed.scale_factor,
-                        &routed.modifiers,
-                        routed.state,
-                        routed.path,
-                        &mut h,
-                        routed.focus_target,
-                        routed.node_id,
-                        routed.taffy,
+                        &mut ui::widget::EventCtx {
+                            scale_factor: routed.scale_factor,
+                            modifiers: &routed.modifiers,
+                            state: routed.state,
+                            path: routed.path,
+                            handled: &mut h,
+                            focus_target: routed.focus_target,
+                            node_id: routed.node_id,
+                            taffy: routed.taffy,
+                        },
                     );
                     Widget::set_focus(&mut self.font_input, true);
                     if let Some(v) = self.font_input.take_changed() {
@@ -7385,14 +7389,16 @@ impl SlidesApp {
         let mut h = false;
         self.font_input.handle_event(
             routed.event,
-            routed.scale_factor,
-            &routed.modifiers,
-            routed.state,
-            routed.path,
-            &mut h,
-            routed.focus_target,
-            routed.node_id,
-            routed.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: routed.scale_factor,
+                modifiers: &routed.modifiers,
+                state: routed.state,
+                path: routed.path,
+                handled: &mut h,
+                focus_target: routed.focus_target,
+                node_id: routed.node_id,
+                taffy: routed.taffy,
+            },
         );
         if let Some(v) = self.font_input.take_changed() {
             self.set_sel_f64(routed.state, "font_size", v);
@@ -10324,14 +10330,16 @@ mod tests {
         let root = automerge::ROOT;
         app.handle_event(
             ev,
-            1.0,
-            &modifiers,
-            doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

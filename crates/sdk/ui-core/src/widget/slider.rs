@@ -4,8 +4,9 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::binding::{BoxedBinding, Pulled};
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
@@ -36,8 +37,8 @@ pub struct Slider {
     is_dragging: bool,
     is_focused: bool,
     value: f64, // 0.0 to 1.0
-    on_change_path: String,
-    local_state: Option<crate::local_state::LocalBinding<f64>>,
+    /// Where the value lives: a document key or process-local state.
+    binding: Option<BoxedBinding<f64>>,
     on_change: Option<Box<dyn FnMut(f64)>>,
     action: Option<ActionEmitter<f64>>,
     presence_path: Vec<PathSegment>,
@@ -78,8 +79,7 @@ impl Slider {
             is_dragging: false,
             is_focused: false,
             value: 0.5,
-            on_change_path: on_change_path.to_string(),
-            local_state: None,
+            binding: Some(crate::doc_binding::number_key(on_change_path)),
             on_change: None,
             action: None,
             presence_path: Vec::new(),
@@ -98,10 +98,10 @@ impl Slider {
     /// through any clone update this slider on the next synchronization pass.
     /// Values are clamped to `0.0..=1.0` at the control boundary.
     pub fn from_state(state: &crate::LocalState<f64>) -> Self {
-        let (value, binding) = crate::local_state::LocalBinding::new(state);
+        let (value, binding) = super::binding::local(state);
         let mut slider = Self::new("slider", "");
         slider.value = value.clamp(0.0, 1.0);
-        slider.local_state = Some(binding);
+        slider.binding = Some(binding);
         slider.publish_local_state();
         slider
     }
@@ -141,7 +141,7 @@ impl Slider {
     }
 
     fn publish_local_state(&mut self) {
-        if let Some(binding) = &mut self.local_state {
+        if let Some(binding) = &mut self.binding {
             binding.publish(&self.value);
         }
     }
@@ -223,21 +223,15 @@ impl Slider {
     /// Commit a new value to the CRDT iff it differs from the cached
     /// `value` by more than a frame-of-noise epsilon. Returns `true` if
     /// the commit happened so callers can flag the event as handled.
-    fn commit_value(&mut self, new_value: f64, state: &mut AutoCommit, root: &ObjId) -> bool {
+    fn commit_value(&mut self, new_value: f64, state: &mut AppModel, root: &ModelPath) -> bool {
         if (new_value - self.value).abs() <= 0.001 {
             return false;
         }
         self.value = new_value;
         if let Some(action) = &mut self.action {
             let _ = action.emit(self.value);
-        } else if self.local_state.is_some() {
-            self.publish_local_state();
-        } else {
-            let _ = state.put(
-                root,
-                self.on_change_path.as_str(),
-                automerge::ScalarValue::F64(self.value),
-            );
+        } else if let Some(binding) = &mut self.binding {
+            binding.push(state, root, &self.value);
         }
         if self.action.is_none()
             && let Some(callback) = self.on_change.as_mut()
@@ -464,31 +458,11 @@ impl Widget for Slider {
         self.is_hovered &= environment.supports_hover();
     }
 
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "Automerge integer values are normalized into this f64 slider model"
-    )]
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Some(value) = self
-            .local_state
-            .as_mut()
-            .and_then(crate::local_state::LocalBinding::poll)
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        if let Some(binding) = &mut self.binding
+            && let Pulled::Value(value) = binding.pull(state, root)
         {
             self.value = value.clamp(0.0, 1.0);
-            return;
-        }
-        if self.local_state.is_some() {
-            return;
-        }
-        if let Ok(Some((val, _))) = state.get(root, self.on_change_path.as_str())
-            && let Value::Scalar(s) = val
-        {
-            match s.as_ref() {
-                automerge::ScalarValue::F64(f) => self.value = *f,
-                automerge::ScalarValue::Int(i) => self.value = *i as f64,
-                automerge::ScalarValue::Uint(u) => self.value = *u as f64,
-                _ => {}
-            }
         }
     }
 
@@ -539,36 +513,25 @@ impl Widget for Slider {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Disabled: reject all input — no drag, no value change, no hover.
         if !self.effectively_enabled() {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = p;
                 let hover = self.rect.contains(p);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
 
                 if self.is_dragging {
                     let new_value = self.value_from_cursor_x(p.x);
-                    if self.commit_value(new_value, state, root) {
-                        *handled = true;
+                    if self.commit_value(new_value, ctx.state, ctx.path) {
+                        *ctx.handled = true;
                     }
                 }
             }
@@ -585,13 +548,13 @@ impl Widget for Slider {
                 // "press on track to jump" affordance.
                 if *element_state == ElementState::Pressed && self.rect.contains(self.last_cursor) {
                     self.is_dragging = true;
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                     let new_value = self.value_from_cursor_x(self.last_cursor.x);
-                    self.commit_value(new_value, state, root);
+                    self.commit_value(new_value, ctx.state, ctx.path);
                 } else if *element_state == ElementState::Released && self.is_dragging {
                     self.is_dragging = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -673,8 +636,8 @@ impl Widget for Slider {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         const STEP: f64 = 0.05;
@@ -747,10 +710,10 @@ impl Widget for Slider {
         let control_id = self.test_id().unwrap_or("slider");
         if let Some(action) = &self.action {
             vec![action.metadata(control_id)]
-        } else if !self.on_change_path.is_empty() {
+        } else if let Some(key) = self.binding.as_ref().and_then(|b| b.document_key()) {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
-                kind: ControlBindingKind::CollaborativeDocument(self.on_change_path.clone()),
+                kind: ControlBindingKind::CollaborativeDocument(key.to_owned()),
             }]
         } else if self.on_change.is_some() {
             vec![ControlBindingMetadata {
@@ -804,6 +767,7 @@ impl Widget for Slider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::{AutoCommit, ReadDoc};
 
     /// Build a slider with a known rect so we don't need a full taffy pass.
     /// Rect spans [0..200, 0..30] — track-padding 5 px, so the track itself
@@ -847,14 +811,16 @@ mod tests {
         let root = automerge::ROOT;
         s.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

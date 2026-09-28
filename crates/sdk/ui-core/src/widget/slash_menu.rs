@@ -32,9 +32,9 @@
 //! pinned 360 px width, which is wider than most paragraph blocks.
 //! A purpose-built widget is ~150 LOC and avoids the impedance match.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -638,7 +638,6 @@ impl SlashMenu {
 // because the popover has no taffy node and renders out-of-band via
 // `draw_overlay`.
 impl Widget for SlashMenu {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -660,20 +659,6 @@ impl Widget for SlashMenu {
         _presence: &PresenceCtx,
     ) {
         // No-op in the main draw pass; see `draw_overlay`.
-    }
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        // Routing is owned by the parent — see `handle_key`.
     }
     fn name(&self) -> &'static str {
         "SlashMenu"
@@ -746,8 +731,8 @@ impl Widget for SlashMenu {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         let Some(row_index) = target
             .strip_prefix("row:")
@@ -773,6 +758,7 @@ impl Widget for SlashMenu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use winit::event::{ElementState, KeyEvent};
     use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
 

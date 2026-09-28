@@ -16,6 +16,47 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value};
+use std::any::Any;
+
+/// The document and object a widget pass lent as its
+/// [`AppModel`](crate::widget::AppModel) and [`ModelPath`](crate::widget::ModelPath).
+///
+/// # Panics
+///
+/// Panics if the host lent another model: a document runtime lends an
+/// `AutoCommit` and an `ObjId` in it.
+#[allow(
+    clippy::panic,
+    reason = "a document host lends its document; any other model is a host bug"
+)]
+pub fn document<'a>(model: &'a mut dyn Any, path: &'a dyn Any) -> (&'a mut AutoCommit, &'a ObjId) {
+    let (Some(doc), Some(path)) = (
+        model.downcast_mut::<AutoCommit>(),
+        path.downcast_ref::<ObjId>(),
+    ) else {
+        panic!("the host lent a model that is not an Automerge document");
+    };
+    (doc, path)
+}
+
+/// Read-only [`document`].
+///
+/// # Panics
+///
+/// Panics if the host lent another model.
+#[allow(
+    clippy::panic,
+    reason = "a document host lends its document; any other model is a host bug"
+)]
+pub fn document_ref<'a>(model: &'a dyn Any, path: &'a dyn Any) -> (&'a AutoCommit, &'a ObjId) {
+    let (Some(doc), Some(path)) = (
+        model.downcast_ref::<AutoCommit>(),
+        path.downcast_ref::<ObjId>(),
+    ) else {
+        panic!("the host lent a model that is not an Automerge document");
+    };
+    (doc, path)
+}
 
 /// The splice [`splice_text_diffed`] applied, in *characters* — Automerge `Text`
 /// is char-addressed, not byte-addressed. A no-op reports `{pos:0, del:0, ins:0}`.

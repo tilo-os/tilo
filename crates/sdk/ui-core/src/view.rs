@@ -389,12 +389,11 @@ mod tests {
     use crate::record::{RecordCheckout, RecordId, RecordKind};
     use crate::state::State;
     use crate::widget::Widget;
-    use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, transaction::Transactable};
+    use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
     use std::collections::HashMap;
     use taffy::TaffyTree;
     use vello::Scene;
     use vello::kurbo::{Affine, Point, Rect as KurboRect};
-    use winit::event::WindowEvent;
 
     /// A minimal root widget that owns all the presentation state a View
     /// captures: a caret (via `get_state`/`set_state`), a scroll offset and a
@@ -423,7 +422,6 @@ mod tests {
     }
 
     impl Widget for DocRoot {
-        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -442,12 +440,6 @@ mod tests {
             _tr: &mut TextRenderer,
             _th: &Theme,
             _p: &PresenceCtx,
-        ) {
-        }
-        fn handle_event_ctx(
-            &mut self,
-            _event: &WindowEvent,
-            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn name(&self) -> &'static str {

@@ -259,14 +259,16 @@ impl Harness {
         let mut handled = false;
         self.root.handle_event(
             event,
-            1.0,
-            &self.modifiers,
-            &mut self.doc,
-            &self.doc_root,
-            &mut handled,
-            &mut self.focus,
-            self.root_node,
-            &self.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &self.modifiers,
+                state: &mut self.doc,
+                path: &self.doc_root,
+                handled: &mut handled,
+                focus_target: &mut self.focus,
+                node_id: self.root_node,
+                taffy: &self.taffy,
+            },
         );
         handled
     }
@@ -644,14 +646,16 @@ impl DragCtx<'_> {
         let mut handled = false;
         self.group.handle_event(
             event,
-            1.0,
-            self.modifiers,
-            self.doc,
-            self.doc_root,
-            &mut handled,
-            self.focus,
-            self.child,
-            self.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: self.modifiers,
+                state: self.doc,
+                path: self.doc_root,
+                handled: &mut handled,
+                focus_target: self.focus,
+                node_id: self.child,
+                taffy: self.taffy,
+            },
         );
     }
 
@@ -1376,14 +1380,16 @@ fn hover_and_click_maximize_chip(group: &mut WindowGroup, taffy: &TaffyTree<()>,
         let mut handled = false;
         group.handle_event(
             &event,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &doc_root,
-            &mut handled,
-            &mut focus,
-            child,
-            taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &doc_root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: child,
+                taffy,
+            },
         );
     };
     pump_ev(
@@ -1678,14 +1684,16 @@ fn pump_host(
     let dummy_node: NodeId = unsafe { std::mem::zeroed() };
     host.handle_event(
         event,
-        1.0,
-        &modifiers,
-        &mut doc,
-        &root,
-        &mut handled,
-        &mut focus_target,
-        dummy_node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: &mut doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: dummy_node,
+            taffy: &taffy,
+        },
     );
     handled
 }
@@ -1813,14 +1821,16 @@ impl UndoHarness {
         let mut focus_target: Option<NodeId> = None;
         self.group.handle_event(
             event,
-            1.0,
-            &modifiers,
-            &mut self.state.doc,
-            &self.state.root,
-            &mut handled,
-            &mut focus_target,
-            self.root_node,
-            &self.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut self.state.doc,
+                path: &self.state.root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: self.root_node,
+                taffy: &self.taffy,
+            },
         );
     }
 

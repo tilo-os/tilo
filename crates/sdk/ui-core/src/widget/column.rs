@@ -4,6 +4,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -260,6 +261,17 @@ impl Widget for Column {
         found
     }
 
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        // This container owns no operation handler: offer each child once.
+        crate::widget::start_in_children(self, op, doc, path)
+    }
+
+    /// Legacy adapter: offered through [`Widget::start_operation`].
     fn start_resource_operation_with_document(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -269,28 +281,17 @@ impl Widget for Column {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        // This container owns no operation handler. Preserve mutable admission
-        // down the retained tree without a second read-only fallback traversal.
-        for child in self.children_mut() {
-            if let Some(started) = child.start_resource_operation_with_document(
-                invocation, kind, type_id, payload, doc, path,
-            )? {
-                return Ok(Some(started));
-            }
-        }
-        Ok(None)
-    }
-
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        for child in &mut self.children {
-            child.sync(state, path);
-        }
+        self.start_operation(
+            &crate::widget::ResourceOperation::local(invocation, kind, type_id, payload),
+            doc,
+            path,
+        )
     }
 
     /// Forward the per-frame update pass; every child runs, and a
     /// change in any of them is a change here. Not short-circuited —
     /// a child that skipped its pass would miss a frame of state.
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for child in &mut self.children {
             changed |= child.update(state, path);
@@ -424,18 +425,7 @@ impl Widget for Column {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // A child with a latched drag (e.g. a slider's knob) gets ALL
         // events exclusively for the frame, so the drag survives the
         // cursor crossing a peer widget's rect — otherwise the peer's
@@ -447,32 +437,12 @@ impl Widget for Column {
             let Some(child) = self.children.get_mut(idx) else {
                 return;
             };
-            child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cnode,
-                taffy,
-            );
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, cnode));
             return;
         }
         for (child_widget, &child_node) in self.children.iter_mut().zip(&self.child_nodes) {
-            child_widget.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
-            if *handled {
+            child_widget.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
+            if *ctx.handled {
                 break;
             }
         }

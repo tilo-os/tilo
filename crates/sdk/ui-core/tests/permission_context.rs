@@ -155,7 +155,6 @@ fn roles_and_scoped_shares_decide_each_permission_check() {
 
 struct NoOpWidget;
 impl tilo_ui::widget::Widget for NoOpWidget {
-    fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
     #[allow(
         clippy::unimplemented,
         reason = "test-only Widget stub; build_layout is never invoked by these tests (they \
@@ -183,19 +182,6 @@ impl tilo_ui::widget::Widget for NoOpWidget {
         _txt: &mut tilo_ui::text_render::TextRenderer,
         _th: &tilo_ui::theme::Theme,
         _presence: &tilo_ui::presence::PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _e: &winit::event::WindowEvent,
-        _sf: f64,
-        _mods: &winit::event::Modifiers,
-        _s: &mut automerge::AutoCommit,
-        _p: &automerge::ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<taffy::NodeId>,
-        _nid: taffy::NodeId,
-        _t: &taffy::TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {
@@ -244,7 +230,6 @@ struct GatedButton {
 }
 
 impl tilo_ui::widget::Widget for GatedButton {
-    fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
     #[allow(
         clippy::unimplemented,
         reason = "test-only Widget stub; build_layout is never invoked by these tests (they \
@@ -277,14 +262,7 @@ impl tilo_ui::widget::Widget for GatedButton {
     fn handle_event(
         &mut self,
         _e: &winit::event::WindowEvent,
-        _sf: f64,
-        _mods: &winit::event::Modifiers,
-        _s: &mut automerge::AutoCommit,
-        _p: &automerge::ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<taffy::NodeId>,
-        _nid: taffy::NodeId,
-        _t: &taffy::TaffyTree<()>,
+        _ctx: &mut tilo_ui::widget::EventCtx<'_>,
     ) {
         self.clicked = true;
     }

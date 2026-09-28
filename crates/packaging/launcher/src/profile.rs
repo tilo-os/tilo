@@ -140,6 +140,23 @@ pub fn landlock_rw_device_paths() -> Vec<PathBuf> {
     SYSTEM_DEVICE_PATHS.iter().map(PathBuf::from).collect()
 }
 
+/// Landlock read-write rules for an engine that builds its own sandbox
+/// inside ours, keyed on the seccomp profile the launch was granted.
+///
+/// Chromium's zygote writes `setgroups`, `uid_map` and `gid_map` through
+/// `/proc/self` from each child it has just forked into a new user
+/// namespace. Those children have fresh PIDs, so no rule narrower than the
+/// sandbox's own `/proc` — mounted for its private PID namespace, listing
+/// only its own processes — reaches them. Without it the engine refuses to
+/// start rather than run its renderers unsandboxed.
+pub fn landlock_rw_nested_sandbox_paths(profile: crate::seccomp::SeccompProfile) -> Vec<PathBuf> {
+    if profile.allows_nested_sandbox() {
+        vec![PathBuf::from("/proc")]
+    } else {
+        Vec::new()
+    }
+}
+
 /// Whether `path` is covered by the read profile — used to explain a
 /// refusal ("this is already yours") rather than to grant anything.
 pub fn covers(path: &Path) -> bool {
@@ -240,6 +257,27 @@ mod tests {
                 "no profile entry may be read-write: {argv:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod nested_sandbox_tests {
+    use super::*;
+    use crate::seccomp::SeccompProfile;
+
+    #[test]
+    fn only_the_web_engine_profile_may_write_proc() {
+        for profile in [SeccompProfile::TiloDefault, SeccompProfile::TiloJit] {
+            assert!(
+                landlock_rw_nested_sandbox_paths(profile).is_empty(),
+                "{} must not reach /proc",
+                profile.as_str()
+            );
+        }
+        assert_eq!(
+            landlock_rw_nested_sandbox_paths(SeccompProfile::TiloWebEngine),
+            vec![PathBuf::from("/proc")]
+        );
     }
 }
 

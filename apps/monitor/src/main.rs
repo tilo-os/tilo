@@ -335,14 +335,16 @@ impl BenchHarness {
         let t = Instant::now();
         self.widget.handle_event(
             ev,
-            1.0,
-            &self.modifiers,
-            &mut self.state.doc,
-            &self.state.root,
-            &mut handled,
-            &mut focus,
-            child,
-            taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &self.modifiers,
+                state: &mut self.state.doc,
+                path: &self.state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: child,
+                taffy,
+            },
         );
         t.elapsed().as_secs_f64() * 1e6
     }

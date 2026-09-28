@@ -9,7 +9,6 @@
 
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use ui::permissions::{PermissionContext, PermissionScope};
@@ -23,7 +22,7 @@ use vello::peniko::{
     Blob, Brush, Color, ColorStop, Extend, Fill, Gradient, ImageAlphaType, ImageBrush,
     ImageBrush as Image, ImageData, ImageFormat as Format,
 };
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 /// Size (in logical pixels) of one grid cell.
 const GRID_STEP: f64 = 24.0;
@@ -438,12 +437,6 @@ impl Default for DesktopBackdrop {
 }
 
 impl Widget for DesktopBackdrop {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        if let Some(child) = &mut self.child {
-            child.sync(state, path);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -546,36 +539,15 @@ impl Widget for DesktopBackdrop {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(child) = &mut self.child {
-            let Ok(children) = taffy.children(node_id) else {
+            let Ok(children) = ctx.taffy.children(ctx.node_id) else {
                 return;
             };
             let Some(&child_node) = children.first() else {
                 return;
             };
-            child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
     }
 

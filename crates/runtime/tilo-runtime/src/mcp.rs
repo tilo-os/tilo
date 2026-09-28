@@ -10,6 +10,10 @@ pub struct McpServer<H> {
     host: H,
     room: String,
     actor: String,
+    /// The agent run every invocation of this connection is attributed to.
+    run: Option<tilo_actions::ActionGroup>,
+    /// Pixel fallback, when the host runs beside a compositor.
+    computer: Option<std::sync::Arc<crate::computer::Computer>>,
 }
 
 #[derive(Default, Deserialize)]
@@ -21,7 +25,9 @@ struct ListArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct QueryArgs {
-    peer_id: u64,
+    peer_id: Option<u64>,
+    #[serde(default)]
+    workspace: bool,
     #[serde(default)]
     revision: String,
     #[serde(default)]
@@ -38,7 +44,9 @@ struct QueryArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TargetArgs {
-    peer_id: u64,
+    peer_id: Option<u64>,
+    #[serde(default)]
+    workspace: bool,
     revision: String,
     resource: String,
     action: String,
@@ -46,7 +54,9 @@ struct TargetArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InvokeArgs {
-    peer_id: u64,
+    peer_id: Option<u64>,
+    #[serde(default)]
+    workspace: bool,
     revision: String,
     resource: String,
     action: String,
@@ -82,7 +92,67 @@ fn tool_result(result: Result<Value, String>) -> Value {
 impl<H: ActionHost + Send + Sync> McpServer<H> {
     #[must_use]
     pub fn new(host: H, room: String, actor: String) -> Self {
-        Self { host, room, actor }
+        Self {
+            host,
+            room,
+            actor,
+            run: None,
+            computer: None,
+        }
+    }
+    /// Offer the canonical `computer` tools, driving `computer`.
+    #[must_use]
+    pub fn with_computer(
+        mut self,
+        computer: Option<std::sync::Arc<crate::computer::Computer>>,
+    ) -> Self {
+        self.computer = computer;
+        self
+    }
+    fn tools(&self) -> Vec<Value> {
+        let mut tools = tool_definitions();
+        if self.computer.is_some() {
+            tools.extend(crate::computer::tool_definitions());
+        }
+        tools
+    }
+    /// Run a `computer` or `computer_batch` call off the async runtime.
+    async fn computer(&self, name: &str, args: Value) -> Value {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Batch {
+            actions: Vec<crate::computer::Action>,
+        }
+        let Some(computer) = self.computer.clone() else {
+            return tool_result(Err("Unknown tool".into()));
+        };
+        let batch = name == "computer_batch";
+        let actions = if batch {
+            parse::<Batch>(args).map(|batch| batch.actions)
+        } else {
+            parse::<crate::computer::Action>(args).map(|action| vec![action])
+        };
+        let actions = match actions {
+            Ok(actions) => actions,
+            Err(error) => return tool_result(Err(error)),
+        };
+        match tokio::task::spawn_blocking(move || computer.run(&actions, batch)).await {
+            Ok(Ok(outcomes)) => crate::computer::content(&outcomes, batch),
+            Ok(Err(error)) => tool_result(Err(error)),
+            Err(error) => tool_result(Err(error.to_string())),
+        }
+    }
+    /// Attribute every invocation of this connection to one agent run, so
+    /// history, undo and activity tell concurrent agents apart. Provenance
+    /// only: authority stays the profile actor's.
+    #[must_use]
+    pub fn with_agent_run(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
+        self.run = Some(tilo_actions::ActionGroup {
+            id: id.into(),
+            label: label.into(),
+            kind: "agent-run".into(),
+        });
+        self
     }
     pub async fn handle(&mut self, request: Value) -> Option<Value> {
         let id = request.get("id").cloned();
@@ -146,7 +216,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 )
             }
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({"tools":tool_definitions()})),
+            "tools/list" => Ok(json!({"tools":self.tools()})),
             "tools/call" => {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]
@@ -156,6 +226,12 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                     arguments: Value,
                 }
                 match parse::<Call>(params) {
+                    Ok(call)
+                        if self.computer.is_some()
+                            && matches!(call.name.as_str(), "computer" | "computer_batch") =>
+                    {
+                        Ok(self.computer(&call.name, call.arguments).await)
+                    }
                     Ok(call)
                         if tool_definitions().iter().any(|definition| {
                             definition["name"].as_str() == Some(call.name.as_str())
@@ -237,11 +313,23 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             Err("Unavailable live application instance".into())
         }
     }
+    /// The provider a call addresses: one live application instance, or the
+    /// workspace itself (installed applications to open, shortcuts, …).
+    async fn provider(&self, peer_id: Option<u64>, workspace: bool) -> Result<String, String> {
+        match (peer_id, workspace) {
+            (None, true) => Ok(tilo_actions::remote::workspace_provider(&self.room)),
+            (Some(peer), false) => {
+                self.live_peer(peer).await?;
+                Ok(peer.to_string())
+            }
+            _ => Err("name exactly one of peer_id or workspace: true".into()),
+        }
+    }
     async fn query(&self, args: QueryArgs) -> Result<Value, String> {
-        self.live_peer(args.peer_id).await?;
+        let provider = self.provider(args.peer_id, args.workspace).await?;
         let page = self
             .ask(CatalogueQuery {
-                provider: Some(args.peer_id.to_string()),
+                provider: Some(provider),
                 parent_resource: (!args.parent_resource.is_empty()).then_some(args.parent_resource),
                 needle: args.needle,
                 target: None,
@@ -266,9 +354,8 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 if a.revision.is_empty() {
                     return Err("revision must not be empty".into());
                 }
-                self.live_peer(a.peer_id).await?;
                 let target = RemoteActionTarget {
-                    provider: a.peer_id.to_string(),
+                    provider: self.provider(a.peer_id, a.workspace).await?,
                     address: tilo_actions::ActionAddress::new(a.resource, a.action),
                 };
                 let page = self
@@ -287,33 +374,46 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 if a.revision.is_empty() {
                     return Err("revision must not be empty".into());
                 }
-                self.live_peer(a.peer_id).await?;
+                let provider = self.provider(a.peer_id, a.workspace).await?;
                 let invocation = a
                     .invocation_id
                     .as_deref()
                     .map_or_else(|| Ok(tilo_actions::InvocationId::new()), invocation_id)?;
-                let request = InvokeRequest {
+                let target = RemoteActionTarget {
+                    provider,
+                    address: tilo_actions::ActionAddress::new(a.resource, a.action),
+                };
+                let mut request = InvokeRequest {
                     invocation,
-                    target: RemoteActionTarget {
-                        provider: a.peer_id.to_string(),
-                        address: tilo_actions::ActionAddress::new(a.resource, a.action),
-                    },
+                    target,
                     argument: InvokeArgument::Json(a.arguments),
-                    context: None,
-                    confirmation: None,
+                    context: self.context(),
+                    // The MCP client admitted this call under its own
+                    // allow/deny policy; that decision is the confirmation.
+                    confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
                     revision: Some(a.revision),
                 };
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    self.host().invoke(&self.caller(), request),
-                )
-                .await
-                .map_err(|_| {
-                    "TimedOut; admission may be unknown; retry with the same invocation_id"
-                        .to_string()
-                })?
-                .ok_or_else(|| "Unavailable".to_string())?
-                .map_err(|error| error.to_string())?;
+                if let Err(error) = self.start(request.clone()).await {
+                    if error
+                        != tilo_actions::remote::ActionHostError::ConfirmationRequired.to_string()
+                    {
+                        return Err(error);
+                    }
+                    // Only an exact-phrase contract refuses the plain
+                    // confirmation; answer with the phrase it names.
+                    let revision = request.revision.clone().unwrap_or_default();
+                    match self
+                        .contract_confirmation(&request.target, &revision)
+                        .await?
+                    {
+                        tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
+                            request.confirmation =
+                                Some(tilo_actions::remote::Confirmation::Phrase(phrase));
+                            self.start(request).await?;
+                        }
+                        _ => return Err(error),
+                    }
+                }
                 self.status(invocation)
             }
             "tilo_status" => {
@@ -334,6 +434,45 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
     /// The action host every caller shares; this bridge is one more caller.
     const fn host(&self) -> &H {
         &self.host
+    }
+    /// Start one invocation, reporting the host's refusal verbatim.
+    async fn start(&self, request: InvokeRequest) -> Result<(), String> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.host().invoke(&self.caller(), request),
+        )
+        .await
+        .map_err(|_| {
+            "TimedOut; admission may be unknown; retry with the same invocation_id".to_string()
+        })?
+        .ok_or_else(|| "Unavailable".to_string())?
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    }
+    /// The confirmation the target's current contract asks for.
+    async fn contract_confirmation(
+        &self,
+        target: &RemoteActionTarget,
+        revision: &str,
+    ) -> Result<tilo_actions::ConfirmationPolicy, String> {
+        let page = self
+            .ask(CatalogueQuery::resolve(target, revision.to_owned()))
+            .await?;
+        if page.stale_cursor {
+            return Err("StaleRevision".into());
+        }
+        page.rows
+            .first()
+            .and_then(|row| row.action.as_ref())
+            .map(|action| action.contract.advertised_confirmation())
+            .ok_or_else(|| "NotFound".into())
+    }
+    fn context(&self) -> Option<tilo_actions::ActionContext> {
+        self.run.as_ref().map(|run| tilo_actions::ActionContext {
+            group: Some(run.clone()),
+            invoker: Some(tilo_actions::ActionInvoker::actor(self.actor.clone())),
+            ..tilo_actions::ActionContext::default()
+        })
     }
     /// The fixed profile actor, confined to the profile's workspace.
     fn caller(&self) -> Caller {
@@ -436,7 +575,8 @@ fn row_json(row: &CatalogueRow) -> Value {
 fn tool_definitions() -> Vec<Value> {
     let integer = json!({"type":"integer","minimum":0});
     let string = json!({"type":"string"});
-    let target = json!({"peer_id":integer,"revision":string,"resource":string,"action":string});
+    let workspace = json!({"type":"boolean","description":"Address the workspace itself instead of a live app: installed applications to open (resource app.<id>, action open), shortcuts and workspace settings"});
+    let target = json!({"peer_id":integer,"workspace":workspace,"revision":string,"resource":string,"action":string});
     let mut invoke = target.clone();
     if let Some(properties) = invoke.as_object_mut() {
         properties.insert("arguments".into(), json!({"type":"object"}));
@@ -445,14 +585,15 @@ fn tool_definitions() -> Vec<Value> {
             json!({"type":"string","format":"uuid"}),
         );
     }
+    let read = json!({"readOnlyHint":true,"openWorldHint":false});
     [
-        ("tilo_list_apps","List a bounded page of live application instances",json!({"after_peer":integer,"max_results":{"type":"integer","minimum":1,"maximum":128}}),json!([])),
-        ("tilo_query","Browse a bounded live directory page; preserve revision and cursor",json!({"peer_id":integer,"revision":string,"cursor":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"parent_resource":string,"needle":string,"max_results":integer,"max_bytes":integer,"max_work":integer,"max_depth":integer}),json!(["peer_id"])),
-        ("tilo_resolve","Resolve an exact current action contract",target,json!(["peer_id","revision","resource","action"])),
-        ("tilo_invoke","Atomically resolve and start an action; accepted is not succeeded. Retry with the same invocation_id to never start twice",invoke,json!(["peer_id","revision","resource","action","arguments"])),
-        ("tilo_status","Read an owned invocation's canonical update",json!({"invocation_id":string}),json!(["invocation_id"])),
-        ("tilo_cancel","Request cancellation of an owned invocation and read its update",json!({"invocation_id":string}),json!(["invocation_id"])),
-    ].into_iter().map(|(name,description,properties,required)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}})).collect()
+        ("tilo_list_apps","List a bounded page of live application instances. To start an app that is not running, tilo_query with workspace: true and invoke its open action",json!({"after_peer":integer,"max_results":{"type":"integer","minimum":1,"maximum":128}}),json!([]),read.clone()),
+        ("tilo_query","Browse a bounded live directory page; preserve revision and cursor. Each action's contract carries its risk level",json!({"peer_id":integer,"workspace":workspace,"revision":string,"cursor":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"parent_resource":string,"needle":string,"max_results":integer,"max_bytes":integer,"max_work":integer,"max_depth":integer}),json!([]),read.clone()),
+        ("tilo_resolve","Resolve an exact current action contract",target,json!(["revision","resource","action"]),read.clone()),
+        ("tilo_invoke","Atomically resolve and start an action; accepted is not succeeded. Retry with the same invocation_id to never start twice. Allowing this call confirms the action, including destructive ones; check the contract's risk first",invoke,json!(["revision","resource","action","arguments"]),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})),
+        ("tilo_status","Read an owned invocation's canonical update",json!({"invocation_id":string}),json!(["invocation_id"]),read),
+        ("tilo_cancel","Request cancellation of an owned invocation and read its update",json!({"invocation_id":string}),json!(["invocation_id"]),json!({"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false})),
+    ].into_iter().map(|(name,description,properties,required,annotations)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},"annotations":annotations})).collect()
 }
 #[cfg(test)]
 #[path = "mcp_tests.rs"]

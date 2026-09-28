@@ -2472,14 +2472,16 @@ fn press_named_with_modifiers(
             event: ev,
             is_synthetic: false,
         },
-        1.0,
-        &mods,
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -2496,14 +2498,16 @@ fn pinch(
             delta,
             phase,
         },
-        1.0,
-        &Modifiers::default(),
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut None,
-        NodeId::new(0),
-        &TaffyTree::new(),
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut None,
+            node_id: NodeId::new(0),
+            taffy: &TaffyTree::new(),
+        },
     );
     handled
 }
@@ -5361,14 +5365,16 @@ pub(super) fn left_click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt
             device_id: unsafe { std::mem::zeroed() },
             position: (pt.x, pt.y).into(),
         },
-        1.0,
-        &mods,
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     wp.handle_event(
         &WindowEvent::MouseInput {
@@ -5376,14 +5382,16 @@ pub(super) fn left_click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt
             state: ElementState::Pressed,
             button: MouseButton::Left,
         },
-        1.0,
-        &mods,
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -5548,14 +5556,16 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
                     device_id: unsafe { std::mem::zeroed() },
                     position: (point.x * 2.0, point.y * 2.0).into(),
                 },
-                2.0,
-                &Modifiers::default(),
-                &mut state.doc,
-                &state.root,
-                &mut handled,
-                &mut None,
-                NodeId::new(0),
-                &TaffyTree::new(),
+                &mut ui::widget::EventCtx {
+                    scale_factor: 2.0,
+                    modifiers: &Modifiers::default(),
+                    state: &mut state.doc,
+                    path: &state.root,
+                    handled: &mut handled,
+                    focus_target: &mut None,
+                    node_id: NodeId::new(0),
+                    taffy: &TaffyTree::new(),
+                },
             );
             let mut after = Scene::new();
             wp.draw_overlay(
@@ -5782,14 +5792,16 @@ fn type_char(wp: &mut WordProcessorWidget, state: &mut ui::State, ch: char) {
             event: ev,
             is_synthetic: false,
         },
-        1.0,
-        &mods,
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -6049,14 +6061,16 @@ fn press_tab(wp: &mut WordProcessorWidget, state: &mut ui::State) {
             event: ev,
             is_synthetic: false,
         },
-        1.0,
-        &mods,
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -7504,13 +7518,15 @@ fn save_and_open_preserve_identity_recovery_and_bytes() {
                 })
                 .unwrap();
                 assert!(
-                    wp.start_resource_operation(
-                        tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                        &payload,
-                        &state.doc,
-                        &state.root,
+                    wp.start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            tilo_actions::InvocationId::new(),
+                            tilo_actions::OperationKind::Effect,
+                            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                            &payload
+                        ),
+                        &mut state.doc,
+                        &state.root
                     )
                     .is_err()
                 );
@@ -7792,26 +7808,30 @@ fn dropped_and_selected_images_expose_their_controls() {
                 device_id: unsafe { std::mem::zeroed() },
                 position: (drop_pt.x, drop_pt.y).into(),
             },
-            1.0,
-            &mods,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         let path = temp_png("drop");
         wp.handle_event(
             &WindowEvent::DroppedFile(path.clone()),
-            1.0,
-            &mods,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         let _ = std::fs::remove_file(&path);
         assert_eq!(
@@ -8125,14 +8145,16 @@ fn the_colour_picker_applies_and_cancels_previews() {
                 device_id: unsafe { std::mem::zeroed() },
                 position: (sv_pt.x, sv_pt.y).into(),
             },
-            1.0,
-            &mods,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         wp.handle_event(
             &WindowEvent::MouseInput {
@@ -8140,14 +8162,16 @@ fn the_colour_picker_applies_and_cancels_previews() {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            1.0,
-            &mods,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         let style_after = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
         assert_ne!(
@@ -8195,14 +8219,16 @@ fn preview_custom_colour(wp: &mut WordProcessorWidget, state: &mut ui::State) ->
             state: ElementState::Released,
             button: MouseButton::Left,
         },
-        1.0,
-        &Modifiers::default(),
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus,
-        NodeId::new(0),
-        &TaffyTree::new(),
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: NodeId::new(0),
+            taffy: &TaffyTree::new(),
+        },
     );
     assert_ne!(
         wp.focused_style_key().map(|k| wp.sheet.get(&k).color),
@@ -8733,12 +8759,14 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
         let payload =
             serde_json::to_vec(&crate::actions::WordProcessorOperation::Save { path: None })
                 .unwrap();
-        wp.start_resource_operation(
-            tilo_actions::InvocationId::new(),
-            tilo_actions::OperationKind::Effect,
-            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-            &payload,
-            &state.doc,
+        wp.start_operation(
+            &ui::widget::ResourceOperation::local(
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
+                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                &payload,
+            ),
+            &mut state.doc,
             &state.root,
         )
         .unwrap();
@@ -8804,13 +8832,15 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
             })
             .unwrap();
             assert!(
-                wp.start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                    &payload,
-                    &state.doc,
-                    &state.root,
+                wp.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut state.doc,
+                    &state.root
                 )
                 .is_err()
             );
@@ -8862,12 +8892,14 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
         })
         .unwrap();
         assert!(
-            wp.start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                &payload,
-                &state.doc,
+            wp.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut state.doc,
                 &state.root
             )
             .is_err()
@@ -8878,12 +8910,14 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
             serde_json::to_vec(&crate::actions::WordProcessorOperation::Save { path: None })
                 .unwrap();
         assert!(matches!(
-            wp.start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                &payload,
-                &state.doc,
+            wp.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut state.doc,
                 &state.root
             )
             .unwrap(),
@@ -9009,14 +9043,16 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
     let mut first_handled = false;
     first.handle_event(
         &ctrl_wheel,
-        1.0,
-        &ctrl,
-        &mut first_state.doc,
-        &first_state.root,
-        &mut first_handled,
-        &mut None,
-        NodeId::new(0),
-        &TaffyTree::new(),
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &ctrl,
+            state: &mut first_state.doc,
+            path: &first_state.root,
+            handled: &mut first_handled,
+            focus_target: &mut None,
+            node_id: NodeId::new(0),
+            taffy: &TaffyTree::new(),
+        },
     );
     assert!(
         !first_handled,
@@ -9026,14 +9062,16 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
     let mut second_handled = false;
     second.handle_event(
         &ctrl_wheel,
-        1.0,
-        &ctrl,
-        &mut second_state.doc,
-        &second_state.root,
-        &mut second_handled,
-        &mut None,
-        NodeId::new(0),
-        &TaffyTree::new(),
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &ctrl,
+            state: &mut second_state.doc,
+            path: &second_state.root,
+            handled: &mut second_handled,
+            focus_target: &mut None,
+            node_id: NodeId::new(0),
+            taffy: &TaffyTree::new(),
+        },
     );
     assert!(second_handled, "the focused Writer owns Ctrl+wheel zoom");
     assert_eq!(
@@ -9072,14 +9110,16 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
     let mut plain_handled = false;
     first.handle_event(
         &plain_wheel,
-        1.0,
-        &Modifiers::default(),
-        &mut first_state.doc,
-        &first_state.root,
-        &mut plain_handled,
-        &mut None,
-        NodeId::new(0),
-        &TaffyTree::new(),
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut first_state.doc,
+            path: &first_state.root,
+            handled: &mut plain_handled,
+            focus_target: &mut None,
+            node_id: NodeId::new(0),
+            taffy: &TaffyTree::new(),
+        },
     );
     assert!(plain_handled, "plain wheel remains pointer-routed");
     assert!(
@@ -9220,13 +9260,15 @@ fn tile_host_preserves_completed_direct_open_result_across_record_intent_release
     })
     .unwrap();
     assert!(matches!(
-        tile.start_resource_operation_with_document(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-            &payload,
+        tile.start_operation(
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                &payload
+            ),
             &mut outer,
-            &automerge::ROOT,
+            &automerge::ROOT
         )
         .unwrap(),
         Some(ui::widget::ResourceOperationStart::Accepted)
@@ -9310,13 +9352,15 @@ fn tile_host_routes_escape_to_old_writer_draft_before_retrying_open_handoff() {
     })
     .unwrap();
     assert!(matches!(
-        tile.start_resource_operation_with_document(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-            &payload,
+        tile.start_operation(
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                &payload
+            ),
             &mut outer,
-            &automerge::ROOT,
+            &automerge::ROOT
         )
         .unwrap(),
         Some(ui::widget::ResourceOperationStart::Accepted)
@@ -9363,14 +9407,16 @@ fn tile_host_routes_escape_to_old_writer_draft_before_retrying_open_handoff() {
             event: key,
             is_synthetic: false,
         },
-        1.0,
-        &Modifiers::default(),
-        &mut outer,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &tree,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut outer,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &tree,
+        },
     );
     assert!(handled);
     // SAFETY: same stable boxed allocation as above.

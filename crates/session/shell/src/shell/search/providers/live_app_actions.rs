@@ -10,7 +10,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tilo_search::{Document, Matching, Page, SearchIndex};
-use ui::search::{FieldWeight, RankField};
+use ui::search::FieldWeight;
 
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::i18n::{t, t_args};
@@ -593,13 +593,18 @@ impl LiveAppActionsProvider {
         &self,
         needle: &str,
         max_results: usize,
-    ) -> Vec<(PublishedSurface, PublishedAction)> {
+    ) -> Vec<(PublishedSurface, PublishedAction, i32)> {
         let snapshot = self.surface_snapshot.borrow();
         let Some(snapshot) = snapshot.as_ref() else {
             return Vec::new();
         };
         let Some(index) = &snapshot.index else {
-            return snapshot.entries.iter().take(max_results).cloned().collect();
+            return snapshot
+                .entries
+                .iter()
+                .take(max_results)
+                .map(|(surface, action)| (surface.clone(), action.clone(), 0))
+                .collect();
         };
         index
             .search(needle, Page::first(max_results))
@@ -607,7 +612,8 @@ impl LiveAppActionsProvider {
             .iter()
             .filter_map(|hit| {
                 let at = usize::try_from(hit.key).ok()?;
-                snapshot.entries.get(at).cloned()
+                let (surface, action) = snapshot.entries.get(at)?;
+                Some((surface.clone(), action.clone(), hit.rank.unwrap_or(0)))
             })
             .collect()
     }
@@ -622,6 +628,7 @@ impl LiveAppActionsProvider {
         ctx: &SearchContext<'_>,
         surface: PublishedSurface,
         action: PublishedAction,
+        rank: i32,
     ) -> Option<SearchResult> {
         let id = Self::result_id(&surface, &action);
         let scope = Self::surface_scope(ctx);
@@ -643,7 +650,9 @@ impl LiveAppActionsProvider {
         });
         self.projection.set(previous_projection);
         self.surface_snapshot.replace(previous);
-        results.into_iter().find(|result| result.id == id)
+        let mut row = results.into_iter().find(|result| result.id == id)?;
+        row.score = crate::shell::search::provider_score(rank);
+        Some(row)
     }
 
     fn poll_directory_pages_at(&self, now: Instant) {
@@ -1443,15 +1452,12 @@ impl LiveAppActionsProvider {
         if descriptor.contract.is_programmatic() {
             return None;
         }
-        let score = crate::shell::search::rank_fields(
+        // The app's own index found this row for the needle.
+        let score = crate::shell::search::remote_score(
             needle,
-            &[
-                RankField::new(&descriptor.action_label, FieldWeight::TITLE),
-                RankField::new(&descriptor.resource_label, FieldWeight::SUBTITLE),
-                RankField::new(&descriptor.address.action, FieldWeight::IDENTITY),
-                RankField::new(&root.app_id, FieldWeight::METADATA),
-            ],
-        )?;
+            &descriptor.action_label,
+            &descriptor.resource_label,
+        );
         let contract = descriptor.contract.clone();
         let mut params = descriptor.params.clone();
         push_confirmation_params(&mut params, &contract.advertised_confirmation());
@@ -1533,33 +1539,18 @@ impl LiveAppActionsProvider {
         root: &ActionDirectoryRoot,
         row: &CatalogueRow,
         needle: &str,
-    ) -> Option<SearchResult> {
+    ) -> SearchResult {
         let presentation = row
             .resource
             .presentation
             .clone()
             .filter(tilo_actions::ResourcePresentation::is_valid);
-        let presentation_text = presentation
-            .as_ref()
-            .into_iter()
-            .flat_map(|value| {
-                [
-                    value.detail.as_deref(),
-                    value.badge.as_deref(),
-                    value.preview.as_deref(),
-                ]
-            })
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" ");
-        let rank = crate::shell::search::rank_fields(
+        // The app's own index found this row for the needle.
+        let rank = crate::shell::search::remote_score(
             needle,
-            &[
-                RankField::new(&row.resource.label, FieldWeight::TITLE),
-                RankField::new(row.resource.id.as_str(), FieldWeight::IDENTITY),
-                RankField::new(&presentation_text, FieldWeight::METADATA),
-            ],
-        )?;
+            &row.resource.label,
+            row.resource.id.as_str(),
+        );
         let scope = crate::shell::chrome_state::SearchResourceScope {
             peer_id: root.peer_id,
             cluster_id: root.cluster_id.clone(),
@@ -1569,7 +1560,7 @@ impl LiveAppActionsProvider {
             kind: row.resource.kind.clone(),
         };
         let title = row.resource.label.clone();
-        Some(SearchResult {
+        SearchResult {
             operation_kind: tilo_actions::OperationKind::View,
             kind: ResourceKind::Custom(if row.resource.kind.is_empty() {
                 "Resources".into()
@@ -1608,7 +1599,7 @@ impl LiveAppActionsProvider {
             }),
             on_invoke: None,
             on_begin_invoke: None,
-        })
+        }
     }
 }
 
@@ -1882,7 +1873,7 @@ impl SearchProvider for LiveAppActionsProvider {
             }
         }
         if self.projection.get() != QueryProjection::All {
-            for (surface, owned_action) in
+            for (surface, owned_action, rank) in
                 self.local_action_candidates(&needle, SearchBudget::PALETTE.max_results)
             {
                 let action = &owned_action;
@@ -1890,18 +1881,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     tilo_actions::Availability::Available => None,
                     tilo_actions::Availability::Unavailable { reason, .. } => Some(reason.clone()),
                 };
-                let Some(score) = crate::shell::search::rank_fields(
-                    &needle,
-                    &[
-                        RankField::new(&action.action_label, FieldWeight::TITLE),
-                        RankField::new(&action.resource_label, FieldWeight::SUBTITLE),
-                        RankField::new(&action.action, FieldWeight::IDENTITY),
-                        RankField::new(&action.resource, FieldWeight::IDENTITY),
-                        RankField::new(&surface.app_id, FieldWeight::METADATA),
-                    ],
-                ) else {
-                    continue;
-                };
+                let score = crate::shell::search::provider_score(rank);
                 let params = Self::action_params(action);
                 let surface_live = surface.live;
                 let start = Rc::new(LocalStart {
@@ -2262,13 +2242,7 @@ impl SearchProvider for LiveAppActionsProvider {
                             work = work.saturating_add(1);
                             continue;
                         }
-                        if let Some(row) = Self::directory_resource_result(root, row, &needle) {
-                            row
-                        } else {
-                            position = position.saturating_add(1);
-                            work = work.saturating_add(1);
-                            continue;
-                        }
+                        Self::directory_resource_result(root, row, &needle)
                     }
                 };
                 position = position.saturating_add(1);
@@ -2363,17 +2337,19 @@ impl SearchProvider for LiveAppActionsProvider {
                 .hits
                 .iter()
                 .map(|hit| {
-                    usize::try_from(hit.key)
+                    let (surface, action) = usize::try_from(hit.key)
                         .ok()
-                        .and_then(|at| snapshot.entries.get(at).cloned())
+                        .and_then(|at| snapshot.entries.get(at).cloned())?;
+                    Some((surface, action, hit.rank.unwrap_or(0)))
                 })
                 .collect::<Vec<_>>();
             (found, candidates)
         };
         let mut considered = 0usize;
         for candidate in candidates {
-            let row = candidate
-                .and_then(|(surface, action)| self.materialize_local_action(&ctx, surface, action));
+            let row = candidate.and_then(|(surface, action, rank)| {
+                self.materialize_local_action(&ctx, surface, action, rank)
+            });
             if let Some(row) = row {
                 let row_bytes = row
                     .title

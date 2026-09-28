@@ -9,11 +9,11 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
-use winit::event::WindowEvent;
 
 type DynamicTextSource = Box<dyn FnMut() -> Option<String>>;
 type DocumentTextSource = Box<dyn FnMut(&AutoCommit, &ObjId) -> String>;
@@ -753,7 +753,8 @@ impl Text {
 }
 
 impl Widget for Text {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document(state, path);
         self.observe_i18n_revision();
         self.observe_engine_revision();
         let label = match self.source.as_mut() {
@@ -929,20 +930,6 @@ impl Widget for Text {
             &self.cached,
             Some(transform.pre_translate(vello::kurbo::Vec2::new(dx, dy))),
         );
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

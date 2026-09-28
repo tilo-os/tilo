@@ -67,14 +67,16 @@ fn dispatch(p: &mut PermissionPrompt, event: &WindowEvent) {
     let root = automerge::ROOT;
     p.handle_event(
         event,
-        1.0,
-        &winit::event::Modifiers::default(),
-        &mut doc,
-        &root,
-        &mut handled,
-        &mut focus_target,
-        node,
-        &tree,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &winit::event::Modifiers::default(),
+            state: &mut doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy: &tree,
+        },
     );
 }
 
@@ -111,7 +113,6 @@ struct StubContent {
     rect: Rect,
 }
 impl ui::widget::Widget for StubContent {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -130,19 +131,6 @@ impl ui::widget::Widget for StubContent {
         _text_renderer: &mut ui::text_render::TextRenderer,
         _theme: &ui::theme::Theme,
         _presence: &ui::presence::PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &automerge::ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<taffy::NodeId>,
-        _node_id: taffy::NodeId,
-        _taffy: &TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {

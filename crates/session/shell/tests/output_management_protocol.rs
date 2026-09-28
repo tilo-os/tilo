@@ -8,8 +8,12 @@
 //! modeset — with `succeeded` arriving only once the backend has applied
 //! the plan.
 //!
-//! The applied change then waits for the person: the shell's Keep/Revert
-//! prompt appears on every display, unless the tool is one they trusted.
+//! An applied change is kept straight away, the way every other compositor
+//! treats these tools. Only a risky one — a custom mode, a display the
+//! person is using turned off or given a mode it never showed — waits for
+//! them: the shell's Keep/Revert prompt appears on every display, unless
+//! the tool is one they trusted. A tool that puts a reverted layout
+//! straight back is refused, with one notice, instead of asking again.
 
 #![allow(
     clippy::unwrap_used,
@@ -30,7 +34,7 @@ use shell::compositor::backend::headless::output_fixture;
 use shell::compositor::backend::{Output, OutputId};
 use shell::compositor::output_globals::OutputGlobals;
 use shell::compositor::output_heads::heads_from_outputs;
-use shell::compositor::output_management::DisplayConfirmation;
+use shell::compositor::output_management::{DisplayConfirmation, DisplayToolNotice};
 use shell::compositor::state::{ClientState, State};
 use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::overlay_host::{OutputGeometry, ShellOverlayHost};
@@ -94,7 +98,7 @@ impl Tool {
     fn head(&self, name: &str) -> &(ZwlrOutputHeadV1, SeenHead) {
         self.heads
             .iter()
-            .find(|(_, seen)| seen.name.as_deref() == Some(name))
+            .find(|(_, seen)| seen.name.as_deref() == Some(name) && !seen.finished)
             .unwrap_or_else(|| panic!("no head named {name}"))
     }
 
@@ -409,7 +413,7 @@ fn a_sandboxed_client_sees_neither_display_configuration_global() {
 }
 
 #[test]
-fn apply_stages_the_settings_transaction_and_succeeds_once_the_backend_applied_it() {
+fn apply_stages_the_settings_transaction_and_keeps_a_safe_change_once_applied() {
     let _home = tilo_test_env::TestHome::new().expect("test home");
     let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
     let configuration = harness.configuration();
@@ -446,8 +450,9 @@ fn apply_stages_the_settings_transaction_and_succeeds_once_the_backend_applied_i
         "nothing to keep before the backend applied it"
     );
 
-    // The DRM backend validates and applies the plan, awaiting the user's
-    // confirmation — the moment the tool learns it worked.
+    // The DRM backend validates and applies the plan — the moment the tool
+    // learns it worked. Moving, scaling and rotating the monitor nobody is
+    // using is kept without asking.
     transaction.state = DisplayTransactionState::AwaitingConfirmation;
     transaction.save().expect("save");
     harness
@@ -455,14 +460,8 @@ fn apply_stages_the_settings_transaction_and_succeeds_once_the_backend_applied_i
         .output_management
         .resolve_transactions(DisplayTransaction::load().as_ref());
     assert_eq!(harness.outcome("apply outcome"), "succeeded");
-    assert_eq!(
-        harness.state.output_management.take_confirmation(),
-        Some(DisplayConfirmation {
-            transaction: transaction.id,
-            tool: Some(DisplayTool::new(KANSHI)),
-        }),
-        "the person is asked to keep it, naming the tool"
-    );
+    assert_eq!(harness.state.output_management.take_confirmation(), None);
+    assert_eq!(state_now(), DisplayTransactionState::ConfirmRequested);
 }
 
 #[test]
@@ -590,19 +589,29 @@ fn unix_now_ms() -> u64 {
     .expect("milliseconds fit u64")
 }
 
-/// The tool moves the monitor above the panel; the backend applies the plan
-/// and starts the restore countdown, ending at `deadline_unix_ms`.
+/// The monitor's size, and a refresh rate 0.2 Hz off the 144 Hz it lists.
+const UNLISTED_MODE: (i32, i32, i32) = (2560, 1440, 143_800);
+
+/// The tool asks for the monitor at a refresh rate the connector does not
+/// list — close enough to resolve to its 144 Hz mode, but risky; the backend
+/// applies the plan and starts the restore countdown, ending at
+/// `deadline_unix_ms`.
 fn apply_and_await(harness: &mut Harness, deadline_unix_ms: u64) -> DisplayTransaction {
+    apply_custom_mode(harness);
+    await_confirmation(harness, deadline_unix_ms, |_| {})
+}
+
+fn apply_custom_mode(harness: &mut Harness) {
     let configuration = harness.configuration();
     let _panel = harness.enable(&configuration, "VIRTUAL-1");
     let monitor = harness.enable(&configuration, "VIRTUAL-2");
-    monitor.set_position(0, -1440);
+    let (width, height, refresh) = UNLISTED_MODE;
+    monitor.set_custom_mode(width, height, refresh);
     configuration.apply();
     harness.pump("apply reaches the compositor", |_| {
         DisplayTransaction::load()
             .is_some_and(|transaction| transaction.state == DisplayTransactionState::Requested)
     });
-    await_confirmation(harness, deadline_unix_ms, |_| {})
 }
 
 /// Play the backend for the staged transaction: `edit` what it applied,
@@ -669,13 +678,161 @@ fn prompt_dialog(host: &ShellOverlayHost) -> AccessNode {
                 && node
                     .name
                     .as_deref()
-                    .is_some_and(|name| name.starts_with("Keep the display settings"))
+                    .is_some_and(|name| name.starts_with("Keep the display change"))
         })
         .expect("the prompt is in the semantic tree")
 }
 
 fn state_now() -> DisplayTransactionState {
     DisplayTransaction::load().expect("transaction").state
+}
+
+#[test]
+fn a_kanshi_like_tool_lights_up_a_hotplugged_monitor_without_asking() {
+    let _home = tilo_test_env::TestHome::new().expect("test home");
+    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
+
+    // Undock, then dock again: the monitor comes back as a new head.
+    let panel_only: Vec<Output> = harness.outputs.iter().take(1).cloned().collect();
+    harness
+        .state
+        .set_output_heads(heads_from_outputs(&panel_only));
+    harness.pump("undock", |tool| tool.live_heads().len() == 1);
+    let undocked = harness.tool.serial;
+    let docked = harness.outputs.clone();
+    harness.state.set_output_heads(heads_from_outputs(&docked));
+    harness.pump("dock", |tool| {
+        tool.serial != undocked
+            && tool.live_heads().len() == 2
+            && tool.live_heads().iter().all(|h| !h.modes.is_empty())
+    });
+
+    // kanshi's profile matches: the monitor at its listed mode, left of
+    // the panel, at 1.25.
+    let configuration = harness.configuration();
+    let _panel = harness.enable(&configuration, "VIRTUAL-1");
+    let monitor = harness.enable(&configuration, "VIRTUAL-2");
+    let listed = harness
+        .tool
+        .head("VIRTUAL-2")
+        .1
+        .modes
+        .first()
+        .expect("a listed mode")
+        .clone();
+    monitor.set_mode(&listed);
+    monitor.set_position(-2048, 0);
+    monitor.set_scale(1.25);
+    configuration.apply();
+    harness.pump("apply reaches the compositor", |_| {
+        DisplayTransaction::load().is_some()
+    });
+    await_confirmation(&mut harness, in_fifteen_seconds(), |_| {});
+    assert_eq!(
+        harness.state.output_management.take_confirmation(),
+        None,
+        "no card for a listed mode on a freshly plugged monitor"
+    );
+    assert_eq!(state_now(), DisplayTransactionState::ConfirmRequested);
+}
+
+#[test]
+fn a_refresh_rate_the_connector_does_not_list_shows_the_card() {
+    let _home = tilo_test_env::TestHome::new().expect("test home");
+    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
+    let transaction = apply_and_await(&mut harness, in_fifteen_seconds());
+    assert_eq!(
+        harness.state.output_management.take_confirmation(),
+        Some(DisplayConfirmation {
+            transaction: transaction.id,
+            tool: Some(DisplayTool::new(KANSHI)),
+        }),
+        "the person is asked to keep it, naming the tool"
+    );
+    assert_eq!(state_now(), DisplayTransactionState::AwaitingConfirmation);
+}
+
+#[test]
+fn turning_off_the_display_under_the_pointer_shows_the_card() {
+    let _home = tilo_test_env::TestHome::new().expect("test home");
+    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
+    // The pointer starts on the panel.
+    let configuration = harness.configuration();
+    configuration.disable_head(&harness.tool.head("VIRTUAL-1").0);
+    let _monitor = harness.enable(&configuration, "VIRTUAL-2");
+    configuration.apply();
+    harness.pump("apply reaches the compositor", |_| {
+        DisplayTransaction::load().is_some()
+    });
+    await_confirmation(&mut harness, in_fifteen_seconds(), |_| {});
+    assert!(
+        harness
+            .state
+            .output_management
+            .take_confirmation()
+            .is_some()
+    );
+    assert_eq!(state_now(), DisplayTransactionState::AwaitingConfirmation);
+}
+
+#[test]
+fn a_tool_reapplying_a_reverted_layout_is_refused_with_one_notice() {
+    let _home = tilo_test_env::TestHome::new().expect("test home");
+    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
+    apply_and_await(&mut harness, in_fifteen_seconds());
+    let confirmation = harness.state.output_management.take_confirmation();
+    let (mut host, layout) = prompt_host(&harness, confirmation.expect("asked"));
+    key(&mut host, &layout, NamedKey::Escape);
+    assert_eq!(state_now(), DisplayTransactionState::RevertRequested);
+    let reverted = DisplayTransaction::load().expect("transaction").id;
+
+    // kanshi sees the layout come back and applies its profile again.
+    for attempt in 0..2 {
+        let configuration = harness.configuration();
+        let _panel = harness.enable(&configuration, "VIRTUAL-1");
+        let monitor = harness.enable(&configuration, "VIRTUAL-2");
+        let (width, height, refresh) = UNLISTED_MODE;
+        monitor.set_custom_mode(width, height, refresh);
+        configuration.apply();
+        assert_eq!(harness.outcome("reapply"), "failed", "attempt {attempt}");
+        assert_eq!(
+            DisplayTransaction::load().expect("transaction").id,
+            reverted,
+            "nothing new is staged"
+        );
+        assert_eq!(harness.state.output_management.take_confirmation(), None);
+        let notices = harness.state.output_management.take_notices();
+        if attempt == 0 {
+            assert_eq!(
+                notices,
+                [DisplayToolNotice::ReappliedAfterRevert {
+                    tool: Some(DisplayTool::new(KANSHI)),
+                }]
+            );
+        } else {
+            assert!(notices.is_empty(), "the person is told once");
+        }
+    }
+
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&WorkspaceTree::bootstrap_demo());
+    host.report_refused_display_reapply(Some(&DisplayTool::new(KANSHI)));
+    assert!(
+        chrome
+            .borrow()
+            .notifications()
+            .iter()
+            .any(|n| n.title == "kanshi tried to reapply a display layout you reverted")
+    );
+
+    // A different layout from the same tool is not what was reverted.
+    let configuration = harness.configuration();
+    let _panel = harness.enable(&configuration, "VIRTUAL-1");
+    let monitor = harness.enable(&configuration, "VIRTUAL-2");
+    monitor.set_position(0, -1440);
+    configuration.apply();
+    harness.pump("a new layout is staged", |_| {
+        DisplayTransaction::load().is_some_and(|transaction| transaction.id != reverted)
+    });
 }
 
 #[test]
@@ -707,7 +864,7 @@ fn an_external_apply_asks_on_every_display_and_enter_keeps_it() {
     let dialog = prompt_dialog(&host);
     assert_eq!(
         dialog.name.as_deref(),
-        Some("Keep the display settings kanshi applied?")
+        Some("Keep the display change from kanshi?")
     );
     assert!(dialog.state.modal);
     let buttons: Vec<&str> = dialog
@@ -717,7 +874,7 @@ fn an_external_apply_asks_on_every_display_and_enter_keeps_it() {
         .collect();
     assert_eq!(
         buttons,
-        ["Keep", "Revert", "Always keep changes from kanshi"]
+        ["Keep", "Revert", "Keep, and don't ask again for kanshi"]
     );
 
     key(&mut host, &layout, NamedKey::Enter);
@@ -788,7 +945,7 @@ fn always_keep_trusts_the_tool_and_its_next_change_is_kept_without_asking() {
             .children
             .iter()
             .any(|node| node.state.focused
-                && node.name.as_deref() == Some("Always keep changes from kanshi")),
+                && node.name.as_deref() == Some("Keep, and don't ask again for kanshi")),
         "Tab walks Keep, Revert, Always keep"
     );
     key(&mut host, &layout, NamedKey::Enter);

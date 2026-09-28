@@ -1,0 +1,18 @@
+[package]
+name = "greetd-client"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "greetd IPC client: the authenticate-then-start exchange"
+
+[dependencies]
+# greetd's wire protocol. `sync-codec` pulls in the blocking
+# `SyncCodec` (`Request::write_to` / `Response::read_from` over
+# `std::io::{Read,Write}`) — no async runtime needed for a login box.
+greetd_ipc = { version = "0.10", features = ["sync-codec"] }
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

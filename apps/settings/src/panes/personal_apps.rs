@@ -3,15 +3,16 @@
 
 use std::collections::HashMap;
 use ui::doc::read_str;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
+use automerge::{AutoCommit, transaction::Transactable};
 use desktop_policy::{AppCandidate, DefaultAppResolver, PersonalDefaults, ResourceKind};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::{Button, Dropdown, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_text_action};
 use crate::widgets::{caption, card, choice_row_described, rows, value_row};
@@ -230,7 +231,8 @@ pub fn installed_candidates() -> Vec<AppCandidate> {
 }
 
 impl Widget for PersonalAppsPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if self.needs_seed {
             let initial_values = {
                 let resolver = DefaultAppResolver::new(&self.candidates);
@@ -372,36 +374,15 @@ impl Widget for PersonalAppsPane {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let was_handled = *handled;
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let was_handled = *ctx.handled;
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
-        self.commit_context_pending |= !was_handled && *handled;
+        self.commit_context_pending |= !was_handled && *ctx.handled;
     }
     fn children(&self) -> Vec<&dyn Widget> {
         self.composed

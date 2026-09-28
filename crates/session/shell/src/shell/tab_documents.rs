@@ -230,14 +230,16 @@ mod tests {
             let mut focus_target = None;
             self.host.handle_event(
                 event,
-                1.0,
-                &mods,
-                doc,
-                &automerge::ROOT,
-                &mut handled,
-                &mut focus_target,
-                self.node,
-                &self.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: doc,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: self.node,
+                    taffy: &self.taffy,
+                },
             );
         }
     }

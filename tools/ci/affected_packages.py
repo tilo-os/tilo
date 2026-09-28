@@ -209,13 +209,18 @@ TEST_SHARD_SECONDS = 500
 MAX_TEST_SHARDS = 4
 # A tested package heavier than this (structural cost plus weighted recorded
 # test seconds) runs on several test jobs of its own, each executing one
-# `nextest --partition count:K/N` slice of its tests. Every partition still
-# builds the package's whole test binaries, so only the test part divides: the
-# package gets the fewest partitions that bring cost + test weight / N under the
-# target, and none when its build alone exceeds it. Test groups and
-# threads-required limits apply per job, so each partition keeps them.
+# `nextest --partition count:K/N` slice of its tests. One archive job builds
+# the package's test binaries once (`cargo nextest archive`) and the partition
+# jobs run their slice from that archive, so the build stays on the critical
+# path once: the package gets the fewest partitions that bring cost + test
+# weight / N under the target, and none when its build alone exceeds it. Test
+# groups and threads-required limits apply per job, so each partition keeps
+# them.
 TEST_PARTITION_WEIGHT = 1_000
 MAX_TEST_PARTITIONS = 3
+# The archive build is the only compile of a partitioned package and every
+# partition waits for it, so on x86 it takes the larger slot.
+ARCHIVE_RUNNERS = {"x86_64": "runner-large", "aarch64": NATIVE_RUNNERS["aarch64"]}
 # Suites whose tests fsync heavily: fs's durability, checked-restore and
 # release-matrix tests over real FUSE (with fs-native and private-fs), and the
 # host suites that commit a durable Store, owner journal or relay journal on
@@ -586,6 +591,15 @@ def android_apps(packages: dict[str, dict]) -> set[str]:
     }
 
 
+def browser_crates(packages: dict[str, dict]) -> set[str]:
+    """Crates that build for the browser: they depend on `wasm-bindgen`."""
+    return {
+        name for name, package in packages.items()
+        if any(dependency.get("name") == "wasm-bindgen" and dependency.get("kind") is None
+               for dependency in package.get("dependencies", ()))
+    }
+
+
 def make_plan(
     metadata: dict,
     root: Path,
@@ -746,32 +760,49 @@ def make_plan(
             test_seconds, TEST_SHARD_APART)]
     for index, shard in enumerate(test_shards, 1):
         shard["shard"] = index
-    if selected and not test_shards:
+    # Partitioned packages run from a prebuilt archive in their own jobs
+    # (partition_matrix, archive_matrix); every other shard builds and tests
+    # its packages in one job (matrix).
+    partitioned = [shard for shard in test_shards if shard["partition"]]
+    whole_shards = [shard for shard in test_shards if not shard["partition"]]
+    if selected and not whole_shards:
         # Keep the aggregate's test result applicable: one row whose steps skip.
-        test_shards = [{"shard": 1, "packages": "", "package_count": 0,
-                        "estimated_cost": 0, "recorded_test_seconds": 0, "partition": ""}]
-    matrix = []
-    for arch, runner in runners.items():
-        for shard in test_shards:
-            shard_names = set(shard["packages"].split()[1::2])
-            test_names = sorted(tested & shard_names)
-            scoped_names = sorted(scoped_tests.keys() & shard_names)
-            selected_runner = (
-                "runner-large"
-                if arch == "x86_64"
-                and LARGE_X86_TEST_PACKAGES.intersection(test_names + scoped_names)
-                else runner
-            )
-            scoped = [{"package": name, "test": scoped_tests[name].test,
-                       "filter": scoped_tests[name].filter} for name in scoped_names]
-            matrix.append({**shard, "arch": arch, "runner": selected_runner, "check_runner": runner,
-                           "test_packages": " ".join(f"-p {name}" for name in test_names),
-                           "scoped_tests": json.dumps(scoped, separators=(",", ":")) if scoped else ""})
+        whole_shards = [{"shard": len(test_shards) + 1, "packages": "", "package_count": 0,
+                         "estimated_cost": 0, "recorded_test_seconds": 0, "partition": ""}]
+
+    def test_row(shard: dict, arch: str, runner: str) -> dict:
+        shard_names = set(shard["packages"].split()[1::2])
+        test_names = sorted(tested & shard_names)
+        scoped_names = sorted(scoped_tests.keys() & shard_names)
+        selected_runner = (
+            "runner-large"
+            if arch == "x86_64"
+            and LARGE_X86_TEST_PACKAGES.intersection(test_names + scoped_names)
+            else runner
+        )
+        scoped = [{"package": name, "test": scoped_tests[name].test,
+                   "filter": scoped_tests[name].filter} for name in scoped_names]
+        return {**shard, "arch": arch, "runner": selected_runner, "check_runner": runner,
+                "test_packages": " ".join(f"-p {name}" for name in test_names),
+                "scoped_tests": json.dumps(scoped, separators=(",", ":")) if scoped else ""}
+
+    matrix = [test_row(shard, arch, runner)
+              for arch, runner in runners.items() for shard in whole_shards]
+    partition_matrix = [
+        {**test_row(shard, arch, runner),
+         "archive": f"nextest-archive-{arch}-{shard['packages'].split()[1]}"}
+        for arch, runner in runners.items() for shard in partitioned]
+    archive_matrix = [
+        {"arch": arch, "runner": ARCHIVE_RUNNERS[arch], "package": name,
+         "test_packages": f"-p {name}", "partitions": split[name],
+         "archive": f"nextest-archive-{arch}-{name}"}
+        for arch in runners for name in sorted(split)]
     # Hermetic suites outside Cargo follow their declared inputs; explicit full
     # runs and pushes to main (all_suites) run every one of them.
     suites = (path_suites.select(suite_manifest, changes, run_all=force_full or all_suites)
               if suite_manifest is not None and not pin_only else [])
     android = sorted(android_apps(packages) & selected)
+    wasm = sorted(browser_crates(packages) & selected)
     return {
         "full": full,
         "rust_required": bool(selected),
@@ -784,6 +815,10 @@ def make_plan(
         # job type-checks them for the Android targets.
         "android_required": bool(android),
         "android": android,
+        # Selected browser crates; check.yml's `wasm` job type-checks them for
+        # wasm32-unknown-unknown, a target no other job builds.
+        "wasm_required": bool(wasm),
+        "wasm": wasm,
         "reason": reason,
         "changed_files": changes,
         "selected_count": len(selected),
@@ -801,8 +836,14 @@ def make_plan(
         "estimated_cost": sum(package_cost(packages[name]) for name in selected),
         "requested_shards": shard_count,
         "shard_count": effective_shards,
-        "test_shard_count": len(matrix) // len(runners) if matrix else 0,
+        "test_shard_count": (len(matrix) + len(partition_matrix)) // len(runners) if matrix else 0,
         "matrix": {"include": matrix},
+        # Partitions of packages too heavy for one test job. check.yml's
+        # `test-archive` builds each package's tests once per architecture
+        # (archive_matrix); its `test-partition` jobs run one slice each.
+        "partitions_required": bool(partition_matrix),
+        "partition_matrix": {"include": partition_matrix},
+        "archive_matrix": {"include": archive_matrix},
         # Clippy's lint result is architecture-independent; lint each package
         # set once, on x86_64.
         "clippy_matrix": {"include": [row for row in check_rows if row["arch"] == "x86_64"]},
@@ -817,6 +858,9 @@ def emit_github(plan: dict, output: Path) -> None:
     compact_matrix = json.dumps(plan["matrix"], separators=(",", ":"))
     with output.open("a", encoding="utf-8") as handle:
         handle.write(f"matrix={compact_matrix}\n")
+        for name in ("partition_matrix", "archive_matrix"):
+            handle.write(f"{name}={json.dumps(plan[name], separators=(',', ':'))}\n")
+        handle.write(f"partitions_required={'true' if plan['partitions_required'] else 'false'}\n")
         compact_clippy_matrix = json.dumps(plan["clippy_matrix"], separators=(",", ":"))
         handle.write(f"clippy_matrix={compact_clippy_matrix}\n")
         compact_check_matrix = json.dumps(plan["check_matrix"], separators=(",", ":"))
@@ -831,6 +875,8 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"pins={' '.join(plan['pins'])}\n")
         handle.write(f"android_required={'true' if plan['android_required'] else 'false'}\n")
         handle.write(f"android_packages={' '.join(f'-p {name}' for name in plan['android'])}\n")
+        handle.write(f"wasm_required={'true' if plan['wasm_required'] else 'false'}\n")
+        handle.write(f"wasm_packages={' '.join(f'-p {name}' for name in plan['wasm'])}\n")
         handle.write(f"selected_count={plan['selected_count']}\n")
         handle.write(f"workspace_count={plan['workspace_count']}\n")
         handle.write(f"estimated_cost={plan['estimated_cost']}\n")

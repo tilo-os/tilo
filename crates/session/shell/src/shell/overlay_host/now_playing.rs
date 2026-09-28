@@ -51,11 +51,17 @@ impl ShellOverlayHost {
         let preferred = self.now_playing_preferred.as_deref();
         let active = crate::shell::now_playing::active_index(&players, preferred)?;
         let bus = players.get(active).map(|player| player.bus_name.clone());
-        let outputs = self
-            .device_fabric_call(DeviceFabricUiAction::Snapshot)
-            .map(|view| output_targets(&view, bus.as_deref(), &controller_of))
+        let fabric = self.device_fabric_call(DeviceFabricUiAction::Snapshot);
+        let outputs = fabric
+            .as_ref()
+            .map(|view| output_targets(view, bus.as_deref(), &controller_of))
             .unwrap_or_default();
+        let speakers = fabric
+            .as_ref()
+            .ok()
+            .and_then(crate::shell::now_playing::SpeakerPlayback::from_view);
         NowPlayingView::new(players, preferred, outputs, Instant::now())
+            .map(|view| view.with_speakers(speakers))
     }
 
     /// Where the card sits: under the popover when it fits, else beside it,
@@ -351,7 +357,7 @@ mod tests {
 
     use winit::keyboard::{Key, NamedKey};
 
-    use super::super::AccessibleOverlay;
+    use super::super::LayerId;
     use super::*;
     use crate::shell::chrome_state::{Chrome, ChromeState};
     use crate::shell::now_playing::tests::{FakeSource, player};
@@ -409,7 +415,7 @@ mod tests {
         assert!(rect.y1 <= host.rect.y1);
         assert!(
             host.accessible_overlay_order()
-                .contains(&AccessibleOverlay::NowPlaying)
+                .contains(&LayerId::NowPlaying)
         );
         assert!(
             host.quick_settings_semantic_rects()
@@ -508,7 +514,7 @@ mod tests {
         let index = host
             .accessible_overlay_order()
             .iter()
-            .position(|overlay| *overlay == AccessibleOverlay::NowPlaying)
+            .position(|overlay| *overlay == LayerId::NowPlaying)
             .expect("the card is published");
         let node = host.now_playing_accessibility().expect("card node");
         assert!(!node.children.is_empty());

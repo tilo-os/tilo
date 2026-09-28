@@ -155,7 +155,6 @@ struct AppearanceRoot {
 }
 
 impl Widget for AppearanceRoot {
-    fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -176,7 +175,6 @@ impl Widget for AppearanceRoot {
         _p: &crate::presence::PresenceCtx,
     ) {
     }
-    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {}
     fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
         Some(self.intent.clone())
     }

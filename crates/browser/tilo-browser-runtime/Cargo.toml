@@ -14,9 +14,11 @@ crate-type = ["cdylib", "rlib"]
 default = []
 # Compile the catalog's apps into the module, as the Cloud frontend's build does.
 static-apps = ["dep:notes", "dep:calculator", "dep:ebook", "dep:word-processor", "dep:chat"]
-# The certified peer, its iroh transport, delivery, onboarding and MoQ media:
-# what the Cloud frontend's canonical desktop needs, not a standalone app.
-cloud = ["dep:iroh", "dep:iroh-base"]
+# The certified peer, its HTTPS delivery, onboarding and MoQ media: what the
+# Cloud frontend's canonical desktop needs, not a standalone app. It adds no
+# dependency, so a web core built with it keeps the default core's runtime ABI
+# and links the same app side modules.
+cloud = []
 # Link as the dynamic-linking main module that app side modules load against:
 # every symbol, the function table and the stack pointer exported, the table
 # growable, and the side-module registration entry points.
@@ -77,8 +79,6 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false
 # The app-facing SDK facade, with the features apps enable on wasm32, so its
 # framework, resource layer and statics exist once, in the core.
 tilo-app = { path = "../../sdk/tilo-app", default-features = false }
-iroh = { workspace = true, optional = true }
-iroh-base = { workspace = true, optional = true }
 wasm-bindgen = "=0.2.108"
 wasm-bindgen-futures = "=0.4.58"
 js-sys = "=0.3.85"
@@ -88,7 +88,6 @@ tempfile.workspace = true
 tilo-automerge.workspace = true
 
 [package.metadata.cargo-machete]
-# The wasm32 build pulls iroh for its browser transport features; machete
-# cannot see target-specific feature-only dependencies. tilo-app is linked
-# into the web core for side modules and is not referenced by name.
-ignored = ["iroh", "tilo-app"]
+# tilo-app is linked into the web core for side modules and is not referenced
+# by name.
+ignored = ["tilo-app"]

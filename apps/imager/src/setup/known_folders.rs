@@ -91,15 +91,9 @@ pub fn discover() -> Vec<KnownFolder> {
 
 #[cfg(target_os = "linux")]
 fn discover_one(kind: KnownFolderKind) -> KnownFolder {
-    let config_path = std::env::var_os("XDG_CONFIG_HOME").map_or_else(
-        || {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default()
-                .join(".config/user-dirs.dirs")
-        },
-        |root| PathBuf::from(root).join("user-dirs.dirs"),
-    );
+    let config_path = xdg_paths::xdg::config_home()
+        .unwrap_or_default()
+        .join("user-dirs.dirs");
     let config = match std::fs::read_to_string(&config_path) {
         Ok(config) => config,
         Err(_) => return KnownFolder::unavailable(kind, "this folder is not configured"),

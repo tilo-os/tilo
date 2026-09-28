@@ -236,14 +236,16 @@ impl<W: Widget + 'static> Embedded<W> {
         let mut focus = None;
         self.widget.handle_event(
             event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            &mut focus,
-            root,
-            &self.tree,
+            &mut crate::widget::EventCtx {
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target: &mut focus,
+                node_id: root,
+                taffy: &self.tree,
+            },
         );
     }
 

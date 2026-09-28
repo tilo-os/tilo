@@ -279,34 +279,32 @@ async fn write_gateway_frame<T: serde::Serialize>(
 ) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
     let body = zeroize::Zeroizing::new(serde_json::to_vec(value).map_err(|e| e.to_string())?);
-    if body.len() > tilo_model_gateway::FRAMING.max_len() {
-        return Err("gateway request exceeds frame limit".into());
-    }
-    stream
-        .write_all(&(body.len() as u32).to_le_bytes())
+    tilo_model_gateway::FRAMING
+        .write_async(stream, &body)
         .await
-        .map_err(|e| e.to_string())?;
-    stream.write_all(&body).await.map_err(|e| e.to_string())?;
+        .map_err(|e| match e {
+            wire_frame::FrameError::PayloadTooLarge(_) => {
+                "gateway request exceeds frame limit".to_string()
+            }
+            other => other.to_string(),
+        })?;
     stream.flush().await.map_err(|e| e.to_string())
 }
 async fn read_gateway_response(
     stream: &mut tokio::net::UnixStream,
 ) -> Result<tilo_model_gateway::Response, String> {
-    use tokio::io::AsyncReadExt;
-    let mut length = [0; 4];
-    stream
-        .read_exact(&mut length)
+    let mut body = zeroize::Zeroizing::new(Vec::new());
+    match tilo_model_gateway::FRAMING
+        .read_into_async(stream, &mut body)
         .await
-        .map_err(|e| e.to_string())?;
-    let length = u32::from_le_bytes(length) as usize;
-    if length > tilo_model_gateway::FRAMING.max_len() {
-        return Err("gateway response exceeds frame limit".into());
+    {
+        Ok(true) => {}
+        Ok(false) => return Err("gateway closed before responding".into()),
+        Err(wire_frame::FrameError::TooLarge(_)) => {
+            return Err("gateway response exceeds frame limit".into());
+        }
+        Err(e) => return Err(e.to_string()),
     }
-    let mut body = zeroize::Zeroizing::new(vec![0; length]);
-    stream
-        .read_exact(&mut body)
-        .await
-        .map_err(|e| e.to_string())?;
     serde_json::from_slice(&body).map_err(|e| format!("invalid gateway response: {e}"))
 }
 fn decode_hash(value: &str) -> Result<[u8; 32], String> {

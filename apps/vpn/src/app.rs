@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -255,8 +256,6 @@ impl ConfirmBody {
 }
 
 impl Widget for ConfirmBody {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -345,20 +344,6 @@ impl Widget for ConfirmBody {
             false,
             true,
         );
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {
@@ -3424,7 +3409,8 @@ impl Widget for VpnApp {
         ]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         #[cfg(test)]
         if let Some(kind) = self.history_control_arm.as_ref().and_then(|arm| arm.take()) {
             self.queue_import(kind);
@@ -3635,42 +3621,37 @@ impl Widget for VpnApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.modal == Modal::Add {
-            self.route_add_modal_event(event, scale_factor, handled);
+            self.route_add_modal_event(event, ctx.scale_factor, ctx.handled);
             return;
         }
         // The Confirm dialog is modal: while it's up the shared ModalDialog
         // captures every event (clicks, Esc, y/n) and nothing leaks to the
         // list behind the scrim.
         if self.modal == Modal::Confirm {
-            self.route_confirm_event(event, scale_factor, *modifiers, state, handled);
+            self.route_confirm_event(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.handled,
+            );
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position, scale_factor, handled);
+                self.handle_cursor_moved(position, ctx.scale_factor, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_detail_scroll(delta, handled);
+                self.handle_detail_scroll(delta, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_click(state, handled);
+                self.handle_left_click(ctx.state, ctx.handled);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -3681,7 +3662,7 @@ impl Widget for VpnApp {
                     },
                 ..
             } => {
-                self.handle_key_press(logical_key, handled);
+                self.handle_key_press(logical_key, ctx.handled);
             }
             _ => {}
         }
@@ -4095,8 +4076,8 @@ impl Widget for VpnApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(
             action,
@@ -4441,7 +4422,7 @@ mod tests {
         ) -> Option<&'static ui::history_mode::HistoryDefinition> {
             Some(&CUSTODY_HISTORY)
         }
-        fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+        fn sync(&mut self, doc: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
             self.child.sync(doc, path);
         }
         fn build_layout(
@@ -4468,21 +4449,8 @@ mod tests {
         fn get_rect(&self) -> Rect {
             self.child.get_rect()
         }
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            scale: f64,
-            modifiers: &Modifiers,
-            doc: &mut AutoCommit,
-            path: &ObjId,
-            handled: &mut bool,
-            focus: &mut Option<NodeId>,
-            node: NodeId,
-            tree: &TaffyTree<()>,
-        ) {
-            self.child.handle_event(
-                event, scale, modifiers, doc, path, handled, focus, node, tree,
-            );
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+            self.child.handle_event(event, ctx);
         }
         fn children(&self) -> Vec<&dyn Widget> {
             vec![self.child.as_ref()]
@@ -4971,14 +4939,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &modifiers,
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 

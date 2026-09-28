@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
@@ -483,7 +483,6 @@ impl SankeyChart {
 }
 
 impl Widget for SankeyChart {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -694,19 +693,8 @@ impl Widget for SankeyChart {
             );
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if let Some(action) = self.touch.handle(event, scale_factor) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
             match action {
                 ChartTouchAction::Inspect(point) => {
                     self.pointer = point;
@@ -719,8 +707,8 @@ impl Widget for SankeyChart {
                     if let Some(hit) = self.hovered {
                         self.activated = self.selection_for(hit);
                         if self.activated.is_some() {
-                            *handled = true;
-                            *focus_target = Some(node_id);
+                            *ctx.handled = true;
+                            *ctx.focus_target = Some(ctx.node_id);
                         }
                     }
                 }
@@ -730,7 +718,8 @@ impl Widget for SankeyChart {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.pointer =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.update_hover();
                 self.keyboard_inspection = false;
             }
@@ -743,8 +732,8 @@ impl Widget for SankeyChart {
                 if let Some(hit) = self.hovered {
                     self.activated = self.selection_for(hit);
                     if self.activated.is_some() {
-                        *handled = true;
-                        *focus_target = Some(node_id);
+                        *ctx.handled = true;
+                        *ctx.focus_target = Some(ctx.node_id);
                     }
                 }
             }
@@ -771,8 +760,8 @@ impl Widget for SankeyChart {
                     self.keyboard_inspection = self.hovered.is_some();
                     self.update_inspection_anchor();
                 }
-                *handled = true;
-                *focus_target = Some(node_id);
+                *ctx.handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
             }
             _ => {}
         }
@@ -825,8 +814,8 @@ impl Widget for SankeyChart {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;

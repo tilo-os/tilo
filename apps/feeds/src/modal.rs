@@ -143,12 +143,6 @@ impl ModalBody {
 }
 
 impl Widget for ModalBody {
-    fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-        if let Some(input) = &mut self.input {
-            input.sync(state, path);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -249,30 +243,9 @@ impl Widget for ModalBody {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(input) = &mut self.input {
-            input.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            input.handle_event(event, ctx);
         }
     }
 

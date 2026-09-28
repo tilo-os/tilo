@@ -14,6 +14,7 @@ use ui::widget::{
     AppKind, AppWidget, ContextMenu, Continuable, FloatingSurfaceProvider, FullscreenProvider,
     IconDescriptor, MenuItem, TabDescriptor, TaffyTreeExt, Widget, WindowCloseAdmission,
 };
+use ui::widget::{AppModel, ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
@@ -443,7 +444,17 @@ impl BrowserTabs {
         if self.layout_immersive == Some(true) {
             if let Some(page) = children.first() {
                 self.active_mut().handle_event(
-                    event, scale, modifiers, state, path, handled, focus, *page, taffy,
+                    event,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: scale,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target: focus,
+                        node_id: *page,
+                        taffy,
+                    },
                 );
             }
             return;
@@ -452,21 +463,33 @@ impl BrowserTabs {
             if let Some(panel_node) = children.get(1) {
                 panel.handle_event(
                     event,
-                    scale,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus,
-                    *panel_node,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: scale,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target: focus,
+                        node_id: *panel_node,
+                        taffy,
+                    },
                 );
             }
             return;
         }
         if let Some(bar) = children.first() {
             self.bar.handle_event(
-                event, scale, modifiers, state, path, handled, focus, *bar, taffy,
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target: focus,
+                    node_id: *bar,
+                    taffy,
+                },
             );
         }
         if let Some(id) = self.bar.take_close() {
@@ -513,7 +536,17 @@ impl BrowserTabs {
         }
         if !*handled && let Some(page) = children.get(1) {
             self.active_mut().handle_event(
-                event, scale, modifiers, state, path, handled, focus, *page, taffy,
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target: focus,
+                    node_id: *page,
+                    taffy,
+                },
             );
         }
     }
@@ -862,7 +895,7 @@ impl BrowserTabs {
 }
 
 impl Widget for BrowserTabs {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if self.fullscreen_hint_deadline.is_some()
             && !fullscreen_hint_visible(self.fullscreen_hint_deadline, Instant::now())
         {
@@ -1130,28 +1163,17 @@ impl Widget for BrowserTabs {
         self.active_mut()
             .draw(scene, transform, tr, theme, presence);
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if *handled {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if *ctx.handled {
             return;
         }
         if let Some(recovery) = self.recovery.as_mut() {
-            if let Ok(children) = taffy.children(node)
+            if let Ok(children) = ctx.taffy.children(ctx.node_id)
                 && let Some(panel) = children.first()
             {
-                recovery.panel.handle_event(
-                    event, scale, modifiers, state, path, handled, focus, *panel, taffy,
-                );
+                recovery
+                    .panel
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, *panel));
             }
             return;
         }
@@ -1166,33 +1188,31 @@ impl Widget for BrowserTabs {
             self.observed_active_content_fullscreen = false;
             self.clear_fullscreen_hint();
             self.dirty = true;
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if self.tab_menu.is_open() {
-            self.tab_menu.handle_event(
-                event, scale, modifiers, state, path, handled, focus, node, taffy,
-            );
+            self.tab_menu.handle_event(event, ctx);
             if let Some(index) = self.tab_menu.take_selection() {
                 self.apply_tab_menu(index);
                 self.dirty = true;
             }
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
-        if self.hold_input_until_layout(event, modifiers.state()) {
-            *handled = true;
+        if self.hold_input_until_layout(event, ctx.modifiers.state()) {
+            *ctx.handled = true;
             return;
         }
         if let Some(address) = self.address_focus_node.take() {
-            *focus = Some(address);
+            *ctx.focus_target = Some(address);
         }
         if matches!(
             event,
             WindowEvent::MouseInput { .. } | WindowEvent::ModifiersChanged(_)
         ) {
-            let m = modifiers.state();
+            let m = ctx.modifiers.state();
             self.active()
                 .engine_handle()
                 .set_modifiers(ui::webview::KeyModifiers {
@@ -1203,10 +1223,10 @@ impl Widget for BrowserTabs {
                 });
         }
         for tab in &mut self.tabs {
-            tab.widget.set_window_scale(scale);
+            tab.widget.set_window_scale(ctx.scale_factor);
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / scale, position.y / scale);
+            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if let WindowEvent::KeyboardInput { event: key, .. } = event {
             if self.exit_state == ExitState::Choice
@@ -1216,34 +1236,34 @@ impl Widget for BrowserTabs {
                 self.exit_state = ExitState::Normal;
                 self.exit_panel = None;
                 self.dirty = true;
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if key.state == ElementState::Pressed
-                && self.shortcut(&key.logical_key, modifiers.state())
+                && self.shortcut(&key.logical_key, ctx.modifiers.state())
             {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
         self.handle_retained_event(RetainedEvent {
             event,
-            scale,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus,
-            node,
-            taffy,
+            scale: ctx.scale_factor,
+            modifiers: ctx.modifiers,
+            state: ctx.state,
+            path: ctx.path,
+            handled: ctx.handled,
+            focus: ctx.focus_target,
+            node: ctx.node_id,
+            taffy: ctx.taffy,
         });
     }
     fn perform_semantic_action(
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         if let Some(recovery) = self.recovery.as_mut() {
             return recovery
@@ -1741,14 +1761,16 @@ mod tests {
         let mut handled = false;
         tabs.handle_event(
             &key_event_with_state(named, state),
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-            &mut handled,
-            &mut None,
-            root,
-            tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut AutoCommit::new(),
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut None,
+                node_id: root,
+                taffy: tree,
+            },
         );
         handled
     }
@@ -1806,14 +1828,16 @@ mod tests {
             let mut handled = false;
             tabs.handle_event(
                 &key_event(NamedKey::Escape),
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut AutoCommit::new(),
-                &automerge::ROOT,
-                &mut handled,
-                &mut None,
-                node,
-                &tree,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut AutoCommit::new(),
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut None,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             assert!(handled);
             assert_eq!(tabs.fullscreen_intent(), Some(false));
@@ -1986,12 +2010,14 @@ mod tests {
             let mut tabs = workspace().with_session(store).unwrap();
             // Exercise the exact action-bound button operation used by the host.
             let result = tabs
-                .start_resource_operation(
-                    ui::tilo_actions::InvocationId::new(),
-                    ui::tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec("browser.session.fresh").unwrap(),
-                    &AutoCommit::new(),
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        ui::tilo_actions::OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec("browser.session.fresh").unwrap(),
+                    ),
+                    &mut AutoCommit::new(),
                     &automerge::ROOT,
                 )
                 .unwrap();
@@ -2076,14 +2102,16 @@ mod tests {
                         let mut handled = false;
                         tabs.handle_event(
                             &event,
-                            1.0,
-                            &winit::event::Modifiers::default(),
-                            &mut doc,
-                            &automerge::ROOT,
-                            &mut handled,
-                            &mut focus,
-                            root,
-                            &tree,
+                            &mut ui::widget::EventCtx {
+                                scale_factor: 1.0,
+                                modifiers: &winit::event::Modifiers::default(),
+                                state: &mut doc,
+                                path: &automerge::ROOT,
+                                handled: &mut handled,
+                                focus_target: &mut focus,
+                                node_id: root,
+                                taffy: &tree,
+                            },
                         );
                         if keyboard {
                             assert!(
@@ -2104,12 +2132,14 @@ mod tests {
                         .take_control_invocation()
                         .expect("ordinary input must emit the button's canonical action");
                     assert_eq!(invocation.address.resource, format!("tilo.control:{id}"));
-                    tabs.start_resource_operation(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec(id).unwrap(),
-                        &doc,
+                    tabs.start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            ui::tilo_actions::InvocationId::new(),
+                            ui::tilo_actions::OperationKind::Effect,
+                            "tilo.ui.control.invoke",
+                            &serde_json::to_vec(id).unwrap(),
+                        ),
+                        &mut doc,
                         &automerge::ROOT,
                     )
                     .unwrap()
@@ -2551,13 +2581,15 @@ mod tests {
             .expect("exit choice must reach the root action broker");
         assert_eq!(invocation.address.resource, format!("tilo.control:{id}"));
         assert!(
-            tabs.start_resource_operation(
-                ui::tilo_actions::InvocationId::new(),
-                ui::tilo_actions::OperationKind::Effect,
-                "tilo.ui.control.invoke",
-                &serde_json::to_vec(id).unwrap(),
+            tabs.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    ui::tilo_actions::OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec(id).unwrap()
+                ),
                 doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             )
             .unwrap()
             .is_some()
@@ -2912,14 +2944,16 @@ mod tests {
                         event: key,
                         is_synthetic: false,
                     },
-                    1.0,
-                    &winit::event::Modifiers::default(),
-                    &mut doc,
-                    &automerge::ROOT,
-                    &mut false,
-                    &mut None,
-                    root,
-                    &tree,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: &mut doc,
+                        path: &automerge::ROOT,
+                        handled: &mut false,
+                        focus_target: &mut None,
+                        node_id: root,
+                        taffy: &tree,
+                    },
                 );
             }
             assert!(
@@ -2967,14 +3001,16 @@ mod tests {
             tabs.activate(1);
             tabs.handle_event(
                 &WindowEvent::Focused(true),
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut AutoCommit::new(),
-                &automerge::ROOT,
-                &mut false,
-                &mut None,
-                root,
-                &tree,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut AutoCommit::new(),
+                    path: &automerge::ROOT,
+                    handled: &mut false,
+                    focus_target: &mut None,
+                    node_id: root,
+                    taffy: &tree,
+                },
             );
         }
     }
@@ -3017,12 +3053,14 @@ mod tests {
                 serde_json::from_value(serde_json::json!({"url": "https://one.test"})).unwrap();
             let encoded = navigate.build_json(&args).unwrap();
             let invocation = ui::tilo_actions::InvocationId::new();
-            tabs.start_resource_operation(
-                invocation,
-                navigate.kind,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
+            tabs.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    navigate.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut doc,
                 &root,
             )
             .unwrap();
@@ -3104,12 +3142,14 @@ mod tests {
                 .find(|action| action.id == "picture-in-picture")
                 .unwrap();
             let invocation = ui::tilo_actions::InvocationId::new();
-            tabs.start_resource_operation(
-                invocation,
-                pip.kind,
-                pip.operation_type.as_deref().unwrap(),
-                br#"{"operation":"toggle-picture-in-picture"}"#,
-                &doc,
+            tabs.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    pip.kind,
+                    pip.operation_type.as_deref().unwrap(),
+                    br#"{"operation":"toggle-picture-in-picture"}"#,
+                ),
+                &mut doc,
                 &root,
             )
             .unwrap();

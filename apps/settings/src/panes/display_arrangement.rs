@@ -13,7 +13,6 @@ pub mod placement;
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -22,7 +21,7 @@ use ui::widget::{ActionEmitter, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use placement::Placement;
@@ -379,8 +378,6 @@ impl DisplayArrangement {
 }
 
 impl Widget for DisplayArrangement {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -469,24 +466,14 @@ impl Widget for DisplayArrangement {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let point =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.cursor = Some(point);
                 if self.drag_to(point) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -498,7 +485,7 @@ impl Widget for DisplayArrangement {
                     && self.rect.contains(point)
                     && self.press(point)
                 {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -507,7 +494,7 @@ impl Widget for DisplayArrangement {
                 ..
             } => {
                 if self.release() {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -516,7 +503,7 @@ impl Widget for DisplayArrangement {
                     && self.drag.with(Option::is_some) =>
             {
                 self.drag.set(None);
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }

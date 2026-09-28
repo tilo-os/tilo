@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::ColorCompat;
 use ui::presence::PresenceCtx;
@@ -305,8 +304,6 @@ impl CaptureMirrorImage {
 }
 
 impl Widget for CaptureMirrorImage {
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -393,18 +390,7 @@ impl Widget for CaptureMirrorImage {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        handled: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.document_aspect.is_none() {
             return;
         }
@@ -413,10 +399,10 @@ impl Widget for CaptureMirrorImage {
         };
         let movement = match delta {
             MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 54.0,
-            MouseScrollDelta::PixelDelta(position) => -position.y / scale_factor.max(0.1),
+            MouseScrollDelta::PixelDelta(position) => -position.y / ctx.scale_factor.max(0.1),
         };
         if self.scroll_document_by(movement) {
-            *handled = true;
+            *ctx.handled = true;
         }
     }
 

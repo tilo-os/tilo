@@ -207,14 +207,16 @@ impl Retained {
                     event,
                     is_synthetic: true,
                 },
-                1.0,
-                &Modifiers::default(),
-                &mut self.doc,
-                &ROOT,
-                &mut handled,
-                &mut None,
-                self.root,
-                &self.tree,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &Modifiers::default(),
+                    state: &mut self.doc,
+                    path: &ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut None,
+                    node_id: self.root,
+                    taffy: &self.tree,
+                },
             );
         }
         let event = micros(started);

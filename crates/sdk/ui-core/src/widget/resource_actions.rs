@@ -4,6 +4,7 @@
 //! immediate or background operation closure. The host supplies the widget
 //! forwarding and invocation lifecycle; scaffolds do not need to copy that
 //! infrastructure into every new project.
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
@@ -16,7 +17,7 @@ use crate::tilo_actions::{
     OperationKind, ParamType, Resource, ResultSpec,
 };
 use crate::vello::Scene;
-use crate::widget::{ResourceOperationStart, TaffyTreeExt, Widget};
+use crate::widget::{ResourceOperation, ResourceOperationStart, TaffyTreeExt, Widget};
 
 /// Shared effect-operation type used by the one-resource app host.
 pub const OPERATION_TYPE: &str = "tilo.app.operation";
@@ -379,12 +380,24 @@ pub fn background(
     })
 }
 
-impl Widget for ResourceActionHost {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.root.sync(state, path);
+impl ResourceActionHost {
+    fn run_operation(
+        &mut self,
+        invocation: InvocationId,
+        payload: &[u8],
+    ) -> Result<ResourceOperationStart, String> {
+        match &mut self.runner {
+            Runner::Immediate(run) => run(payload).map(ResourceOperationStart::Completed),
+            Runner::Background(run) => {
+                self.pending.insert(invocation, run(payload)?);
+                Ok(ResourceOperationStart::Accepted)
+            }
+        }
     }
+}
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+impl Widget for ResourceActionHost {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.root.update(state, path)
     }
 
@@ -440,30 +453,17 @@ impl Widget for ResourceActionHost {
     fn handle_event(
         &mut self,
         event: &crate::winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &crate::winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
-        self.root.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            taffy
-                .children(node_id)
-                .ok()
-                .and_then(|children| children.first().copied())
-                .unwrap_or(node_id),
-            taffy,
-        );
+        let node_id = ctx
+            .taffy
+            .children(ctx.node_id)
+            .ok()
+            .and_then(|children| children.first().copied())
+            .unwrap_or(ctx.node_id);
+        let path = ctx.path;
+        self.root
+            .handle_event(event, &mut ctx.reborrow(path, node_id));
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -517,8 +517,8 @@ impl Widget for ResourceActionHost {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.root.perform_action(action, state, path)
     }
@@ -527,8 +527,8 @@ impl Widget for ResourceActionHost {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.root.perform_action_at(action, key_path, state, path)
     }
@@ -537,8 +537,8 @@ impl Widget for ResourceActionHost {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.root
             .perform_semantic_action(target, action, state, path)
@@ -552,6 +552,28 @@ impl Widget for ResourceActionHost {
         vec![self.resource.clone()]
     }
 
+    fn start_operation(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op
+            .unscoped()
+            .filter(|request| request.kind != OperationKind::Document)
+            .filter(|request| request.type_id == OPERATION_TYPE)
+        else {
+            return Ok(None);
+        };
+        self.run_operation(request.invocation, request.payload)
+            .map(Some)
+    }
+
+    /// Legacy adapter: apps not yet on [`Widget::start_operation`] still reach
+    /// this host through their read-only routing.
     fn invoke_resource_operation_v2(
         &mut self,
         kind: OperationKind,
@@ -569,6 +591,7 @@ impl Widget for ResourceActionHost {
         }
     }
 
+    /// Legacy adapter; see [`Self::invoke_resource_operation_v2`].
     fn start_resource_operation(
         &mut self,
         invocation: InvocationId,
@@ -583,15 +606,7 @@ impl Widget for ResourceActionHost {
                 .root
                 .start_resource_operation(invocation, kind, type_id, payload, doc, path);
         }
-        match &mut self.runner {
-            Runner::Immediate(run) => run(payload)
-                .map(ResourceOperationStart::Completed)
-                .map(Some),
-            Runner::Background(run) => {
-                self.pending.insert(invocation, run(payload)?);
-                Ok(Some(ResourceOperationStart::Accepted))
-            }
-        }
+        self.run_operation(invocation, payload).map(Some)
     }
 
     fn poll_resource_operation(

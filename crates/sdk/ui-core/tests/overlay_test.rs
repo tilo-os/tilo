@@ -12,7 +12,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{AvailableSpace, Dimension, Style};
 use taffy::{NodeId, Size, TaffyTree};
 use tilo_ui::offscreen::OffscreenRenderer;
@@ -26,7 +25,6 @@ use tilo_ui::widget::{ModalDialog, PopoverWidget, Text, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::Color;
-use winit::event::{Modifiers, WindowEvent};
 
 #[test]
 fn overlay_stack_orders_layers_and_traps_focus() {
@@ -127,8 +125,6 @@ impl FixedContent {
 }
 
 impl Widget for FixedContent {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -185,21 +181,6 @@ impl Widget for FixedContent {
             transform.pre_translate(Vec2::new(self.rect.x0, y)),
             None,
         );
-    }
-
-    #[allow(clippy::too_many_arguments, reason = "trait signature")]
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

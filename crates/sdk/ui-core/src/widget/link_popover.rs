@@ -12,7 +12,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
@@ -507,7 +506,6 @@ fn count_f64(v: usize) -> f64 {
 
 // LinkPopover lives in overlay space so most methods no-op.
 impl Widget for LinkPopover {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -526,19 +524,6 @@ impl Widget for LinkPopover {
         _text_renderer: &mut TextRenderer,
         _theme: &Theme,
         _presence: &PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {

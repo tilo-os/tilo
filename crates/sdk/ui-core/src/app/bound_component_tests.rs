@@ -3,6 +3,7 @@ use crate::application::{
     AppComponent, ApplicationDefinition, HostContext, LaunchTarget, RestoreInput,
 };
 use crate::widget::{AppKind, AppWidget, Column, IconDescriptor, TileHost};
+use crate::widget::{AppModel, ModelPath};
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -232,12 +233,8 @@ impl Widget for Probe {
             strict: self.strict,
         })]
     }
-    fn activate_search_result(
-        &mut self,
-        id: &str,
-        doc: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-    ) {
+    fn activate_search_result(&mut self, id: &str, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = crate::doc::document(doc, path);
         assert_eq!(id, "opaque");
         doc.put(ROOT, "navigation", true).unwrap();
     }
@@ -322,15 +319,15 @@ impl Widget for Probe {
         clippy::panic_in_result_fn,
         reason = "probe asserts canonical admission before returning the toolkit result"
     )]
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        _: tilo_actions::InvocationId,
-        _: tilo_actions::OperationKind,
-        type_id: &str,
-        _: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         doc: &mut automerge::AutoCommit,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(crate::widget::OperationRequest { type_id, .. }) = op.unscoped() else {
+            return Ok(None);
+        };
         if type_id == "bound.view" {
             if COMPOUND_MODE.get() == 1 {
                 self.actions.dispatch(doc, "bound.apply", &FollowUp);
@@ -416,7 +413,8 @@ impl Widget for Probe {
         })
     }
 
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = crate::doc::document(doc, path);
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some("child")
@@ -452,20 +450,9 @@ impl Widget for Probe {
     fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
         Self::capture("draw");
     }
-    fn handle_event(
-        &mut self,
-        _: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        d: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, _: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         assert_eq!(
-            d.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
+            ctx.state.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some("child")
         );
         Self::capture("event");
@@ -498,9 +485,10 @@ impl Widget for Probe {
     fn perform_action(
         &mut self,
         _: &crate::a11y::Action,
-        doc: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
+        doc: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (doc, _) = crate::doc::document(doc, path);
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some("child")

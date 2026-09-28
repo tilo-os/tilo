@@ -1,13 +1,15 @@
 //! Outer-state wire schemas accepted by the resource-limited decoder.
 //! Native document reconstruction has a separate admission boundary.
 
-use super::{DurableV4, DurableV5};
+use super::{DurableV4, DurableV5, DurableV6};
 use crate::resources::outer::{EncodeSchema, Schema};
 
 impl EncodeSchema for DurableV4 {}
 impl EncodeSchema for DurableV5<'_> {}
+impl EncodeSchema for DurableV6<'_> {}
 impl Schema<'_> for DurableV4 {}
 impl<'de> Schema<'de> for DurableV5<'de> {}
+impl<'de> Schema<'de> for DurableV6<'de> {}
 
 #[cfg(test)]
 mod tests {

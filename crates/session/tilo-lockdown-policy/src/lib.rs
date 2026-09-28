@@ -6,8 +6,6 @@ use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
@@ -256,31 +254,10 @@ impl PolicyStore {
     }
 }
 fn persist(path: &Path, policy: &LockdownPolicy) -> std::io::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| failed("lockdown policy path has no parent"))?;
-    fs::create_dir_all(parent)
-        .map_err(|e| failed(&format!("cannot create lockdown directory: {e}")))?;
-    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
-        .map_err(|e| failed(&format!("cannot protect lockdown directory: {e}")))?;
-    let tmp = path.with_extension("tmp");
     let encoded = serde_json::to_vec(policy)
         .map_err(|e| failed(&format!("cannot encode lockdown policy: {e}")))?;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(&tmp)
-        .map_err(|e| failed(&format!("cannot create lockdown policy: {e}")))?;
-    file.write_all(&encoded)
-        .and_then(|()| file.sync_all())
-        .map_err(|e| failed(&format!("cannot write lockdown policy: {e}")))?;
-    fs::rename(&tmp, path).map_err(|e| failed(&format!("cannot commit lockdown policy: {e}")))?;
-    fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|e| failed(&format!("cannot sync lockdown policy: {e}")))?;
-    Ok(())
+    atomic_file::write_private(path, &encoded)
+        .map_err(|e| failed(&format!("cannot commit lockdown policy: {e}")))
 }
 fn failed(message: &str) -> std::io::Error {
     std::io::Error::other(message)

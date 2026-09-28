@@ -42,11 +42,14 @@ display-confirm-keep = Behalten
 display-confirm-revert = Zurücksetzen
 display-rejected = Diese Anordnung konnte nicht angewendet werden: { $reason }
 
-# Eine Änderung eines Anzeigewerkzeugs (kanshi, wlr-randr) behalten oder zurücksetzen
-display-confirm-tool-title = Die von { $tool } angewendeten Anzeigeeinstellungen behalten?
-display-confirm-tool-unknown-title = Die von einem Werkzeug angewendeten Anzeigeeinstellungen behalten?
-display-confirm-always = Änderungen von { $tool } immer behalten
-display-confirm-a11y-description = Ein Anzeigewerkzeug hat deine Bildschirme geändert. Eingabe behält die Änderung, Escape stellt die vorherige Anordnung wieder her.
+# Eine riskante Änderung eines Anzeigewerkzeugs (kanshi, wlr-randr) behalten oder
+# zurücksetzen: eine, die einen Bildschirm schwarz lassen oder den benutzten ausschalten kann
+display-confirm-tool-title = Die Anzeigeänderung von { $tool } behalten?
+display-confirm-tool-unknown-title = Diese Anzeigeänderung behalten?
+display-confirm-always = Behalten und bei { $tool } nicht mehr fragen
+display-confirm-a11y-description = Ein Anzeigewerkzeug hat einen Bildschirm geändert, den du gerade benutzt, oder einen Modus gewählt, den er noch nie gezeigt hat – dabei kann er schwarz bleiben. Eingabe behält die Änderung; Escape oder Abwarten stellt die vorherige Anordnung wieder her.
+display-tool-reapply-refused = { $tool } wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
+display-tool-reapply-refused-unknown = Ein Anzeigewerkzeug wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
 
 # Drahtlose Empfänger, der untere Bereich desselben Blatts
 wireless-heading = Drahtlose Bildschirme
@@ -578,6 +581,9 @@ host-fabric-speaker-stopped = Wiedergabe auf { $group } beendet
 host-fabric-speaker-playing = Wiedergabe auf { $group }
 host-fabric-speaker-playing-media = Wiedergabe auf { $group }; die Medien laufen weiter von hier
 host-fabric-speaker-left = Dieses Gerät hat { $group } verlassen
+host-fabric-speaker-listen-allowed = { $group } kann mit diesem Mikrofon kalibrieren
+host-fabric-speaker-listen-declined = { $group } verwendet dieses Mikrofon nicht
+host-fabric-speaker-listen-stopped = { $group } kann dieses Mikrofon nicht mehr verwenden
 host-fabric-audio-route-dismissed = Unterbrochene Übertragung { $route } verworfen
 host-fabric-audio-route-stopped = Übertragung { $route } beendet
 host-fabric-input-allowed = { $app } darf diese Eingabe einmal verwenden
@@ -864,8 +870,17 @@ qs-devices-speakers-playing = { $count ->
         [one] { $count } Lautsprecher spielt · auswählen zum Beenden
        *[other] { $count } Lautsprecher spielen · auswählen zum Beenden
     }
+qs-devices-speaker-syncing = { $playing } spielen, { $syncing } gleichen die Uhr ab… · auswählen zum Beenden
+qs-devices-speaker-clock-failed = { $count ->
+        [one] { $count } Lautsprecher kann nicht synchron spielen: { $reason } · auswählen zum Beenden
+       *[other] { $count } Lautsprecher können nicht synchron spielen: { $reason } · auswählen zum Beenden
+    }
 qs-devices-speaker-setup-note = Stereopaar oder Raumlautsprecher · öffnet Einstellungen → Lautsprecher
 qs-devices-speaker-membership-note = eingerichtet auf { $leader } · auswählen zum Austreten
+qs-devices-speaker-listen = { $leader } dieses Mikrofon für { $group } verwenden lassen?
+qs-devices-speaker-listen-note = nur während der Lautsprecherkalibrierung · die Aufnahme bleibt hier
+qs-devices-speaker-listen-note-microphone = verwendet { $microphone } · nur während der Lautsprecherkalibrierung · die Aufnahme bleibt hier
+qs-devices-speaker-listener-note = eingerichtet auf { $leader } · auswählen zum Beenden
 qs-devices-another-certified = Ein anderes zertifiziertes Gerät
 qs-devices-requested-allow-once = { $source } hat das angefragt · einmal erlauben oder ablehnen
 qs-devices-audio-app = Audio der fokussierten App · endet, wenn der Fokus wechselt
@@ -874,6 +889,8 @@ qs-devices-certified-device = zertifiziertes Gerät
 qs-devices-audio-awaiting = wartet auf Freigabe mit { $peer } · auswählen zum Beenden
 qs-devices-audio-streaming = streamt mit { $peer } · auswählen zum Beenden
 qs-devices-audio-interrupted = unterbrochen mit { $peer } · auswählen zum Verwerfen
+qs-devices-audio-syncing = gleicht die Uhr mit { $peer } ab… · auswählen zum Beenden
+qs-devices-audio-clock-failed = kann mit { $peer } nicht synchron spielen: { $reason } · auswählen zum Beenden
 qs-devices-capture-share = { $input } dieses Geräts teilen
 qs-devices-capture-requested = { $source } hat das für { $app } angefragt · einmal erlauben oder ablehnen
 qs-devices-capture-use-remote = Entfernte Eingabe verwenden: { $input }
@@ -1481,6 +1498,11 @@ search-continuity-speaker-play-subtitle = Über jeden bereiten Lautsprecher dies
 search-continuity-speaker-media-subtitle = Hier weiterspielen und den Ton an diese Lautsprechergruppe senden
 search-continuity-speaker-stop = Wiedergabe auf { $group } beenden
 search-continuity-speaker-stop-subtitle = Die Wiedergabe dieser Lautsprechergruppe auf allen Lautsprechern beenden
+search-continuity-speaker-listen-allow = { $group } mit diesem Mikrofon kalibrieren lassen
+search-continuity-speaker-listen-decline = { $group } dieses Mikrofon nicht verwenden lassen
+search-continuity-speaker-listen-subtitle = { $device } möchte beim Kalibrieren der Lautsprecher mit dem Mikrofon dieses Geräts hören
+search-continuity-speaker-listen-stop = { $group } dieses Mikrofon nicht mehr verwenden lassen
+search-continuity-speaker-listen-stop-subtitle = Die auf { $leader } eingerichtete Lautsprecherkalibrierung darf mit diesem Mikrofon hören
 search-continuity-place-left = { $device } links anordnen
 search-continuity-place-right = { $device } rechts anordnen
 search-continuity-place-above = { $device } oberhalb anordnen
@@ -1885,7 +1907,7 @@ window-move-unknown-workspace = Dieser Arbeitsbereich existiert nicht mehr.
 window-move-same-workspace = Das Fenster ist bereits in diesem Arbeitsbereich.
 window-move-pinned = Dieses Fenster gehört zu seinem Arbeitsbereich und kann nicht verschoben werden.
 window-move-document-refused = Das Arbeitsbereichsdokument hat die Änderung nicht angenommen, daher wurde nichts verschoben.
-window-move-hosted-workspace = Die Dokumente dieses Arbeitsbereichs verwahrt ein Raumbesitzer, daher können Fenster von diesem Gerät aus noch nicht hinein- oder herausgebracht werden.
+window-move-hosted-workspace = Diesen Arbeitsbereich führt sein Besitzer, und dieses Gerät erreicht ihn gerade nicht, daher können keine Fenster hinein- oder herausgebracht werden.
 window-move-not-permitted = In diesem Arbeitsbereich darfst du diese App nicht öffnen.
 window-move-already-moving = Dieses Fenster wird bereits verschoben.
 window-move-nobody-to-confirm = Zum Verschieben eines Fensters muss die Person an diesem Desktop zustimmen, was mitgeht, und es ist niemand da.
@@ -1921,6 +1943,26 @@ window-transfer-lost-title = „{ $window }“ wurde während des Verschiebens g
 window-transfer-lost-detail = Die App wurde unerwartet beendet, daher fehlen eventuell Änderungen aus ihren letzten Sekunden. Alles, was sie gespeichert hatte, ist jetzt in { $to }.
 window-transfer-late-edits-title = Deine letzten Änderungen in „{ $window }“ sind mitgekommen
 window-transfer-late-edits-detail = Änderungen, die in { $from } während des Verschiebens gemacht wurden, wurden dem Dokument hinzugefügt.
+window-transfer-move-needs-window = Zum Verschieben muss das Fenster in { $from } geöffnet sein, damit es das Original dort als verschoben markieren kann. Öffne es zuerst oder erstelle eine Kopie.
+window-transfer-owner-accepts = { $to } führt sein Besitzer, der das Dokument annehmen muss, bevor es dort geöffnet wird.
+window-transfer-awaiting-owner = Warte darauf, dass der Besitzer von { $to } es annimmt …
+window-transfer-too-large-hosted = Es ist noch zu groß, um es nach { $to } zu verschieben.
+window-transfer-proposal-failed = { $to } hat es nicht angenommen: { $reason }
+window-transfer-declined = Der Besitzer von { $to } hat es abgelehnt.
+window-transfer-owner-timeout = Der Besitzer von { $to } hat nicht rechtzeitig geantwortet.
+window-transfer-kept-as-copy-title = „{ $window }“ wurde kopiert, nicht verschoben
+window-transfer-kept-as-copy-detail = Es hat sich in { $from } geändert, während der Besitzer von { $to } entschied, daher bleiben beide. { $to } hat es so, wie es beim Verschieben war.
+window-transfer-not-retired-title = „{ $window }“ ist noch in { $from }
+window-transfer-not-retired-detail = Sein Fenster wurde geschlossen, bevor es das Dokument als verschoben markieren konnte, daher bleibt das Original auch in { $from }.
+window-transfer-late-edits-stay-title = Deine letzten Änderungen sind in { $from } geblieben
+window-transfer-late-edits-stay-detail = Änderungen, die in { $from } kurz vor dem Schließen des Fensters gemacht wurden, stehen dort im Verlauf des Dokuments, nicht in { $to }.
+document-import-title = „{ $title }“ in { $to } annehmen?
+document-import-detail = { $person } möchte „{ $title }“ ({ $app }) samt Verlauf nach { $to } verschieben. Alle in { $to } können es dann öffnen.
+document-import-accept = In { $to } annehmen
+document-import-decline = Ablehnen
+document-import-confirm = Antworten
+document-import-someone = Jemand
+document-import-answer-failed-title = Deine Antwort zu „{ $title }“ hat seinen Arbeitsbereich nicht erreicht
 window-transfer-moved-away-title = „{ $window }“ wurde in einen anderen Arbeitsbereich verschoben
 window-transfer-moved-away-to = { $person } hat es nach { $to } verschoben, wo es sich jetzt für dich öffnet. Was du hier siehst, ist der Stand beim Verschieben; hier kann es nicht mehr bearbeitet werden.
 window-transfer-moved-away-elsewhere = { $person } hat es in einen Arbeitsbereich verschoben, in dem du nicht bist. Was du hier siehst, ist der Stand beim Verschieben; hier kann es nicht mehr bearbeitet werden.
@@ -2050,9 +2092,7 @@ speaker-error-no-applied-calibration = es gibt keine angewendete Kalibrierung zu
 speaker-error-calibration-unavailable = die Kalibrierung ist nicht verfügbar
 speaker-error-calibration-gone = diese Kalibrierung ist nicht mehr verfügbar
 speaker-error-network-unavailable = das Gerätenetz ist nicht verfügbar
-speaker-error-microphone-invalid = dieses Mikrofon ist ungültig
 speaker-error-calibrate-on-leader = kalibriere diese Gruppe auf dem Gerät, das sie eingerichtet hat
-speaker-error-microphone-unavailable = dieses Mikrofon ist nicht verfügbar
 speaker-error-not-all-ready = alle Lautsprecher müssen vor dem Kalibrieren bereit sein
 speaker-error-request-failed = die Lautsprecheranfrage ist fehlgeschlagen
 speaker-error-app-stopped = diese Anwendung spielt nichts mehr ab
@@ -2060,11 +2100,24 @@ speaker-error-audio-unavailable = der Ton für Lautsprechergruppen ist nicht ver
 speaker-error-other-session = auf diesem Gerät spielt bereits eine andere Lautsprechergruppe
 
 # Lautsprecher für die Kalibrierung messen
-speaker-calibration-reason-remote-microphone = kalibriere mit einem Mikrofon auf dem Gerät, das die Lautsprecher eingerichtet hat
 speaker-calibration-reason-microphone-gone = dieses Mikrofon ist nicht mehr verbunden
 speaker-calibration-reason-output-gone = der Ausgang dieses Lautsprechers ist nicht mehr verbunden
 speaker-calibration-reason-play-failed = das Messsignal konnte nicht abgespielt werden: { $error }
-speaker-calibration-reason-listen-failed = die Aufnahme konnte nicht gestartet werden: { $error }
+speaker-calibration-reason-clock = die Uhr dieses Lautsprechers konnte nicht abgeglichen werden: { $reason }
+clock-sync-failure-media-disabled = die Medien-Übergabe ist auf diesem Gerät ausgeschaltet
+clock-sync-failure-no-reply = das andere Gerät hat auf den Uhrabgleich nicht geantwortet
+now-playing-speakers-playing = Spielt auf { $group }
+now-playing-speakers-connecting = { $group }: verbindet…
+now-playing-speakers-syncing = { $group }: Uhren werden abgeglichen…
+now-playing-speakers-clock-failed = { $group }: kann nicht synchron spielen – { $reason }
+speaker-calibration-reason-not-heard = dort hob sich kein Messsignal vom Rauschen ab
+speaker-calibration-reason-not-allowed = dieses Gerät hat sein Mikrofon nicht freigegeben
+speaker-calibration-reason-out-of-window = die Anfrage kam zu spät auf diesem Gerät an
+speaker-calibration-reason-busy = dieses Mikrofon war mit einem anderen Messsignal beschäftigt
+speaker-calibration-reason-capture-failed = die Aufnahme ist fehlgeschlagen
+speaker-calibration-reason-clock-unknown = die Uhr dieses Geräts ist noch nicht synchronisiert
+speaker-calibration-reason-no-answer = dieses Gerät hat nicht rechtzeitig geantwortet
+speaker-calibration-reason-not-at-seat = kein Mikrofon hat ihn deutlich genug gehört
 speaker-calibration-failed = { $speaker } konnte nicht gemessen werden: { $reason }
 speaker-calibration-cancelled = Die Kalibrierung wurde abgebrochen
 
@@ -2216,3 +2269,12 @@ remote-capture-source-label = { $app } auf zertifiziertem Gerät
 
 # Druckaufträge: der Titel in der Druckwarteschlange, wenn die App keinen angegeben hat
 print-untitled-document = Dokument
+
+a11y-speaker-listen = { $leader } dieses Mikrofon zum Kalibrieren von { $group } verwenden lassen
+a11y-speaker-listen-description = Es nimmt nur auf, während jeder Lautsprecher ein Messsignal spielt; die Aufnahme bleibt auf diesem Gerät, gesendet werden nur Laufzeit und Pegel
+a11y-speaker-listen-allow = Dieses Mikrofon erlauben
+a11y-speaker-listen-decline = Dieses Mikrofon nicht erlauben
+a11y-speaker-listener = { $group } kann mit diesem Mikrofon kalibrieren
+a11y-speaker-listener-description = Die Lautsprecherkalibrierung darf mit diesem Mikrofon hören; aktivieren, um das zu beenden
+speaker-calibration-listening-refused = { $microphone } durfte nicht zuhören, daher kann an deinem Platz nichts gemessen werden
+speaker-error-listening-unavailable = wähle ein Mikrofon, das an deinem Platz zuhören kann

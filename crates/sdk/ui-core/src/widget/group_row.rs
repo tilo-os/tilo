@@ -5,7 +5,7 @@
 //! Within-group reorder still lives in `TabBar` / `WindowGroup`.
 
 use crate::time::{Duration, Instant};
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::{
     Dimension, Display, FlexDirection, LengthPercentageAuto, NodeId, Position, Size, Style,
@@ -13,7 +13,7 @@ use taffy::{
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -2521,13 +2521,13 @@ impl Widget for GroupRow {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         for g in &mut self.groups {
             g.sync(state, root);
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, root: &ModelPath) -> bool {
         // Animation needs one layout refresh per host frame, not an endless
         // structural invalidation inside bounded composition settlement.
         self.structure_dirty |= self.snap_in_flight();
@@ -2998,25 +2998,15 @@ impl Widget for GroupRow {
         self.draw_reorder_capsule(scene, transform, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if self.external_navigation && self.hidden {
             return;
         }
         // Track the cursor so our post-dispatch detach sweep can hit-test
         // sibling bars even after a child has swallowed the event.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             self.refresh_tab_drop_preview();
         }
 
@@ -3024,8 +3014,8 @@ impl Widget for GroupRow {
         // threshold, it claims the motion/release they'd otherwise
         // contend for. A press records a candidate without claiming, so
         // a plain click still reaches the child for focus.
-        if self.update_group_drag(event, scale_factor) {
-            *handled = true;
+        if self.update_group_drag(event, ctx.scale_factor) {
+            *ctx.handled = true;
             return;
         }
 
@@ -3062,47 +3052,20 @@ impl Widget for GroupRow {
             .find(|group| group.new_tab_hit(cursor))
             .is_some_and(|group| group.request_new_tab_if_hit(cursor));
         if direct_new_tab {
-            *handled = true;
+            *ctx.handled = true;
         }
         if new_tab_owned && !direct_new_tab {
-            self.dispatch_to_groups(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                root,
-                handled,
-                focus_target,
-                taffy,
-            );
+            self.dispatch_to_groups(event, ctx);
         }
-        if !*handled {
-            self.dispatch_to_handles(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                root,
-                handled,
-                focus_target,
-                taffy,
-            );
+        if !*ctx.handled {
+            self.dispatch_to_handles(event, ctx);
         }
         self.apply_pending_handle_resizes();
         if !new_tab_owned {
-            self.dispatch_to_groups(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                root,
-                handled,
-                focus_target,
-                taffy,
-            );
+            self.dispatch_to_groups(event, ctx);
         }
         self.prune_closed_groups();
-        self.resolve_tab_detaches(handled);
+        self.resolve_tab_detaches(ctx.handled);
         if matches!(
             event,
             WindowEvent::MouseInput {
@@ -3590,21 +3553,7 @@ impl GroupRow {
     /// Resize handles dispatch FIRST so a press in the gap claims the
     /// event before adjacent groups see it. Skipped during any child's
     /// tab-drag, which owns the gap itself.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own signature"
-    )]
-    fn dispatch_to_handles(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn dispatch_to_handles(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let any_drag_inflight = self
             .groups
             .iter()
@@ -3616,18 +3565,8 @@ impl GroupRow {
             let Some(&node_id) = self.handle_node_ids.get(i) else {
                 break;
             };
-            h.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                root,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
-            if *handled {
+            h.handle_event(event, &mut ctx.reborrow(ctx.path, node_id));
+            if *ctx.handled {
                 break;
             }
         }
@@ -3663,21 +3602,7 @@ impl GroupRow {
     /// mid-frame (detach sweep pushes a new `WindowGroup`), briefly
     /// outrunning `node_ids`; `.get` skips the new one until its next
     /// layout pass assigns a `node_id`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own signature"
-    )]
-    fn dispatch_to_groups(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn dispatch_to_groups(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Mouse buttons carry no position, so dispatch the group that owns the
         // remembered cursor (or an active capture) before siblings. Keep every
         // sibling in the fallback order: synthetic and keyboard-adjacent test
@@ -3710,18 +3635,8 @@ impl GroupRow {
             let Some(&node_id) = self.node_ids.get(i) else {
                 continue;
             };
-            g.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                root,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
-            if *handled {
+            g.handle_event(event, &mut ctx.reborrow(ctx.path, node_id));
+            if *ctx.handled {
                 break;
             }
         }
@@ -3953,6 +3868,8 @@ fn collect_named_rects(w: &dyn Widget, out: &mut Vec<(String, Rect)>) {
 mod tests {
     use super::*;
     use crate::widget::{TabDescriptor, TileContent, WindowWidth, min_group_px};
+    use automerge::{AutoCommit, ObjId};
+    use winit::event::Modifiers;
 
     /// Narrows a fixture viewport width to the `f32` taffy layout expects.
     /// Test fixtures only ever pass small literal pixel constants (hundreds
@@ -4283,14 +4200,16 @@ mod tests {
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &Modifiers::default(),
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &Modifiers::default(),
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             assert_eq!(
@@ -4611,14 +4530,16 @@ mod tests {
         let mut focus: Option<NodeId> = None;
         row.handle_event(
             ev,
-            1.0,
-            &modifiers,
-            &mut state,
-            &path,
-            &mut handled,
-            &mut focus,
-            root,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut state,
+                path: &path,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: root,
+                taffy,
+            },
         );
     }
 
@@ -4880,14 +4801,16 @@ mod tests {
             };
             row.handle_event(
                 &event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             let b_idx = row
@@ -4957,14 +4880,16 @@ mod tests {
             };
             row.handle_event(
                 &release_event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             let b_ids: Vec<u64> = row.groups[1].tabs().iter().map(|t| t.id).collect();
@@ -4998,14 +4923,16 @@ mod tests {
             let mut focus: Option<NodeId> = None;
             row.handle_event(
                 &release_event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             let b_ids: Vec<u64> = row.groups[1].tabs().iter().map(|t| t.id).collect();
@@ -5069,14 +4996,16 @@ mod tests {
             };
             row.handle_event(
                 &release_event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             let a_tabs_after: Vec<u64> = row.groups[0].tabs().iter().map(|t| t.id).collect();
@@ -5187,14 +5116,16 @@ mod tests {
             };
             row.handle_event(
                 &event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             assert!(
@@ -5234,14 +5165,16 @@ mod tests {
                     state: winit::event::ElementState::Released,
                     button: winit::event::MouseButton::Left,
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &root_obj,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root_obj,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
             // Mimic App's RedrawRequested path so the new group gets a rect.
             assert_eq!(row.groups.len(), 2, "drop 1 must produce 2 groups");
@@ -5275,14 +5208,16 @@ mod tests {
                     state: winit::event::ElementState::Released,
                     button: winit::event::MouseButton::Left,
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &root_obj,
-                &mut handled2,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root_obj,
+                    handled: &mut handled2,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
             assert_eq!(
                 row.groups.len(),
@@ -5321,14 +5256,16 @@ mod tests {
         let mut focus: Option<NodeId> = None;
         row.handle_event(
             &event,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &doc_root,
-            &mut handled,
-            &mut focus,
-            root,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &doc_root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: root,
+                taffy,
+            },
         );
     }
 
@@ -5377,14 +5314,16 @@ mod tests {
             let mut focus: Option<NodeId> = None;
             row.handle_event(
                 &event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             assert_eq!(
@@ -5434,14 +5373,16 @@ mod tests {
             let mut focus: Option<NodeId> = None;
             row.handle_event(
                 &event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             assert_eq!(
@@ -5475,14 +5416,16 @@ mod tests {
             let mut focus: Option<NodeId> = None;
             row.handle_event(
                 &event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             assert_eq!(
@@ -5529,14 +5472,16 @@ mod tests {
             let mut focus: Option<NodeId> = None;
             row.handle_event(
                 &event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             assert_eq!(
@@ -5892,14 +5837,16 @@ mod tests {
                         device_id: dev,
                         position: PhysicalPosition::new(cx, cy),
                     },
-                    1.0,
-                    &modifiers,
-                    &mut state,
-                    &root_obj,
-                    &mut handled,
-                    &mut focus,
-                    root,
-                    &taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &modifiers,
+                        state: &mut state,
+                        path: &root_obj,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: root,
+                        taffy: &taffy,
+                    },
                 );
                 row.handle_event(
                     &WindowEvent::MouseWheel {
@@ -5907,14 +5854,16 @@ mod tests {
                         delta: MouseScrollDelta::LineDelta(0.0, -3.0),
                         phase: winit::event::TouchPhase::Moved,
                     },
-                    1.0,
-                    &modifiers,
-                    &mut state,
-                    &root_obj,
-                    &mut handled,
-                    &mut focus,
-                    root,
-                    &taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &modifiers,
+                        state: &mut state,
+                        path: &root_obj,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: root,
+                        taffy: &taffy,
+                    },
                 );
                 assert!(!handled, "a bare wheel must be left unclaimed by the strip");
                 // Lets any wrongly-started eased travel show itself.
@@ -6102,14 +6051,16 @@ mod tests {
                     device_id: dev,
                     position: PhysicalPosition::new(cx, cy),
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &root_obj,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root_obj,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
             row.handle_event(
                 &WindowEvent::MouseWheel {
@@ -6117,14 +6068,16 @@ mod tests {
                     delta: MouseScrollDelta::LineDelta(0.0, -1.0),
                     phase: winit::event::TouchPhase::Moved,
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &root_obj,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root_obj,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
             let anim = row
                 .pan
@@ -6536,14 +6489,16 @@ mod tests {
                     device_id: dev,
                     position: PhysicalPosition::new(cx, cy),
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &path,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &path,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
             assert!(
                 !row.handle_at(0).unwrap().is_hovered(),
@@ -6579,14 +6534,16 @@ mod tests {
         let mut handled = false;
         row.handle_event(
             event,
-            1.0,
-            &modifiers,
-            state,
-            path,
-            &mut handled,
-            focus,
-            root,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state,
+                path,
+                handled: &mut handled,
+                focus_target: focus,
+                node_id: root,
+                taffy,
+            },
         );
         handled
     }

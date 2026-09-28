@@ -1,12 +1,12 @@
 //! The production desktop hierarchy, shared by native and portable hosts.
 use crate::resolver::{TileRequest, TileResolver, tile_app_kind};
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use tilo_desktop_model::{
     DesktopTree, OutputPartition, RoomId, Strip, StripId, WindowGroup, WindowWidth,
 };
 use ui::record::RecordStore;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Column, Container, GroupRow, Stack, StripView, TabDescriptor, Widget, WindowGroup as UiGroup,
     WorkspaceView,
@@ -933,10 +933,7 @@ impl Widget for DesktopSurface {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
-        self.root.sync(doc, path);
-    }
-    fn update(&mut self, doc: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
         let wake = self.take_component_wake();
         self.root.update(doc, path) || wake
     }
@@ -987,21 +984,12 @@ impl Widget for DesktopSurface {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        tree: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        if !*handled {
-            self.observe_navigation_event(event, scale);
+        if !*ctx.handled {
+            self.observe_navigation_event(event, ctx.scale_factor);
         }
-        self.root.handle_event(
-            event, scale, modifiers, doc, path, handled, focus, node, tree,
-        );
+        self.root.handle_event(event, ctx);
     }
     fn focus_requested(&mut self, target: Option<NodeId>, tree: &TaffyTree<()>) {
         self.observe_focus_request(target, tree);

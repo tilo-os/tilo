@@ -2,7 +2,7 @@
 use super::{
     Actor, AdmittedJoinIdentity, Arc, CapDecision, CapnpBrokerState, CrdtRoute,
     PrivateWorkerRegistration, PublishedAction, PublishedInput, ResourceRef, Verb,
-    VerifiedActionCaller, Weak, principal_id_for_root,
+    VerifiedActionCaller, Weak,
 };
 use ui::invocation_scope::{
     PublishedInvocationAuthorizer, PublishedInvocationLease, PublishedInvocationRequest,
@@ -174,10 +174,35 @@ impl OriginalInvocation {
         }
         self.data.time.now_ns().map_err(|error| error.to_string())
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered custody, admission, caller and permission recheck with its timing marks"
-    )]
+    /// The original person caller, decided while `state` can still say who
+    /// governs the room; `None` for an agent caller.
+    fn original_person(
+        &self,
+        state: &CapnpBrokerState,
+    ) -> Result<Option<super::BrokerActor>, String> {
+        if self.agent_id().is_some() {
+            return Ok(None);
+        }
+        let room = &self.data.route.cluster_id;
+        Ok(Some(state.certified_person(room, self.certificate()?)))
+    }
+    fn original_actor(
+        &self,
+        person: Option<super::BrokerActor>,
+        workspace: &tilo_desktop_model::Workspace,
+        seconds: u64,
+    ) -> Result<Actor, String> {
+        if let Some(person) = person {
+            return Ok(person.policy_in(workspace, seconds));
+        }
+        let agent = self
+            .agent_id()
+            .ok_or("original invocation caller unavailable")?;
+        workspace
+            .role_of_agent_at(agent, seconds)
+            .ok_or("original agent membership expired")?;
+        Ok(Actor::agent(agent).in_room(self.data.route.cluster_id.clone()))
+    }
     fn check_lifecycle(&self) -> Result<(), String> {
         let began = std::time::Instant::now();
         self.check_custody()?;
@@ -228,6 +253,7 @@ impl OriginalInvocation {
             .as_ref()
             .ok_or("workspace authority unavailable")?
             .snapshot()?;
+        let person = self.original_person(&state)?;
         drop(state);
         let membership_us = crate::agent_timing::us(mark);
         let workspace = tree
@@ -236,17 +262,7 @@ impl OriginalInvocation {
             .find(|workspace| workspace.room.to_string() == self.data.route.cluster_id)
             .ok_or("original invocation workspace unavailable")?;
         let seconds = self.data.time.now_ns().map_err(|error| error.to_string())? / 1_000_000_000;
-        let actor = if let Some(agent) = self.agent_id() {
-            workspace
-                .role_of_agent_at(agent, seconds)
-                .ok_or("original agent membership expired")?;
-            Actor::agent(agent).in_room(self.data.route.cluster_id.clone())
-        } else {
-            workspace.actor_for_person_at(
-                &principal_id_for_root(self.certificate()?.user_public_key),
-                seconds,
-            )
-        };
+        let actor = self.original_actor(person, workspace, seconds)?;
         let verb = match self.data.spec.contract.permission {
             tilo_actions::PermissionRequirement::None => None,
             tilo_actions::PermissionRequirement::Read => Some(Verb::Read),

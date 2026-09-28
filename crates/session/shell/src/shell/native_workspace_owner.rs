@@ -1,8 +1,12 @@
 //! Actual native semantic owner, committed through the existing state.json writer.
-mod bootstrap;
-mod enrollment;
+//!
+//! The owner itself is `tilo_joined_room`'s; this host keeps its record
+//! inside the state file ([`TreeStore`]), so every owner publication also
+//! binds an enrolled slot, projects the room into the tree and exports the
+//! resulting file-system capabilities under the same writer lock.
 pub(crate) mod publication;
-mod record;
+#[cfg(test)]
+mod publication_tests;
 pub(crate) mod store;
 #[cfg(test)]
 mod tests;
@@ -11,392 +15,162 @@ pub(crate) use tests::{test_bootstrap_response, test_descriptor, test_enrolled_o
 
 use super::{
     persist,
-    state::{RoomId, WorkspaceTreeHandle},
-};
-pub(crate) use bootstrap::NativeBootstrap;
-use parking_lot::{Mutex, RwLock};
-pub use record::NativeAuthorityStorage;
-pub(crate) use record::{PendingEnrollmentId, PendingEnrollmentStatus, StoredPendingEnrollment};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Weak},
-    time::SystemTime,
+    state::{RoomId, WorkspaceId, WorkspaceTreeHandle},
 };
 pub use store::NativeStateRuntime;
-use tilo_delivery_protocol::delivery_v3::descriptor::GenerationExpectation;
-use tilo_peer_state::{AdmissionReport, NeighbourMsg, StatePeer, TransportOrigin};
-use tilo_user_identity::DeviceCert;
+pub use tilo_joined_room::NativeAuthorityStorage;
+use tilo_joined_room::{Change, Store};
+pub(crate) use tilo_joined_room::{
+    DocumentRead, NativeBootstrap, NativeCommittedView, NativeFenceSubscription,
+    NativeWorkspaceOwner,
+};
+#[cfg(test)]
+pub(crate) use tilo_joined_room::{PendingEnrollmentId, PendingEnrollmentStatus};
 
-#[derive(Clone)]
-pub(crate) struct NativeWorkspaceOwner(Arc<SharedOwner>);
-struct SharedOwner {
+/// The owner's record as one field of the state file, written through the
+/// state file's single writer.
+struct TreeStore {
     tree: WorkspaceTreeHandle,
     runtime: NativeStateRuntime,
-    mutation: Mutex<()>,
-    current: RwLock<Current>,
-    listeners: Mutex<Vec<Weak<dyn NativeFenceObserver>>>,
-}
-#[derive(Default)]
-struct Current {
-    rooms: BTreeMap<RoomId, Arc<NativeCommittedView>>,
-    required: BTreeSet<RoomId>,
-    denied: BTreeSet<RoomId>,
-    fenced: bool,
-}
-/// Closure-scoped borrowed view of the actual owner publication. It is never an authority DTO.
-#[derive(Clone)]
-pub(crate) struct NativeCommittedView {
-    peer: StatePeer,
-    record: record::StoredRoom,
-}
-impl NativeCommittedView {
-    pub(crate) fn peer(&self) -> &StatePeer {
-        &self.peer
-    }
-    pub(crate) fn governor(&self) -> &DeviceCert {
-        &self.record.governor
-    }
-    pub(crate) fn enrollment_invitation(&self) -> &[u8] {
-        &self.record.invitation
-    }
-    pub(crate) fn device(&self) -> &DeviceCert {
-        &self.record.device
-    }
-    pub(crate) fn workspace(&self) -> u64 {
-        self.record.workspace
-    }
-    pub(crate) fn generation(&self) -> u64 {
-        self.record.generation
-    }
-    pub(crate) fn continuity(&self) -> u64 {
-        self.record.continuity
-    }
-    pub(crate) fn host(&self) -> Option<&DeviceCert> {
-        self.record.host.as_ref()
-    }
-    pub(crate) fn delivery_locator(&self) -> Option<&tilo_peer_state::join::TransportHint> {
-        self.record.locator.as_ref()
-    }
-    pub(crate) fn hint(&self) -> Option<&tilo_peer_state::join::TransportHint> {
-        self.record.hint.as_ref()
-    }
-    pub(crate) fn transport_hint(&self) -> &tilo_peer_state::join::TransportHint {
-        &self.record.transport_hint
-    }
-    pub(crate) fn descriptor_expectation(&self) -> Result<GenerationExpectation, String> {
-        if self.host().is_none() {
-            return Err("enrollment has no independently pinned delivery host".into());
-        }
-        Ok(match &self.record.floor {
-            Some(floor) => GenerationExpectation::Current {
-                generation: floor.generation,
-                descriptor_digest: floor.digest,
-            },
-            None => GenerationExpectation::FirstAccepted {
-                minimum_generation: 1,
-            },
-        })
-    }
-    fn security_digest(&self) -> Result<[u8; 32], String> {
-        let policy = self.peer.validated_media_policy().ok().flatten();
-        let basis = self
-            .peer
-            .admitted_room()
-            .map(|doc| tilo_peer_state::room::media::security_basis(doc, &self.peer.revocations()))
-            .transpose()
-            .map_err(|e| e.to_string())?;
-        let bytes = postcard::to_stdvec(&(
-            policy,
-            basis,
-            &self.record.device,
-            &self.record.host,
-            &self.record.hint,
-            &self.record.floor,
-        ))
-        .map_err(|e| e.to_string())?;
-        Ok(*blake3::hash(&bytes).as_bytes())
-    }
 }
 
-/// Callbacks synchronously revoke live client/capture fences; no owner reread or I/O.
-pub(crate) trait NativeFenceObserver: Send + Sync {
-    fn fence(&self, room: RoomId, continuity: u64);
-}
-impl<F: Fn(RoomId, u64) + Send + Sync> NativeFenceObserver for F {
-    fn fence(&self, room: RoomId, continuity: u64) {
-        self(room, continuity);
+impl Store for TreeStore {
+    fn healthy(&self) -> bool {
+        self.runtime.healthy()
     }
-}
-/// Retaining this token retains the callback; owner stores only a weak reference.
-pub(crate) struct NativeFenceSubscription {
-    _observer: Arc<dyn NativeFenceObserver>,
-}
-impl SharedOwner {
-    fn notify(&self, room: RoomId, continuity: u64) {
-        let observers: Vec<_> = {
-            let mut listeners = self.listeners.lock();
-            let live = listeners.iter().filter_map(Weak::upgrade).collect();
-            listeners.retain(|listener| listener.strong_count() != 0);
-            live
-        };
-        for observer in observers {
-            observer.fence(room, continuity);
-        }
+
+    fn uncertain(&self, room: RoomId) -> bool {
+        self.runtime.requires_uncertain(room)
     }
-    fn fence_all(&self) {
-        let mut current = self.current.write();
-        current.fenced = true;
-        for (room, view) in &current.rooms {
-            self.notify(*room, view.continuity());
-        }
+
+    fn slot_room(&self, slot: WorkspaceId) -> Option<RoomId> {
+        self.tree.read().room_of(slot)
     }
-}
-impl NativeWorkspaceOwner {
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "callers hand over their tree handle; the owner retains a clone of it"
-    )]
+
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "the state writer stays locked from owner lookup through installation and export"
+        reason = "the state writer stays locked from the slot check through publication and export"
     )]
-    pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<Self, String> {
-        let mut native = tree.write();
-        if let Some(owner) = native.installed_native_owner() {
-            if !Arc::ptr_eq(&owner.0.tree, &tree) {
+    fn publish(
+        &self,
+        next: &NativeAuthorityStorage,
+        change: Change<'_>,
+        install: &mut dyn FnMut(),
+    ) -> Result<(), String> {
+        let mut tree = self.tree.write();
+        store::preflight(&*tree, store::MAX_STATE_BYTES).map_err(|e| e.to_string())?;
+        let mut candidate = tree.clone();
+        if let Change::Room {
+            room,
+            bind: Some(target),
+            ..
+        } = change
+        {
+            if tree.room_of(target.workspace) != Some(target.prior_room) {
                 return Err(
-                    "state writer already belongs to a different native tree handle".into(),
+                    "enrollment target or pending generation changed before completion".into(),
                 );
             }
-            return Ok(owner);
-        }
-        store::preflight(&native.native_authority, store::MAX_AUTHORITY_BYTES)
-            .map_err(|e| e.to_string())?;
-        let path = native
-            .persist_path
-            .clone()
-            .ok_or("native owner requires the actual state-file path")?;
-        native
-            .native_runtime
-            .bind(&path, &native.native_authority)
-            .map_err(|e| e.to_string())?;
-        if native.native_authority.pending.len() > store::MAX_PENDING {
-            return Err("native pending enrollment quota exceeded".into());
-        }
-        let mut pending_slots = BTreeSet::new();
-        for pending in native.native_authority.pending.values() {
-            if !pending_slots.insert(pending.target.workspace) {
-                return Err("ambiguous native pending enrollment slot".into());
-            }
-        }
-        let mut current = Current::default();
-        current
-            .required
-            .extend(native.native_authority.rooms.keys().copied());
-        current
-            .required
-            .extend(native.native_authority.pending.keys().copied());
-        for (room, pending) in &native.native_authority.pending {
-            enrollment::validate_pending(*room, pending)?;
-        }
-        store::preflight(&*native, store::MAX_STATE_BYTES).map_err(|e| e.to_string())?;
-        let reopened = native.clone();
-        for (room, record) in &native.native_authority.rooms {
-            let view = enrollment::restore(*room, record, SystemTime::now())?;
-            current.rooms.insert(*room, Arc::new(view));
-        }
-        let owner = Self(Arc::new(SharedOwner {
-            tree: tree.clone(),
-            runtime: native.native_runtime.clone(),
-            mutation: Mutex::new(()),
-            current: RwLock::new(current),
-            listeners: Mutex::new(Vec::new()),
-        }));
-        // Re-establish the publication barrier before exposing a reopened generation.
-        let bytes = persist::encode_tree(&reopened).map_err(|e| e.to_string())?;
-        native
-            .native_runtime
-            .publish(
-                &path,
-                &native.native_authority,
-                &reopened.native_authority,
-                &bytes,
-            )
-            .map_err(|e| e.to_string())?;
-        *native = reopened;
-        for (room, view) in &owner.0.current.read().rooms {
-            native.project_native_room(*room, &view.peer);
-        }
-        native.native_runtime.0.writer.lock().owner = Arc::downgrade(&owner.0);
-        native.export_fs_capabilities();
-        Ok(owner)
-    }
-    pub(crate) fn contains_room(&self, room: RoomId) -> bool {
-        self.0.current.read().required.contains(&room) || self.0.runtime.requires_uncertain(room)
-    }
-    /// Store availability only; room authority still requires `with_current`.
-    pub(crate) fn health(&self) -> Result<(), String> {
-        if self.0.current.read().fenced || !self.0.runtime.healthy() {
-            return Err("native owner continuity is fenced".into());
-        }
-        Ok(())
-    }
-    pub(crate) fn with_current<T>(
-        &self,
-        room: RoomId,
-        read: impl FnOnce(&NativeCommittedView) -> Result<T, String>,
-    ) -> Result<T, String> {
-        let current = self.0.current.read();
-        if current.fenced || current.denied.contains(&room) || !self.0.runtime.healthy() {
-            return Err("native owner continuity is fenced".into());
-        }
-        read(
-            current
-                .rooms
-                .get(&room)
-                .ok_or("room has no committed native enrollment")?,
-        )
-    }
-    pub(crate) fn observe_fences(
-        &self,
-        observer: Arc<dyn NativeFenceObserver>,
-    ) -> NativeFenceSubscription {
-        self.0.listeners.lock().push(Arc::downgrade(&observer));
-        NativeFenceSubscription {
-            _observer: observer,
-        }
-    }
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "fence observers are notified in order under the continuity write lock"
-    )]
-    pub(crate) fn invalidate_identity(&self, room: RoomId) {
-        let mut current = self.0.current.write();
-        if !current.denied.insert(room) {
-            return;
-        }
-        let continuity = current.rooms.get(&room).map_or(0, |view| view.continuity());
-        self.0.notify(room, continuity);
-    }
-    /// Admits genuine relay provenance; pending document prerequisites are also durable.
-    pub(crate) fn receive(
-        &self,
-        room: RoomId,
-        origin: TransportOrigin,
-        message: NeighbourMsg,
-        now: SystemTime,
-    ) -> Result<AdmissionReport, String> {
-        if !matches!(
-            message,
-            NeighbourMsg::SyncResp { .. } | NeighbourMsg::AppDocument { .. }
-        ) {
-            return Err("native owner admits only workspace state messages".into());
-        }
-        let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
-        let report = candidate
-            .peer
-            .receive_from_report(origin, message, now)
-            .map_err(|e| e.to_string())?;
-        publication::retire(&mut candidate)?;
-        candidate.record.peer = candidate.peer.durable()?;
-        candidate.record.generation = candidate
-            .record
-            .generation
-            .checked_add(1)
-            .ok_or("native owner generation exhausted")?;
-        self.publish_room(room, candidate, None)?;
-        Ok(report)
-    }
-    /// Caller holds the serialized turn, but readers keep the preceding committed view during I/O.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the state writer stays locked from the enrollment check through publication and export"
-    )]
-    fn publish_room(
-        &self,
-        room: RoomId,
-        mut candidate: NativeCommittedView,
-        enrollment: Option<&StoredPendingEnrollment>,
-    ) -> Result<(), String> {
-        let candidate_security = candidate.security_digest()?;
-        let changed = {
-            let current = self.0.current.read();
-            if current.fenced || current.denied.contains(&room) || !self.0.runtime.healthy() {
-                return Err("native owner continuity is fenced".into());
-            }
-            current
-                .rooms
-                .get(&room)
-                .map(|old| {
-                    old.security_digest()
-                        .map(|digest| digest != candidate_security)
-                })
-                .transpose()?
-                .unwrap_or(true)
-        };
-        store::preflight(&candidate.record, store::MAX_AUTHORITY_BYTES)
-            .map_err(|e| e.to_string())?;
-        if changed {
-            candidate.record.continuity = candidate
-                .record
-                .continuity
-                .checked_add(1)
-                .ok_or("native continuity exhausted")?;
-        }
-        let mut tree = self.0.tree.write();
-        store::preflight(&*tree, store::MAX_STATE_BYTES).map_err(|e| e.to_string())?;
-        if let Some(pending) = enrollment
-            && (tree.room_of(pending.target.workspace) != Some(pending.target.prior_room)
-                || tree
-                    .native_authority
-                    .pending
-                    .get(&room)
-                    .is_none_or(|current| {
-                        current.id != pending.id
-                            || current.status != PendingEnrollmentStatus::Active
-                    }))
-        {
-            return Err("enrollment target or pending generation changed before completion".into());
-        }
-        let mut next = tree.clone();
-        if let Some(pending) = enrollment {
             // This pure helper cannot reach any persistence/export/publisher channel.
-            next.set_room_in_memory(pending.target.workspace, room);
-            if next.room_of(pending.target.workspace) != Some(room) {
+            candidate.set_room_in_memory(target.workspace, room);
+            if candidate.room_of(target.workspace) != Some(room) {
                 return Err("enrollment local slot cannot be bound".into());
             }
         }
-        next.native_authority.revision = next
-            .native_authority
-            .revision
-            .checked_add(1)
-            .ok_or("native storage generation exhausted")?;
-        next.native_authority
-            .rooms
-            .insert(room, candidate.record.clone());
-        if enrollment.is_some() {
-            next.native_authority.pending.remove(&room);
+        candidate.native_authority = next.clone();
+        if let Change::Room { room, peer, .. } = change {
+            candidate.project_native_room(room, peer);
         }
-        next.project_native_room(room, &candidate.peer);
-        let bytes = persist::encode_tree(&next).map_err(|e| e.to_string())?;
+        let bytes = persist::encode_tree(&candidate).map_err(|e| e.to_string())?;
         let path = tree
             .persist_path
             .as_ref()
             .ok_or("native owner state-file path removed")?;
         tree.native_runtime
-            .publish(path, &tree.native_authority, &next.native_authority, &bytes)
+            .publish(
+                path,
+                &tree.native_authority,
+                &candidate.native_authority,
+                &bytes,
+            )
             .map_err(|e| e.to_string())?;
-        let mut current = self.0.current.write();
-        if changed {
-            self.0.notify(room, candidate.continuity());
+        match change {
+            Change::Pending => {
+                persist::save_doc_for(&candidate, path, &bytes);
+                install();
+                *tree = candidate;
+            }
+            Change::Room { .. } => {
+                install();
+                *tree = candidate;
+                // Only the acknowledged final admitted projection reaches authority exports.
+                tree.export_fs_capabilities();
+            }
         }
-        current.required.insert(room);
-        current.rooms.insert(room, Arc::new(candidate));
-        *tree = next;
-        drop(current);
-        // Only the acknowledged final admitted projection reaches authority exports.
-        tree.export_fs_capabilities();
         Ok(())
     }
+}
+
+/// The owner of the state file behind `tree`, attached to its writer.
+///
+/// # Errors
+/// The writer belongs to another tree, the file's record is invalid, or the
+/// reopened generation cannot be published.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "callers hand over their tree handle; the owner retains a clone of it"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the state writer stays locked from owner lookup through installation and export"
+)]
+pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, String> {
+    let mut native = tree.write();
+    if let Some(owner) = native.native_runtime.owner_of(&tree)? {
+        return Ok(owner);
+    }
+    store::preflight(&native.native_authority, store::MAX_AUTHORITY_BYTES)
+        .map_err(|e| e.to_string())?;
+    let path = native
+        .persist_path
+        .clone()
+        .ok_or("native owner requires the actual state-file path")?;
+    native
+        .native_runtime
+        .bind(&path, &native.native_authority)
+        .map_err(|e| e.to_string())?;
+    if !native.native_authority.every_pending_has_slot() {
+        return Err("native pending enrollment has no local slot".into());
+    }
+    store::preflight(&*native, store::MAX_STATE_BYTES).map_err(|e| e.to_string())?;
+    let reopened = native.clone();
+    let owner = NativeWorkspaceOwner::restore(
+        std::sync::Arc::new(TreeStore {
+            tree: tree.clone(),
+            runtime: native.native_runtime.clone(),
+        }),
+        native.native_authority.clone(),
+        std::time::SystemTime::now(),
+    )?;
+    // Re-establish the publication barrier before exposing a reopened generation.
+    let bytes = persist::encode_tree(&reopened).map_err(|e| e.to_string())?;
+    native
+        .native_runtime
+        .publish(
+            &path,
+            &native.native_authority,
+            &reopened.native_authority,
+            &bytes,
+        )
+        .map_err(|e| e.to_string())?;
+    *native = reopened;
+    for room in owner.rooms() {
+        owner.with_current(room, |view| {
+            native.project_native_room(room, view.peer());
+            Ok(())
+        })?;
+    }
+    native.native_runtime.attach(&owner, &tree);
+    native.export_fs_capabilities();
+    Ok(owner)
 }

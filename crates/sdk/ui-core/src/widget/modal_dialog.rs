@@ -5,6 +5,7 @@
 //! and do not flow through Automerge, mirroring how `permission_prompt`
 //! exposes its result via `pending_choice`.
 
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -421,14 +422,16 @@ impl<C: Widget> ModalDialog<C> {
         let mut inner_handled = false;
         self.content.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut inner_handled,
-            focus_target,
-            node,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor,
+                modifiers: &modifiers,
+                state,
+                path,
+                handled: &mut inner_handled,
+                focus_target,
+                node_id: node,
+                taffy,
+            },
         );
         inner_handled
     }
@@ -484,14 +487,16 @@ impl<C: Widget + 'static> ModalDialog<C> {
         let mut focus_target = None;
         self.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor,
+                modifiers: &modifiers,
+                state,
+                path,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -504,7 +509,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         self.recompute_layout();
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         // The dialog holds no CRDT-backed state itself; forward so embedded
         // content widgets still get their sync pass.
         self.content.sync(state, path);
@@ -652,18 +657,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.open {
             return;
         }
@@ -672,11 +666,19 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // App's `modal_capture` cooperation.
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.pointer_inside = true;
                 // A TextInput only takes a click while hovered, and this
                 // CursorMoved is what arms it.
-                self.forward_to_content(event, scale_factor, *modifiers, state, path, focus_target);
+                self.forward_to_content(
+                    event,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
+                );
             }
             // No `CursorMoved` follows the pointer out of the window, so the
             // footer buttons' hover has to be dropped here.
@@ -695,7 +697,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 if let Some(cb) = self.on_dismiss.as_mut() {
                     cb();
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -708,20 +710,27 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             } => {
                 let content_handled = self.forward_to_content(
                     event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    focus_target,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
                 );
                 if !content_handled && let Some(action) = self.primary_action.as_mut() {
                     (action.on_click)();
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput { .. } => {
-                self.forward_to_content(event, scale_factor, *modifiers, state, path, focus_target);
-                *handled = true;
+                self.forward_to_content(
+                    event,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
+                );
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -741,16 +750,16 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 } else if self.rect.contains(p) {
                     self.forward_to_content(
                         event,
-                        scale_factor,
-                        *modifiers,
-                        state,
-                        path,
-                        focus_target,
+                        ctx.scale_factor,
+                        *ctx.modifiers,
+                        ctx.state,
+                        ctx.path,
+                        ctx.focus_target,
                     );
                 } else if let Some(cb) = self.on_dismiss.as_mut() {
                     cb();
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput { .. } => {
                 // Still forward in-box presses so e.g. a right-click context
@@ -758,14 +767,14 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 if self.rect.contains(self.last_cursor) {
                     self.forward_to_content(
                         event,
-                        scale_factor,
-                        *modifiers,
-                        state,
-                        path,
-                        focus_target,
+                        ctx.scale_factor,
+                        *ctx.modifiers,
+                        ctx.state,
+                        ctx.path,
+                        ctx.focus_target,
                     );
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -850,8 +859,8 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _: &mut AutoCommit,
-        _: &ObjId,
+        _: &mut AppModel,
+        _: &ModelPath,
     ) -> bool {
         if !self.open || !matches!(action, crate::a11y::Action::Activate) {
             return false;
@@ -903,7 +912,6 @@ mod tests {
     struct TestContent;
 
     impl Widget for TestContent {
-        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -922,19 +930,6 @@ mod tests {
             _text_renderer: &mut TextRenderer,
             _theme: &Theme,
             _presence: &PresenceCtx,
-        ) {
-        }
-        fn handle_event(
-            &mut self,
-            _event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &winit::event::Modifiers,
-            _state: &mut AutoCommit,
-            _path: &ObjId,
-            _handled: &mut bool,
-            _focus_target: &mut Option<NodeId>,
-            _node_id: NodeId,
-            _taffy: &TaffyTree<()>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -956,7 +951,6 @@ mod tests {
     }
 
     impl Widget for CountingContent {
-        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -996,20 +990,9 @@ mod tests {
             _presence: &PresenceCtx,
         ) {
         }
-        fn handle_event(
-            &mut self,
-            _event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &winit::event::Modifiers,
-            _state: &mut AutoCommit,
-            _path: &ObjId,
-            handled: &mut bool,
-            _focus_target: &mut Option<NodeId>,
-            _node_id: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, _event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             self.events.set(self.events.get().saturating_add(1));
-            *handled = self.consume;
+            *ctx.handled = self.consume;
         }
         fn name(&self) -> &'static str {
             "CountingContent"
@@ -1074,14 +1057,16 @@ mod tests {
         let root = automerge::ROOT;
         d.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
         handled
     }

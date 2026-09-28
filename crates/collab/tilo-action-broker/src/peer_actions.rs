@@ -82,6 +82,12 @@ pub trait CertificateAuthority: Send + Sync {
         room: Uuid,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String>;
+    /// Whether `_device` governs `_room`; `None` is this host's own device.
+    /// A foreign device is held to the workspace's cap only in rooms it does
+    /// not govern; the default governs none.
+    fn governs(&self, _room: Uuid, _device: Option<&[u8; 32]>) -> bool {
+        false
+    }
     /// Local SDK admission may additionally require a host's current enrollment record.
     ///
     /// # Errors

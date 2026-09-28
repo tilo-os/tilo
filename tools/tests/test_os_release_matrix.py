@@ -155,7 +155,7 @@ class OsReleaseMatrixTests(unittest.TestCase):
             self.assertIn("PLANNED_PUBLISH: ${{ needs.plan.outputs.publish }}", workflow)
             self.assertIn("docker://registry.tilo.so/tilo/tilo:latest", workflow)
             self.assertIn('.Labels["org.opencontainers.image.revision"]', workflow)
-        with self.subTest(phase='every publishing run holds the generation series lock'):
+        with self.subTest(phase='generic publishing runs hold the generation series lock'):
             cases = [
                 ("refs/tags/v1.2.3", "push", ""),
                 ("refs/heads/main", "workflow_dispatch", "true"),
@@ -175,6 +175,19 @@ class OsReleaseMatrixTests(unittest.TestCase):
                         self.assertEqual(group, "tilo-os-image-series-2")
                     else:
                         self.assertEqual(group, f"tilo-os-image-validate-{ref}")
+        with self.subTest(phase='Lenovo publication has a source-specific lock'):
+            self.assertEqual(
+                concurrency_group("refs/heads/main", "workflow_dispatch", "true", "lenovo-83ed"),
+                f"tilo-os-image-lenovo-{SHA}",
+            )
+            self.assertEqual(
+                concurrency_group("refs/heads/main", "workflow_dispatch", "true", "lenovo-83ed", "f" * 40),
+                f"tilo-os-image-lenovo-{'f' * 40}",
+            )
+            self.assertNotEqual(
+                concurrency_group("refs/heads/main", "workflow_dispatch", "true"),
+                concurrency_group("refs/heads/main", "workflow_dispatch", "true", "lenovo-83ed"),
+            )
 
 
 def generation_script() -> str:
@@ -246,7 +259,7 @@ class ReleaseGateTests(unittest.TestCase):
             workflow = WORKFLOW.read_text()
             archive = re.compile(r"oci-archive:/var/tmp/tilo-image(?:-repro)?\.tar")
             uses = list(archive.finditer(workflow))
-            self.assertEqual(len(uses), 4)
+            self.assertEqual(len(uses), 6)
             for use in uses:
                 self.assertRegex(
                     workflow[use.end():use.end() + 24],
@@ -357,7 +370,9 @@ class ReleaseGateTests(unittest.TestCase):
             )
 
 
-def concurrency_group(ref: str, event: str, requested: str) -> str:
+def concurrency_group(
+    ref: str, event: str, requested: str, profile: str = "generic", sha: str = SHA,
+) -> str:
     """Evaluate the workflow's concurrency expression for one event."""
     line = next(
         line for line in WORKFLOW.read_text().splitlines() if line.startswith("  group: ${{")
@@ -365,7 +380,9 @@ def concurrency_group(ref: str, event: str, requested: str) -> str:
     expression = line.split("${{", 1)[1].rsplit("}}", 1)[0]
     for source, target in [
         ("startsWith(github.ref, 'refs/tags/v')", "ref.startswith('refs/tags/v')"),
+        ("format('tilo-os-image-lenovo-{0}', github.sha)", "('tilo-os-image-lenovo-' + sha)"),
         ("format('tilo-os-image-validate-{0}', github.ref)", "('tilo-os-image-validate-' + ref)"),
+        ("github.event.inputs.hardware_profile", "profile"),
         ("github.event.inputs.publish", "requested"),
         ("github.event_name", "event"),
         ("github.ref", "ref"),
@@ -373,7 +390,9 @@ def concurrency_group(ref: str, event: str, requested: str) -> str:
         ("||", " or "),
     ]:
         expression = expression.replace(source, target)
-    return eval(expression, {}, {"ref": ref, "event": event, "requested": requested})
+    return eval(expression, {}, {
+        "ref": ref, "event": event, "requested": requested, "profile": profile, "sha": sha,
+    })
 
 
 if __name__ == "__main__":

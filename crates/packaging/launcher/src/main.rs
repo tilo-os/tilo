@@ -416,6 +416,7 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         sandbox_shim_bin: None,
         minimal_libs: args.minimal_libs,
         landlock_enforce: true,
+        landlock_best_effort: launcher::provider_sandbox::landlock_best_effort(&args.payload_root),
         mode: if args.service {
             LaunchMode::Service {
                 passthrough_argv: args.rest,
@@ -679,6 +680,7 @@ fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
         no_services: args.no_services,
         mode: LaunchMode::Gui,
         landlock_enforce: true,
+        landlock_best_effort: launcher::provider_sandbox::landlock_best_effort(&entry.payload_root),
         allow_missing_runtime: args.allow_missing_runtime,
         allow_unsigned_runtime: args.allow_unsigned_runtime,
         wayland_socket: args.wayland_socket,
@@ -826,6 +828,7 @@ fn run_installed(
         sandbox_shim_bin: None,
         minimal_libs,
         landlock_enforce: true,
+        landlock_best_effort: launcher::provider_sandbox::landlock_best_effort(&entry.payload_root),
         mode: LaunchMode::Cli {
             command: command.to_string(),
             passthrough_argv: rest,

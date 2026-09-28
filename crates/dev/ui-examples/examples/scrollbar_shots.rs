@@ -133,14 +133,16 @@ fn shoot(theme: &Theme, out: &Path, active: bool, both: bool) {
             let mut ft = None;
             scroll.handle_event(
                 &cursor_at(c),
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state.doc,
-                &state.root,
-                &mut handled,
-                &mut ft,
-                node,
-                &taffy,
+                &mut tilo_ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state.doc,
+                    path: &state.root,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
         }
     }

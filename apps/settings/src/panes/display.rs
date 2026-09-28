@@ -41,6 +41,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use tilo_clock::unix_now_ms;
 use ui::doc::{read_bool, read_str_or_text};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use os_actions::Dispatcher;
@@ -50,7 +51,7 @@ use ui::theme::Theme;
 use ui::widget::{Button, Dropdown, Slider, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::dispatcher::dispatcher_or_real;
 use crate::prefs::{DisplayPrefs, SystemPrefs};
@@ -182,7 +183,7 @@ fn best_mirror_modes(
 }
 
 /// One real display output, derived from a DRM connector.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool mirrors an independent DRM/compositor capability flag (connected, \
@@ -204,6 +205,9 @@ pub struct DisplayOutput {
     /// mode selection is unavailable, not that a made-up default is valid.
     pub modes: Vec<OutputMode>,
     pub current_mode: Option<OutputMode>,
+    /// The scale the compositor shows it at; an output with no saved entry
+    /// runs at the compositor's own choice.
+    pub scale: f64,
     pub hdr: bool,
     pub sink_hdr: bool,
     pub hdr_unavailable_reason: Option<settings_store::hardware::HdrUnavailable>,
@@ -291,6 +295,7 @@ pub fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
         connector_label: name.to_string(),
         modes: Vec::new(),
         current_mode: None,
+        scale: 1.0,
         hdr: false,
         sink_hdr: false,
         hdr_unavailable_reason: None,
@@ -300,6 +305,13 @@ pub fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
         color_profiles: Vec::new(),
         color_profile_labels: BTreeMap::new(),
         monitor: None,
+    }
+}
+
+impl DisplayOutput {
+    /// The entry that describes this output as it runs with none saved.
+    fn unconfigured(&self) -> OutputConfig {
+        OutputConfig::at_scale(self.scale)
     }
 }
 
@@ -370,6 +382,7 @@ fn read_outputs() -> Vec<DisplayOutput> {
                 connector_label,
                 modes: snapshot.descriptor.modes,
                 current_mode: Some(snapshot.current_mode),
+                scale: snapshot.scale,
                 hdr: snapshot.descriptor.hdr,
                 sink_hdr: snapshot.sink_hdr,
                 hdr_unavailable_reason: snapshot.hdr_unavailable_reason,
@@ -446,6 +459,9 @@ pub struct DisplayPane {
     /// composition is rebuilt between frames.
     arrangement_drag: ui::LocalState<Option<super::display_arrangement::ArrangementDrag>>,
     composed: Option<Box<dyn Widget>>,
+    /// Hardware facts changed under the retained composition. The host holds
+    /// raw pointers into it until the next build, so it must not be dropped.
+    structure_dirty: bool,
     rect: Rect,
 }
 
@@ -513,6 +529,7 @@ impl DisplayPane {
             needs_seed: true,
             arrangement_drag: ui::LocalState::new(None),
             composed: None,
+            structure_dirty: false,
             rect: Rect::ZERO,
         }
     }
@@ -542,6 +559,7 @@ impl DisplayPane {
                     height: 1080,
                     refresh_mhz: 60_000,
                 }),
+                scale: 1.0,
                 hdr: false,
                 sink_hdr: false,
                 hdr_unavailable_reason: None,
@@ -575,6 +593,7 @@ impl DisplayPane {
             needs_seed: true,
             arrangement_drag: ui::LocalState::new(None),
             composed: None,
+            structure_dirty: false,
             rect: Rect::ZERO,
         }
     }
@@ -912,17 +931,13 @@ impl DisplayPane {
         let mut placed: Vec<ArrangedDisplay> = Vec::new();
         for (index, output) in connected.iter().enumerate() {
             let entry = config.outputs.get(&output.connector);
-            let resolved = entry.cloned().unwrap_or_default();
+            let resolved = entry.cloned().unwrap_or_else(|| output.unconfigured());
             if !resolved.enabled {
                 continue;
             }
-            let mode = resolved.mode.or(output.current_mode).unwrap_or(OutputMode {
-                width: 1920,
-                height: 1080,
-                refresh_mhz: 60_000,
-            });
-            let (width, height) =
-                settings_store::display_mode::output_extent(mode, resolved.transform);
+            // Drawn at the logical size the pointer moves through, so a
+            // 2x panel beside a 1x monitor looks, and snaps, as it behaves.
+            let (width, height) = logical_extent_of(output, &resolved);
             // An output with no saved position has never been arranged: put
             // it after the others rather than on top of them.
             let (x, y) = if entry.is_some() {
@@ -1063,7 +1078,7 @@ impl DisplayPane {
             .unwrap_or_else(|| OutputConfig {
                 primary: index == 0,
                 x: index as i32 * 1920,
-                ..Default::default()
+                ..output.unconfigured()
             });
         let mut output_rows = Vec::new();
         if self.output_brightness.contains_key(&output.connector) {
@@ -1554,7 +1569,7 @@ impl DisplayPane {
                 .unwrap_or_else(|| OutputConfig {
                     primary: index == 0,
                     x: index as i32 * 1920,
-                    ..Default::default()
+                    ..output.unconfigured()
                 });
             let _ = state.put(root, output_key(&output.connector, "enabled"), cfg.enabled);
             let _ = state.put(root, output_key(&output.connector, "primary"), cfg.primary);
@@ -1609,7 +1624,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for DisplayPane {
-    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
+        let (shared, _) = ui::doc::document(shared, root);
         let isolated = self.isolate_document;
         let mut state = if isolated {
             std::mem::take(&mut self.local_doc)
@@ -1729,33 +1745,12 @@ impl Widget for DisplayPane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
     }
 
@@ -1782,6 +1777,14 @@ impl Widget for DisplayPane {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.structure_dirty)
+            || self
+                .composed
+                .as_mut()
+                .is_some_and(|c| c.take_structure_dirty())
+    }
 }
 
 /// `sync` helper methods, split out of the trait method above (which must
@@ -1804,7 +1807,7 @@ impl DisplayPane {
                     automerge::ScalarValue::F64(f64::from(brightness)),
                 );
                 self.hardware_probe = None;
-                self.composed = None;
+                self.structure_dirty = true;
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.hardware_probe = None;
@@ -1827,7 +1830,7 @@ impl DisplayPane {
             self.outputs = read_outputs();
             self.output_config = DisplayConfig::load_for(&self.display_set());
             self.needs_seed = true;
-            self.composed = None;
+            self.structure_dirty = true;
         }
         // Monitor probing finishes in the background; a monitor that turns
         // out to speak DDC/CI gains its slider once the probe lands.
@@ -1835,7 +1838,7 @@ impl DisplayPane {
         if controllable.keys().ne(self.output_brightness.keys()) {
             self.output_brightness = controllable;
             self.needs_seed = true;
-            self.composed = None;
+            self.structure_dirty = true;
         }
     }
 
@@ -2164,7 +2167,7 @@ impl DisplayPane {
                 .outputs
                 .get(&output.connector)
                 .cloned()
-                .unwrap_or_default();
+                .unwrap_or_else(|| output.unconfigured());
             if Self::apply_output_field_overrides(state, root, output, &mut next, &mut cfg) {
                 changed = true;
             }
@@ -2338,7 +2341,7 @@ impl DisplayPane {
                     .outputs
                     .get(&reference.connector)
                     .cloned()
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| reference.unconfigured());
                 // Positions are logical, so neighbours are placed by their
                 // logical extent (mode over scale, rotated), not their mode:
                 // a 2x panel's right-hand neighbour starts 1280 in, not 2560.
@@ -2592,6 +2595,65 @@ impl DisplayPane {
 mod tests {
     use super::*;
     use crate::dispatcher::testing::RecordingDispatcher;
+
+    fn probed_pane() -> (DisplayPane, std::sync::mpsc::Sender<(f32, bool)>) {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
+        let (probe_tx, probe_rx) = std::sync::mpsc::channel();
+        pane.hardware_probe = Some(probe_rx);
+        (pane, probe_tx)
+    }
+
+    /// A brightness probe that lands after the pane was composed keeps the
+    /// widgets the host's layout tree points into, and asks for a rebuild.
+    #[test]
+    fn late_hardware_probe_keeps_the_retained_tree_and_requests_a_rebuild() {
+        let (mut pane, probe_tx) = probed_pane();
+        let mut taffy = TaffyTree::new();
+        let mut node_map = HashMap::new();
+        pane.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let composed = |pane: &DisplayPane| {
+            pane.children()
+                .first()
+                .map(|c| std::ptr::from_ref(*c).cast::<()>())
+        };
+        let before = composed(&pane);
+        assert!(before.is_some(), "build_layout composes the pane");
+
+        probe_tx
+            .send((0.8, false))
+            .expect("probe receiver is alive");
+        let mut doc = AutoCommit::new();
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            composed(&pane),
+            before,
+            "the host still holds layout pointers into this composition"
+        );
+        assert!(
+            pane.take_structure_dirty(),
+            "the landed probe requests a rebuild"
+        );
+        assert!(!pane.take_structure_dirty(), "and reports it once");
+        let brightness = doc
+            .get(&automerge::ROOT, BRIGHTNESS_KEY)
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| value.as_f64());
+        assert_eq!(brightness, Some(f64::from(0.8_f32)));
+
+        let (pane, probe_tx) = probed_pane();
+        let mut harness =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(pane), (900, 700));
+        probe_tx
+            .send((0.8, false))
+            .expect("probe receiver is alive");
+        harness.relayout();
+        assert!(
+            harness.last_relayout().rebuilt,
+            "the headless host recomposes the pane after the probe lands"
+        );
+    }
 
     #[test]
     fn sdr_brightness_slider_round_trips_whole_nits_and_reasons_have_copy() {
@@ -3105,6 +3167,7 @@ mod tests {
             connector_label: connector.into(),
             current_mode: modes.first().copied(),
             modes,
+            scale: 1.0,
             hdr: false,
             sink_hdr: false,
             hdr_unavailable_reason: None,
@@ -3280,6 +3343,91 @@ mod tests {
         assert_eq!(
             monitor.placement,
             super::super::display_arrangement::placement::Placement::new(1920, 0, 2560, 1440)
+        );
+    }
+
+    #[test]
+    fn the_arrangement_draws_mixed_dpi_displays_at_their_logical_size() {
+        use super::super::display_arrangement::placement::{Placement, settle};
+        // A 2x panel of 2560x1600 is 1280x800 on the desktop the pointer
+        // moves through; a 1x monitor beside it starts at x = 1280.
+        let panel_mode = OutputMode {
+            width: 2560,
+            height: 1600,
+            refresh_mhz: 60_000,
+        };
+        let monitor_mode = OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        };
+        let rec = Arc::new(RecordingDispatcher::default());
+        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+            .with_outputs(vec![
+                display_with_modes("eDP-1", "Built-in display", true, vec![panel_mode]),
+                display_with_modes("HDMI-A-1", "Desk monitor", false, vec![monitor_mode]),
+            ]);
+        pane.output_config.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                primary: true,
+                scale: 2.0,
+                ..Default::default()
+            },
+        );
+        pane.output_config.outputs.insert(
+            "HDMI-A-1".into(),
+            OutputConfig {
+                x: 1280,
+                ..Default::default()
+            },
+        );
+        let connected = pane.connected_outputs();
+        let displays = pane.arranged_displays(&connected);
+        let panel = displays.iter().find(|d| d.connector == "eDP-1").unwrap();
+        let monitor = displays.iter().find(|d| d.connector == "HDMI-A-1").unwrap();
+        assert_eq!(panel.placement, Placement::new(0, 0, 1280, 800));
+        assert_eq!(monitor.placement, Placement::new(1280, 0, 1920, 1080));
+        assert!(
+            panel.placement.touches(monitor.placement),
+            "the canvas shows the edge the pointer crosses"
+        );
+        // Dropping the monitor near the panel's right edge snaps it onto
+        // that logical edge, never onto the panel's mode width.
+        let dropped = settle(monitor.placement.at(1300, 12), &[panel.placement], 24);
+        assert_eq!((dropped.x, dropped.y), (1280, 0));
+    }
+
+    #[test]
+    fn an_unconfigured_display_is_drawn_and_staged_at_the_compositors_scale() {
+        // Nothing saved: the compositor runs the HiDPI panel at the 2x it
+        // chose itself, so the canvas draws it 1280 wide and staging a
+        // change keeps that scale rather than writing 1x.
+        let mut panel = display_with_modes(
+            "eDP-1",
+            "Built-in display",
+            true,
+            vec![OutputMode {
+                width: 2560,
+                height: 1600,
+                refresh_mhz: 60_000,
+            }],
+        );
+        panel.scale = 2.0;
+        let rec = Arc::new(RecordingDispatcher::default());
+        let pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+            .with_outputs(vec![panel]);
+        let connected = pane.connected_outputs();
+        let displays = pane.arranged_displays(&connected);
+        assert_eq!(displays[0].placement.width, 1280);
+        assert_eq!(displays[0].placement.height, 800);
+
+        let mut doc = AutoCommit::new();
+        pane.write_output_controls(&mut doc, &automerge::ROOT, &pane.output_config);
+        assert_eq!(
+            read_str_or_text(&doc, &automerge::ROOT, output_key("eDP-1", "scale")).as_deref(),
+            Some("200%"),
+            "the scale control shows the scale the display runs at"
         );
     }
 

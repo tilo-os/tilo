@@ -12,7 +12,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -355,8 +354,6 @@ impl Banner {
 }
 
 impl Widget for Banner {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     #[allow(
         clippy::cast_possible_truncation,
         reason = "content_height is a small, bounded pixel value built from theme typography \
@@ -441,21 +438,11 @@ impl Widget for Banner {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -467,7 +454,7 @@ impl Widget for Banner {
             {
                 self.dismissed = true;
                 self.dismiss_fired = true;
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -513,6 +500,7 @@ impl Widget for Banner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use taffy::prelude::TaffyMaxContent;
     use vello_encoding::DrawTag;
 
@@ -682,14 +670,16 @@ mod tests {
         let root = automerge::ROOT;
         w.handle_event(
             e,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

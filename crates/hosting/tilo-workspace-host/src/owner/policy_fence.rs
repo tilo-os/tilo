@@ -7,6 +7,7 @@ pub(crate) enum OwnerPolicyFence {
     LocalOwnerRequest(crate::owner_commit::LocalOwnerPolicyFence),
     HostSigning(crate::host_signing::HostSigningPolicyFence),
     Checkpoint(super::checkpoint::CheckpointPolicyFence),
+    DocumentImport(crate::document_imports::DocumentImportPolicyFence),
 }
 /// A definite refusal before SessionStore was called, never an I/O classification.
 #[derive(Debug)]
@@ -24,6 +25,7 @@ impl OwnerPolicyFence {
             Self::LocalOwnerRequest(fence) => fence.policy_time(),
             Self::HostSigning(fence) => fence.policy_time(),
             Self::Checkpoint(fence) => fence.policy_time(),
+            Self::DocumentImport(fence) => fence.policy_time(),
         }
     }
     pub(super) fn sample(&self) -> Result<SystemTime> {
@@ -35,6 +37,7 @@ impl OwnerPolicyFence {
             Self::LocalOwnerRequest(fence) => fence.revalidate(owner),
             Self::HostSigning(fence) => fence.revalidate(owner),
             Self::Checkpoint(fence) => fence.revalidate(owner),
+            Self::DocumentImport(fence) => fence.revalidate(owner),
         }
         .map_err(|error| OwnerPolicyRefused(error).into())
     }

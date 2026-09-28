@@ -263,6 +263,7 @@ impl CollabTransport for BrokerTransport {
                 app_id,
                 cluster_id,
                 record,
+                record_kind,
                 handle,
             }) => {
                 let deadline = PrimaryDeadline::default();
@@ -273,13 +274,14 @@ impl CollabTransport for BrokerTransport {
                         cluster_id,
                         record,
                     },
+                    record_kind,
                     handle,
                     deadline,
                 })
             }
             TransportCommand::Primary(request) => SdkCommand::Primary(request),
             TransportCommand::ToRoute(route, request) => SdkCommand::ToRoute(route, request),
-            TransportCommand::Join(route) => SdkCommand::Join(route),
+            TransportCommand::Join(route) => SdkCommand::Join(route, None),
             TransportCommand::ConfirmPrimaryRoute => {
                 let (reply, pending) = mpsc::sync_channel(1);
                 self.enqueue(SdkCommand::PrimaryReady(reply))?;
@@ -430,10 +432,14 @@ impl CollabTransport for BrokerTransport {
         Some(self)
     }
 
-    fn prepare_committed_document(&mut self, route: RouteSpec) -> Option<CommittedDocument> {
+    fn prepare_committed_document(
+        &mut self,
+        route: RouteSpec,
+        record_kind: &str,
+    ) -> Option<CommittedDocument> {
         let key = route.channel_id();
         if self.state.document_reads.joining(&key) {
-            let _ = self.enqueue(SdkCommand::Join(route));
+            let _ = self.enqueue(SdkCommand::Join(route, Some(record_kind.to_owned())));
         }
         self.state.document_reads.initial(&key)
     }
@@ -443,7 +449,8 @@ enum SdkCommand {
     /// Announce the primary route; the shovel abandons the join at `deadline`.
     Hello(PrimaryHello),
     Primary(CollabRequest),
-    Join(RouteSpec),
+    /// Join a route, naming the resource kind of its record when known.
+    Join(RouteSpec, Option<String>),
     ToRoute(RouteSpec, CollabRequest),
     PrimaryReady(mpsc::SyncSender<Result<RouteSpec, String>>),
     /// Answered once every document mutation queued before it has been
@@ -472,6 +479,7 @@ enum SdkCommand {
 
 struct PrimaryHello {
     route: RouteSpec,
+    record_kind: Option<String>,
     handle: Option<String>,
     /// Filled by the shovel when it starts the join, so the owner waits for
     /// the very deadline the shovel enforces.
@@ -659,12 +667,16 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         CollabRequest::Hello {
             app_id,
             record,
+            record_kind,
             handle,
             ..
         } => {
             meter.string_capacity(app_id);
             if let Some(record) = record {
                 meter.string_capacity(record);
+            }
+            if let Some(kind) = record_kind {
+                meter.string_capacity(kind);
             }
             if let Some(handle) = handle {
                 meter.string_capacity(handle);
@@ -836,6 +848,9 @@ fn command_bytes(command: &SdkCommand) -> Option<usize> {
             if let Some(record) = &hello.route.record {
                 meter.string_capacity(record);
             }
+            if let Some(kind) = &hello.record_kind {
+                meter.string_capacity(kind);
+            }
             if let Some(handle) = &hello.handle {
                 meter.string_capacity(handle);
             }
@@ -850,11 +865,14 @@ fn command_bytes(command: &SdkCommand) -> Option<usize> {
             }
             meter.finish()
         }
-        SdkCommand::Join(route) => {
+        SdkCommand::Join(route, record_kind) => {
             let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
                 meter.string_capacity(record);
+            }
+            if let Some(kind) = record_kind {
+                meter.string_capacity(kind);
             }
             meter.finish()
         }
@@ -2303,7 +2321,7 @@ impl CollaborationManager {
 
     pub(crate) fn switch_native_record(
         &mut self,
-        record: &crate::record::RecordId,
+        checkout: &crate::record::RecordCheckout,
     ) -> Result<(), String> {
         let primary = self
             .primary_route
@@ -2312,7 +2330,7 @@ impl CollaborationManager {
             .ok_or("native primary route unavailable")?
             .route
             .clone();
-        let record = (!record.is_package_primary()).then(|| record.as_str().to_owned());
+        let record = (!checkout.id.is_package_primary()).then(|| checkout.id.as_str().to_owned());
         if primary.record == record {
             return Ok(());
         }
@@ -2320,6 +2338,7 @@ impl CollaborationManager {
             app_id: primary.app_id,
             cluster_id: primary.cluster_id,
             record,
+            record_kind: Some(checkout.kind.as_str().to_owned()),
             handle: presence_handle_env(),
         }) {
             return Err("native route queue unavailable".into());
@@ -2360,6 +2379,13 @@ impl CollaborationManager {
         history: Vec<u8>,
     ) -> (Self, Box<dyn Fn() -> usize>) {
         tests::native_initial_fixture(app, room, history)
+    }
+
+    /// A connected route whose document reads are not Required, as a
+    /// standalone runtime admits it.
+    #[cfg(all(test, unix))]
+    pub(crate) fn connected_fixture_for_test(app: &str, room: Uuid) -> Self {
+        tests::connected_manager_for(app, room)
     }
 
     #[cfg(all(test, unix))]
@@ -2437,6 +2463,7 @@ impl CollaborationManager {
             app_id,
             cluster_id,
             record,
+            record_kind: None,
             handle,
         }));
         await_primary_route_on(&mut transport, &mut primary_route)?;
@@ -2539,7 +2566,7 @@ impl CollaborationManager {
         )
     }
 
-    pub(super) fn new_scoped(record: Option<String>) -> Self {
+    pub(super) fn new_scoped(record: Option<String>, record_kind: Option<String>) -> Self {
         // Without an inherited service there is nothing to reach; say so
         // without starting a worker.
         if runtime_portal::service_fd("collab").is_none() {
@@ -2554,6 +2581,7 @@ impl CollaborationManager {
                 cluster_id,
                 record,
             },
+            record_kind,
             presence_handle_env(),
         )
     }
@@ -2567,6 +2595,7 @@ impl CollaborationManager {
         source: SdkConnectSource,
         identity: SdkIdentitySource,
         route: RouteSpec,
+        record_kind: Option<String>,
         handle: Option<String>,
     ) -> Self {
         let sdk = match Self::start_sdk(source, identity) {
@@ -2583,6 +2612,7 @@ impl CollaborationManager {
             app_id,
             cluster_id,
             record,
+            record_kind,
             handle,
         });
         manager.confirm_primary_route_in_background();
@@ -2593,6 +2623,33 @@ impl CollaborationManager {
     #[cfg(all(test, unix))]
     pub(crate) fn connected_for_lifecycle_test() -> Self {
         tests::connected_manager()
+    }
+
+    /// Block until the broker worker has finished every command submitted so
+    /// far. A route join enqueues the route's initial action catalogue before
+    /// its command completes, so the next [`Self::poll`] then sees everything
+    /// those commands produced. Panics at the hang bound.
+    #[cfg(all(test, unix))]
+    pub(crate) fn wait_for_commands_for_test(&self) {
+        let Backend::Transport(transport) = &self.backend else {
+            panic!("a broker transport");
+        };
+        let state = &transport
+            .as_any()
+            .and_then(|any| any.downcast_ref::<BrokerTransport>())
+            .expect("a broker transport")
+            .state;
+        let deadline = tilo_test_env::hang_deadline();
+        while state.command_bytes.0.load(Ordering::Acquire) != 0
+            || state.document_command_bytes.0.load(Ordering::Acquire) != 0
+        {
+            assert!(
+                crate::time::now() < deadline,
+                "broker worker still had commands in flight after {:?}",
+                tilo_test_env::hang_bound()
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// Real socket-backed SDK transport plus a probe returning every signed
@@ -2642,6 +2699,7 @@ impl CollaborationManager {
             app_id: app_id.to_owned(),
             cluster_id,
             record: None,
+            record_kind: None,
             handle: presence_handle_env(),
         });
         manager
@@ -2985,6 +3043,7 @@ async fn drive_shovel(
         match command {
             SdkCommand::Hello(PrimaryHello {
                 route: spec,
+                record_kind,
                 handle,
                 deadline,
             }) => {
@@ -3001,6 +3060,7 @@ async fn drive_shovel(
                         &mut routes,
                         &media_routes,
                         &spec,
+                        record_kind.as_deref().unwrap_or(""),
                         asks_channel_keys,
                     ),
                 )
@@ -3032,7 +3092,7 @@ async fn drive_shovel(
                     published = false;
                 }
             }
-            SdkCommand::Join(spec) => {
+            SdkCommand::Join(spec, record_kind) => {
                 let _ = ensure_sdk_route(
                     &client,
                     &presentation,
@@ -3042,6 +3102,7 @@ async fn drive_shovel(
                     &mut routes,
                     &media_routes,
                     &spec,
+                    record_kind.as_deref().unwrap_or(""),
                     asks_channel_keys,
                 )
                 .await;
@@ -3057,6 +3118,7 @@ async fn drive_shovel(
                     &mut routes,
                     &media_routes,
                     &spec,
+                    "",
                     asks_channel_keys,
                 )
                 .await;
@@ -3201,6 +3263,7 @@ async fn install_sdk_encryption(
         routes,
         context.media_routes,
         &spec,
+        "",
         context.asks_channel_keys,
     )
     .await?;
@@ -3251,6 +3314,7 @@ async fn ensure_sdk_route(
     routes: &mut std::collections::HashMap<String, SdkRoute>,
     media_routes: &native_media::Routes,
     spec: &RouteSpec,
+    record_kind: &str,
     asks_channel_keys: bool,
 ) -> Result<(), String> {
     let channel_id = spec.channel_id();
@@ -3263,6 +3327,7 @@ async fn ensure_sdk_route(
             identity_bytes,
             participant_handle.unwrap_or(""),
             participant_kind,
+            record_kind,
         )
         .await
     {
@@ -5501,6 +5566,68 @@ mod tests {
 
     use super::*;
 
+    /// The byte budget an app pages its directory by is checked against the
+    /// encoded page, so the per-row estimate must never fall below a row's
+    /// Cap'n Proto size, however its fields are sized.
+    #[test]
+    fn directory_row_estimates_bound_their_encoded_size() {
+        let text = |length: usize| "x".repeat(length);
+        for length in [0, 1, 7, 8, 9, 63, 64, 1000] {
+            let row = runtime_collab::ActionDirectoryRow {
+                parent_resource: text(length),
+                resource: text(length),
+                resource_kind: text(length),
+                resource_label: text(length),
+                resource_presentation_json: text(length),
+                action: Some(text(length)),
+                descriptor: Some(runtime_collab::ExportedAction {
+                    resource: text(length),
+                    action: text(length),
+                    resource_kind: text(length),
+                    resource_label: text(length),
+                    action_label: text(length),
+                    description: Some(text(length)),
+                    operation_kind: text(length),
+                    params_json: text(length),
+                    contract_json: text(length),
+                    view: None,
+                    input: runtime_collab::ExportedInput::Text {
+                        prompt: text(length),
+                        placeholder: text(length),
+                        wants_content: false,
+                    },
+                }),
+                has_children: false,
+                visibility_action: Some(text(length)),
+                visibility_contract_json: text(length),
+            };
+            let rows = 40u32;
+            let mut message = capnp::message::Builder::new_default();
+            {
+                let mut page = message
+                    .init_root::<runtime_collab::collab_capnp::action_directory_page::Builder<'_>>(
+                    );
+                page.set_revision("v5:00000000-0000-0000-0000-000000000000");
+                let mut list = page.reborrow().init_rows(rows);
+                for index in 0..rows {
+                    write_directory_row(list.reborrow().get(index), &row);
+                }
+            }
+            let encoded = message
+                .get_root_as_reader::<runtime_collab::collab_capnp::action_directory_page::Reader<'_>>()
+                .unwrap()
+                .total_size()
+                .unwrap()
+                .word_count
+                * 8;
+            let estimated = crate::app::directory_row_wire_bytes(&row) * rows as usize;
+            assert!(
+                u64::try_from(estimated).unwrap() >= encoded,
+                "field length {length}: estimated {estimated} < encoded {encoded}"
+            );
+        }
+    }
+
     /// The concrete broker transport's bridge state behind a test manager.
     fn broker_state(manager: &CollaborationManager) -> BridgeState {
         match &manager.backend {
@@ -5577,6 +5704,7 @@ mod tests {
         fail_terminal: bool,
         terminal_updates: usize,
         joined: Vec<(String, Vec<u8>)>,
+        joined_record_kinds: Vec<String>,
         signed_ops: Vec<Vec<u8>>,
         cursor_publishes: Vec<(f32, f32)>,
         pointer_publishes: Vec<(Vec<u8>, f32, f32)>,
@@ -6263,11 +6391,15 @@ mod tests {
                 .get_identity()
                 .map(<[u8]>::to_vec)
                 .unwrap_or_default();
-            self.captures
-                .lock()
-                .unwrap()
-                .joined
-                .push((channel_id, identity));
+            let record_kind = reader
+                .get_record_kind()
+                .ok()
+                .and_then(|kind| kind.to_str().ok().map(str::to_owned))
+                .unwrap_or_default();
+            let mut captures = self.captures.lock().unwrap();
+            captures.joined.push((channel_id, identity));
+            captures.joined_record_kinds.push(record_kind);
+            drop(captures);
 
             let chan = FakeChannel {
                 captures: self.captures.clone(),
@@ -7205,6 +7337,7 @@ mod tests {
             app_id: "so.tilo.test".into(),
             cluster_id: Uuid::new_v4(),
             record: None,
+            record_kind: None,
             handle: None,
         }));
         manager.await_primary_route().unwrap();
@@ -7356,6 +7489,7 @@ mod tests {
             app_id: app_id.into(),
             cluster_id: cluster,
             record: None,
+            record_kind: None,
             handle: None,
         }));
         manager.await_primary_route().unwrap();
@@ -7415,6 +7549,7 @@ mod tests {
             app_id: "worker".into(),
             cluster_id: Uuid::new_v4(),
             record: None,
+            record_kind: None,
             handle: None,
         }));
         manager.await_primary_route().unwrap();
@@ -8147,6 +8282,11 @@ mod tests {
 
     #[cfg(unix)]
     pub(super) fn connected_manager() -> CollaborationManager {
+        connected_manager_for("lifecycle-test", Uuid::new_v4())
+    }
+
+    #[cfg(unix)]
+    pub(super) fn connected_manager_for(app: &str, room: Uuid) -> CollaborationManager {
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(Captures::default())),
             op_backlog: vec![],
@@ -8155,7 +8295,7 @@ mod tests {
             scrollback_response: None,
         };
         let (fd, _, _thread) = stand_up_fake_broker(broker);
-        CollaborationManager::from_sdk_fd_for_test(fd, "lifecycle-test", Uuid::new_v4())
+        CollaborationManager::from_sdk_fd_for_test(fd, app, room)
     }
 
     #[cfg(unix)]
@@ -8774,6 +8914,7 @@ mod tests {
                 signer: harness_document_signer(),
             })),
             route,
+            None,
             None,
         )
     }
@@ -9808,7 +9949,7 @@ mod tests {
         )));
         let mut initial = None;
         tilo_test_env::wait_until("the native record to hydrate", || {
-            initial = manager.prepare_native_record(&want.id);
+            initial = manager.prepare_native_record(&want);
             initial.is_some()
         });
         let read = initial.unwrap();
@@ -9822,11 +9963,16 @@ mod tests {
         );
         assert_eq!(state.doc.get_heads(), heads);
         read.applied();
-        manager.switch_native_record(&want.id).unwrap();
+        manager.switch_native_record(&want).unwrap();
         assert_eq!(
             captures.lock().unwrap().joined.len(),
             2,
             "two routes must share the one inherited transport"
+        );
+        assert_eq!(
+            captures.lock().unwrap().joined_record_kinds,
+            ["", "document"],
+            "the record route names its resource kind for the owner; the launch route none"
         );
         assert!(
             captures.lock().unwrap().signed_ops.is_empty(),

@@ -685,14 +685,16 @@ impl CaptureStudio {
         let mut focus = None;
         menu.handle_event(
             e,
-            scale,
-            &modifiers,
-            state,
-            path,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: scale,
+                modifiers: &modifiers,
+                state,
+                path,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         if let Some(index) = menu.take_selection() {
             self.choose_send_target(index);
@@ -4552,7 +4554,6 @@ impl CaptureStudio {
 }
 
 impl Widget for CaptureStudio {
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
     fn build_layout(
         &mut self,
         t: &mut TaffyTree<()>,
@@ -5216,18 +5217,8 @@ impl Widget for CaptureStudio {
         }
         s.pop_layer()
     }
-    fn handle_event(
-        &mut self,
-        e: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, e: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let state = &mut *ctx.state;
         if !self.open {
             return;
         }
@@ -5244,7 +5235,7 @@ impl Widget for CaptureStudio {
                 }
             ) {
                 self.close();
-                *handled = true;
+                *ctx.handled = true;
             }
             return;
         }
@@ -5257,15 +5248,16 @@ impl Widget for CaptureStudio {
         if self.replay_active {
             match e {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.cursor = Point::new(position.x / scale, position.y / scale);
-                    *handled = self.replay_indicator_rects().0.contains(self.cursor);
+                    self.cursor =
+                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    *ctx.handled = self.replay_indicator_rects().0.contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                     ..
                 } if self.replay_indicator_rects().0.contains(self.cursor) => {
-                    *handled = true;
+                    *ctx.handled = true;
                     self.click(self.cursor);
                 }
                 _ => {}
@@ -5274,22 +5266,29 @@ impl Widget for CaptureStudio {
         }
         if self.screenshot_receipt.is_some() {
             if let WindowEvent::CursorMoved { position, .. } = e {
-                self.cursor = Point::new(position.x / scale, position.y / scale);
+                self.cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             if self.send_menu.is_some() {
-                *handled = self.route_send_menu_event(e, scale, *modifiers, state, path);
+                *ctx.handled = self.route_send_menu_event(
+                    e,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    state,
+                    ctx.path,
+                );
                 return;
             }
             match e {
                 WindowEvent::CursorMoved { .. } => {
-                    *handled = self.screenshot_receipt_rects().0.contains(self.cursor);
+                    *ctx.handled = self.screenshot_receipt_rects().0.contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                     ..
                 } if self.screenshot_receipt_rects().0.contains(self.cursor) => {
-                    *handled = true;
+                    *ctx.handled = true;
                     self.click(self.cursor);
                 }
                 WindowEvent::KeyboardInput {
@@ -5303,7 +5302,7 @@ impl Widget for CaptureStudio {
                 } => {
                     self.screenshot_receipt = None;
                     self.open = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 _ => {}
             }
@@ -5312,15 +5311,16 @@ impl Widget for CaptureStudio {
         if self.recording_finished_at.is_some() {
             match e {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.cursor = Point::new(position.x / scale, position.y / scale);
-                    *handled = self.recording_receipt_rect().contains(self.cursor);
+                    self.cursor =
+                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    *ctx.handled = self.recording_receipt_rect().contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                     ..
                 } if self.recording_receipt_rect().contains(self.cursor) => {
-                    *handled = true;
+                    *ctx.handled = true;
                     self.click(self.cursor);
                 }
                 WindowEvent::KeyboardInput {
@@ -5334,7 +5334,7 @@ impl Widget for CaptureStudio {
                 } => {
                     self.recording_finished_at = None;
                     self.open = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 _ => {}
             }
@@ -5343,15 +5343,16 @@ impl Widget for CaptureStudio {
         if self.recording_active {
             match e {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.cursor = Point::new(position.x / scale, position.y / scale);
-                    *handled = self.recording_indicator_rects().0.contains(self.cursor);
+                    self.cursor =
+                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    *ctx.handled = self.recording_indicator_rects().0.contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
                     state,
                     button: MouseButton::Left,
                     ..
                 } if self.recording_indicator_rects().0.contains(self.cursor) => {
-                    *handled = true;
+                    *ctx.handled = true;
                     if *state == ElementState::Pressed {
                         self.click(self.cursor);
                     }
@@ -5360,10 +5361,11 @@ impl Widget for CaptureStudio {
             }
             return;
         }
-        *handled = true;
+        *ctx.handled = true;
         match e {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = Point::new(position.x / scale, position.y / scale);
+                self.cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 if let Some(d) = self.drag.as_mut() {
                     d.set_current(self.cursor)
                 }
@@ -5372,7 +5374,7 @@ impl Widget for CaptureStudio {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.click_with_additive(self.cursor, modifiers.state().shift_key()),
+            } => self.click_with_additive(self.cursor, ctx.modifiers.state().shift_key()),
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
@@ -5407,7 +5409,7 @@ impl Widget for CaptureStudio {
                 ..
             } => {
                 if !self.navigate_picker(*key) {
-                    let amount = if modifiers.state().shift_key() {
+                    let amount = if ctx.modifiers.state().shift_key() {
                         10.0
                     } else {
                         1.0

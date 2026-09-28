@@ -53,9 +53,12 @@ for run in 1 2; do
   printf 'packages=tilo-clock-probe\n' >"$root/usr/lib/sysimage/libdnf5/packages.toml"
   printf 'real-time-%s\n' "$run" >"$root/usr/lib/sysimage/libdnf5/transaction_history.sqlite"
   printf 'real-time-%s\n' "$run" >"$root/var/log/dnf5.log"
+  mkdir -p "$root/var/cache/ldconfig"
+  printf 'inode-%s\n' "$run" >"$root/var/cache/ldconfig/aux-cache"
   sh "$repo/os/scripts/clean-dnf-layer-state.sh" "$root"
   test ! -e "$root/usr/lib/sysimage/libdnf5/transaction_history.sqlite"
   test ! -e "$root/var/log/dnf5.log"
+  test ! -e "$root/var/cache/ldconfig/aux-cache"
   test "$(cat "$root/usr/lib/sysimage/libdnf5/packages.toml")" = \
     'packages=tilo-clock-probe'
   test -s "$root/rpmdb/rpmdb.sqlite"

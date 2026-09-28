@@ -11,11 +11,11 @@
 //! `focusable_order` and its caret survives the per-keystroke filter
 //! rebuild.
 
+use crate::widget::{AppModel, ModelPath};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -694,7 +694,7 @@ fn paint_child(
 }
 
 impl Widget for AppShell {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if self.back_requested.replace(false) {
             self.back();
         }
@@ -845,21 +845,11 @@ impl Widget for AppShell {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -872,7 +862,7 @@ impl Widget for AppShell {
             } => {
                 // Esc on the narrow content screen goes back to the list.
                 if self.back() {
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
             }
@@ -896,7 +886,7 @@ impl Widget for AppShell {
             }
             _ => {}
         }
-        if *handled {
+        if *ctx.handled {
             return;
         }
 
@@ -906,7 +896,7 @@ impl Widget for AppShell {
         // that retain hover/press state: a content control must not consume a
         // release meant for a sidebar row, and a content wheel must reach its
         // Scrollable rather than the sidebar list.
-        let child_nodes = taffy.children(node_id).unwrap_or_default();
+        let child_nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         let mut pairs: Vec<(Slot, NodeId)> = Vec::new();
         for (slot, &n) in self.slots.iter().zip(child_nodes.iter()) {
             pairs.push((*slot, n));
@@ -926,7 +916,7 @@ impl Widget for AppShell {
             _ => [Slot::Back, Slot::Search, Slot::Content, Slot::Nav],
         };
         for want in order {
-            if *handled {
+            if *ctx.handled {
                 break;
             }
             if let Some(&(_, n)) = pairs.iter().find(|(s, _)| *s == want) {
@@ -939,20 +929,10 @@ impl Widget for AppShell {
                     Slot::Nav => self.nav.as_mut(),
                     Slot::Content => self.content.as_mut(),
                 };
-                w.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
+                w.handle_event(event, &mut ctx.reborrow(ctx.path, n));
                 if self.back_requested.replace(false) {
                     self.back();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
         }
@@ -1083,6 +1063,7 @@ impl Widget for AppShell {
 mod tests {
     use super::*;
     use crate::widget::{Text, TextInput};
+    use automerge::AutoCommit;
     use vello::kurbo::Affine;
     use vello_encoding::DrawTag;
 
@@ -1469,7 +1450,7 @@ mod tests {
                 &mut document,
                 &automerge::ROOT,
             ));
-            dispatch_view_actions(&mut shell, &document);
+            dispatch_view_actions(&mut shell, &mut document);
             assert!(shell.take_structure_dirty());
             assert_eq!(screen.with(Clone::clone), NarrowScreen::List);
         }
@@ -1607,14 +1588,16 @@ mod tests {
         let root = automerge::ROOT;
         s.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
     fn click(s: &mut AppShell, at: Point) {
@@ -1624,10 +1607,10 @@ mod tests {
         dispatch(s, &left_press(), &mut handled);
         let mut handled = false;
         dispatch(s, &left_release(), &mut handled);
-        dispatch_view_actions(s, &AutoCommit::new());
+        dispatch_view_actions(s, &mut AutoCommit::new());
     }
 
-    fn dispatch_view_actions(s: &mut AppShell, doc: &AutoCommit) {
+    fn dispatch_view_actions(s: &mut AppShell, doc: &mut AutoCommit) {
         while let Some(intent) = s.take_control_invocation() {
             let mut resources = Vec::new();
             crate::widget::collect_widget_resources(s, doc, &mut resources);
@@ -1635,13 +1618,15 @@ mod tests {
                 tilo_actions::door::encode_json(&resources, &intent.address, &intent.arguments)
                     .expect("AppShell Back exports the action it emits");
             assert!(
-                s.start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
+                s.start_operation(
+                    &crate::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
                     doc,
-                    &automerge::ROOT,
+                    &automerge::ROOT
                 )
                 .expect("Back view action succeeds")
                 .is_some()

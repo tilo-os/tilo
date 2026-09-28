@@ -42,7 +42,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::operation(\"open\", \"Open\", OperationKind::View, \"app.open\", &()).unwrap())] }\n"
                 " fn local_resource_operation_handlers(&self) -> &'static [&'static str] { &[\"app.open\"] }\n"
-                " fn invoke_resource_operation(&mut self, type_id: &str) { match type_id { \"app.open\" => open(), _ => {} } } }\n"
+                " fn start_operation(&mut self, type_id: &str) { match type_id { \"app.open\" => open(), _ => {} } } }\n"
             )
             violations, apps = contract.audit(root)
             self.assertEqual(violations, [])
@@ -87,6 +87,16 @@ class AppResourceActionContractTests(unittest.TestCase):
             violations, apps = contract.audit(root)
             self.assertEqual(violations, [])
             self.assertEqual(apps, 1)
+        with self.subTest(phase='toolkit host with a hand-built multi-operation descriptor passes'):
+            root = self.fixture(
+                "pub fn app_root() {\n"
+                " let mut resource = tilo_actions::Resource::new(\"k:root\", \"k\", \"K\");\n"
+                " resource.actions.push(ActionSpec::operation(\"a\", \"A\", OperationKind::Effect, T, &()).unwrap());\n"
+                " ui::widget::resource_actions::background(root, resource, |_| {});\n"
+                "}\n"
+            )
+            violations, _ = contract.audit(root)
+            self.assertEqual(violations, [])
         with self.subTest(phase='toolkit host without resource descriptor fails'):
             root = self.fixture(
                 "pub fn app_root() {\n"

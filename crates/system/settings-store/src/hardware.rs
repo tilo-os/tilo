@@ -12,7 +12,9 @@ use tilo_clock::unix_now_ms;
 
 mod profiles;
 
-pub use profiles::{AttachedOutput, DisplayProfile, DisplayProfiles, DisplaySet};
+pub use profiles::{
+    AttachedOutput, DisplayProfile, DisplayProfiles, DisplaySet, MonitorHistory, same_scale,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -161,10 +163,15 @@ impl OutputDescriptor {
 /// this instead of probing DRM itself: the process that owns KMS is the only
 /// authority that can say which modes and output features are actually
 /// usable by the active renderer.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DisplayOutputSnapshot {
     pub descriptor: OutputDescriptor,
     pub current_mode: OutputMode,
+    /// The scale the compositor shows this output at: its live scale while
+    /// it is on, else the one it would choose for it unconfigured. An output
+    /// with no saved entry runs at the compositor's own choice, so this is
+    /// the scale a layout must keep when it first writes one.
+    pub scale: f64,
     pub builtin: bool,
     /// The sink/EDID may support HDR even when the active scanout pipeline
     /// cannot safely signal or encode it. `descriptor.hdr` is the usable
@@ -181,6 +188,14 @@ pub struct DisplayOutputSnapshot {
     /// Stable profile identifier (currently the canonical ICC path) to a
     /// user-facing label. Only profiles in this map may be selected.
     pub color_profile_labels: BTreeMap<String, String>,
+}
+
+impl DisplayOutputSnapshot {
+    /// The entry that describes this output as it runs with none saved: the
+    /// defaults at the compositor's own scale.
+    pub fn unconfigured(&self) -> OutputConfig {
+        OutputConfig::at_scale(self.scale)
+    }
 }
 
 /// Why an HDR-capable sink cannot be driven in HDR by the compositor.
@@ -211,7 +226,7 @@ pub enum AdaptiveSyncUnavailable {
 /// Read-only state written atomically by the compositor in the private user
 /// runtime directory. It is deliberately separate from durable intent:
 /// unplugging a monitor changes this document, not the user's saved layout.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplayHardwareSnapshot {
     pub generated_unix_ms: u64,
@@ -801,6 +816,21 @@ pub struct OutputConfig {
     /// times make many panels flicker. Inert on a sink that cannot do it.
     pub vrr: bool,
     pub color_profile: Option<String>,
+}
+
+impl OutputConfig {
+    /// The defaults at `scale`, or at 1x when `scale` is not a usable
+    /// factor.
+    pub fn at_scale(scale: f64) -> Self {
+        Self {
+            scale: if scale.is_finite() && scale > 0.0 {
+                scale
+            } else {
+                1.0
+            },
+            ..Self::default()
+        }
+    }
 }
 
 impl Default for OutputConfig {

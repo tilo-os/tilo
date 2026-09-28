@@ -9,8 +9,9 @@ use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 use tilo_clock::unix_now;
 use ui::doc::{read_bool, read_str};
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
+use automerge::transaction::Transactable;
 use taffy::{NodeId, TaffyTree};
 use tilo_relay_protocol::config::CheckpointPrefixRecovery;
 use tilo_relay_protocol::{DeviceRole, RelayConfig, ReplicationIntent};
@@ -19,7 +20,7 @@ use ui::theme::Theme;
 use ui::widget::{Button, Dropdown, TextInput, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::continuity::{Capability, ContinuityPrivacy};
 use crate::widgets::{
@@ -1813,7 +1814,8 @@ impl Widget for DeviceMeshPane {
         clippy::too_many_lines,
         reason = "one synchronization pass consumes the pane's related role, replication, pairing, device-revocation, and server-management controls atomically"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.poll_background_tasks();
         if let Some(command_state) = &self.command_state
             && let Some(operation) = command_state.get()
@@ -1983,36 +1985,15 @@ impl Widget for DeviceMeshPane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let was_handled = *handled;
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let was_handled = *ctx.handled;
         if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(child) = children.first()
         {
-            composed.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                *child,
-                taffy,
-            );
+            composed.handle_event(event, &mut ctx.reborrow(ctx.path, *child));
         }
-        self.commit_context_pending |= !was_handled && *handled;
+        self.commit_context_pending |= !was_handled && *ctx.handled;
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -2076,6 +2057,7 @@ impl Widget for DeviceMeshPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use settings_store::roaming_provenance::{SCHEMA_VERSION, SettingResolution, WifiResolution};
     use std::time::Instant;
     use tilo_relay_protocol::WorkspaceBinding;

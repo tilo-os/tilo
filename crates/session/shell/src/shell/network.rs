@@ -5,6 +5,7 @@
 
 use crate::shell::state::WorkspaceAuthority as _;
 
+mod governor_actions;
 mod native_enrollment;
 mod native_ingress;
 
@@ -1330,27 +1331,7 @@ pub struct InboundDocument {
     pub envelope: Box<collab_types::SignedOp>,
 }
 
-/// One received piece of channel governance, addressed to a room this
-/// device is in. Every variant is signed by a device key and verified by
-/// the channel service before it changes any state.
-#[derive(Debug, Clone)]
-pub enum InboundChannelGovernance {
-    /// A frame from a channel's steward.
-    Frame {
-        room: RoomId,
-        frame: Box<collab_types::MlsGovernanceFrameV1>,
-    },
-    /// A device asking a channel's steward for membership.
-    AccessRequest {
-        room: RoomId,
-        request: Box<collab_types::MlsAccessRequestV1>,
-    },
-    /// A device's cumulative acknowledgement of a channel's frames.
-    Ack {
-        room: RoomId,
-        ack: Box<collab_types::MlsGovernanceAckV1>,
-    },
-}
+pub use tilo_action_broker::channel_encryption::InboundChannelGovernance;
 
 /// One received cooperative-scrollback request. The broker's drainer
 /// may answer with a `ScrollbackResponse` if its op log holds the range.
@@ -1384,7 +1365,9 @@ pub struct InboundPresence {
     /// Presence channel key (workspace, tab, widget path, …), JSON so
     /// the wire format stays opaque to the bridge.
     pub key: String,
-    /// Pointer position in the publisher's logical-pixel scene-space.
+    /// Pointer position in the space `key` names — for a person's desktop
+    /// pointer, logical pixels from the corner of a tab's tile
+    /// ([`crate::shell::peer_presence::PointerAnchor`]).
     pub point: (f64, f64),
     /// Wall-clock millisecond timestamp from the publisher.
     pub ts: u64,
@@ -2431,7 +2414,8 @@ impl ShellNetwork {
                     caller: tilo_actions::remote::Caller::authenticated(
                         identity.user_pubkey,
                         identity.device_pubkey,
-                    ),
+                    )
+                    .from_foreign_device(identity.capabilities.foreign),
                     message: frame.message,
                 });
             }

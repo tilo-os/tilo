@@ -148,6 +148,7 @@ pub mod diag;
 pub mod dmabuf_import;
 pub mod dnd;
 pub mod doc;
+pub mod doc_binding;
 #[cfg(any(windows, test))]
 mod dx12_shader_cache;
 pub mod floating_surface;
@@ -310,7 +311,7 @@ pub use reorder::{
     DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop, ReorderMotion,
 };
 pub use search::{
-    FnProvider, SearchGroup, SearchProvider, SearchRegistry, SearchResult, fuzzy_score,
+    FnProvider, ListIndex, SearchGroup, SearchProvider, SearchRegistry, SearchResult,
 };
 pub use selection::{KeySelection, SelectionModel};
 pub use state::{

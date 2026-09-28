@@ -60,6 +60,7 @@ path = "src/home_peer_control.rs"
 #   iroh endpoint so the integration tests spin up two relays + N
 #   peers without any external service.
 [dependencies]
+xdg-paths = { path = "../../system/xdg-paths" }
 tilo-clock = { path = "../../system/tilo-clock" }
 tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 web-time = { version = "1", features = ["serde"] }
@@ -114,6 +115,7 @@ uuid.workspace = true
 
 # Runtime + config.
 tokio = { workspace = true, features = ["sync", "macros", "io-util"] }
+wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
 n0-future = "0.3.2"
 thiserror.workspace = true
 

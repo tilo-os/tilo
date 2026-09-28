@@ -198,12 +198,14 @@ fn immersive_widgets_render_reachable_geometry_at_every_size() {
                     label: "Alice".into(),
                     color: Color::from_rgb8(0xec, 0x48, 0x99),
                     is_agent: false,
+                    opacity: 1.0,
                 },
                 PeerCursor {
                     pos: (170.0, 150.0),
                     label: "Ada".into(),
                     color: Color::from_rgb8(0x0e, 0xa5, 0xe9),
                     is_agent: true,
+                    opacity: 1.0,
                 },
                 // Past the right edge, with a name no side band can hold whole.
                 PeerCursor {
@@ -211,6 +213,7 @@ fn immersive_widgets_render_reachable_geometry_at_every_size() {
                     label: "Charlotte Okonkwo".into(),
                     color: Color::from_rgb8(0xf9, 0x73, 0x16),
                     is_agent: false,
+                    opacity: 1.0,
                 },
                 // Above the top edge.
                 PeerCursor {
@@ -218,6 +221,7 @@ fn immersive_widgets_render_reachable_geometry_at_every_size() {
                     label: "Bob".into(),
                     color: Color::from_rgb8(0x10, 0xb9, 0x81),
                     is_agent: false,
+                    opacity: 1.0,
                 },
             ];
             let mut scene = Scene::new();

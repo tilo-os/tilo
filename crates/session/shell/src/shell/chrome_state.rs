@@ -655,6 +655,10 @@ pub struct ChromeState {
     /// the session lock state, so a UI action cannot diverge from the lock
     /// screen, client-focus and input-capture lifecycle.
     session_lock_requested: bool,
+    /// Session lifecycle actions invoked through the typed `session.*`
+    /// actions, waiting for the overlay host's session executor — the same
+    /// one the power flyout's rows reach.
+    session_action_requests: Vec<os_actions::SessionAction>,
     /// Id of the group full-screened via `xdg_toplevel.set_fullscreen`.
     /// NOT persisted — the compositor sets it from live state each
     /// frame via [`Self::set_fullscreen_group`].
@@ -827,6 +831,7 @@ impl ChromeState {
             session_locked: false,
             active_exposures: Vec::new(),
             session_lock_requested: false,
+            session_action_requests: Vec::new(),
             fullscreen_group: None,
             maximized_group: None,
             fullscreen_presentation: false,
@@ -2579,6 +2584,16 @@ impl ChromeState {
     /// session transition.
     pub fn take_session_lock_request(&mut self) -> bool {
         std::mem::take(&mut self.session_lock_requested)
+    }
+
+    /// Queue a typed session action for the overlay host's executor, which
+    /// drains it on the next update.
+    pub fn request_session_action(&mut self, action: os_actions::SessionAction) {
+        self.session_action_requests.push(action);
+    }
+
+    pub fn take_session_action_requests(&mut self) -> Vec<os_actions::SessionAction> {
+        std::mem::take(&mut self.session_action_requests)
     }
 
     /// Called once per frame; no-op when no bridge is installed.

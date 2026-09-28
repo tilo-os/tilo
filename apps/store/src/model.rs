@@ -13,7 +13,7 @@
 //! that seam explicit.
 
 use serde::{Deserialize, Serialize};
-use ui::search::{FieldWeight, RankField};
+use ui::search::{FieldWeight, ListIndex};
 
 /// Which upstream feed a [`StoreItem`] came from.
 ///
@@ -364,27 +364,24 @@ impl StoreItem {
             u8::from(self.installed.is_installed())
         }
     }
+}
 
-    /// Case- and accent-insensitive substring match against name +
-    /// description. Empty needle matches everything (so the search bar can
-    /// start empty).
-    pub fn matches_query(&self, needle: &str) -> bool {
-        needle.trim().is_empty() || self.relevance(needle).is_some()
-    }
-
-    /// The shared search ranker's relevance of this item — higher is better,
-    /// `None` when neither field contains the needle. A hit in the name
-    /// outranks a hit in the description; an exact prefix outranks a
-    /// mid-string hit.
-    pub fn relevance(&self, needle: &str) -> Option<i32> {
-        ui::search::field_rank(
-            needle,
-            &[
-                RankField::new(&self.name, FieldWeight::TITLE),
-                RankField::new(&self.description, FieldWeight::BODY),
-            ],
-        )
-    }
+/// Each item's relevance to `needle`, case- and accent-insensitively —
+/// higher is better, `None` when neither its name nor its description
+/// matches. A hit in the name outranks a hit in the description; a prefix
+/// outranks a mid-string hit. An empty needle matches everything (so the
+/// search bar can start empty). `index` keeps the items indexed while they
+/// stay the same.
+pub fn relevance(index: &ListIndex, needle: &str, items: &[&StoreItem]) -> Vec<Option<i32>> {
+    index.ranks(
+        needle,
+        items.iter().map(|item| {
+            [
+                (item.name.as_str(), FieldWeight::TITLE),
+                (item.description.as_str(), FieldWeight::BODY),
+            ]
+        }),
+    )
 }
 
 /// Which source-side filter chip is active.
@@ -619,20 +616,24 @@ mod tests {
         // Case `search_matches_name_and_description_case_insensitive`.
         {
             let n = tilo_item("Notes", InstalledState::Not, "0.1.0");
-            assert!(n.matches_query(""));
-            assert!(n.matches_query("Notes"));
-            assert!(n.matches_query("notes"));
-            assert!(n.matches_query("some notes app"));
-            assert!(!n.matches_query("terminal"));
+            let index = ListIndex::default();
+            let matches = |needle: &str| relevance(&index, needle, &[&n])[0].is_some();
+            assert!(matches(""));
+            assert!(matches("Notes"));
+            assert!(matches("notes"));
+            assert!(matches("some notes app"));
+            assert!(!matches("terminal"));
         }
 
         // Case `relevance_prefers_name_prefix_hits`.
         {
             let mut n = tilo_item("Notes", InstalledState::Not, "0.1.0");
             n.description = "great little app".into();
-            let prefix = n.relevance("no");
-            let mid = n.relevance("tes");
-            let desc = n.relevance("little");
+            let index = ListIndex::default();
+            let rank = |needle: &str| relevance(&index, needle, &[&n])[0];
+            let prefix = rank("no");
+            let mid = rank("tes");
+            let desc = rank("little");
             assert!(mid.is_some() && desc.is_some());
             assert!(
                 prefix > mid,

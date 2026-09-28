@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
@@ -312,7 +313,8 @@ impl Widget for NotesApp {
         Some(&HISTORY)
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.body.sync(state, root);
         self.clamp_cursor();
     }
@@ -400,34 +402,35 @@ impl Widget for NotesApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.clamp_cursor();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(*position, scale_factor, handled);
+                self.handle_cursor_moved(*position, ctx.scale_factor, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: es,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_mouse_input(*es, *modifiers, handled, focus_target, node_id);
+                self.handle_mouse_input(
+                    *es,
+                    *ctx.modifiers,
+                    ctx.handled,
+                    ctx.focus_target,
+                    ctx.node_id,
+                );
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
-                self.handle_keyboard_input(key_event, *modifiers, state, root, handled);
+                self.handle_keyboard_input(
+                    key_event,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                );
             }
             _ => {}
         }

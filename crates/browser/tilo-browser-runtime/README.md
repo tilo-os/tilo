@@ -36,7 +36,7 @@ wasm32; it is installed either compiled in (a line in `COMPILED`, with
 
 `app` is a full app id (`so.tilo.word-processor`, `so.tilo.ebook`, ...), one of
 the aliases `writer` and `chat`, or `desktop` for the canonical desktop, which
-requires an admitted certified peer. An id the build does not contain rejects the
+requires an admitted certified peer or `local` (below). An id the build does not contain rejects the
 mount and reports `application "..." is not available` through `onStatus`; no
 placeholder is mounted. `applications()` lists what the build contains, and a
 mount's `application` names the resolved id, title and record scope.
@@ -90,11 +90,76 @@ const phone = await mountDesktop(phoneEl, {app: 'so.tilo.ebook', newDocument: tr
   open: {url: '/books/the-odyssey.epub'}, ...shared});
 const book = phone.opened.resource;   // 'ebook.book:book:<32 hex>'
 const laptop = await mountDesktop(laptopEl, {app: 'so.tilo.ebook', record: phone.record, ...shared});
+// Each mount reads at its own position: open both at Book I without selecting.
+for (const mount of [phone, laptop]) mount.invokeAction(book, 'go-to', {chapter: 4, block: 3});
 phone.invokeAction(book, 'select-passage', {chapter: 4, start_block: 3, end_block: 3});
 ```
 
 Refusals reject the mount with `code` `TILO_OPEN_INVALID`,
 `TILO_OPEN_UNSUPPORTED` or `TILO_OPEN_UNAVAILABLE` (WEB_RUNTIME.md).
+
+### A local desktop
+
+`mountDesktop(el, {app: 'desktop', local})` mounts the canonical desktop shell
+(strips, workspaces, top bar, launcher, search, action palette, Activity) over
+room documents the page seeds and alone holds: no peer, nothing replicated. This
+mount is their topology owner, so the commands the shell binds (open, close,
+reorder, move, split, strips, renames) are reduced at once with the same command
+reduction and projection a workspace host runs. Each workspace is its own room;
+the first is the mount's `room`. Windows name app ids or aliases; the host links
+apps the core lacks through the resolver first, as for a standalone mount.
+
+A window with `record` shows that record of the app in the mount's room, such
+as one a standalone mount of the same profile, device and room opened (a Books
+library with its book and annotations); both mounts edit one document and show
+each other's changes live. A window without `record`, and every window opened
+later, gets a new record from the app itself. `apps` lists more apps to link,
+so the launcher, search and palette offer them.
+
+```js
+const shared = {profile: 'demo', device: 'visitor', room: ROOM, author: 'Visitor'};
+const phone = await mountDesktop(phoneEl, {app: 'so.tilo.ebook', newDocument: true,
+  open: {url: '/books/the-odyssey.epub'}, ...shared});
+const book = phone.opened.resource;
+await phone.cleanup();                       // the phone "expands" into the desktop
+const desktop = await mountDesktop(desktopEl, {app: 'desktop', ...shared, local: {
+  apps: ['so.tilo.word-processor'],
+  workspaces: [
+    {title: 'Reading', strips: [{title: 'Odyssey', windows: [
+      {app: 'so.tilo.ebook', record: phone.record, focused: true}]}]},
+    {title: 'Writing'},
+  ]}});
+const nav = desktop.navigation;              // DesktopNavigationV1
+desktop.invokeAction(book, 'go-to', {chapter: 4, block: 3});    // the focused window's app
+await desktop.openApp('so.tilo.word-processor');                 // a new, selected Writer window
+const {generation, workspaces} = nav.getSnapshot();
+await nav.dispatch({kind: 'workspace', generation, workspace: workspaces[1].id});
+```
+
+`actions(resource, {window})` and `invokeAction(resource, action, args,
+{confirm, window})` address one window's app: `window` is its tab id (a route's
+`tab`), by default the focused window. The snapshot lists every window
+(`entries`), workspace and strip, the focused route (`active`) and the linked
+apps (`applications`); `dispatch` selects windows, workspaces and strips, sets
+width and maximization, pans, closes, opens (`{kind: 'open', app}`), and opens
+the focused document's history (`{kind: 'history', route: active, target:
+history.target}`) or the workspace's Activity (`{kind: 'workspace-activity',
+workspace, view}`).
+
+`{kind: 'workspace-settings', workspace, tab}` opens the workspace settings
+(`general`, `members`, `agents`, `permissions`, `apps`) and
+`{kind: 'close-workspace-settings', workspace}` closes them; the snapshot's
+`workspaceSettings` reports `{workspace, tab}` while they are open. A
+workspace's `members` (`{name, access, agent}`) and `grants` (`{app, access,
+over}`) seed what its People, Agents and Privacy tabs list; they are shown,
+not enforced (the page keeps owner rights). Workspace history is the
+Activity pane over the room's real changes and the windows' records; a
+document's own history is the app's (Writer: `invokeAction('word-processor.document',
+'history', {}, {window})` opens its version strip, and its
+`word-processor.revision:<hash>#show` resources name each revision).
+
+The rooms live as long as the mount; records persist in the profile's storage
+like a standalone mount's.
 
 ## Lifetime and persistence
 
@@ -141,6 +206,7 @@ GPU presentation are separate flags, so a drawn widget still presents its Scene.
 node --test crates/browser/tilo-browser-runtime/web/host.test.mjs
 node --test crates/browser/tilo-browser-runtime/web/open-file.test.mjs
 cargo test --locked -j2 -p tilo-browser-runtime --lib catalog::
+cargo test --locked -j2 -p tilo-browser-runtime --lib local_desktop::
 cargo test --locked -j2 -p ebook --lib component::
 cargo test --locked -j2 -p ui --test it package_primary
 cargo test --locked -j2 -p word-processor --test it canonical_component

@@ -9,13 +9,11 @@
 //! Defaults to [`Theme::text_primary`] and the lucide 1.5px stroke; see
 //! [`IconWidget::with_color`], [`IconWidget::dim`], [`IconWidget::with_stroke`].
 
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
-use winit::event::WindowEvent;
 
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX};
 use crate::presence::PresenceCtx;
@@ -99,8 +97,6 @@ impl IconWidget {
 }
 
 impl Widget for IconWidget {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -143,20 +139,6 @@ impl Widget for IconWidget {
         let color = self.resolve_color(theme);
         self.icon
             .draw_with_stroke(scene, transform, self.rect, color, self.stroke_px);
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

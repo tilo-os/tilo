@@ -11,12 +11,10 @@
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Arc, Cap, Circle, Join, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Brush, Color, Fill};
-use winit::event::WindowEvent;
 
 use crate::presence::PresenceCtx;
 use crate::text_metrics::renderer_type_size;
@@ -312,8 +310,6 @@ impl RingGauge {
 }
 
 impl Widget for RingGauge {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -377,20 +373,6 @@ impl Widget for RingGauge {
             &self.small,
             &self.style,
         );
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {
@@ -656,8 +638,6 @@ impl BarGauge {
 }
 
 impl Widget for BarGauge {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -706,20 +686,6 @@ impl Widget for BarGauge {
             &self.value,
             &self.style,
         );
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

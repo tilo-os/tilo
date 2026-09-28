@@ -164,7 +164,24 @@ impl GpuImporter {
         dmabuf: &Dmabuf,
         out: &mut Vec<u8>,
     ) -> Result<(u32, u32), GpuImportError> {
-        let result = self.read_back(dmabuf, out);
+        self.import_as(dmabuf, out, Fourcc::Abgr8888)
+    }
+
+    /// [`Self::import`] reading back in `readback`: `Abgr8888` (RGBA8, `X`
+    /// formats forced opaque), or `Abgr2101010` / `Abgr16161616f` to keep a
+    /// 10-bit or half-float buffer's precision, as-is.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::import`], and [`GpuImportError::ReadbackFailed`] when the
+    /// driver cannot read back in `readback`.
+    pub fn import_as(
+        &mut self,
+        dmabuf: &Dmabuf,
+        out: &mut Vec<u8>,
+        readback: Fourcc,
+    ) -> Result<(u32, u32), GpuImportError> {
+        let result = self.read_back(dmabuf, out, readback);
         self.release_readback_scratch();
         result
     }
@@ -193,6 +210,7 @@ impl GpuImporter {
         &mut self,
         dmabuf: &Dmabuf,
         out: &mut Vec<u8>,
+        readback: Fourcc,
     ) -> Result<(u32, u32), GpuImportError> {
         let width = dmabuf.width();
         let height = dmabuf.height();
@@ -219,7 +237,7 @@ impl GpuImporter {
         );
         let mapping = self
             .renderer
-            .copy_texture(&texture, region, Fourcc::Abgr8888)
+            .copy_texture(&texture, region, readback)
             .map_err(|e| GpuImportError::ReadbackFailed(e.to_string()))?;
         let bytes = self
             .renderer
@@ -228,9 +246,14 @@ impl GpuImporter {
 
         // Also client-controlled: a buffer whose reported area overflows `usize` is rejected
         // rather than silently wrapping into a too-small allocation.
+        let bytes_per_pixel = if readback == Fourcc::Abgr16161616f {
+            8
+        } else {
+            4
+        };
         let expected = (width as usize)
             .checked_mul(height as usize)
-            .and_then(|area| area.checked_mul(4))
+            .and_then(|area| area.checked_mul(bytes_per_pixel))
             .ok_or(GpuImportError::InvalidDimensions { width, height })?;
         let Some(head) = bytes.get(..expected) else {
             return Err(GpuImportError::ReadbackFailed(format!(
@@ -243,7 +266,7 @@ impl GpuImporter {
         out.extend_from_slice(head);
 
         // The `X` FourCCs have no alpha channel — the fourth byte is undefined padding that would otherwise show up as a see-through tile. Force it opaque, same as the CPU importer's swizzle.
-        if is_opaque_fourcc(dmabuf.format().code) {
+        if readback == Fourcc::Abgr8888 && is_opaque_fourcc(dmabuf.format().code) {
             for px in out.chunks_exact_mut(4) {
                 if let Some(alpha) = px.last_mut() {
                     *alpha = 0xFF;

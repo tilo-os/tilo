@@ -1,5 +1,6 @@
 use super::*;
 use crate::history_mode::*;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{ROOT, transaction::Transactable};
 static HISTORY: HistoryDefinition = HistoryDefinition {
     app_id: "dev.tilo.native-history-fixture",
@@ -3824,7 +3825,7 @@ impl crate::widget::Widget for PaletteHistoryOwner {
     fn test_id(&self) -> Option<&str> {
         Some("palette-history-owner")
     }
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         self.text.sync(doc, path);
     }
     fn build_layout(
@@ -3861,26 +3862,9 @@ impl crate::widget::Widget for PaletteHistoryOwner {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<taffy::NodeId>,
-        node: taffy::NodeId,
-        tree: &taffy::TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
-        self.text.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            doc,
-            path,
-            handled,
-            focus,
-            node,
-            tree,
-        );
+        self.text.handle_event(event, ctx);
     }
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
         if self
@@ -3903,15 +3887,18 @@ impl crate::widget::Widget for PaletteHistoryOwner {
             .into_iter()
             .collect()
     }
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        _: tilo_actions::InvocationId,
-        _: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         _: &mut automerge::AutoCommit,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(crate::widget::OperationRequest {
+            type_id, payload, ..
+        }) = op.unscoped()
+        else {
+            return Ok(None);
+        };
         if !self.resource_operation_handlers().contains(type_id) {
             return Ok(None);
         }
@@ -4427,7 +4414,7 @@ impl crate::widget::Widget for ComponentControlOwner {
     fn name(&self) -> &str {
         &self.id
     }
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         self.text.sync(doc, path);
     }
     fn build_layout(
@@ -4464,26 +4451,9 @@ impl crate::widget::Widget for ComponentControlOwner {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<taffy::NodeId>,
-        node: taffy::NodeId,
-        tree: &taffy::TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
-        self.text.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            doc,
-            path,
-            handled,
-            focus,
-            node,
-            tree,
-        );
+        self.text.handle_event(event, ctx);
     }
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
         let mut resources = vec![self.resource()];
@@ -4503,15 +4473,21 @@ impl crate::widget::Widget for ComponentControlOwner {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         [self.operation.clone()].into_iter().collect()
     }
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        _: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         _: &mut automerge::AutoCommit,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(crate::widget::OperationRequest {
+            invocation,
+            type_id,
+            payload,
+            ..
+        }) = op.unscoped()
+        else {
+            return Ok(None);
+        };
         if type_id != self.operation {
             return Ok(None);
         }
@@ -4562,9 +4538,6 @@ impl crate::widget::Widget for ComponentControlSlot {
     fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
         Some(self.binding.clone())
     }
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-        self.live.sync(doc, path);
-    }
     fn build_layout(
         &mut self,
         tree: &mut taffy::TaffyTree<()>,
@@ -4597,26 +4570,9 @@ impl crate::widget::Widget for ComponentControlSlot {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<taffy::NodeId>,
-        node: taffy::NodeId,
-        tree: &taffy::TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
-        self.live.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            doc,
-            path,
-            handled,
-            focus,
-            node,
-            tree,
-        );
+        self.live.handle_event(event, ctx);
     }
     fn children(&self) -> Vec<&dyn crate::widget::Widget> {
         vec![&self.live]
@@ -4653,7 +4609,7 @@ impl crate::widget::Widget for ComponentControlRoot {
     fn name(&self) -> &str {
         "Controlled component root"
     }
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         self.text.sync(doc, path);
     }
     fn build_layout(
@@ -4690,26 +4646,9 @@ impl crate::widget::Widget for ComponentControlRoot {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<taffy::NodeId>,
-        node: taffy::NodeId,
-        tree: &taffy::TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
-        self.text.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            doc,
-            path,
-            handled,
-            focus,
-            node,
-            tree,
-        );
+        self.text.handle_event(event, ctx);
     }
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn crate::widget::Widget)) {
         for slot in &self.slots {
@@ -5881,7 +5820,7 @@ impl crate::widget::Widget for CustodyDeniedRoot {
     fn name(&self) -> &str {
         "Controlled component boundary"
     }
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         self.child.sync(doc, path);
     }
     fn build_layout(
@@ -5919,26 +5858,9 @@ impl crate::widget::Widget for CustodyDeniedRoot {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<taffy::NodeId>,
-        node: taffy::NodeId,
-        tree: &taffy::TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
-        self.child.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            doc,
-            path,
-            handled,
-            focus,
-            node,
-            tree,
-        );
+        self.child.handle_event(event, ctx);
     }
     fn children(&self) -> Vec<&dyn crate::widget::Widget> {
         vec![self.child.as_ref()]
@@ -6234,9 +6156,6 @@ impl crate::widget::Widget for CustodyControlsRoot {
     fn name(&self) -> &str {
         "Controlled component boundary"
     }
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-        self.child.sync(doc, path);
-    }
     fn build_layout(
         &mut self,
         tree: &mut taffy::TaffyTree<()>,
@@ -6272,26 +6191,9 @@ impl crate::widget::Widget for CustodyControlsRoot {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<taffy::NodeId>,
-        node: taffy::NodeId,
-        tree: &taffy::TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
-        self.child.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            doc,
-            path,
-            handled,
-            focus,
-            node,
-            tree,
-        );
+        self.child.handle_event(event, ctx);
     }
     fn children(&self) -> Vec<&dyn crate::widget::Widget> {
         vec![self.child.as_ref()]
@@ -6307,23 +6209,21 @@ impl crate::widget::Widget for CustodyControlsRoot {
         handlers.insert("fixture.control".into());
         handlers
     }
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        operation: &str,
-        payload: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         doc: &mut automerge::AutoCommit,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if operation != "fixture.control" {
-            return self.child.start_resource_operation_with_document(
-                invocation, kind, operation, payload, doc, path,
-            );
-        }
+        let Some(request) = op
+            .unscoped()
+            .filter(|request| request.type_id == "fixture.control")
+        else {
+            return self.child.start_operation(op, doc, path);
+        };
         self.ledger
             .borrow_mut()
-            .push(serde_json::from_slice(payload).unwrap());
+            .push(serde_json::from_slice(request.payload).unwrap());
         Ok(Some(crate::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
@@ -6557,14 +6457,16 @@ fn custody_matrix_activate(app: &mut App, kind: &str, second: bool) -> serde_jso
                     crate::widget::TaffyTreeExt::leaf_node(&mut tree, taffy::Style::default());
                 widget.handle_event(
                     &event,
-                    1.0,
-                    &winit::event::Modifiers::default(),
-                    doc,
-                    path,
-                    &mut handled,
-                    &mut focus,
-                    leaf,
-                    &tree,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: doc,
+                        path,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: leaf,
+                        taffy: &tree,
+                    },
                 );
             })
             .unwrap();

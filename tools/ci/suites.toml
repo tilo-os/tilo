@@ -49,6 +49,7 @@ suites = [
   "os/tests/disk_image_mirror_policy.sh",
   "os/tests/disk_image_mtools_esp.sh",
   "os/tests/disk_image_root_podman_store.sh",
+  "os/tests/disk_image_user_labels.sh",
   "os/tests/dracut_tilo_root_contract.sh",
   "os/tests/encrypted_boot_mount_contract.sh",
   "os/tests/airplay_encrypted_session_test.sh",
@@ -124,6 +125,7 @@ suites = [
   "os/tests/test_native_resume_admission.py",
   "os/tests/test_native_resume_launcher.py",
   "os/tests/test_native_source_compatibility.py",
+  "os/tests/test_oci_image_diff.py",
   "os/tests/test_pack_apps_cleanup.py",
   "os/tests/test_prepare_wpe_stage.py",
   "os/tests/test_prepare_windows_direct_source.py",
@@ -400,7 +402,7 @@ readers = [
 
 [[cargo]]
 package = "launcher"
-inputs = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf"]
+inputs = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf", "os/usr/lib/tilo/web-engine-entitled.conf"]
 readers = ["crates/packaging/launcher/src/manifest.rs", "crates/packaging/launcher/src/seccomp.rs"]
 
 [[cargo]]

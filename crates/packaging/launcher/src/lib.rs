@@ -57,6 +57,8 @@ pub mod netgate;
 pub mod performance;
 pub mod profile;
 #[cfg(target_os = "linux")]
+pub mod provider_sandbox;
+#[cfg(target_os = "linux")]
 pub mod run;
 #[cfg(target_os = "linux")]
 pub mod sandbox;

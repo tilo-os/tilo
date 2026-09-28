@@ -9,5 +9,9 @@ pub mod delegated_promotion_cli;
 pub mod http_end_to_end;
 #[path = "promotion_cli.rs"]
 pub mod promotion_cli;
+#[path = "publisher_applications.rs"]
+pub mod publisher_applications;
+#[path = "publisher_client.rs"]
+pub mod publisher_client;
 #[path = "snapshot_cli.rs"]
 pub mod snapshot_cli;

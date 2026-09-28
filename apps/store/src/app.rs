@@ -34,6 +34,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
@@ -922,6 +923,8 @@ pub struct StoreApp {
     /// Retained global-search projection. It is rebuilt only after a changed
     /// worker snapshot and resolves palette addresses against live rows.
     search_index: crate::search_provider::StoreSearchIndex,
+    /// The items' names and descriptions, indexed while they stay the same.
+    item_index: ui::search::ListIndex,
     /// Active source-side filter (`All | Tilo | Flatpak | Installed`). Kept
     /// locally: browsing one catalogue must not navigate collaborators.
     active_filter: SourceFilter,
@@ -1029,6 +1032,7 @@ impl StoreApp {
         Self {
             items: Vec::new(),
             search_index: crate::search_provider::StoreSearchIndex::default(),
+            item_index: ui::search::ListIndex::default(),
             active_filter: SourceFilter::All,
             active_category: None,
             query: String::new(),
@@ -1414,7 +1418,7 @@ impl StoreApp {
     /// tests + the detail-sheet reducer both need it.
     pub fn visible_items(&self) -> Vec<&StoreItem> {
         let cat = self.active_category.as_deref();
-        let mut hits: Vec<&StoreItem> = self
+        let hits: Vec<&StoreItem> = self
             .items
             .iter()
             .filter(|i| self.active_filter.accepts(i))
@@ -1422,7 +1426,12 @@ impl StoreApp {
                 Some(c) => i.categories.iter().any(|k| k == c),
                 None => true,
             })
-            .filter(|i| i.matches_query(&self.query))
+            .collect();
+        let ranks = crate::model::relevance(&self.item_index, &self.query, &hits);
+        let mut hits: Vec<(&StoreItem, i32)> = hits
+            .into_iter()
+            .zip(ranks)
+            .filter_map(|(item, rank)| Some((item, rank?)))
             .collect();
         // Ranking: when idle, marked-installed (pinned) apps sort
         // first, then merely-cached, then everything else —
@@ -1430,17 +1439,16 @@ impl StoreApp {
         // refreshes. When a query is active the best fuzzy match wins
         // regardless of install state.
         if self.query.trim().is_empty() {
-            hits.sort_by_key(|i| {
+            hits.sort_by_key(|(i, _)| {
                 (
                     std::cmp::Reverse(i.install_rank()),
                     i.name.to_ascii_lowercase(),
                 )
             });
         } else {
-            let q = self.query.clone();
-            hits.sort_by_cached_key(|i| std::cmp::Reverse(i.relevance(&q)));
+            hits.sort_by_key(|(_, rank)| std::cmp::Reverse(*rank));
         }
-        hits
+        hits.into_iter().map(|(item, _)| item).collect()
     }
 
     /// Category chips: `All` first, then every distinct category
@@ -4227,11 +4235,278 @@ impl Widget for StoreApp {
         None
     }
 
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        let index = self
+            .completed_invocations
+            .iter()
+            .position(|update| update.invocation() == invocation)?;
+        Some(self.completed_invocations.remove(index))
+    }
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
+        self.drain_report_export();
+        for report in &self.reports {
+            let _ = ensure_text_obj(state, path, &report_note_key(&report.app_id));
+        }
+        self.sync_report_resources(state, path);
+        if let Some(root) = self.root.as_mut() {
+            root.sync(state, path);
+        }
+        // The catalogue chrome is process-local presentation state. Reconcile
+        // the local widget bindings after children have handled input; a
+        // remote document can never overwrite another person's search, view,
+        // or facet selection.
+        let source = self.source_filter_state.with(Clone::clone);
+        self.set_active_filter_from_local(&source);
+        let category = self.category_filter_state.with(Clone::clone);
+        let category = (category != "All").then_some(category);
+        let valid = category.as_ref().is_none_or(|candidate| {
+            self.category_labels()
+                .iter()
+                .any(|label| label == candidate)
+        });
+        self.set_active_category(if valid { category } else { None });
+        self.set_query(self.query_state.with(Clone::clone));
+        self.report_notes = self
+            .reports
+            .iter()
+            .map(|report| {
+                (
+                    report.app_id.clone(),
+                    text_at(state, path, &report_note_key(&report.app_id)),
+                )
+            })
+            .collect();
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.structure_dirty = false;
+        self.reduce_motion = theme.reduce_motion;
+        self.text_scale = theme.text_scale;
+        let mut root = self.compose(theme);
+        let child = root.build_layout(taffy, theme, node_map);
+        self.root = Some(root);
+        let node = parent_node(
+            taffy,
+            Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            },
+            &[child],
+        );
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let was_compact = self.compact_layout();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
+        self.rect = Rect::new(
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
+        );
+        if was_compact != self.compact_layout() {
+            self.structure_dirty = true;
+        }
+        if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node))
+            && let Some(&child_node) = children.first()
+        {
+            root.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if let Some(root) = self.root.as_mut() {
+            root.draw(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        permissions: &PermissionContext,
+    ) {
+        if let Some(root) = self.root.as_mut() {
+            root.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                permissions,
+            );
+        }
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        // Child overlays (any dropdown / popover) first, then the
+        // floating status bubble on top of the content.
+        if let Some(root) = self.root.as_mut() {
+            root.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        self.draw_status_bubble(scene, transform, text_renderer, theme);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        // Track the pointer so the bubble can reveal on hover of its
+        // bottom-right zone (coords are window-space, unscaled).
+        if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+        }
+        if let (Some(root), Ok(children)) = (self.root.as_mut(), ctx.taffy.children(ctx.node_id))
+            && let Some(&child_node) = children.first()
+        {
+            root.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.root
+            .as_ref()
+            .map(|r| r.as_ref() as &dyn Widget)
+            .into_iter()
+            .collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.root
+            .as_mut()
+            .map(|r| r.as_mut() as &mut (dyn Widget + '_))
+            .into_iter()
+            .collect()
+    }
+
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.root
+            .as_mut()
+            .and_then(|root| root.take_control_invocation())
+            .or_else(|| self.pending_control_invocation.take())
+    }
+
+    fn name(&self) -> &'static str {
+        "StoreApp"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// The composed child tree supplies individual control semantics; the
+    /// canvas-free root still names the application for assistive technology.
+    fn accessibility(&self) -> Option<AccessNode> {
+        let mut root = AccessNode::new(Role::Window)
+            .with_name("App Store")
+            .with_bounds(self.rect);
+        if !self.status_line.is_empty() {
+            root.children.push(
+                AccessNode::new(Role::Group)
+                    .with_name(self.status_line.clone())
+                    .with_live(Politeness::Polite),
+            );
+        }
+        Some(root)
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let own = std::mem::take(&mut self.structure_dirty);
+        let child = self.root.as_mut().is_some_and(|r| r.take_structure_dirty());
+        own || child
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.root
+            .as_ref()
+            .is_some_and(|r| r.needs_animation_frame())
+            || (!self.compact_layout()
+                && !self.reduce_motion
+                && self.status_bubble.needs_frame(std::time::Instant::now()))
+            || self
+                .images
+                .as_ref()
+                .is_some_and(|images| images.pending() > 0)
+            || self.report_export.is_some()
+    }
+}
+
+impl StoreApp {
     #[allow(
         clippy::too_many_lines,
         reason = "the Store's synchronous action boundary keeps every local view route and typed operation refusal together so capability checks cannot split from resource dispatch"
     )]
-    fn invoke_resource_operation(
+    fn answer_resource_operation(
         &mut self,
         kind: OperationKind,
         type_id: &str,
@@ -4362,7 +4637,7 @@ impl Widget for StoreApp {
         clippy::too_many_lines,
         reason = "this is the single typed effect-dispatch boundary for Store lifecycle, export, remote, and moderation actions"
     )]
-    fn start_resource_operation(
+    fn admit_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
         kind: OperationKind,
@@ -4586,255 +4861,6 @@ impl Widget for StoreApp {
         self.pending_lifecycle_actions
             .push((id, action, invocation));
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        let index = self
-            .completed_invocations
-            .iter()
-            .position(|update| update.invocation() == invocation)?;
-        Some(self.completed_invocations.remove(index))
-    }
-
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.drain_report_export();
-        for report in &self.reports {
-            let _ = ensure_text_obj(state, path, &report_note_key(&report.app_id));
-        }
-        self.sync_report_resources(state, path);
-        if let Some(root) = self.root.as_mut() {
-            root.sync(state, path);
-        }
-        // The catalogue chrome is process-local presentation state. Reconcile
-        // the local widget bindings after children have handled input; a
-        // remote document can never overwrite another person's search, view,
-        // or facet selection.
-        let source = self.source_filter_state.with(Clone::clone);
-        self.set_active_filter_from_local(&source);
-        let category = self.category_filter_state.with(Clone::clone);
-        let category = (category != "All").then_some(category);
-        let valid = category.as_ref().is_none_or(|candidate| {
-            self.category_labels()
-                .iter()
-                .any(|label| label == candidate)
-        });
-        self.set_active_category(if valid { category } else { None });
-        self.set_query(self.query_state.with(Clone::clone));
-        self.report_notes = self
-            .reports
-            .iter()
-            .map(|report| {
-                (
-                    report.app_id.clone(),
-                    text_at(state, path, &report_note_key(&report.app_id)),
-                )
-            })
-            .collect();
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.structure_dirty = false;
-        self.reduce_motion = theme.reduce_motion;
-        self.text_scale = theme.text_scale;
-        let mut root = self.compose(theme);
-        let child = root.build_layout(taffy, theme, node_map);
-        self.root = Some(root);
-        let node = parent_node(
-            taffy,
-            Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            },
-            &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let was_compact = self.compact_layout();
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        if was_compact != self.compact_layout() {
-            self.structure_dirty = true;
-        }
-        if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node))
-            && let Some(&child_node) = children.first()
-        {
-            root.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if let Some(root) = self.root.as_mut() {
-            root.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &PermissionContext,
-    ) {
-        if let Some(root) = self.root.as_mut() {
-            root.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                permissions,
-            );
-        }
-    }
-
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        // Child overlays (any dropdown / popover) first, then the
-        // floating status bubble on top of the content.
-        if let Some(root) = self.root.as_mut() {
-            root.draw_overlay(scene, transform, text_renderer, theme, presence);
-        }
-        self.draw_status_bubble(scene, transform, text_renderer, theme);
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        // Track the pointer so the bubble can reveal on hover of its
-        // bottom-right zone (coords are window-space, unscaled).
-        if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
-        }
-        if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node_id))
-            && let Some(&child_node) = children.first()
-        {
-            root.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.root
-            .as_ref()
-            .map(|r| r.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.root
-            .as_mut()
-            .map(|r| r.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
-
-    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.root
-            .as_mut()
-            .and_then(|root| root.take_control_invocation())
-            .or_else(|| self.pending_control_invocation.take())
-    }
-
-    fn name(&self) -> &'static str {
-        "StoreApp"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    /// The composed child tree supplies individual control semantics; the
-    /// canvas-free root still names the application for assistive technology.
-    fn accessibility(&self) -> Option<AccessNode> {
-        let mut root = AccessNode::new(Role::Window)
-            .with_name("App Store")
-            .with_bounds(self.rect);
-        if !self.status_line.is_empty() {
-            root.children.push(
-                AccessNode::new(Role::Group)
-                    .with_name(self.status_line.clone())
-                    .with_live(Politeness::Polite),
-            );
-        }
-        Some(root)
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self.root.as_mut().is_some_and(|r| r.take_structure_dirty());
-        own || child
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        self.root
-            .as_ref()
-            .is_some_and(|r| r.needs_animation_frame())
-            || (!self.compact_layout()
-                && !self.reduce_motion
-                && self.status_bubble.needs_frame(std::time::Instant::now()))
-            || self
-                .images
-                .as_ref()
-                .is_some_and(|images| images.pending() > 0)
-            || self.report_export.is_some()
     }
 }
 
@@ -5258,9 +5284,8 @@ mod tests {
                     "Useful software with a description that wraps onto another line.".into();
             }
             app.set_layout_width_hint(480.0);
-            let mut list = app.compose(&Theme::dark());
-            layout_composition(list.as_mut(), 480.0);
-            check(list.as_ref());
+            let list = frame_composition(app.compose(&Theme::dark()), 480.0);
+            check(list.root_widget());
         }
 
         // Case `medium_short_viewport_uses_one_width_appropriate_source_summary`.
@@ -5279,13 +5304,13 @@ mod tests {
             let mut app = seeded_app();
             app.set_items(crate::shots::fixture_catalog());
             app.set_layout_width_hint(480.0);
-            let mut tree = app.compose(&Theme::dark());
-            layout_composition(tree.as_mut(), 480.0);
+            let frame = frame_composition(app.compose(&Theme::dark()), 480.0);
+            let tree = frame.root_widget();
 
-            let discover = accessible_rect(tree.as_ref(), "Discover more · 3")
+            let discover = accessible_rect(tree, "Discover more · 3")
                 .expect("discover heading in full catalogue");
             let mut grids = Vec::new();
-            card_grid_extents(tree.as_ref(), &mut grids);
+            card_grid_extents(tree, &mut grids);
             assert_eq!(grids.len(), 2, "ready and discover grids");
             assert!(
                 grids[0].1 <= discover.y0,
@@ -5303,7 +5328,18 @@ mod tests {
         }
     }
 
-    fn layout_composition(widget: &mut dyn Widget, width: f32) -> (TaffyTree<()>, NodeId) {
+    /// Mount a composed tree and run one frame at `width` × 900.
+    fn frame_composition(widget: Box<dyn Widget>, width: f32) -> ui::headless::FrameHarness {
+        ui::headless::FrameHarness::new(
+            ui::State::new(),
+            widget,
+            ui::headless::viewport((width, 900.0)),
+        )
+    }
+
+    /// The `CardGrid` control test drains `take_control_invocation`, which the
+    /// harness's control custody would take first, so it lays out by hand.
+    fn layout_card_grid(widget: &mut CardGrid, width: f32) -> (TaffyTree<()>, NodeId) {
         let mut tree = TaffyTree::new();
         let mut map = HashMap::new();
         let node = widget.build_layout(&mut tree, &Theme::dark(), &mut map);
@@ -5449,7 +5485,7 @@ mod tests {
                         busy,
                     );
                     let mut grid = CardGrid::content_sized(vec![card]);
-                    let (tree, node) = layout_composition(&mut grid, width);
+                    let (tree, node) = layout_card_grid(&mut grid, width);
                     let center = control_mut(&mut grid, "select.button")
                         .unwrap()
                         .get_rect()
@@ -5476,14 +5512,16 @@ mod tests {
                     for event in events {
                         grid.handle_event(
                             &event,
-                            1.0,
-                            &winit::event::Modifiers::default(),
-                            &mut doc,
-                            &automerge::ROOT,
-                            &mut false,
-                            &mut focus,
-                            node,
-                            &tree,
+                            &mut ui::widget::EventCtx {
+                                scale_factor: 1.0,
+                                modifiers: &winit::event::Modifiers::default(),
+                                state: &mut doc,
+                                path: &automerge::ROOT,
+                                handled: &mut false,
+                                focus_target: &mut focus,
+                                node_id: node,
+                                taffy: &tree,
+                            },
                         );
                     }
                     let details = grid.take_control_invocation().expect("pointer Details");
@@ -5512,23 +5550,29 @@ mod tests {
         // Case `detail_and_remote_controls_use_typed_local_actions`.
         {
             let mut app = seeded_app();
-            let doc = AutoCommit::new();
-            app.invoke_resource_operation(
-                OperationKind::View,
-                "store.view",
-                &serde_json::to_vec(&"id.chess").unwrap(),
-                &doc,
+            let mut doc = AutoCommit::new();
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    OperationKind::View,
+                    "store.view",
+                    &serde_json::to_vec(&"id.chess").unwrap(),
+                ),
+                &mut doc,
                 &automerge::ROOT,
             )
             .unwrap();
             assert_eq!(app.take_detail_requested().as_deref(), Some("id.chess"));
             assert!(app.take_detail_requested().is_none());
 
-            app.invoke_resource_operation(
-                OperationKind::View,
-                "store.view-remotes",
-                &serde_json::to_vec(&()).unwrap(),
-                &doc,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    OperationKind::View,
+                    "store.view-remotes",
+                    &serde_json::to_vec(&()).unwrap(),
+                ),
+                &mut doc,
                 &automerge::ROOT,
             )
             .unwrap();
@@ -5550,9 +5594,11 @@ mod tests {
                 app.set_items(crate::shots::fixture_catalog());
                 app.set_layout_width_hint(width);
                 app.text_scale = scale;
-                let mut tree = app.compose(&Theme::dark().with_text_scale(scale));
-                layout_composition(tree.as_mut(), width as f32);
-                assert_finite_rects(tree.as_ref());
+                let frame = frame_composition(
+                    app.compose(&Theme::dark().with_text_scale(scale)),
+                    width as f32,
+                );
+                assert_finite_rects(frame.root_widget());
             }
         }
 
@@ -5589,10 +5635,9 @@ mod tests {
             let mut app = seeded_app();
             app.set_layout_width_hint(1200.0);
             app.items[0].description = "A useful app with a longer description. ".repeat(7);
-            let mut list = app.build_list(&Theme::dark());
-            layout_composition(list.as_mut(), 1200.0);
+            let list = frame_composition(app.build_list(&Theme::dark()), 1200.0);
             let mut found = 0;
-            check(list.as_ref(), &mut found);
+            check(list.root_widget(), &mut found);
             assert_eq!(found, 3);
         }
 
@@ -5777,13 +5822,15 @@ mod tests {
             let heads = doc.get_heads();
             let invocation = tilo_actions::InvocationId::new();
             assert_eq!(
-                app.start_resource_operation(
-                    invocation,
-                    OperationKind::Effect,
-                    "store.refresh",
-                    &serde_json::to_vec(&"").unwrap(),
-                    &doc,
-                    &automerge::ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        OperationKind::Effect,
+                        "store.refresh",
+                        &serde_json::to_vec(&"").unwrap()
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -5795,15 +5842,17 @@ mod tests {
         // Case `exported_refresh_is_accepted_until_worker_completion`.
         {
             let mut app = seeded_app();
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let invocation = tilo_actions::InvocationId::new();
             let started = app
-                .start_resource_operation(
-                    invocation,
-                    OperationKind::Effect,
-                    "store.refresh",
-                    &serde_json::to_vec(&"").unwrap(),
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        OperationKind::Effect,
+                        "store.refresh",
+                        &serde_json::to_vec(&"").unwrap(),
+                    ),
+                    &mut doc,
                     &automerge::ROOT,
                 )
                 .unwrap();
@@ -5823,15 +5872,17 @@ mod tests {
         // Case `app_operation_locks_the_target_card_until_the_worker_is_idle`.
         {
             let mut app = seeded_app();
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let payload = serde_json::to_vec(&vec!["id.notes", "open"]).unwrap();
             let first = app
-                .start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    "store.app",
-                    &payload,
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        "store.app",
+                        &payload,
+                    ),
+                    &mut doc,
                     &automerge::ROOT,
                 )
                 .unwrap();
@@ -5843,13 +5894,15 @@ mod tests {
             assert_eq!(app.status_line(), "Starting Notes…");
             assert_eq!(app.take_lifecycle_actions().len(), 1);
             assert!(
-                app.start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    "store.app",
-                    &payload,
-                    &doc,
-                    &automerge::ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        "store.app",
+                        &payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .is_err(),
                 "the card action cannot double-submit while the worker owns it"
@@ -5888,6 +5941,10 @@ mod tests {
 
     /// The live store starts empty and its search/source/category controls stay local to the window.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
     fn local_browse_controls_filter_without_document_writes() {
         // Case `live_constructor_starts_empty`.
         {
@@ -5982,16 +6039,20 @@ mod tests {
                 },
             )
             .unwrap();
-            assert!(
-                app.invoke_resource_operation(
-                    OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
-                    &automerge::ROOT,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::View,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
-                .unwrap()
-            );
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(app.active_filter(), SourceFilter::Tilo);
             assert!(
                 app.visible_items()
@@ -6016,13 +6077,15 @@ mod tests {
         // Case `stale_resource_action_cannot_escalate_to_an_unoffered_mutation`.
         {
             let mut app = seeded_app();
-            let doc = AutoCommit::new();
-            let result = app.start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                OperationKind::Effect,
-                "store.app",
-                &serde_json::to_vec(&vec!["id.notes", "remove"]).unwrap(),
-                &doc,
+            let mut doc = AutoCommit::new();
+            let result = app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    OperationKind::Effect,
+                    "store.app",
+                    &serde_json::to_vec(&vec!["id.notes", "remove"]).unwrap(),
+                ),
+                &mut doc,
                 &automerge::ROOT,
             );
             assert!(
@@ -6069,7 +6132,7 @@ mod tests {
                 user_managed: true,
             };
             app.set_flatpak_available(false);
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let root = Widget::resources(&app, &doc).pop().unwrap();
             let chess = root
                 .children
@@ -6085,13 +6148,15 @@ mod tests {
                 ));
             }
             assert!(
-                app.start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    "store.app",
-                    &serde_json::to_vec(&vec!["id.chess", "flatpak-remove"]).unwrap(),
-                    &doc,
-                    &automerge::ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        "store.app",
+                        &serde_json::to_vec(&vec!["id.chess", "flatpak-remove"]).unwrap()
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .is_err(),
                 "direct/stale invocation cannot bypass the unavailable resource contract"
@@ -6159,13 +6224,15 @@ mod tests {
                 note,
             );
             assert_eq!(
-                app.start_resource_operation(
-                    invocation,
-                    OperationKind::Effect,
-                    "store.moderation",
-                    &serde_json::to_vec(&("Tilo", &envelope)).unwrap(),
-                    &doc,
-                    &automerge::ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        OperationKind::Effect,
+                        "store.moderation",
+                        &serde_json::to_vec(&("Tilo", &envelope)).unwrap()
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -6225,29 +6292,33 @@ mod tests {
         // Case `remote_effect_queue_is_bounded`.
         {
             let mut app = seeded_app();
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let payload = serde_json::to_vec(&vec!["refresh".to_string()]).unwrap();
             for _ in 0..MAX_PENDING_EXTERNAL_OPERATIONS {
                 assert!(
-                    app.start_resource_operation(
-                        tilo_actions::InvocationId::new(),
-                        OperationKind::Effect,
-                        "store.remote",
-                        &payload,
-                        &doc,
-                        &automerge::ROOT,
+                    app.start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            tilo_actions::InvocationId::new(),
+                            OperationKind::Effect,
+                            "store.remote",
+                            &payload
+                        ),
+                        &mut doc,
+                        &automerge::ROOT
                     )
                     .is_ok()
                 );
             }
             assert!(
-                app.start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    "store.remote",
-                    &payload,
-                    &doc,
-                    &automerge::ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        "store.remote",
+                        &payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .is_err()
             );
@@ -6271,13 +6342,15 @@ mod tests {
                 app.items.iter().find(|item| item.id == "id.notes"),
                 note,
             );
-            let doc = AutoCommit::new();
-            let accepted = app.start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                OperationKind::Effect,
-                "store.moderation",
-                &serde_json::to_vec(&("Tilo", &current)).unwrap(),
-                &doc,
+            let mut doc = AutoCommit::new();
+            let accepted = app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    OperationKind::Effect,
+                    "store.moderation",
+                    &serde_json::to_vec(&("Tilo", &current)).unwrap(),
+                ),
+                &mut doc,
                 &automerge::ROOT,
             );
             assert!(accepted.is_ok());
@@ -6285,12 +6358,14 @@ mod tests {
 
             let mut stale = current;
             stale.evidence_note = "Different text that was never saved in this draft.".into();
-            let rejected = app.start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                OperationKind::Effect,
-                "store.moderation",
-                &serde_json::to_vec(&("Tilo", stale)).unwrap(),
-                &doc,
+            let rejected = app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    OperationKind::Effect,
+                    "store.moderation",
+                    &serde_json::to_vec(&("Tilo", stale)).unwrap(),
+                ),
+                &mut doc,
                 &automerge::ROOT,
             );
             assert!(rejected.is_err());

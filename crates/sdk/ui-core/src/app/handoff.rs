@@ -241,6 +241,7 @@ mod tests {
             app_id: "dev.tilo.handoff".into(),
             cluster_id: uuid::Uuid::new_v4(),
             record: Some("continuation:31".into()),
+            record_kind: None,
             handle: None,
         }));
         manager.poll();

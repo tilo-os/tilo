@@ -4,8 +4,9 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::binding::{BoxedBinding, Pulled};
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
@@ -28,7 +29,6 @@ pub struct Toggle {
     is_hovered: bool,
     is_checked: bool,
     is_focused: bool,
-    on_toggle_path: String,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     enabled: bool,
@@ -36,9 +36,8 @@ pub struct Toggle {
     /// Spoken name for a label-less toggle (e.g. an icon-only switch);
     /// unset falls back to a sibling label from the tree builder.
     accessible_name: Option<String>,
-    /// Typed process-local model mirrored in both directions during the
-    /// ordinary widget sync/event lifecycle.
-    local_state: Option<crate::local_state::LocalBinding<bool>>,
+    /// Where the checked value lives: a document key or process-local state.
+    binding: Option<BoxedBinding<bool>>,
     /// Observes user intent without owning model synchronization.
     on_change: Option<BoolChangeCallback>,
     action: Option<ActionEmitter<bool>>,
@@ -56,13 +55,12 @@ impl Toggle {
             is_hovered: false,
             is_checked: false,
             is_focused: false,
-            on_toggle_path: on_toggle_path.to_string(),
             presence_path: Vec::new(),
             permission_scope: None,
             enabled: true,
             id_override: None,
             accessible_name: Some(crate::widget::humanize_control_id(id)),
-            local_state: None,
+            binding: Some(crate::doc_binding::bool_key(on_toggle_path)),
             on_change: None,
             action: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
@@ -76,10 +74,10 @@ impl Toggle {
     /// synchronization pass. Use [`Self::on_change`] only to observe user
     /// changes, not to keep the model in sync.
     pub fn from_state(state: &crate::LocalState<bool>) -> Self {
-        let (checked, binding) = crate::local_state::LocalBinding::new(state);
+        let (checked, binding) = super::binding::local(state);
         Self {
             is_checked: checked,
-            local_state: Some(binding),
+            binding: Some(binding),
             ..Self::new("toggle", "")
         }
     }
@@ -123,26 +121,19 @@ impl Toggle {
     }
 
     fn publish_local_state(&mut self) {
-        if let Some(binding) = &mut self.local_state {
+        if let Some(binding) = &mut self.binding {
             binding.publish(&self.is_checked);
         }
     }
 
-    fn commit_user_toggle(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn commit_user_toggle(&mut self, state: &mut AppModel, root: &ModelPath) {
         let checked = !self.is_checked;
         if let Some(action) = &mut self.action {
             let _ = action.emit(checked);
-        } else if self.local_state.is_none() {
-            let _ = state.put(
-                root,
-                self.on_toggle_path.as_str(),
-                automerge::ScalarValue::Boolean(checked),
-            );
+        } else if let Some(binding) = &mut self.binding {
+            binding.push(state, root, &checked);
         }
         self.is_checked = checked;
-        if self.action.is_none() {
-            self.publish_local_state();
-        }
         if self.action.is_none()
             && let Some(callback) = self.on_change.as_mut()
         {
@@ -505,25 +496,14 @@ impl Widget for Toggle {
         self.is_hovered &= environment.supports_hover();
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Some(binding) = &mut self.local_state {
-            if let Some(checked) = binding.poll() {
-                self.is_checked = checked;
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        if let Some(binding) = &mut self.binding {
+            match binding.pull(state, root) {
+                Pulled::Value(checked) => self.is_checked = checked,
+                Pulled::Missing => self.is_checked = false,
+                Pulled::Unchanged => {}
             }
-            return;
         }
-        self.is_checked = state
-            .get(root, self.on_toggle_path.as_str())
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| match value {
-                Value::Scalar(scalar) => match scalar.as_ref() {
-                    automerge::ScalarValue::Boolean(checked) => Some(*checked),
-                    _ => None,
-                },
-                Value::Object(_) => None,
-            })
-            .unwrap_or(false);
     }
 
     fn build_layout(
@@ -580,28 +560,18 @@ impl Widget for Toggle {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.effectively_enabled() {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let logical_pos =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let hover = self.rect.contains(logical_pos);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -609,9 +579,9 @@ impl Widget for Toggle {
                 button: MouseButton::Left,
                 ..
             } if self.is_hovered && *element_state == ElementState::Pressed => {
-                *handled = true;
-                *focus_target = Some(node_id);
-                self.commit_user_toggle(state, root);
+                *ctx.handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
+                self.commit_user_toggle(ctx.state, ctx.path);
             }
             _ => {}
         }
@@ -647,8 +617,8 @@ impl Widget for Toggle {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         if !self.effectively_enabled() {
@@ -717,10 +687,10 @@ impl Widget for Toggle {
         let control_id = self.test_id().unwrap_or("toggle");
         if let Some(action) = &self.action {
             vec![action.metadata(control_id)]
-        } else if !self.on_toggle_path.is_empty() {
+        } else if let Some(key) = self.binding.as_ref().and_then(|b| b.document_key()) {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
-                kind: ControlBindingKind::CollaborativeDocument(self.on_toggle_path.clone()),
+                kind: ControlBindingKind::CollaborativeDocument(key.to_owned()),
             }]
         } else if self.on_change.is_some() {
             vec![ControlBindingMetadata {
@@ -775,6 +745,7 @@ impl Widget for Toggle {
 mod tests {
     use super::*;
     use crate::widget::Widget;
+    use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
 
     #[test]
     fn toggle_identity_enabled_state_and_accessibility_are_reported() {
@@ -1135,14 +1106,16 @@ mod tests {
                     device_id: device,
                     position: (10.0, 10.0).into(),
                 },
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             t.handle_event(
                 &WindowEvent::MouseInput {
@@ -1150,14 +1123,16 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
 
             assert!(focus.is_none(), "disabled toggle must not request focus");

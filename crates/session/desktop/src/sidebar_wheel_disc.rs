@@ -12,8 +12,8 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{AlignItems, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, Stroke};
@@ -968,8 +968,6 @@ fn spoke_icon_for_label(label: &str) -> Icon {
 }
 
 impl Widget for SidebarWheelDisc {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1147,33 +1145,22 @@ impl Widget for SidebarWheelDisc {
         self.cached_fp = fp;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Pressed,
                 button: winit::event::MouseButton::Left,
                 ..
-            } => self.handle_left_press(handled),
+            } => self.handle_left_press(ctx.handled),
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position, scale_factor, handled);
+                self.handle_cursor_moved(position, ctx.scale_factor, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Released,
                 button: winit::event::MouseButton::Left,
                 ..
-            } => self.handle_left_release(handled),
-            WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(delta, handled),
+            } => self.handle_left_release(ctx.handled),
+            WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(delta, ctx.handled),
             _ => {}
         }
     }
@@ -1193,7 +1180,7 @@ impl Widget for SidebarWheelDisc {
         spring_active || self.wheel_last_event.is_some() || self.drag_from.is_some()
     }
 
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
         // Real (clamped) frame dt keeps the spring wall-clock-correct
         // under frame drops. Clamped to 1/30 s: semi-implicit Euler
         // stays stable, and a long stall just resumes rather than
@@ -1322,8 +1309,8 @@ impl Widget for SidebarWheelDisc {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
@@ -1347,8 +1334,8 @@ impl Widget for SidebarWheelDisc {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
@@ -2318,6 +2305,7 @@ impl SidebarWheelDisc {
 )]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::cell::Cell;
     use winit::dpi::PhysicalPosition;
     use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
@@ -2437,14 +2425,16 @@ mod tests {
         let dummy_node = unsafe { std::mem::transmute::<u64, NodeId>(0) };
         d.handle_event(
             ev,
-            1.0,
-            &mods,
-            &mut doc,
-            &path,
-            &mut handled,
-            &mut focus,
-            dummy_node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &path,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: dummy_node,
+                taffy: &taffy,
+            },
         );
         handled
     }

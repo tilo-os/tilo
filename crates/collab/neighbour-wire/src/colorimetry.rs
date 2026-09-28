@@ -79,6 +79,10 @@ pub enum TransferCharacteristics {
     /// sRGB piecewise-linear (matches sRGB spec, subtly different from
     /// BT.709). CICP 13.
     Srgb,
+    /// Linear light, extended range: `1.0` is SDR reference white and
+    /// values above it are HDR highlights (scRGB with BT.709 primaries).
+    /// CICP 8.
+    Linear,
     /// Unspecified. CICP 2.
     Unspecified,
 }
@@ -88,6 +92,7 @@ impl TransferCharacteristics {
         match self {
             TransferCharacteristics::Bt709 => 1,
             TransferCharacteristics::Unspecified => 2,
+            TransferCharacteristics::Linear => 8,
             TransferCharacteristics::Srgb => 13,
             TransferCharacteristics::SmpteSt2084 => 16,
             TransferCharacteristics::AribStdB67 => 18,

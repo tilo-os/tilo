@@ -12,7 +12,8 @@ use tilo_action_broker::services::{
     AppActionGrants, LegacyWorkspaceProjection, WorkspaceAuthority,
 };
 use tilo_desktop_model::{
-    DesktopTree, IdMinter, RoomId, Strip, StripId, Workspace, WorkspaceId, WorkspaceTaskStatus,
+    DesktopTree, IdMinter, RoomId, Strip, StripId, Workspace, WorkspaceEffectReceipt, WorkspaceId,
+    WorkspaceTaskStatus,
 };
 use tilo_identity_host::broker::WorkspaceMembership;
 
@@ -104,8 +105,31 @@ impl ProfileWorkspace {
 
     /// Whether this host governs the tree: it keeps its own file, rather
     /// than reading the desktop session's.
-    fn governs(&self) -> bool {
+    pub(super) fn governs(&self) -> bool {
         self.path.is_some()
+    }
+
+    /// Keep the broker's already redacted `receipt` in the workspace of
+    /// `room`; a retried invocation keeps its first receipt.
+    pub(super) fn keep_effect_receipt(
+        &self,
+        room: &str,
+        receipt: WorkspaceEffectReceipt,
+    ) -> Result<(), String> {
+        self.record(room, |tree, workspace| {
+            let workspace = tree
+                .workspaces
+                .iter_mut()
+                .find(|candidate| candidate.id == workspace)?;
+            if !workspace
+                .effect_receipts
+                .iter()
+                .any(|kept| kept.invocation == receipt.invocation)
+            {
+                workspace.effect_receipts.push(receipt);
+            }
+            Some(())
+        })
     }
 
     /// Apply `change` to this host's own tree and persist it. `None`, with

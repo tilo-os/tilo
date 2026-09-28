@@ -28,6 +28,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -2987,7 +2988,7 @@ impl BooksApp {
 
     fn on_copy_selection(&self) {
         // Selection stays put so the reader can also highlight or note it.
-        let text = self.selection_text();
+        let text = self.selection_clipboard_text();
         if !text.is_empty() {
             ui::clipboard_copy(&text);
         }
@@ -3926,6 +3927,17 @@ impl BooksApp {
     /// The full plain text currently selected, paragraph-joined with a
     /// space, not truncated (unlike [`Self::selection_excerpt`]).
     fn selection_text(&self) -> String {
+        self.selected_text_joined(false)
+    }
+
+    /// The selected text as it goes on the clipboard: verse lines and
+    /// `<br/>`s stay on their own lines, and blocks are separated by a blank
+    /// line.
+    fn selection_clipboard_text(&self) -> String {
+        self.selected_text_joined(true)
+    }
+
+    fn selected_text_joined(&self, keep_lines: bool) -> String {
         let Some(sel) = self.sel else {
             return String::new();
         };
@@ -3948,9 +3960,17 @@ impl BooksApp {
             let hi = hi.min(b.char_len);
             if lo < hi {
                 if !out.is_empty() {
-                    out.push(' ');
+                    out.push_str(if keep_lines { "\n\n" } else { " " });
                 }
-                out.extend(b.text.chars().skip(lo).take(hi - lo));
+                out.extend(b.text.chars().enumerate().skip(lo).take(hi - lo).map(
+                    |(index, character)| {
+                        if keep_lines && b.hard_breaks.binary_search(&index).is_ok() {
+                            '\n'
+                        } else {
+                            character
+                        }
+                    },
+                ));
             }
         }
         out
@@ -4658,6 +4678,7 @@ impl BooksApp {
             || chapter.blocks.len().saturating_sub(1),
             |position| position.block,
         );
+        let mut page_bounds: Option<Rect> = None;
         let children = chapter
             .blocks
             .iter()
@@ -4668,18 +4689,38 @@ impl BooksApp {
                     crate::model::Block::Heading { level, .. } => Role::Heading { level: *level },
                     _ => Role::Paragraph,
                 };
-                AccessNode::new(role)
+                let node = AccessNode::new(role)
                     .with_name(block.plain_text())
-                    .with_hashed_key((self.chapter, index))
+                    .with_hashed_key((self.chapter, index));
+                match self.painted_block_bounds(index) {
+                    Some(bounds) => {
+                        page_bounds = Some(page_bounds.map_or(bounds, |page| page.union(bounds)));
+                        node.with_bounds(bounds)
+                    }
+                    None => node,
+                }
             })
             .collect();
-        Some(
-            AccessNode::new(Role::Document)
-                .with_name(chapter.title.clone())
-                .with_description("Current reading page")
-                .with_state(AccessState::new().read_only(true))
-                .with_children(children),
-        )
+        let document = AccessNode::new(Role::Document)
+            .with_name(chapter.title.clone())
+            .with_description("Current reading page")
+            .with_state(AccessState::new().read_only(true))
+            .with_children(children);
+        Some(match page_bounds {
+            Some(bounds) => document.with_bounds(bounds),
+            None => document,
+        })
+    }
+
+    /// Screen bounds of the part of block `index` painted in the last frame:
+    /// the union of its on-page selection runs. A block continued from or on
+    /// another page reports only its visible lines.
+    fn painted_block_bounds(&self, index: usize) -> Option<Rect> {
+        self.sel_runs
+            .iter()
+            .filter(|run| run.block == index)
+            .map(|run| Rect::new(run.x0, run.y0, run.x1, run.y1))
+            .reduce(|bounds, run| bounds.union(run))
     }
 
     fn draw_load_toast(
@@ -4806,157 +4847,35 @@ impl Widget for BooksApp {
         &[crate::actions::EBOOK_OPERATION_TYPE]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        use crate::actions::EbookOperation;
-
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        let expected = crate::actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match ebook operation kind {expected:?}"
-            ));
-        }
-        match operation {
-            EbookOperation::PreviousPage => self.on_prev_page(),
-            EbookOperation::NextPage => self.on_next_page(),
-            EbookOperation::ToggleContents => self.on_toggle_toc(),
-            EbookOperation::ToggleNotes => self.on_toggle_notes(),
-            EbookOperation::OpenSettings => self.on_open_settings(),
-            EbookOperation::Reveal {
-                book_id,
-                chapter,
-                page,
-                block,
-            } => {
-                let Some(index) = self.library.iter().position(|book| book.id == book_id) else {
-                    return Err("book is no longer in the library".into());
-                };
-                let Some(book) = self.library.get(index) else {
-                    return Err("book is no longer in the library".into());
-                };
-                // A resource address is an authority-bearing snapshot. Do not
-                // silently clamp a chapter or annotation target from an old
-                // search/resource row: a peer may have replaced the EPUB, and
-                // opening a nearby passage would be materially misleading.
-                if book.chapters.is_empty() {
-                    if chapter != 0 || block.is_some() {
-                        return Err("book no longer contains the requested reading target".into());
-                    }
-                } else {
-                    let Some(chapter_item) = book.chapters.get(chapter) else {
-                        return Err("chapter is no longer available in this book".into());
-                    };
-                    if let Some(block) = block
-                        && block >= chapter_item.blocks.len()
-                    {
-                        return Err(
-                            "annotation target is no longer available in this chapter".into()
-                        );
-                    }
-                }
-                self.book_idx = index;
-                self.view = View::Reader;
-                self.chapter = chapter;
-                self.page = page;
-                self.pending_jump_block = block;
-                self.clear_selection();
-                self.composing = None;
-                self.note_composer.close();
-                self.comment_overlay.close();
-                // Explicit, like `select_passage`: persisted, never re-adopted.
-                self.layout = None;
-                self.dirty = true;
-            }
-            EbookOperation::SelectPassage {
-                book_id,
-                chapter,
-                start_block,
-                start_char,
-                end_block,
-                end_char,
-            } => self.select_passage(
-                &book_id,
-                chapter,
-                (start_block, start_char),
-                (end_block, end_char),
-            )?,
-            EbookOperation::OpenBook => {
-                return Err("book open requires the lifecycle-capable operation host".into());
-            }
-            EbookOperation::ShareBook { .. } | EbookOperation::HydrateSharedBook { .. } => {
-                return Err("book sharing requires the lifecycle-capable operation host".into());
-            }
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        let expected = crate::actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match ebook operation kind {expected:?}"
-            ));
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        match operation {
-            crate::actions::EbookOperation::OpenBook => {
-                if self.resource_invocation.is_some() {
-                    return Err("another book open is in progress".into());
-                }
-                self.resource_invocation = Some(invocation);
-                self.resource_lifecycle = Some(ResourceLifecycle::Open);
-                self.request_open_via_portal();
-                if self.portal_rx.is_none() {
-                    self.resource_invocation = None;
-                    self.resource_lifecycle = None;
-                    return Err("book picker could not be started".into());
-                }
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            crate::actions::EbookOperation::ShareBook { book_id } => {
-                self.begin_share_book(&book_id)?;
-                self.resource_invocation = Some(invocation);
-                self.resource_lifecycle = Some(ResourceLifecycle::Share);
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            crate::actions::EbookOperation::HydrateSharedBook { book_id } => {
-                self.begin_hydrate_shared_book(&book_id, doc)?;
-                self.resource_invocation = Some(invocation);
-                self.resource_lifecycle = Some(ResourceLifecycle::Hydrate);
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            _ => self
-                .invoke_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                }),
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -5080,7 +4999,8 @@ impl Widget for BooksApp {
         clippy::too_many_lines,
         reason = "sync owns the ordered UI-thread handoff for document, portal, and lifecycle state"
     )]
-    fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, path) = ui::doc::document(doc, path);
         // Hydrate the persisted library on the first frame (when the document is
         // finally available), then pull in any book the host picker returned.
         self.ensure_library_loaded(doc);
@@ -5466,27 +5386,16 @@ impl Widget for BooksApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let mut input_ctx = InputEventCtx {
             event,
-            scale_factor,
-            modifiers: *modifiers,
-            state: doc,
-            root: path,
-            node_id,
-            taffy,
-            handled,
+            scale_factor: ctx.scale_factor,
+            modifiers: *ctx.modifiers,
+            state: ctx.state,
+            root: ctx.path,
+            node_id: ctx.node_id,
+            taffy: ctx.taffy,
+            handled: ctx.handled,
         };
         // The colour sheet is modal: while open every event is its own.
         if let Some(response) = self.color_picker.handle_event(&mut input_ctx) {
@@ -5508,35 +5417,35 @@ impl Widget for BooksApp {
             // Regaining focus is a natural moment to notice books that appeared
             // in a watched folder while the reader was elsewhere — no manual
             // "reload". A no-op when nothing is watched or nothing is new.
-            WindowEvent::Focused(true) => self.rescan_watched(doc),
+            WindowEvent::Focused(true) => self.rescan_watched(ctx.state),
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.handle_cursor_moved(p, doc, handled);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.handle_cursor_moved(p, ctx.state, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_press(*modifiers, doc, handled);
+                self.handle_left_press(*ctx.modifiers, ctx.state, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_release(doc, handled);
+                self.handle_left_release(ctx.state, ctx.handled);
             }
             WindowEvent::KeyboardInput { event: ke, .. } if ke.state == ElementState::Pressed => {
-                if self.handle_key(&ke.logical_key, modifiers.state(), doc) {
-                    self.refresh_from_doc(doc);
-                    self.persist_progress(doc);
+                if self.handle_key(&ke.logical_key, ctx.modifiers.state(), ctx.state) {
+                    self.refresh_from_doc(ctx.state);
+                    self.persist_progress(ctx.state);
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_mouse_wheel(*delta, doc, handled);
+                self.handle_mouse_wheel(*delta, ctx.state, ctx.handled);
             }
             _ => {}
         }
@@ -5690,9 +5599,10 @@ impl Widget for BooksApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        doc: &mut AutoCommit,
-        path: &ObjId,
+        doc: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (doc, path) = ui::doc::document(doc, path);
         if target == "books.reader.progress" {
             self.semantic_focus = Some(target.to_string());
             let value = match action {
@@ -5938,6 +5848,161 @@ impl Widget for BooksApp {
 }
 
 impl BooksApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        use crate::actions::EbookOperation;
+
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        let expected = crate::actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match ebook operation kind {expected:?}"
+            ));
+        }
+        match operation {
+            EbookOperation::PreviousPage => self.on_prev_page(),
+            EbookOperation::NextPage => self.on_next_page(),
+            EbookOperation::ToggleContents => self.on_toggle_toc(),
+            EbookOperation::ToggleNotes => self.on_toggle_notes(),
+            EbookOperation::OpenSettings => self.on_open_settings(),
+            EbookOperation::Reveal {
+                book_id,
+                chapter,
+                page,
+                block,
+            } => {
+                let Some(index) = self.library.iter().position(|book| book.id == book_id) else {
+                    return Err("book is no longer in the library".into());
+                };
+                let Some(book) = self.library.get(index) else {
+                    return Err("book is no longer in the library".into());
+                };
+                // A resource address is an authority-bearing snapshot. Do not
+                // silently clamp a chapter or annotation target from an old
+                // search/resource row: a peer may have replaced the EPUB, and
+                // opening a nearby passage would be materially misleading.
+                if book.chapters.is_empty() {
+                    if chapter != 0 || block.is_some() {
+                        return Err("book no longer contains the requested reading target".into());
+                    }
+                } else {
+                    let Some(chapter_item) = book.chapters.get(chapter) else {
+                        return Err("chapter is no longer available in this book".into());
+                    };
+                    if let Some(block) = block
+                        && block >= chapter_item.blocks.len()
+                    {
+                        return Err(
+                            "annotation target is no longer available in this chapter".into()
+                        );
+                    }
+                }
+                self.book_idx = index;
+                self.view = View::Reader;
+                self.chapter = chapter;
+                self.page = page;
+                self.pending_jump_block = block;
+                self.clear_selection();
+                self.composing = None;
+                self.note_composer.close();
+                self.comment_overlay.close();
+                // Explicit, like `select_passage`: persisted, never re-adopted.
+                self.layout = None;
+                self.dirty = true;
+            }
+            EbookOperation::SelectPassage {
+                book_id,
+                chapter,
+                start_block,
+                start_char,
+                end_block,
+                end_char,
+            } => self.select_passage(
+                &book_id,
+                chapter,
+                (start_block, start_char),
+                (end_block, end_char),
+            )?,
+            EbookOperation::OpenBook => {
+                return Err("book open requires the lifecycle-capable operation host".into());
+            }
+            EbookOperation::ShareBook { .. } | EbookOperation::HydrateSharedBook { .. } => {
+                return Err("book sharing requires the lifecycle-capable operation host".into());
+            }
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        let expected = crate::actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match ebook operation kind {expected:?}"
+            ));
+        }
+        match operation {
+            crate::actions::EbookOperation::OpenBook => {
+                if self.resource_invocation.is_some() {
+                    return Err("another book open is in progress".into());
+                }
+                self.resource_invocation = Some(invocation);
+                self.resource_lifecycle = Some(ResourceLifecycle::Open);
+                self.request_open_via_portal();
+                if self.portal_rx.is_none() {
+                    self.resource_invocation = None;
+                    self.resource_lifecycle = None;
+                    return Err("book picker could not be started".into());
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            crate::actions::EbookOperation::ShareBook { book_id } => {
+                self.begin_share_book(&book_id)?;
+                self.resource_invocation = Some(invocation);
+                self.resource_lifecycle = Some(ResourceLifecycle::Share);
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            crate::actions::EbookOperation::HydrateSharedBook { book_id } => {
+                self.begin_hydrate_shared_book(&book_id, doc)?;
+                self.resource_invocation = Some(invocation);
+                self.resource_lifecycle = Some(ResourceLifecycle::Hydrate);
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            _ => self
+                .answer_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            tilo_actions::ActionOutput::default(),
+                        )
+                    })
+                }),
+        }
+    }
+}
+
+impl BooksApp {
     fn forward_shared_input_event(&mut self, ctx: &mut InputEventCtx<'_>) -> bool {
         let mut input_handled = false;
         // The editors write the text as it is typed; finishing only closes.
@@ -6007,14 +6072,16 @@ impl BooksApp {
         if let Some(rn) = self.renaming.as_mut() {
             rn.field.handle_event(
                 ctx.event,
-                ctx.scale_factor,
-                &ctx.modifiers,
-                ctx.state,
-                ctx.root,
-                &mut field_handled,
-                &mut field_focus,
-                ctx.node_id,
-                ctx.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: &ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.root,
+                    handled: &mut field_handled,
+                    focus_target: &mut field_focus,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             );
         }
         self.poll_rename_outcome(ctx.state);
@@ -8216,6 +8283,13 @@ impl BooksApp {
         }
         if let Some(jb) = self.pending_jump_block.take() {
             self.page = page_for_block(layout, jb);
+            if mode.is_continuous() {
+                self.scroll_y = layout
+                    .blocks
+                    .iter()
+                    .find(|b| b.index == jb)
+                    .map_or(0.0, |b| f64::from(b.top));
+            }
         }
         self.page = self.page.min(layout.page_count().saturating_sub(1));
         // Spreads align to an even left page so a spread is always (2k, 2k+1).
@@ -9355,7 +9429,7 @@ impl BooksApp {
         b: &crate::paginate::LaidBlock,
     ) {
         match b.kind {
-            LayoutKind::Quote => {
+            LayoutKind::Quote | LayoutKind::Verse { quoted: true } => {
                 let visible: Vec<&crate::paginate::LaidLine> = b
                     .lines
                     .iter()
@@ -10102,7 +10176,8 @@ impl BooksApp {
             return;
         }
         let track_h = (y1 - y0).max(1.0);
-        let thumb_h = (track_h * visible_h / content_h).clamp(28.0, track_h);
+        // A track shorter than the minimum thumb (a short window) is all thumb.
+        let thumb_h = (track_h * visible_h / content_h).clamp(28.0_f64.min(track_h), track_h);
         let progress = (scroll / max_scroll).clamp(0.0, 1.0);
         let thumb_y = y0 + progress * (track_h - thumb_h);
         paint::fill_round(

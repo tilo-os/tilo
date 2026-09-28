@@ -21,8 +21,8 @@
 //!    so a pure scroll stays on the cheap re-apply path.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
@@ -124,7 +124,7 @@ impl ChannelAvatar {
 }
 
 impl Widget for ChannelAvatar {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         // Lazily resolve the real avatar. Only touch the store until we have the
         // image (an `Arc` clone thereafter would be wasted work); a freshly
         // decoded photo flips `dirty` so the next frame repaints it — no rebuild.
@@ -176,20 +176,6 @@ impl Widget for ChannelAvatar {
         _presence: &PresenceCtx,
     ) {
         self.paint(scene, transform, text_renderer, theme);
-    }
-
-    fn handle_event(
-        &mut self,
-        _e: &winit::event::WindowEvent,
-        _sf: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<NodeId>,
-        _n: NodeId,
-        _t: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

@@ -7,6 +7,7 @@
 )]
 use super::legacy_document::*;
 use super::*;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Column, TileContent, TileHost};
 use automerge::ReadDoc;
 use serde::{Deserialize, Serialize};
@@ -142,11 +143,11 @@ impl Widget for Probe {
                 .with_action(self.spec.borrow().clone())
         })
     }
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {
+    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
         let (u, s) = self.model_passes.get();
         self.model_passes.set((u, s + 1));
     }
-    fn update(&mut self, _: &mut AutoCommit, _: &ObjId) -> bool {
+    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
         let (u, s) = self.model_passes.get();
         self.model_passes.set((u + 1, s));
         false
@@ -154,15 +155,21 @@ impl Widget for Probe {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["controlled.effect"]
     }
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        _: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         _: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(crate::widget::OperationRequest {
+            invocation,
+            kind,
+            type_id,
+            ..
+        }) = op.unscoped()
+        else {
+            return Ok(None);
+        };
         if type_id != "controlled.effect" {
             return Ok(None);
         }

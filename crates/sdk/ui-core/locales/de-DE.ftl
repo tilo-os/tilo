@@ -239,3 +239,24 @@ relative-ago-years = { $count ->
 # Ein Software-Teilnehmer in Verlauf, Präsenz und Aktivität.
 participant-agent = { $name } · Agent
 participant-unknown-agent = Unbekannter Agent
+
+# Der Verlauf als veröffentlichte Aktionen, für Palette, Skripte, Agenten und Hilfstechnologien.
+history-action-resource = Dokumentverlauf
+history-action-open = Verlauf öffnen
+history-action-list = Änderungen auflisten
+history-action-view-at = Version ansehen
+history-action-compare = Änderungen vergleichen
+history-action-close = Vorschau schließen
+history-action-restore = Version wiederherstellen
+history-action-param-resource = Das Dokument, dessen Verlauf verwendet wird, wie der Verlauf es aufführt. Standardmäßig das geöffnete Dokument.
+history-action-param-cursor = Wo die vorherige Seite endete.
+history-action-param-entry = Eine Änderung, wie der Verlauf sie aufführt.
+history-action-param-entries = Änderungen, wie der Verlauf sie aufführt.
+history-action-param-session = Eine mit „Version ansehen“ geöffnete Vorschau.
+history-action-param-heads = Die Live-Heads, die die Vorschau gemeldet hat. Die Wiederherstellung wird abgelehnt, wenn sich das Dokument seitdem geändert hat.
+history-action-denied = Du hast für diesen Teil des Dokumentverlaufs keine Berechtigung.
+history-action-stale-document = Dieses Dokument ist nicht mehr geöffnet.
+history-action-stale-cursor = Der Verlauf hat sich seit dieser Seite geändert. Liste ihn erneut von vorne auf.
+history-action-unknown-entry = Diese Änderung ist nicht im Verlauf dieses Dokuments.
+history-action-unknown-session = Diese Vorschau ist nicht geöffnet.
+history-action-invalid = Diese Verlaufsanfrage ist ungültig.

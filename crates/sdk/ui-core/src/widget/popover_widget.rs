@@ -10,9 +10,9 @@
 //! owned by [`crate::overlay::popover::Popover`] (a tiny positioning hint,
 //! not a `Widget`). Don't collide.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
@@ -335,7 +335,7 @@ impl<C: Widget> PopoverWidget<C> {
 }
 
 impl<C: Widget + 'static> Widget for PopoverWidget<C> {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         // Pass through even when closed — otherwise re-opening reveals a stale frame.
         self.content.sync(state, path);
     }
@@ -423,24 +423,14 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.open {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -451,7 +441,7 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
                     && let Some(cb) = self.on_dismiss.as_mut()
                 {
                     cb();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -471,6 +461,7 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
 mod tests {
     use super::*;
     use crate::widget::Text;
+    use automerge::AutoCommit;
     use taffy::prelude::TaffyMaxContent;
     use winit::event::DeviceId;
 
@@ -494,8 +485,6 @@ mod tests {
     }
 
     impl Widget for TestContent {
-        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -548,20 +537,6 @@ mod tests {
                 None,
                 &self.rect,
             );
-        }
-
-        fn handle_event(
-            &mut self,
-            _event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &winit::event::Modifiers,
-            _state: &mut AutoCommit,
-            _path: &ObjId,
-            _handled: &mut bool,
-            _focus_target: &mut Option<NodeId>,
-            _node_id: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
         }
 
         fn name(&self) -> &'static str {
@@ -725,14 +700,16 @@ mod tests {
             };
             p.handle_event(
                 &cursor_evt,
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
 
             let press_evt = WindowEvent::MouseInput {
@@ -742,14 +719,16 @@ mod tests {
             };
             p.handle_event(
                 &press_evt,
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
 
             assert_eq!(

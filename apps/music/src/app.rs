@@ -2219,14 +2219,16 @@ impl MusicApp {
             let mut ft = None;
             nd.dialog.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                &automerge::ROOT,
-                handled,
-                &mut ft,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor,
+                    modifiers: &modifiers,
+                    state,
+                    path: &automerge::ROOT,
+                    handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             (nd.submit.replace(false), nd.cancel.replace(false))
         };
@@ -4537,7 +4539,7 @@ impl MusicApp {
                 // This takes the identical operation-decoding/validation path
                 // a Ctrl+K result takes after its canonical resource action
                 // resolves at the authority door.
-                let _ = self.invoke_resource_operation(
+                let _ = self.answer_resource_operation(
                     tilo_actions::OperationKind::View,
                     crate::actions::MUSIC_OPERATION_TYPE,
                     &payload,
