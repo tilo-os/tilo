@@ -1263,6 +1263,12 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                         .push(WebViewEvent::MediaElementUnavailable { request_id });
                 }
             }
+            WebViewCommand::Page { request_id, .. } => {
+                state.shared.push(WebViewEvent::PageResult {
+                    request_id,
+                    result: Err(super::PageFailure::unavailable()),
+                });
+            }
             WebViewCommand::ClearWebsiteData => {
                 let session = ffi::webkit_web_view_get_network_session(state.view);
                 if !session.is_null() {
