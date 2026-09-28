@@ -3456,7 +3456,7 @@ impl SheetsApp {
         assert_eq!(spec.kind, tilo_actions::OperationKind::View);
         let encoded = spec.build_json(&intent.arguments).expect("valid arguments");
         assert!(
-            self.invoke_resource_operation(
+            self.answer_resource_operation(
                 spec.kind,
                 &encoded.type_id,
                 &encoded.payload,
@@ -5644,152 +5644,35 @@ impl Widget for SheetsApp {
         &[actions::SHEETS_OPERATION_TYPE]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        if type_id != actions::SHEETS_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        let expected = actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match sheets operation kind {expected:?}"
-            ));
-        }
-        match operation {
-            actions::SheetsOperation::ImportCsv { path: None } => {
-                self.begin_import(Interchange::Csv);
-            }
-            actions::SheetsOperation::ImportXlsx { path: None } => {
-                self.begin_import(Interchange::Xlsx);
-            }
-            actions::SheetsOperation::ImportOds { path: None } => {
-                self.begin_import(Interchange::Ods);
-            }
-            actions::SheetsOperation::ExportCsv { path: None } => {
-                self.begin_export(Interchange::Csv);
-            }
-            actions::SheetsOperation::ExportXlsx { path: None } => {
-                self.begin_export(Interchange::Xlsx);
-            }
-            actions::SheetsOperation::ExportOds { path: None } => {
-                self.begin_export(Interchange::Ods);
-            }
-            actions::SheetsOperation::ImportCsv { path: Some(_) }
-            | actions::SheetsOperation::ImportXlsx { path: Some(_) }
-            | actions::SheetsOperation::ImportOds { path: Some(_) }
-            | actions::SheetsOperation::ExportCsv { path: Some(_) }
-            | actions::SheetsOperation::ExportXlsx { path: Some(_) }
-            | actions::SheetsOperation::ExportOds { path: Some(_) } => {
-                return Err("direct spreadsheet I/O requires lifecycle dispatch".into());
-            }
-            actions::SheetsOperation::OpenCommandPalette => self.open_command_palette(doc),
-            actions::SheetsOperation::GoToCell { reference } => self.go_to_cell(&reference),
-            actions::SheetsOperation::ToggleFormulaView => self.toggle_formula_view(),
-            actions::SheetsOperation::RevealSheet { sheet_id } => {
-                if !self
-                    .searchable_sheets
-                    .iter()
-                    .any(|sheet| sheet.id == sheet_id)
-                {
-                    return Err("sheet no longer exists".into());
-                }
-                self.pending_reveal = Some(PendingReveal::Sheet { sheet_id });
-            }
-            actions::SheetsOperation::RevealCell { sheet_id, col, row } => {
-                if !self.searchable_sheets.iter().any(|sheet| {
-                    sheet.id == sheet_id
-                        && sheet
-                            .cells
-                            .iter()
-                            .any(|cell| cell.col == col && cell.row == row)
-                }) {
-                    return Err("cell no longer exists".into());
-                }
-                self.pending_reveal = Some(PendingReveal::Cell {
-                    sheet_id,
-                    addr: (col, row),
-                });
-            }
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        let expected = actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match sheets operation kind {expected:?}"
-            ));
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let direct = match &operation {
-            actions::SheetsOperation::ImportCsv { path }
-            | actions::SheetsOperation::ImportXlsx { path }
-            | actions::SheetsOperation::ImportOds { path }
-            | actions::SheetsOperation::ExportCsv { path }
-            | actions::SheetsOperation::ExportXlsx { path }
-            | actions::SheetsOperation::ExportOds { path } => path.is_some(),
-            _ => false,
-        };
-        let is_interchange = matches!(
-            &operation,
-            actions::SheetsOperation::ImportCsv { .. }
-                | actions::SheetsOperation::ImportXlsx { .. }
-                | actions::SheetsOperation::ImportOds { .. }
-                | actions::SheetsOperation::ExportCsv { .. }
-                | actions::SheetsOperation::ExportXlsx { .. }
-                | actions::SheetsOperation::ExportOds { .. }
-        );
-        // There is exactly one portal/result slot.  Refuse a second accepted
-        // operation rather than overwriting the first invocation's identity
-        // (which would strand an agent or Ctrl+K job forever).
-        if is_interchange
-            && (self.io.is_some()
-                || self.pending_resource_io.is_some()
-                || self.interchange_rx.is_some()
-                || self.active_interchange_generation.is_some()
-                || self.resource_invocation.is_some()
-                || self.resource_result.is_some())
-        {
-            return Err("a spreadsheet import or export is already in progress".into());
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        if direct {
-            self.pending_resource_io = Some((invocation, operation));
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        if self.io.is_some() {
-            self.resource_invocation = Some(invocation);
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else {
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
-        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -6560,6 +6443,156 @@ impl Widget for SheetsApp {
 
     fn on_commit(&mut self) {
         self.pending.commit = false;
+    }
+}
+
+impl SheetsApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        if type_id != actions::SHEETS_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let Some(operation) = actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        let expected = actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match sheets operation kind {expected:?}"
+            ));
+        }
+        match operation {
+            actions::SheetsOperation::ImportCsv { path: None } => {
+                self.begin_import(Interchange::Csv);
+            }
+            actions::SheetsOperation::ImportXlsx { path: None } => {
+                self.begin_import(Interchange::Xlsx);
+            }
+            actions::SheetsOperation::ImportOds { path: None } => {
+                self.begin_import(Interchange::Ods);
+            }
+            actions::SheetsOperation::ExportCsv { path: None } => {
+                self.begin_export(Interchange::Csv);
+            }
+            actions::SheetsOperation::ExportXlsx { path: None } => {
+                self.begin_export(Interchange::Xlsx);
+            }
+            actions::SheetsOperation::ExportOds { path: None } => {
+                self.begin_export(Interchange::Ods);
+            }
+            actions::SheetsOperation::ImportCsv { path: Some(_) }
+            | actions::SheetsOperation::ImportXlsx { path: Some(_) }
+            | actions::SheetsOperation::ImportOds { path: Some(_) }
+            | actions::SheetsOperation::ExportCsv { path: Some(_) }
+            | actions::SheetsOperation::ExportXlsx { path: Some(_) }
+            | actions::SheetsOperation::ExportOds { path: Some(_) } => {
+                return Err("direct spreadsheet I/O requires lifecycle dispatch".into());
+            }
+            actions::SheetsOperation::OpenCommandPalette => self.open_command_palette(doc),
+            actions::SheetsOperation::GoToCell { reference } => self.go_to_cell(&reference),
+            actions::SheetsOperation::ToggleFormulaView => self.toggle_formula_view(),
+            actions::SheetsOperation::RevealSheet { sheet_id } => {
+                if !self
+                    .searchable_sheets
+                    .iter()
+                    .any(|sheet| sheet.id == sheet_id)
+                {
+                    return Err("sheet no longer exists".into());
+                }
+                self.pending_reveal = Some(PendingReveal::Sheet { sheet_id });
+            }
+            actions::SheetsOperation::RevealCell { sheet_id, col, row } => {
+                if !self.searchable_sheets.iter().any(|sheet| {
+                    sheet.id == sheet_id
+                        && sheet
+                            .cells
+                            .iter()
+                            .any(|cell| cell.col == col && cell.row == row)
+                }) {
+                    return Err("cell no longer exists".into());
+                }
+                self.pending_reveal = Some(PendingReveal::Cell {
+                    sheet_id,
+                    addr: (col, row),
+                });
+            }
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        let expected = actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match sheets operation kind {expected:?}"
+            ));
+        }
+        let direct = match &operation {
+            actions::SheetsOperation::ImportCsv { path }
+            | actions::SheetsOperation::ImportXlsx { path }
+            | actions::SheetsOperation::ImportOds { path }
+            | actions::SheetsOperation::ExportCsv { path }
+            | actions::SheetsOperation::ExportXlsx { path }
+            | actions::SheetsOperation::ExportOds { path } => path.is_some(),
+            _ => false,
+        };
+        let is_interchange = matches!(
+            &operation,
+            actions::SheetsOperation::ImportCsv { .. }
+                | actions::SheetsOperation::ImportXlsx { .. }
+                | actions::SheetsOperation::ImportOds { .. }
+                | actions::SheetsOperation::ExportCsv { .. }
+                | actions::SheetsOperation::ExportXlsx { .. }
+                | actions::SheetsOperation::ExportOds { .. }
+        );
+        // There is exactly one portal/result slot.  Refuse a second accepted
+        // operation rather than overwriting the first invocation's identity
+        // (which would strand an agent or Ctrl+K job forever).
+        if is_interchange
+            && (self.io.is_some()
+                || self.pending_resource_io.is_some()
+                || self.interchange_rx.is_some()
+                || self.active_interchange_generation.is_some()
+                || self.resource_invocation.is_some()
+                || self.resource_result.is_some())
+        {
+            return Err("a spreadsheet import or export is already in progress".into());
+        }
+        if direct {
+            self.pending_resource_io = Some((invocation, operation));
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        if self.io.is_some() {
+            self.resource_invocation = Some(invocation);
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )))
+        }
     }
 }
 
@@ -8282,17 +8315,20 @@ mod tests {
     fn affordances_and_resource_operations_match_action_specs() {
         // Case `resource_operations_reject_wrong_kinds_without_changing_state`.
         {
-            let (mut app, doc) = seeded_app();
+            let (mut app, mut doc) = seeded_app();
             assert!(!app.grid.formula_view());
             let toggle = serde_json::to_vec(&actions::SheetsOperation::ToggleFormulaView).unwrap();
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::Effect,
-                    actions::SHEETS_OPERATION_TYPE,
-                    &toggle,
-                    &doc,
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        actions::SHEETS_OPERATION_TYPE,
+                        &toggle
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .is_err()
             );
@@ -8303,14 +8339,16 @@ mod tests {
             })
             .unwrap();
             assert!(
-                Widget::start_resource_operation(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    actions::SHEETS_OPERATION_TYPE,
-                    &import,
-                    &doc,
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        actions::SHEETS_OPERATION_TYPE,
+                        &import
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .is_err()
             );
