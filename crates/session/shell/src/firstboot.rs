@@ -183,18 +183,15 @@ fn host_keyboard_updates(
     let Some(active) = source_ids.first() else {
         return input;
     };
-    // Version 2 accidentally persisted the settings-store default (`us`) before
-    // it consulted the host.  Treat only that exact singleton/default state as
-    // an unowned migration value.  A multi-layout list or any non-US choice is
-    // an explicit Tilo preference and must continue to win.
-    let stale_v2_default = existing
-        .get(HOST_INPUT_MIGRATION_VERSION_KEY)
-        .and_then(serde_json::Value::as_u64)
-        .is_some_and(|version| version == 2)
-        && existing.get("keyboard_layout") == Some(&serde_json::json!("us"))
+    // Version 2 persisted the settings-store default (`us`) before it consulted
+    // the host, and any writer of the whole input section stores the same
+    // default before this import first completes. Until then, treat only that
+    // exact singleton/default state as unowned. A multi-layout list or any
+    // non-US choice is an explicit Tilo preference and must continue to win.
+    let unowned_us_default = existing.get("keyboard_layout") == Some(&serde_json::json!("us"))
         && existing.get("keyboard_layouts") == Some(&serde_json::json!(["us"]));
     if !existing.contains_key("keyboard_layout") && !existing.contains_key("keyboard_layouts")
-        || stale_v2_default
+        || unowned_us_default
     {
         input.insert("keyboard_layout".into(), serde_json::json!(active));
         input.insert("keyboard_layouts".into(), serde_json::json!(source_ids));
@@ -551,6 +548,27 @@ mod tests {
             });
             assert!(!preserved.contains_key("keyboard_layout"));
             assert!(!preserved.contains_key("keyboard_layouts"));
+        }
+        // Phase `defaults_written_before_the_first_import_do_not_pin_us`.
+        {
+            let defaults = serde_json::Map::from_iter([
+                ("keyboard_layout".into(), serde_json::json!("us")),
+                ("keyboard_layouts".into(), serde_json::json!(["us"])),
+                ("compose_key".into(), serde_json::Value::Null),
+                ("key_repeat".into(), serde_json::json!(0.5)),
+            ]);
+            let imported = host_input_migration_updates(&defaults, |schema, key| {
+                (schema == "org.gnome.desktop.input-sources" && key == "sources")
+                    .then(|| "[('xkb', 'de+nodeadkeys')]".into())
+            });
+            assert_eq!(
+                imported.get("keyboard_layouts"),
+                Some(&serde_json::json!(["de:nodeadkeys"]))
+            );
+            assert_eq!(
+                imported.get(HOST_INPUT_MIGRATION_VERSION_KEY),
+                Some(&serde_json::json!(HOST_INPUT_MIGRATION_VERSION))
+            );
         }
     }
 
