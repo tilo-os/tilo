@@ -4587,99 +4587,35 @@ impl Widget for FeedsApp {
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match (kind, operation) {
-            (tilo_actions::OperationKind::View, crate::actions::FeedsOperation::ImportOpml) => {
-                self.request_import();
-            }
-            (tilo_actions::OperationKind::View, crate::actions::FeedsOperation::ExportOpml) => {
-                self.export_opml();
-            }
-            (tilo_actions::OperationKind::Effect, crate::actions::FeedsOperation::RefreshAll) => {
-                if self.store.feeds.is_empty() {
-                    return Err("there are no subscriptions to refresh".into());
-                }
-                self.refresh_all();
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::FeedsOperation::RevealFeed { id },
-            ) => {
-                let id = id.parse::<Id>().map_err(|_| "invalid feed id")?;
-                if self.store.feed(id).is_none() {
-                    return Err("feed no longer exists".into());
-                }
-                self.set_filter(Filter::Feed(id));
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::FeedsOperation::RevealArticle { id },
-            ) => {
-                let id = id.parse::<Id>().map_err(|_| "invalid article id")?;
-                let Some(feed_id) = self.store.article(id).map(|article| article.feed_id) else {
-                    return Err("article no longer exists".into());
-                };
-                self.set_filter(Filter::Feed(feed_id));
-                self.selected = Some(id);
-                self.reader_scroll = 0.0;
-                if self.store.mark_read(id, true) {
-                    self.pending_resource_actions
-                        .push(actions::mark_read_action(id, true));
-                }
-                if self.single_pane() {
-                    self.detail_pushed = true;
-                }
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::FeedsOperation::RevealTag { tag },
-            ) => {
-                let tag = actions::normalize_tags([tag.as_str()])
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| "invalid empty tag".to_string())?;
-                if !self.store.has_tag(&tag) {
-                    return Err("tag no longer exists".into());
-                }
-                self.set_filter(Filter::Tag(crate::model::tag_key(&tag)));
-            }
-            _ => return Ok(false),
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect
-            || type_id != crate::actions::FEEDS_OPERATION_TYPE
-        {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if self.resource_refresh_invocation.is_some() || self.refresh.in_progress() {
-            return Err("a feed refresh is already running".into());
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        self.resource_refresh_invocation = Some(invocation);
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -5482,6 +5418,103 @@ impl Widget for FeedsApp {
                 .toast
                 .as_ref()
                 .is_some_and(|(_, since)| since.elapsed().as_secs_f32() < 4.0)
+    }
+}
+
+impl FeedsApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match (kind, operation) {
+            (tilo_actions::OperationKind::View, crate::actions::FeedsOperation::ImportOpml) => {
+                self.request_import();
+            }
+            (tilo_actions::OperationKind::View, crate::actions::FeedsOperation::ExportOpml) => {
+                self.export_opml();
+            }
+            (tilo_actions::OperationKind::Effect, crate::actions::FeedsOperation::RefreshAll) => {
+                if self.store.feeds.is_empty() {
+                    return Err("there are no subscriptions to refresh".into());
+                }
+                self.refresh_all();
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::FeedsOperation::RevealFeed { id },
+            ) => {
+                let id = id.parse::<Id>().map_err(|_| "invalid feed id")?;
+                if self.store.feed(id).is_none() {
+                    return Err("feed no longer exists".into());
+                }
+                self.set_filter(Filter::Feed(id));
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::FeedsOperation::RevealArticle { id },
+            ) => {
+                let id = id.parse::<Id>().map_err(|_| "invalid article id")?;
+                let Some(feed_id) = self.store.article(id).map(|article| article.feed_id) else {
+                    return Err("article no longer exists".into());
+                };
+                self.set_filter(Filter::Feed(feed_id));
+                self.selected = Some(id);
+                self.reader_scroll = 0.0;
+                if self.store.mark_read(id, true) {
+                    self.pending_resource_actions
+                        .push(actions::mark_read_action(id, true));
+                }
+                if self.single_pane() {
+                    self.detail_pushed = true;
+                }
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::FeedsOperation::RevealTag { tag },
+            ) => {
+                let tag = actions::normalize_tags([tag.as_str()])
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| "invalid empty tag".to_string())?;
+                if !self.store.has_tag(&tag) {
+                    return Err("tag no longer exists".into());
+                }
+                self.set_filter(Filter::Tag(crate::model::tag_key(&tag)));
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != tilo_actions::OperationKind::Effect
+            || type_id != crate::actions::FEEDS_OPERATION_TYPE
+        {
+            return Ok(None);
+        }
+        if self.resource_refresh_invocation.is_some() || self.refresh.in_progress() {
+            return Err("a feed refresh is already running".into());
+        }
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        self.resource_refresh_invocation = Some(invocation);
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 

@@ -4904,139 +4904,35 @@ impl Widget for PdfApp {
         &[crate::actions::PDF_VIEWER_OPERATION_TYPE]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        use crate::actions::PdfOperation;
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match operation {
-            PdfOperation::PreviousPage => self.prev_page(),
-            PdfOperation::NextPage => self.next_page(),
-            PdfOperation::ZoomIn => self.zoom_by(1.15),
-            PdfOperation::ZoomOut => self.zoom_by(1.0 / 1.15),
-            PdfOperation::FitPage => self.fit_page(),
-            PdfOperation::FitWidth => self.fit_width(),
-            PdfOperation::ToggleSidebar => self.toggle_sidebar(),
-            PdfOperation::ToggleRail => self.toggle_rail(),
-            PdfOperation::OpenSearch => self.open_search(),
-            PdfOperation::GoToPage { page } => self.go_to_page(page),
-            PdfOperation::MarkupStyle { style } => {
-                if let Some(style) = model::MarkupStyle::parse(&style) {
-                    self.markup_style = style;
-                    self.tool = Tool::Highlight;
-                    self.dirty = true;
-                }
-            }
-            PdfOperation::GoToSearchResult {
-                query,
-                whole_word,
-                case_sensitive,
-                index,
-                page,
-            } => self.go_to_search_result(&query, whole_word, case_sensitive, index, page),
-            PdfOperation::Open { .. } | PdfOperation::SaveAs { .. } => {
-                return Err("file operations require the lifecycle-capable operation host".into());
-            }
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        match operation {
-            PdfOperation::Open { path: Some(file) } => {
-                if self.portal_action.is_some() || self.pending_open.is_some() {
-                    return Err("another PDF open is already in progress".into());
-                }
-                self.portal_action = Some((invocation, PortalActionKind::Open));
-                self.load_path(std::path::Path::new(&file), doc);
-                if self.pending_open.is_some() {
-                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-                }
-                if !self.has_document {
-                    self.portal_action = None;
-                    return Err(self
-                        .load_error
-                        .clone()
-                        .unwrap_or_else(|| "PDF could not be opened".into()));
-                }
-                self.portal_action = None;
-                Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                )))
-            }
-            PdfOperation::SaveAs { path: Some(file) } => {
-                if self.portal_action.is_some() || self.pending_save.is_some() {
-                    return Err("another PDF save is already in progress".into());
-                }
-                let file = ensure_pdf_extension(file.into());
-                self.portal_action = Some((invocation, PortalActionKind::Save));
-                if !self.save_annotated_to(&file) {
-                    self.portal_action = None;
-                    return Err("PDF could not be saved".into());
-                }
-                if self.pending_save.is_some() {
-                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-                }
-                self.portal_action = None;
-                Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                )))
-            }
-            PdfOperation::Open { path: None } => {
-                if self.portal_action.is_some() || self.pending_open.is_some() {
-                    return Err("another PDF open is already in progress".into());
-                }
-                self.portal_action = Some((invocation, PortalActionKind::Open));
-                self.request_open_via_portal();
-                if self.portal_rx.is_none() {
-                    self.portal_action = None;
-                    return Err("PDF picker could not be started".into());
-                }
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            PdfOperation::SaveAs { path: None } => {
-                if self.portal_action.is_some() || self.pending_save.is_some() {
-                    return Err("another PDF save is already in progress".into());
-                }
-                self.portal_action = Some((invocation, PortalActionKind::Save));
-                self.request_save_via_portal();
-                if self.portal_save_rx.is_none() {
-                    self.portal_action = None;
-                    return Err("PDF save picker could not be started".into());
-                }
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            _ => self
-                .invoke_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                }),
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -5952,7 +5848,7 @@ impl Widget for PdfApp {
         let Ok(payload) = serde_json::to_vec(&operation) else {
             return false;
         };
-        self.invoke_resource_operation(
+        self.answer_resource_operation(
             tilo_actions::OperationKind::View,
             crate::actions::PDF_VIEWER_OPERATION_TYPE,
             &payload,
@@ -6067,6 +5963,143 @@ impl Widget for PdfApp {
         }
         // Root fills the whole window — never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl PdfApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        use crate::actions::PdfOperation;
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            PdfOperation::PreviousPage => self.prev_page(),
+            PdfOperation::NextPage => self.next_page(),
+            PdfOperation::ZoomIn => self.zoom_by(1.15),
+            PdfOperation::ZoomOut => self.zoom_by(1.0 / 1.15),
+            PdfOperation::FitPage => self.fit_page(),
+            PdfOperation::FitWidth => self.fit_width(),
+            PdfOperation::ToggleSidebar => self.toggle_sidebar(),
+            PdfOperation::ToggleRail => self.toggle_rail(),
+            PdfOperation::OpenSearch => self.open_search(),
+            PdfOperation::GoToPage { page } => self.go_to_page(page),
+            PdfOperation::MarkupStyle { style } => {
+                if let Some(style) = model::MarkupStyle::parse(&style) {
+                    self.markup_style = style;
+                    self.tool = Tool::Highlight;
+                    self.dirty = true;
+                }
+            }
+            PdfOperation::GoToSearchResult {
+                query,
+                whole_word,
+                case_sensitive,
+                index,
+                page,
+            } => self.go_to_search_result(&query, whole_word, case_sensitive, index, page),
+            PdfOperation::Open { .. } | PdfOperation::SaveAs { .. } => {
+                return Err("file operations require the lifecycle-capable operation host".into());
+            }
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        match operation {
+            PdfOperation::Open { path: Some(file) } => {
+                if self.portal_action.is_some() || self.pending_open.is_some() {
+                    return Err("another PDF open is already in progress".into());
+                }
+                self.portal_action = Some((invocation, PortalActionKind::Open));
+                self.load_path(std::path::Path::new(&file), doc);
+                if self.pending_open.is_some() {
+                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+                }
+                if !self.has_document {
+                    self.portal_action = None;
+                    return Err(self
+                        .load_error
+                        .clone()
+                        .unwrap_or_else(|| "PDF could not be opened".into()));
+                }
+                self.portal_action = None;
+                Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                )))
+            }
+            PdfOperation::SaveAs { path: Some(file) } => {
+                if self.portal_action.is_some() || self.pending_save.is_some() {
+                    return Err("another PDF save is already in progress".into());
+                }
+                let file = ensure_pdf_extension(file.into());
+                self.portal_action = Some((invocation, PortalActionKind::Save));
+                if !self.save_annotated_to(&file) {
+                    self.portal_action = None;
+                    return Err("PDF could not be saved".into());
+                }
+                if self.pending_save.is_some() {
+                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+                }
+                self.portal_action = None;
+                Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                )))
+            }
+            PdfOperation::Open { path: None } => {
+                if self.portal_action.is_some() || self.pending_open.is_some() {
+                    return Err("another PDF open is already in progress".into());
+                }
+                self.portal_action = Some((invocation, PortalActionKind::Open));
+                self.request_open_via_portal();
+                if self.portal_rx.is_none() {
+                    self.portal_action = None;
+                    return Err("PDF picker could not be started".into());
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            PdfOperation::SaveAs { path: None } => {
+                if self.portal_action.is_some() || self.pending_save.is_some() {
+                    return Err("another PDF save is already in progress".into());
+                }
+                self.portal_action = Some((invocation, PortalActionKind::Save));
+                self.request_save_via_portal();
+                if self.portal_save_rx.is_none() {
+                    self.portal_action = None;
+                    return Err("PDF save picker could not be started".into());
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            _ => self
+                .answer_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            tilo_actions::ActionOutput::default(),
+                        )
+                    })
+                }),
+        }
     }
 }
 
