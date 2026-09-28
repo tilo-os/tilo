@@ -31,10 +31,10 @@ EOF
 cat >"$work/bin/build-rpm" <<EOF
 #!/bin/sh
 set -e
-mkdir -p "\$TILO_PACKAGE_OUT/RPMS/$arch" "\$TILO_PACKAGE_OUT/RPMS/noarch"
+mkdir -p "\$TILO_PACKAGE_OUT/RPMS/$arch"
 : >"\$TILO_PACKAGE_OUT/RPMS/$arch/tilo-session-$version-\$TILO_RPM_RELEASE.fc44.$arch.rpm"
 : >"\$TILO_PACKAGE_OUT/RPMS/$arch/tilo-session-apps-$version-\$TILO_RPM_RELEASE.fc44.$arch.rpm"
-: >"\$TILO_PACKAGE_OUT/RPMS/noarch/tilo-session-devel-$version-\$TILO_RPM_RELEASE.fc44.noarch.rpm"
+: >"\$TILO_PACKAGE_OUT/RPMS/$arch/tilo-session-devel-$version-\$TILO_RPM_RELEASE.fc44.$arch.rpm"
 echo "\$*" >"\$TILO_PACKAGE_OUT/build-args"
 EOF
 chmod +x "$work/bin"/*
@@ -57,7 +57,7 @@ release=$(find "$TILO_PACKAGE_OUT/RPMS/$arch" -name 'tilo-session-apps-*' -print
     | sed -E "s/^tilo-session-apps-$version-(.*)\.fc44\.$arch\.rpm$/\1/")
 [[ $release =~ ^0\.[0-9]{12}\.git[0-9a-f]{10}(\.dirty)?$ ]] || fail "release does not name the commit: $release"
 [[ $(wc -l <"$FAKE_LOG") -eq 1 ]] || fail "expected exactly one rpm-ostree transaction: $(cat "$FAKE_LOG")"
-grep -Eq "^uninstall tilo-session tilo-session-apps tilo-session-devel --install=.*/tilo-session-$version-$release\.fc44\.$arch\.rpm --install=.*/tilo-session-apps-.* --install=.*/tilo-session-devel-.*noarch\.rpm$" \
+grep -Eq "^uninstall tilo-session tilo-session-apps tilo-session-devel --install=.*/tilo-session-$version-$release\.fc44\.$arch\.rpm --install=.*/tilo-session-apps-.* --install=.*/tilo-session-devel-.*\.$arch\.rpm$" \
     "$FAKE_LOG" || fail "unexpected swap: $(cat "$FAKE_LOG")"
 grep -q chatgpt "$FAKE_LOG" && fail "touched an unrelated layered package"
 [[ -z $(<"$TILO_PACKAGE_OUT/build-args") ]] || fail "a full build passed arguments: $(cat "$TILO_PACKAGE_OUT/build-args")"
