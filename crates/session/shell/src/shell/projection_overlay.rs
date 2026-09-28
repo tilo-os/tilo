@@ -597,14 +597,16 @@ impl ProjectionOverlay {
         };
         self.credential_input.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut input_handled,
-            focus_target,
-            input_node,
-            &input_taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers: &modifiers,
+                state,
+                path,
+                handled: &mut input_handled,
+                focus_target,
+                node_id: input_node,
+                taffy: &input_taffy,
+            },
         );
         if let Some(value) = self.credential_input.take_dirty() {
             self.controller.options.credential = (!value.is_empty()).then_some(value);

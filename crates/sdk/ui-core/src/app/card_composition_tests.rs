@@ -294,14 +294,16 @@ fn send_widget_then_host_fallback(app: &mut App, event: &WindowEvent) -> bool {
     let mut focus_target = None;
     app.root_widget.handle_event(
         event,
-        1.0,
-        &app.input.modifiers,
-        &mut app.state.doc,
-        &app.state.root,
-        &mut handled,
-        &mut focus_target,
-        app.layout.root_node.unwrap(),
-        &app.layout.taffy,
+        &mut crate::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &app.input.modifiers,
+            state: &mut app.state.doc,
+            path: &app.state.root,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: app.layout.root_node.unwrap(),
+            taffy: &app.layout.taffy,
+        },
     );
     if let Some(target) = focus_target {
         app.set_focused_node(Some(target));

@@ -783,19 +783,6 @@ impl Widget for ProbeRoot {
             }
         });
     }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<taffy::NodeId>,
-        _: taffy::NodeId,
-        _: &taffy::TaffyTree<()>,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "application-probe"
     }

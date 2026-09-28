@@ -6,7 +6,6 @@ use crate::{
     theme::Theme,
     widget::{TaffyTreeExt, Widget},
 };
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::{
@@ -143,22 +142,11 @@ impl Widget for PreviewCanvas {
             );
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        handled: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / scale, position.y / scale);
+            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
-        if *handled {
+        if *ctx.handled {
             return;
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
@@ -168,7 +156,7 @@ impl Widget for PreviewCanvas {
                 MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 32.0, f64::from(*y) * 32.0),
                 MouseScrollDelta::PixelDelta(point) => (point.x, point.y),
             };
-            *handled = self.navigate(PreviewNavigation::Scroll { dx, dy });
+            *ctx.handled = self.navigate(PreviewNavigation::Scroll { dx, dy });
         }
     }
     fn get_rect(&self) -> Rect {

@@ -169,14 +169,16 @@ impl Harness {
         let mut focus_target = None;
         self.widget.handle_event(
             event,
-            1.0,
-            &modifiers,
-            &mut self.state.doc,
-            &self.state.root,
-            &mut handled,
-            &mut focus_target,
-            self.self_node,
-            &self.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut self.state.doc,
+                path: &self.state.root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: self.self_node,
+                taffy: &self.taffy,
+            },
         );
         handled
     }

@@ -900,56 +900,24 @@ impl<M: ListModel> VirtualList<M> {
         self.viewport.offset().to_bits() != before.to_bits()
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the Widget event contract plus its handled/focus outputs"
-    )]
-    fn route_to_children(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn route_to_children(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let Some(row) = self
             .mounted
             .iter_mut()
             .find(|row| row.widget.wants_pointer_capture())
             && let Some(node) = row.node
         {
-            row.widget.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
-            );
+            row.widget
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
             return;
         }
         for row in self.mounted.iter_mut().rev() {
             let Some(node) = row.node else {
                 continue;
             };
-            row.widget.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
-            );
-            if *handled {
+            row.widget
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled {
                 break;
             }
         }
@@ -1286,49 +1254,29 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "keeps child, scrollbar, reorder, scroll, selection, and keyboard precedence explicit"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if self.handle_scrollbar_event(event, scale_factor) {
-            *handled = true;
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.handle_scrollbar_event(event, ctx.scale_factor) {
+            *ctx.handled = true;
             return;
         }
         if !self.drag_scroll.is_tracking() && !self.reorder.is_tracking() {
-            self.route_to_children(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                taffy,
-            );
+            self.route_to_children(event, ctx);
         }
-        if *handled {
+        if *ctx.handled {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let point =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 if self.reorder.is_tracking() {
                     self.momentum.stop();
                     self.update_reorder_pointer(point, crate::time::now());
                     self.last_tick = Some(crate::time::now());
-                    *handled = self.reorder.is_active();
+                    *ctx.handled = self.reorder.is_active();
                 } else if self.drag_scroll.is_tracking() {
                     let now = crate::time::now();
                     let update = self.drag_scroll.update(point.y, now);
@@ -1336,7 +1284,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     if let Some(update) = update {
                         self.set_scroll_offset(update.target_offset);
                         self.last_tick = Some(now);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
             }
@@ -1360,8 +1308,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                         .begin(cursor.y, self.viewport.offset(), crate::time::now());
                 }
                 self.momentum.stop();
-                *focus_target = Some(node_id);
-                *handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -1374,12 +1322,16 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     if let Some(dropped) = self.reorder.finish() {
                         self.commit_reorder(dropped);
                     } else if !active && let Some(key) = source {
-                        let toggle =
-                            modifiers.state().control_key() || modifiers.state().super_key();
-                        self.apply_selection(key.clone(), toggle, modifiers.state().shift_key());
+                        let toggle = ctx.modifiers.state().control_key()
+                            || ctx.modifiers.state().super_key();
+                        self.apply_selection(
+                            key.clone(),
+                            toggle,
+                            ctx.modifiers.state().shift_key(),
+                        );
                         self.focused_key = Some(key);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if let Some(drag) = self.drag_scroll.finish(crate::time::now()) {
                     if drag.dragged {
                         if self.reduce_motion {
@@ -1389,12 +1341,16 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                             self.last_tick = Some(crate::time::now());
                         }
                     } else if let Some((_, key)) = self.row_at_cursor() {
-                        let toggle =
-                            modifiers.state().control_key() || modifiers.state().super_key();
-                        self.apply_selection(key.clone(), toggle, modifiers.state().shift_key());
+                        let toggle = ctx.modifiers.state().control_key()
+                            || ctx.modifiers.state().super_key();
+                        self.apply_selection(
+                            key.clone(),
+                            toggle,
+                            ctx.modifiers.state().shift_key(),
+                        );
                         self.focused_key = Some(key);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, phase, .. }
@@ -1403,7 +1359,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     .is_some_and(|point| self.rect.contains(point)) =>
             {
                 self.last_tick = Some(crate::time::now());
-                *handled = match self.momentum.wheel(delta, *phase, self.reduce_motion) {
+                *ctx.handled = match self.momentum.wheel(delta, *phase, self.reduce_motion) {
                     WheelStep::Scroll(delta) => {
                         let moved = self.scroll_by(delta);
                         self.momentum.wheel_applied(delta, moved);
@@ -1418,11 +1374,15 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             {
                 self.momentum.stop();
                 if event.logical_key == Key::Named(NamedKey::Escape) && self.reorder.cancel() {
-                    *handled = true;
+                    *ctx.handled = true;
                 } else {
-                    let toggle = modifiers.state().control_key() || modifiers.state().super_key();
-                    *handled =
-                        self.on_key(&event.logical_key, toggle, modifiers.state().shift_key());
+                    let toggle =
+                        ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
+                    *ctx.handled = self.on_key(
+                        &event.logical_key,
+                        toggle,
+                        ctx.modifiers.state().shift_key(),
+                    );
                 }
             }
             _ => {}
@@ -1833,18 +1793,7 @@ mod tests {
         ) {
         }
 
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &Modifiers,
-            _state: &mut AutoCommit,
-            _path: &ObjId,
-            handled: &mut bool,
-            _focus_target: &mut Option<NodeId>,
-            _node_id: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             if self.consumes_press
                 && matches!(
                     event,
@@ -1856,7 +1805,7 @@ mod tests {
                 )
             {
                 self.presses.set(self.presses.get().saturating_add(1));
-                *handled = true;
+                *ctx.handled = true;
             }
         }
 
@@ -1921,14 +1870,16 @@ mod tests {
         let mut focus = None;
         list.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy,
+            },
         );
         handled
     }

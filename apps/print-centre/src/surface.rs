@@ -21,7 +21,7 @@ use vello::{
     Scene,
     kurbo::{Affine, Point, Rect},
 };
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 type El = Box<dyn Widget>;
 
@@ -662,21 +662,8 @@ impl Widget for DashboardCard {
         self.inner.draw(scene, transform, text, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.inner.handle_event(
-            event, scale, modifiers, state, path, handled, focus, node, taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.inner.handle_event(event, ctx);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -3318,21 +3305,8 @@ impl Widget for PrintCentre {
     ) {
         self.inner.draw(scene, transform, text, theme, presence);
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.inner.handle_event(
-            event, scale, modifiers, state, path, handled, focus, node, taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.inner.handle_event(event, ctx);
     }
     fn children(&self) -> Vec<&dyn Widget> {
         vec![self.inner.as_ref()]

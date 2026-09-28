@@ -3491,20 +3491,11 @@ impl ContainersApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the complete Widget event context to modal-owned shared inputs"
-    )]
     pub(crate) fn on_key(
         &mut self,
-        doc: &mut AutoCommit,
         event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
         key: &KeyEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        path: &automerge::ObjId,
-        focus_target: &mut Option<taffy::NodeId>,
-        handled: &mut bool,
     ) {
         if key.state != ElementState::Pressed {
             return;
@@ -3519,27 +3510,18 @@ impl ContainersApp {
                 self.combo.close();
             } else if self.create_open {
                 self.create_open = false;
-            } else if ViewDoc::selected(doc).is_some() {
-                ViewDoc::set_selected(doc, None);
+            } else if ViewDoc::selected(ctx.state).is_some() {
+                ViewDoc::set_selected(ctx.state, None);
             }
-            *handled = true;
-            self.refresh_view(doc);
+            *ctx.handled = true;
+            self.refresh_view(ctx.state);
             return;
         }
 
         // Create modal owns the keyboard while open.
         if self.create_open {
-            self.create_modal_key(
-                doc,
-                event,
-                key,
-                scale_factor,
-                modifiers,
-                path,
-                focus_target,
-                handled,
-            );
-            self.refresh_view(doc);
+            self.create_modal_key(event, ctx, key);
+            self.refresh_view(ctx.state);
             return;
         }
 
@@ -3548,55 +3530,46 @@ impl ContainersApp {
             let s = ch.to_lowercase();
             match s.as_str() {
                 "1" => {
-                    ViewDoc::set_section(doc, Section::Containers);
-                    *handled = true;
+                    ViewDoc::set_section(ctx.state, Section::Containers);
+                    *ctx.handled = true;
                 }
                 "2" => {
-                    ViewDoc::set_section(doc, Section::Images);
-                    *handled = true;
+                    ViewDoc::set_section(ctx.state, Section::Images);
+                    *ctx.handled = true;
                 }
                 "3" => {
-                    ViewDoc::set_section(doc, Section::Volumes);
-                    *handled = true;
+                    ViewDoc::set_section(ctx.state, Section::Volumes);
+                    *ctx.handled = true;
                 }
                 "4" => {
-                    ViewDoc::set_section(doc, Section::Distrobox);
-                    *handled = true;
+                    ViewDoc::set_section(ctx.state, Section::Distrobox);
+                    *ctx.handled = true;
                 }
                 "/" => {
                     self.open_container_palette();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 "n" => {
                     self.create_open = true;
                     self.create_focus = CreateField::Image;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 "b" => {
                     self.toggle_sidebar();
                     self.structure_dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 _ => {}
             }
         }
-        self.refresh_view(doc);
+        self.refresh_view(ctx.state);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "create-modal policy wraps the embedded TextInput Widget event path"
-    )]
     fn create_modal_key(
         &mut self,
-        doc: &mut AutoCommit,
         event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
         key: &KeyEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        path: &automerge::ObjId,
-        focus_target: &mut Option<taffy::NodeId>,
-        handled: &mut bool,
     ) {
         let field = self.create_focus;
         let on_image = field == CreateField::Image;
@@ -3605,32 +3578,32 @@ impl ContainersApp {
         if on_image && self.combo.open {
             match &key.logical_key {
                 Key::Named(NamedKey::ArrowDown) => {
-                    let len = self.filtered_image_len(doc);
+                    let len = self.filtered_image_len(ctx.state);
                     self.combo.move_highlight(1, len);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::ArrowUp) => {
-                    let len = self.filtered_image_len(doc);
+                    let len = self.filtered_image_len(ctx.state);
                     self.combo.move_highlight(-1, len);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::Enter) => {
                     // Pick the highlighted suggestion, else submit.
-                    let typed = ViewDoc::create_field(doc, CreateField::Image);
+                    let typed = ViewDoc::create_field(ctx.state, CreateField::Image);
                     let options = self.engine.image_references();
                     let filtered = combobox::filter_options(&options, &typed);
                     if let Some(reference) = filtered
                         .get(self.combo.highlight)
                         .and_then(|&idx| options.get(idx))
                     {
-                        ViewDoc::set_create_field(doc, CreateField::Image, reference);
+                        ViewDoc::set_create_field(ctx.state, CreateField::Image, reference);
                         self.combo.close();
                     } else {
-                        self.submit_create(doc);
+                        self.submit_create(ctx.state);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 _ => {}
@@ -3643,25 +3616,25 @@ impl ContainersApp {
                     self.focus_create_field(field);
                 }
                 self.combo.close();
-                *handled = true;
+                *ctx.handled = true;
             }
             Key::Named(NamedKey::Enter) => {
-                self.submit_create(doc);
-                *handled = true;
+                self.submit_create(ctx.state);
+                *ctx.handled = true;
             }
             _ => {
                 self.focus_create_field(field);
                 self.route_create_input(
                     field,
                     event,
-                    scale_factor,
-                    modifiers,
-                    doc,
-                    path,
-                    focus_target,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
                 );
                 self.after_create_input(field);
-                *handled = true;
+                *ctx.handled = true;
             }
         }
     }

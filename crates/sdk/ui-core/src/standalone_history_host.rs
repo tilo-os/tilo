@@ -936,19 +936,6 @@ impl Widget for PresentationRoots<'_> {
         _presence: &PresenceCtx,
     ) {
     }
-    fn handle_event(
-        &mut self,
-        _event: &winit::event::WindowEvent,
-        _scale: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         self.children.clone()
     }

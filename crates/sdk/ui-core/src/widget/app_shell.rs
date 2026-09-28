@@ -845,21 +845,11 @@ impl Widget for AppShell {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -872,7 +862,7 @@ impl Widget for AppShell {
             } => {
                 // Esc on the narrow content screen goes back to the list.
                 if self.back() {
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
             }
@@ -896,7 +886,7 @@ impl Widget for AppShell {
             }
             _ => {}
         }
-        if *handled {
+        if *ctx.handled {
             return;
         }
 
@@ -906,7 +896,7 @@ impl Widget for AppShell {
         // that retain hover/press state: a content control must not consume a
         // release meant for a sidebar row, and a content wheel must reach its
         // Scrollable rather than the sidebar list.
-        let child_nodes = taffy.children(node_id).unwrap_or_default();
+        let child_nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         let mut pairs: Vec<(Slot, NodeId)> = Vec::new();
         for (slot, &n) in self.slots.iter().zip(child_nodes.iter()) {
             pairs.push((*slot, n));
@@ -926,7 +916,7 @@ impl Widget for AppShell {
             _ => [Slot::Back, Slot::Search, Slot::Content, Slot::Nav],
         };
         for want in order {
-            if *handled {
+            if *ctx.handled {
                 break;
             }
             if let Some(&(_, n)) = pairs.iter().find(|(s, _)| *s == want) {
@@ -939,20 +929,10 @@ impl Widget for AppShell {
                     Slot::Nav => self.nav.as_mut(),
                     Slot::Content => self.content.as_mut(),
                 };
-                w.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
+                w.handle_event(event, &mut ctx.reborrow(ctx.path, n));
                 if self.back_requested.replace(false) {
                     self.back();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
         }
@@ -1607,14 +1587,16 @@ mod tests {
         let root = automerge::ROOT;
         s.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
     fn click(s: &mut AppShell, at: Point) {

@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -687,21 +687,11 @@ impl Widget for SearchResultsView {
         self.draw_preview(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.hover = self.row_at(self.last_cursor);
             }
             WindowEvent::MouseInput {
@@ -712,7 +702,7 @@ impl Widget for SearchResultsView {
                 if let Some(flat) = self.row_at(self.last_cursor) {
                     self.cursor = flat;
                     self.activate_selected();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -730,15 +720,15 @@ impl Widget for SearchResultsView {
                 match logical_key {
                     Key::Named(NamedKey::ArrowDown) => {
                         self.move_down();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowUp) => {
                         self.move_up();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::Enter) => {
                         self.activate_selected();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     _ => {}
                 }
@@ -1083,14 +1073,16 @@ mod tests {
             assert_eq!(v.cursor(), 0);
             v.handle_event(
                 &key(NamedKey::ArrowDown),
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut ft,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(handled, "arrow-down consumed");
             assert_eq!(v.cursor(), 1);
@@ -1098,14 +1090,16 @@ mod tests {
             v.set_cursor(0);
             v.handle_event(
                 &key(NamedKey::ArrowUp),
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut ft,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert_eq!(v.cursor(), v.len() - 1, "up wraps to the bottom");
 
@@ -1113,14 +1107,16 @@ mod tests {
             v.set_cursor(0);
             v.handle_event(
                 &key(NamedKey::Enter),
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut ft,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert_eq!(
                 v.take_activated().as_deref(),
@@ -1151,14 +1147,16 @@ mod tests {
                     device_id: unsafe { std::mem::zeroed() },
                     position: winit::dpi::PhysicalPosition::new(target.x, target.y),
                 },
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut ft,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             v.handle_event(
                 &WindowEvent::MouseInput {
@@ -1166,14 +1164,16 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut ft,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(handled, "row click consumed");
             assert_eq!(

@@ -10,7 +10,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -742,21 +741,11 @@ impl Widget for Chip {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -765,11 +754,11 @@ impl Widget for Chip {
             } => {
                 if self.removable && self.remove_hit_rect().contains(self.last_cursor) {
                     self.removed = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if self.selectable && self.hit_rect().contains(self.last_cursor) {
                     self.selected = !self.selected;
                     self.toggled = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -814,6 +803,7 @@ impl Widget for Chip {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     fn lay_out(w: &mut dyn Widget) {
         lay_out_with_theme(w, &Theme::dark());
@@ -1001,14 +991,16 @@ mod tests {
         let root = automerge::ROOT;
         w.handle_event(
             e,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

@@ -414,14 +414,16 @@ fn press(wp: &mut WordProcessorWidget, state: &mut ui::State, input: &Input) {
             event: ev,
             is_synthetic: false,
         },
-        1.0,
-        &mods,
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus,
-        NodeId::new(0),
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: NodeId::new(0),
+            taffy: &taffy,
+        },
     );
 }
 

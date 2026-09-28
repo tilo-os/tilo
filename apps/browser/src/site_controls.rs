@@ -758,14 +758,16 @@ mod tests {
                 handled = false;
                 panel.handle_event(
                     &event,
-                    1.0,
-                    &winit::event::Modifiers::default(),
-                    &mut doc,
-                    &automerge::ROOT,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &tree,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: &mut doc,
+                        path: &automerge::ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &tree,
+                    },
                 );
             }
             let intent = panel

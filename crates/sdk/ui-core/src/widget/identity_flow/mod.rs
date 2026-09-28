@@ -2571,97 +2571,24 @@ impl Widget for IdentityFlow {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let outcome = match self.current {
-            IdentityFlowScreen::CreateIdentity => self.create_identity.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-                &*self.store,
-            ),
-            IdentityFlowScreen::RecoveryShare => self.recovery_share.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            IdentityFlowScreen::RecoveryVerify => self.recovery_verify.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            IdentityFlowScreen::AddDeviceHost => self.add_device_host.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            IdentityFlowScreen::PairDevice => self.pair_device.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            IdentityFlowScreen::InviteMint => self.invite_mint.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            IdentityFlowScreen::InviteAccept => self.invite_accept.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
+            IdentityFlowScreen::CreateIdentity => {
+                self.create_identity
+                    .handle_event_screen(event, ctx, &*self.store)
+            }
+            IdentityFlowScreen::RecoveryShare => {
+                self.recovery_share.handle_event_screen(event, ctx)
+            }
+            IdentityFlowScreen::RecoveryVerify => {
+                self.recovery_verify.handle_event_screen(event, ctx)
+            }
+            IdentityFlowScreen::AddDeviceHost => {
+                self.add_device_host.handle_event_screen(event, ctx)
+            }
+            IdentityFlowScreen::PairDevice => self.pair_device.handle_event_screen(event, ctx),
+            IdentityFlowScreen::InviteMint => self.invite_mint.handle_event_screen(event, ctx),
+            IdentityFlowScreen::InviteAccept => self.invite_accept.handle_event_screen(event, ctx),
             IdentityFlowScreen::Done => ScreenOutcome::Stay,
         };
         self.advance(outcome);

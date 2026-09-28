@@ -452,20 +452,9 @@ impl Widget for Probe {
     fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
         Self::capture("draw");
     }
-    fn handle_event(
-        &mut self,
-        _: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        d: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, _: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         assert_eq!(
-            d.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
+            ctx.state.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some("child")
         );
         Self::capture("event");

@@ -39,22 +39,9 @@ impl Widget for ResponsiveRoot {
     fn name(&self) -> &'static str {
         "ResponsiveRoot"
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        _: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         for (child, node) in self.children.iter_mut().zip(&self.nodes) {
-            child.handle_event(
-                event, scale, modifiers, doc, path, handled, focus, *node, taffy,
-            );
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, *node));
         }
     }
     fn build_layout(

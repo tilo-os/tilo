@@ -1452,26 +1452,9 @@ impl Widget for ClocksApp {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        tree: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        self.inner.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            doc,
-            path,
-            handled,
-            focus,
-            node,
-            tree,
-        );
+        self.inner.handle_event(event, ctx);
     }
     fn children(&self) -> Vec<&dyn Widget> {
         vec![self.inner.as_ref()]

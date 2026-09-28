@@ -16,7 +16,6 @@
 use crate::time::SystemTime;
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use collab_types::{ChannelId, Ed25519PublicKey, Role as ChannelRole};
 use ed25519_dalek::SigningKey as DalekSigningKey;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -230,25 +229,15 @@ impl InviteMintScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Invite-screen routing mirrors the host Widget event contract, including CRDT, focus/handled, and layout parameters."
-    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) -> ScreenOutcome {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseInput {
@@ -259,24 +248,24 @@ impl InviteMintScreen {
                 for (i, r) in self.expiry_rects.iter().enumerate() {
                     if r.contains(self.last_cursor) {
                         self.expiry = EXPIRIES.get(i).copied().unwrap_or(InviteExpiry::Never);
-                        *handled = true;
+                        *ctx.handled = true;
                         return ScreenOutcome::Stay;
                     }
                 }
                 if self.last_url.is_some() && self.revoke_rect.contains(self.last_cursor) {
                     self.revoke();
-                    *handled = true;
+                    *ctx.handled = true;
                     return ScreenOutcome::Stay;
                 }
                 if self.last_url.is_some() && self.copy_rect.contains(self.last_cursor) {
                     self.copy_url_to_clipboard();
-                    *handled = true;
+                    *ctx.handled = true;
                     return ScreenOutcome::Stay;
                 }
                 // Needs the owner's key, which the shell-side host provides
                 // through `mint_now`; the button is wired up at that layer.
                 if self.generate_rect.contains(self.last_cursor) {
-                    *handled = true;
+                    *ctx.handled = true;
                     self.error = Some("Wire owner signing key via mint_now".to_string());
                     return ScreenOutcome::Stay;
                 }
@@ -284,7 +273,7 @@ impl InviteMintScreen {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.scroll.wheel(delta) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
             }
@@ -298,7 +287,7 @@ impl InviteMintScreen {
                 ..
             } => {
                 if self.scroll.key(logical_key, self.body_height) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
             }
@@ -612,20 +601,6 @@ impl Widget for InviteMintScreen {
         }
         scene.pop_layer();
         sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

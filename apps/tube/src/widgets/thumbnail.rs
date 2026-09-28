@@ -339,20 +339,6 @@ impl Widget for Thumbnail {
         self.paint(scene, transform, text_renderer);
     }
 
-    fn handle_event(
-        &mut self,
-        _e: &winit::event::WindowEvent,
-        _sf: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<NodeId>,
-        _n: NodeId,
-        _t: &TaffyTree<()>,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "Thumbnail"
     }

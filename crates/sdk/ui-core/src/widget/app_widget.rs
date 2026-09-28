@@ -878,37 +878,28 @@ mod component_adapter {
                 &permissions,
             );
         }
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            scale_factor: f64,
-            modifiers: &winit::event::Modifiers,
-            state: &mut AutoCommit,
-            _path: &ObjId,
-            handled: &mut bool,
-            focus_target: &mut Option<NodeId>,
-            node_id: NodeId,
-            taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             let binding = self.component.callback_binding();
             binding
-                .with_document(state, |document, record_root| {
+                .with_document(ctx.state, |document, record_root| {
                     let Some(root) = self.component.root.as_deref_mut() else {
                         return;
                     };
-                    if let Ok(children) = taffy.children(node_id)
+                    if let Ok(children) = ctx.taffy.children(ctx.node_id)
                         && let Some(child) = children.first()
                     {
                         root.handle_event(
                             event,
-                            scale_factor,
-                            modifiers,
-                            document,
-                            record_root,
-                            handled,
-                            focus_target,
-                            *child,
-                            taffy,
+                            &mut crate::widget::EventCtx {
+                                scale_factor: ctx.scale_factor,
+                                modifiers: ctx.modifiers,
+                                state: document,
+                                path: record_root,
+                                handled: ctx.handled,
+                                focus_target: ctx.focus_target,
+                                node_id: *child,
+                                taffy: ctx.taffy,
+                            },
                         );
                     }
                     let _ = binding.drain_owned_tree(root, document);

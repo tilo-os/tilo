@@ -151,20 +151,6 @@ impl Widget for ExportConfigBody {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "ExportConfigBody"
     }

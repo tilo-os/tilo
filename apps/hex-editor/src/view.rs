@@ -1749,28 +1749,32 @@ impl HexView {
             Overlay::Search => {
                 self.search_input.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    doc,
-                    path,
-                    &mut field_handled,
-                    layout.focus_target,
-                    layout.node_id,
-                    layout.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor,
+                        modifiers: &modifiers,
+                        state: doc,
+                        path,
+                        handled: &mut field_handled,
+                        focus_target: layout.focus_target,
+                        node_id: layout.node_id,
+                        taffy: layout.taffy,
+                    },
                 );
                 self.search_input.take_dirty().is_some()
             }
             Overlay::Goto => {
                 self.goto_input.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    doc,
-                    path,
-                    &mut field_handled,
-                    layout.focus_target,
-                    layout.node_id,
-                    layout.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor,
+                        modifiers: &modifiers,
+                        state: doc,
+                        path,
+                        handled: &mut field_handled,
+                        focus_target: layout.focus_target,
+                        node_id: layout.node_id,
+                        taffy: layout.taffy,
+                    },
                 );
                 self.goto_input.take_dirty().is_some()
             }
@@ -2065,35 +2069,24 @@ impl Widget for HexView {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let ctrl = modifiers.state().control_key();
-        let shift = modifiers.state().shift_key();
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let ctrl = ctx.modifiers.state().control_key();
+        let shift = ctx.modifiers.state().shift_key();
 
         if self.overlay != Overlay::None {
             if self.handle_overlay_event(
                 event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
                 OverlayLayoutCtx {
-                    focus_target,
-                    node_id,
-                    taffy,
+                    focus_target: ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
                 },
             ) {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             // An open prompt captures keys even when the field deliberately
@@ -2108,9 +2101,10 @@ impl Widget for HexView {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.handle_mouse_press(shift, handled),
+            } => self.handle_mouse_press(shift, ctx.handled),
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_mouse =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let lines = match delta {
@@ -2119,7 +2113,7 @@ impl Widget for HexView {
                 };
                 self.model.scroll_by(-(lines.round() as isize) * 3);
                 self.dirty = true;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -2129,7 +2123,7 @@ impl Widget for HexView {
                     },
                 ..
             } => {
-                self.handle_key_event(ke, ctrl, shift, handled);
+                self.handle_key_event(ke, ctrl, shift, ctx.handled);
             }
             _ => {}
         }

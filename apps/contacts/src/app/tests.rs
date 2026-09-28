@@ -954,14 +954,16 @@ impl Harness {
         let mut focus = None;
         self.app.handle_event(
             event,
-            1.0,
-            &mods,
-            &mut self.doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            self.node,
-            &self.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut self.doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: self.node,
+                taffy: &self.taffy,
+            },
         );
         handled
     }
@@ -1015,14 +1017,16 @@ impl Harness {
         let mut focus = None;
         self.app.handle_event(
             event,
-            1.0,
-            &modifiers,
-            &mut self.doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            self.node,
-            &self.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut self.doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: self.node,
+                taffy: &self.taffy,
+            },
         );
         handled
     }

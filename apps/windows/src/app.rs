@@ -2568,22 +2568,11 @@ impl Widget for WindowsApp {
         clippy::too_many_lines,
         reason = "one event boundary keeps modal capture ahead of the existing routed controls"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        mods: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.confirm_delete_data.is_some() {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.mouse = Point::new(position.x, position.y);
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if let WindowEvent::KeyboardInput {
@@ -2596,7 +2585,7 @@ impl Widget for WindowsApp {
                     Key::Named(NamedKey::Enter) => self.confirm_delete_data(),
                     _ => {}
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if matches!(
@@ -2619,15 +2608,15 @@ impl Widget for WindowsApp {
                         Some(ModalHit::Card | ModalHit::Scrim | ModalHit::Action(_)) | None => {}
                     }
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         macro_rules! forward_button_event {
             ($button:expr) => {
-                $button.handle_event(event, scale, mods, state, path, handled, focus, node, taffy)
+                $button.handle_event(event, ctx)
             };
         }
         for button in &mut self.route_buttons {
@@ -2660,10 +2649,10 @@ impl Widget for WindowsApp {
         match event {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
-            } if key_event.state == ElementState::Pressed && !*handled => {
+            } if key_event.state == ElementState::Pressed && !*ctx.handled => {
                 if key_event.logical_key == Key::Named(NamedKey::Escape) && self.compact_detail {
                     self.hit(Hit::Back);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 let next = match key_event.logical_key {
@@ -2677,7 +2666,7 @@ impl Widget for WindowsApp {
                 };
                 if next != self.selected && !self.catalogue.apps.is_empty() {
                     self.hit(Hit::App(next));
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. }
@@ -2686,12 +2675,12 @@ impl Widget for WindowsApp {
             {
                 let delta = match delta {
                     MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 48.0,
-                    MouseScrollDelta::PixelDelta(position) => -position.y / scale,
+                    MouseScrollDelta::PixelDelta(position) => -position.y / ctx.scale_factor,
                 };
                 let before = self.sidebar_scroll;
                 self.sidebar_scroll += delta;
                 self.clamp_sidebar_scroll();
-                *handled |= (self.sidebar_scroll - before).abs() > f64::EPSILON;
+                *ctx.handled |= (self.sidebar_scroll - before).abs() > f64::EPSILON;
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse = Point::new(position.x, position.y);
@@ -2708,7 +2697,7 @@ impl Widget for WindowsApp {
                     .map(|(_, hit)| *hit)
                 {
                     self.hit(hit);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}

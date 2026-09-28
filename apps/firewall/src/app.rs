@@ -1405,14 +1405,16 @@ impl FirewallApp {
         let mut ft: Option<NodeId> = None;
         input.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut handled,
-            &mut ft,
-            NodeId::new(0),
-            taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers: &modifiers,
+                state,
+                path,
+                handled: &mut handled,
+                focus_target: &mut ft,
+                node_id: NodeId::new(0),
+                taffy,
+            },
         );
         handled
     }
@@ -1612,58 +1614,46 @@ impl Widget for FirewallApp {
         self.draw(scene, t, tr, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 Self::forward_to_input(
                     &mut self.form.port,
                     event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    taffy,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.taffy,
                 );
                 Self::forward_to_input(
                     &mut self.form.source,
                     event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    taffy,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.taffy,
                 );
             }
             WindowEvent::KeyboardInput { .. } => {
-                self.handle_key(event, *modifiers, state, path, handled, taffy);
+                self.handle_key(
+                    event,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                    ctx.taffy,
+                );
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_click(
-                    self.last_cursor,
-                    state,
-                    handled,
-                    scale_factor,
-                    *modifiers,
-                    path,
-                    taffy,
-                    event,
-                );
+                self.handle_click(event, ctx, self.last_cursor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -1672,20 +1662,20 @@ impl Widget for FirewallApp {
                 Self::forward_to_input(
                     &mut self.form.port,
                     event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    taffy,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.taffy,
                 );
                 Self::forward_to_input(
                     &mut self.form.source,
                     event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    taffy,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.taffy,
                 );
             }
             _ => {}
@@ -2314,55 +2304,29 @@ impl FirewallApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the click-dispatch entry point threading the shared event/input context; \
-                  splitting the body into handle_click_* helpers (below) is what keeps this \
-                  one under the line-length lint, not shrinking its argument list further"
-    )]
-    fn handle_click(
-        &mut self,
-        p: Point,
-        state: &mut AutoCommit,
-        handled: &mut bool,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        path: &ObjId,
-        taffy: &TaffyTree<()>,
-        event: &WindowEvent,
-    ) {
+    fn handle_click(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>, p: Point) {
         // Nothing is interactive while firewalld is unavailable — there is
         // no real config to edit or apply.
         if !self.available {
             if self.layout.recover_btn.contains(p) {
-                self.retry_connect(state);
-                *handled = true;
+                self.retry_connect(ctx.state);
+                *ctx.handled = true;
             }
             return;
         }
 
         let l = self.layout.clone();
 
-        if self.handle_click_rail(p, &l, handled) {
+        if self.handle_click_rail(p, &l, ctx.handled) {
             return;
         }
-        if self.handle_click_primary(p, state, &l, handled) {
+        if self.handle_click_primary(p, ctx.state, &l, ctx.handled) {
             return;
         }
-        if self.handle_click_form(p, state, &l, handled) {
+        if self.handle_click_form(p, ctx.state, &l, ctx.handled) {
             return;
         }
-        if self.handle_click_text_field(
-            p,
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            taffy,
-            &l,
-            handled,
-        ) {
+        if self.handle_click_text_field(event, ctx, p, &l) {
             return;
         }
 
@@ -2571,35 +2535,25 @@ impl FirewallApp {
 
     /// Port/source text fields: focus + forward the press for caret
     /// placement. Returns whether the click was consumed here.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the same shared event/input context as handle_click, split out only \
-                  to keep handle_click itself under the line-length lint"
-    )]
     fn handle_click_text_field(
         &mut self,
-        p: Point,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
+        p: Point,
         l: &Layout,
-        handled: &mut bool,
     ) -> bool {
         if !self.form.is_service && l.port_field.contains(p) {
             self.set_form_focus(Some(FocusField::Port));
             Self::forward_to_input(
                 &mut self.form.port,
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                taffy,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.taffy,
             );
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         if l.source_field.contains(p) {
@@ -2607,13 +2561,13 @@ impl FirewallApp {
             Self::forward_to_input(
                 &mut self.form.source,
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                taffy,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.taffy,
             );
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         false

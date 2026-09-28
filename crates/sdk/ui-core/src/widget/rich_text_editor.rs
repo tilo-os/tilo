@@ -39,7 +39,7 @@ use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
-use winit::event::{ElementState, Ime, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
@@ -1016,31 +1016,21 @@ impl Widget for RichTextEditor {
         self.redraw = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-        let shift = modifiers.state().shift_key();
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let ctrl = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
+        let shift = ctx.modifiers.state().shift_key();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.handle_cursor_move(point, handled);
+                let point =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.handle_cursor_move(point, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_primary_press(shift, node_id, focus_target, handled);
+                self.handle_primary_press(shift, ctx.node_id, ctx.focus_target, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -1048,7 +1038,7 @@ impl Widget for RichTextEditor {
                 ..
             } => {
                 if self.drag_select.release() {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::Ime(Ime::Commit(s)) => {
@@ -1057,8 +1047,8 @@ impl Widget for RichTextEditor {
                 }
                 self.preedit.clear();
                 self.preedit_cursor = None;
-                self.insert_str(state, s);
-                *handled = true;
+                self.insert_str(ctx.state, s);
+                *ctx.handled = true;
             }
             WindowEvent::Ime(Ime::Preedit(s, cursor)) => {
                 if !self.focused {
@@ -1068,7 +1058,7 @@ impl Widget for RichTextEditor {
                 self.preedit_cursor = *cursor;
                 self.redraw = true;
                 self.layout_dirty = true;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -1083,7 +1073,14 @@ impl Widget for RichTextEditor {
                 if !self.focused {
                     return;
                 }
-                self.handle_key_press(logical_key, text.as_deref(), ctrl, shift, state, handled);
+                self.handle_key_press(
+                    logical_key,
+                    text.as_deref(),
+                    ctrl,
+                    shift,
+                    ctx.state,
+                    ctx.handled,
+                );
             }
             _ => {}
         }
@@ -1237,6 +1234,7 @@ mod tests {
     use super::*;
     use crate::State;
     use vello::kurbo::Affine;
+    use winit::event::Modifiers;
     use winit::keyboard::{ModifiersState, SmolStr};
 
     fn setup() -> (State, RichTextEditor) {
@@ -1318,14 +1316,16 @@ mod tests {
         let mut ft = None;
         ed.handle_event(
             ev,
-            1.0,
-            &m,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 

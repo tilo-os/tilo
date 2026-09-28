@@ -4870,101 +4870,42 @@ impl Widget for NotesApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // An open note menu owns input before shortcuts and the narrow drawer,
         // including the click that dismisses it.
         if self.note_menu.is_open() {
-            self.handle_note_context_menu(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.handle_note_context_menu(event, ctx);
             return;
         }
-        if self.handle_shortcuts_overlay(event, scale_factor, handled) {
+        if self.handle_shortcuts_overlay(event, ctx.scale_factor, ctx.handled) {
             return;
         }
-        if self.handle_help_key(event, handled) {
+        if self.handle_help_key(event, ctx.handled) {
             return;
         }
-        if self.handle_find_shortcut(event, *modifiers, focus_target, handled) {
+        if self.handle_find_shortcut(event, *ctx.modifiers, ctx.focus_target, ctx.handled) {
             return;
         }
-        if self.handle_new_child_shortcut(event, *modifiers, state, handled) {
+        if self.handle_new_child_shortcut(event, *ctx.modifiers, ctx.state, ctx.handled) {
             return;
         }
-        if self.handle_route_history_shortcut(event, *modifiers, state, handled) {
+        if self.handle_route_history_shortcut(event, *ctx.modifiers, ctx.state, ctx.handled) {
             return;
         }
-        self.transfer_toasts.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
-        if *handled {
+        self.transfer_toasts.handle_event(event, ctx);
+        if *ctx.handled {
             return;
         }
-        if self.handle_narrow_drawer(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            taffy,
-        ) {
+        if self.handle_narrow_drawer(event, ctx) {
             return;
         }
-        if self.handle_note_context_menu(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
+        if self.handle_note_context_menu(event, ctx) {
             return;
         }
-        if self.handle_link_click(event, state, handled) {
+        if self.handle_link_click(event, ctx.state, ctx.handled) {
             return;
         }
-        self.route_to_children(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            taffy,
-        );
+        self.route_to_children(event, ctx);
     }
 
     fn name(&self) -> &'static str {
@@ -5328,20 +5269,10 @@ impl NotesApp {
     /// Narrow-mode overlay drawer. The top-bar button toggles it; while
     /// open it captures pointer/keys so the page tree behaves like a
     /// modal flyout over the editor.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the exact Widget::handle_event context bundle"
-    )]
     fn handle_narrow_drawer(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if !self.built_narrow {
             return false;
@@ -5351,24 +5282,15 @@ impl NotesApp {
         if self.sidebar.menu_is_open() {
             let selected = self.workspace.selected();
             if let Some(n) = self.sidebar_node {
-                self.sidebar.handle_event(
-                    event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
-                self.claim_sidebar_focus(*focus_target);
+                self.sidebar
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+                self.claim_sidebar_focus(*ctx.focus_target);
             }
-            self.drain_sidebar_events(state);
+            self.drain_sidebar_events(ctx.state);
             if self.workspace.selected() != selected && !self.sidebar.menu_is_open() {
                 self.set_drawer_open(false);
             }
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         // Toggle button — hit-test the hamburger in the top bar.
@@ -5380,7 +5302,7 @@ impl NotesApp {
             && self.menu_btn_rect.contains(self.last_mouse)
         {
             self.set_drawer_open(!self.drawer.is_open());
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         if !self.drawer.is_open() {
@@ -5398,7 +5320,7 @@ impl NotesApp {
         } = event
         {
             self.set_drawer_open(false);
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         // A press on the scrim (outside the drawer) closes it.
@@ -5410,31 +5332,23 @@ impl NotesApp {
             && !self.sidebar.get_rect().contains(self.last_mouse)
         {
             self.set_drawer_open(false);
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         // Route to the page tree; auto-close once a page is picked.
         let sel_before = self.workspace.selected();
         if let Some(n) = self.sidebar_node {
-            self.sidebar.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-            self.claim_sidebar_focus(*focus_target);
+            self.sidebar
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            self.claim_sidebar_focus(*ctx.focus_target);
         }
-        self.drain_sidebar_events(state);
+        self.drain_sidebar_events(ctx.state);
         if self.workspace.selected() != sel_before && !self.sidebar.menu_is_open() {
             self.set_drawer_open(false);
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_mouse =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         self.refresh_status();
         true
@@ -5486,42 +5400,21 @@ impl NotesApp {
 
     /// Route note commands before pointer or keyboard events reach the editor.
     #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the Widget event context"
-    )]
-    #[allow(
         clippy::too_many_lines,
         reason = "routes the complete context-menu event lifecycle through one stateful boundary"
     )]
     fn handle_note_context_menu(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if self.note_menu.is_open() {
-            self.note_menu.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.note_menu.handle_event(event, ctx);
             if let Some(index) = self.note_menu.take_selection() {
-                self.apply_note_menu_selection(index, state);
+                self.apply_note_menu_selection(index, ctx.state);
             }
             self.self_dirty = true;
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         let pointer_open = matches!(
@@ -5535,7 +5428,7 @@ impl NotesApp {
         let keyboard_open = matches!(event, WindowEvent::KeyboardInput { event: KeyEvent {
             state: ElementState::Pressed, logical_key, ..
         }, .. } if matches!(logical_key, Key::Named(NamedKey::ContextMenu))
-            || (modifiers.state().shift_key() && matches!(logical_key, Key::Named(NamedKey::F10))))
+            || (ctx.modifiers.state().shift_key() && matches!(logical_key, Key::Named(NamedKey::F10))))
             && !self.sidebar.is_focused()
             && (self.main.editor().is_focused() || self.main.title_focused());
         if !(pointer_open || keyboard_open) {
@@ -5615,7 +5508,7 @@ impl NotesApp {
             .open_at([num::f32_of_f64(anchor.x), num::f32_of_f64(anchor.y)]);
         self.note_menu_target = Some(page);
         self.self_dirty = true;
-        *handled = true;
+        *ctx.handled = true;
         true
     }
 
@@ -5716,21 +5609,7 @@ impl NotesApp {
         self.refresh_status();
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the exact Widget::handle_event context bundle"
-    )]
-    fn route_to_children(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn route_to_children(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Modal focus capture: while the editor's `/` block menu (or the
         // `[[` link popover) is open, keyboard nav belongs to it — not the
         // page list behind it; symmetrically, while the sidebar's
@@ -5746,21 +5625,12 @@ impl NotesApp {
         // (wide mode). In narrow mode the drawer block above owns it.
         if !self.built_narrow && (!editor_menu_open || !is_keyboard) {
             if let Some(n) = self.sidebar_node {
-                self.sidebar.handle_event(
-                    event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
-                self.claim_sidebar_focus(*focus_target);
+                self.sidebar
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+                self.claim_sidebar_focus(*ctx.focus_target);
             }
             // Drain any commands the sidebar produced.
-            self.drain_sidebar_events(state);
+            self.drain_sidebar_events(ctx.state);
         }
         // The editor never sees keystrokes the sidebar is capturing — its
         // right-click menu OR an in-progress inline rename — so a rename
@@ -5769,17 +5639,8 @@ impl NotesApp {
         if !(sidebar_capturing_kbd && is_keyboard)
             && let Some(n) = self.main_node
         {
-            self.main.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            self.main
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
         // The body editor has applied the person's edit as a Notes action.
         // `editor_is_dirty` drains the widget's edit edge, so a pointer move
@@ -5790,17 +5651,19 @@ impl NotesApp {
         // A committed edit of the note's in-page title renames the current
         // page on the same replayable action path the sidebar's inline rename
         // uses, then re-syncs the sidebar so the new name shows in the tree.
-        self.drain_title_rename(state);
+        self.drain_title_rename(ctx.state);
         // A fresh workspace has no selected page, so its central first-use
         // action creates a root note. Route it through the same replayable
         // action path as the sidebar + and Cmd/Ctrl-N; a first note must be
         // just as collaborative and undoable as every later one.
-        self.drain_empty_note_request(state);
+        self.drain_empty_note_request(ctx.state);
         // Update the last-mouse cache so the next MouseInput knows
         // where to hit-test for link clicks.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let logical =
-                vello::kurbo::Point::new(position.x / scale_factor, position.y / scale_factor);
+            let logical = vello::kurbo::Point::new(
+                position.x / ctx.scale_factor,
+                position.y / ctx.scale_factor,
+            );
             self.last_mouse = logical;
         }
         // Status bar refresh runs at the tail of every event so word

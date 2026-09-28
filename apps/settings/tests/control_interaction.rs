@@ -130,14 +130,16 @@ fn click_at(
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &mods,
-            doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy,
+            },
         );
         // The live host resolves action-bound control intents immediately
         // after event delivery. Mirror that boundary here so AppShell's Back

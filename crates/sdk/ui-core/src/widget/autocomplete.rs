@@ -27,7 +27,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
@@ -605,61 +605,39 @@ impl Autocomplete {
     /// keep that under the line cap. Navigation/accept/cancel keys are
     /// intercepted here since the field itself never consumes them;
     /// everything else forwards to the field and recomputes on change.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards Widget::handle_event's own parameter list to the inner field; \
-                  bundling it would mean bundling the trait method too"
-    )]
     fn handle_key_while_editing(
         &mut self,
-        logical_key: &Key,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
+        logical_key: &Key,
     ) {
         match logical_key {
             Key::Named(NamedKey::ArrowDown) => {
                 self.move_highlight(true);
-                *handled = true;
+                *ctx.handled = true;
             }
             Key::Named(NamedKey::ArrowUp) => {
                 self.move_highlight(false);
-                *handled = true;
+                *ctx.handled = true;
             }
             Key::Named(NamedKey::Enter) => {
                 let value = self
                     .highlighted()
                     .map_or_else(|| self.input.value().to_string(), |s| s.value.clone());
                 self.accept(value);
-                *handled = true;
+                *ctx.handled = true;
             }
             Key::Named(NamedKey::Tab) if !self.suggestions.is_empty() => {
                 self.complete_to_highlight();
-                *handled = true;
+                *ctx.handled = true;
             }
             Key::Named(NamedKey::Escape) => {
                 self.cancel();
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {
                 // Forward to the field, then recompute if the text changed.
-                self.input.handle_event(
-                    event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    root,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                self.input.handle_event(event, ctx);
                 if self.input.take_dirty().is_some() {
                     self.recompute();
                     self.open = !self.suggestions.is_empty();
@@ -780,20 +758,10 @@ impl Widget for Autocomplete {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_pointer =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             self.hover = self.row_at(self.last_pointer);
         }
         if !self.is_editing() {
@@ -810,18 +778,7 @@ impl Widget for Autocomplete {
                         ..
                     },
                 ..
-            } => self.handle_key_while_editing(
-                logical_key,
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                root,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
+            } => self.handle_key_while_editing(event, ctx, logical_key),
             // A left press on a dropdown row accepts it.
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -833,7 +790,7 @@ impl Widget for Autocomplete {
                 {
                     let value = s.value.clone();
                     self.accept(value);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             // A left press outside the field and the dropdown cancels. Not
@@ -850,17 +807,7 @@ impl Widget for Autocomplete {
                 self.cancel();
             }
             _ => {
-                self.input.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    root,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                self.input.handle_event(event, ctx);
                 if self.input.take_dirty().is_some() {
                     self.recompute();
                     self.open = !self.suggestions.is_empty();
@@ -1035,6 +982,7 @@ impl Widget for Autocomplete {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use winit::event::Modifiers;
 
     #[test]
     fn suggestions_open_highlight_accept_or_cancel() {
@@ -1264,14 +1212,16 @@ mod tests {
         let mut doc = AutoCommit::new();
         ac.handle_event(
             ev,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

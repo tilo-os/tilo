@@ -945,27 +945,16 @@ impl Widget for EditorApp {
         scene.pop_layer();
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.clamp_cursor();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_mouse = p;
                 let was_hover = self.hovered;
                 self.hovered = self.rect.contains(p);
                 if self.hovered != was_hover {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -974,14 +963,20 @@ impl Widget for EditorApp {
                 ..
             } => {
                 if self.hovered && *es == ElementState::Pressed {
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
-                self.handle_keyboard_input(key_event, *modifiers, state, root, handled);
+                self.handle_keyboard_input(
+                    key_event,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                );
             }
             _ => {}
         }

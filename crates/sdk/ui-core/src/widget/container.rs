@@ -391,32 +391,11 @@ impl Widget for Container {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let Some(child) = &mut self.child
-            && let Some(&child_node) = taffy.children(node_id).unwrap_or_default().first()
+            && let Some(&child_node) = ctx.taffy.children(ctx.node_id).unwrap_or_default().first()
         {
-            child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
     }
 

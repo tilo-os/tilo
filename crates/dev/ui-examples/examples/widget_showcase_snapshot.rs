@@ -123,19 +123,6 @@ impl Widget for LabelTile {
             None,
         );
     }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "LabelTile"
     }
@@ -425,14 +412,16 @@ pub fn run(_args: &[String]) {
     };
     root.handle_event(
         &wheel,
-        1.0,
-        &modifiers,
-        &mut doc,
-        &automerge::ObjId::Root,
-        &mut handled,
-        &mut focus_target,
-        root_node,
-        &taffy,
+        &mut tilo_ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: &mut doc,
+            path: &automerge::ObjId::Root,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: root_node,
+            taffy: &taffy,
+        },
     );
     // Re-apply layout — the Scrollable child is positioned with
     // (rect.x0 - offset_x, rect.y0 - offset_y), so updated offset means

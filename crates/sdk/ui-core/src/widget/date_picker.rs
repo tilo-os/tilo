@@ -387,18 +387,7 @@ impl Widget for DatePicker {
         self.draw_day_grid(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::KeyboardInput {
                 event:
@@ -414,37 +403,38 @@ impl Widget for DatePicker {
                 match logical_key {
                     Key::Named(NamedKey::ArrowLeft) => {
                         self.move_selection(-1);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowRight) => {
                         self.move_selection(1);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowUp) => {
                         self.move_selection(-7);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowDown) => {
                         self.move_selection(7);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::PageUp) => {
                         self.retreat_month();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::PageDown) => {
                         self.advance_month();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::Enter | NamedKey::Space) => {
                         self.commit_user_date(self.selected);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     _ => {}
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -454,12 +444,12 @@ impl Widget for DatePicker {
                 let pt = self.last_cursor;
                 if self.prev_button_rect.contains(pt) {
                     self.retreat_month();
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if self.next_button_rect.contains(pt) {
                     self.advance_month();
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // Cloned so mutating `selected` doesn't borrow `self.day_rects`.
@@ -472,7 +462,7 @@ impl Widget for DatePicker {
                     // Slides the visible month on a spill-in/out click,
                     // matching every common picker UX.
                     self.commit_user_date(date);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -798,25 +788,29 @@ mod tests {
 
             dp.handle_event(
                 &cursor_moved(pt.x, pt.y),
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             dp.handle_event(
                 &mouse_pressed(),
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
 
             assert_eq!(dp.selected(), target);

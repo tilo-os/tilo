@@ -1169,37 +1169,17 @@ impl Widget for MergeView {
         self.dirty = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        m: &winit::event::Modifiers,
-        s: &mut AutoCommit,
-        p: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.merged_editor.is_focused() || self.merged_editor.rect().contains(self.cursor) {
-            self.merged_editor.handle_event(
-                event,
-                scale_factor,
-                m,
-                s,
-                p,
-                handled,
-                focus,
-                node,
-                taffy,
-            );
-            if *handled {
+            self.merged_editor.handle_event(event, ctx);
+            if *ctx.handled {
                 return;
             }
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // Only scroll the source band when the cursor is above the
@@ -1209,7 +1189,7 @@ impl Widget for MergeView {
                     MouseScrollDelta::PixelDelta(pp) => -pp.y,
                 };
                 self.scroll_by(dy);
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1223,7 +1203,7 @@ impl Widget for MergeView {
                     .map(|hit| hit.source)
                 {
                     self.select_source(source);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 let hit = self
@@ -1233,7 +1213,7 @@ impl Widget for MergeView {
                     .copied();
                 if let Some(a) = hit {
                     self.resolve(a.hunk, a.choice);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -1255,7 +1235,7 @@ impl Widget for MergeView {
                 };
                 if let Some(source) = source {
                     self.select_source(source);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}

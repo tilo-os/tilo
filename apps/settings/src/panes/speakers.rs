@@ -27,7 +27,7 @@ use ui::theme::Theme;
 use ui::widget::{Button, Dropdown, Slider, TextInput, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::actions::{LocalOperationStatus, SPEAKER_OPERATION_TYPE, SpeakerOperation};
 use crate::i18n::{t, t_args};
@@ -1367,33 +1367,12 @@ impl Widget for SpeakersPane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(child) = children.first()
         {
-            composed.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                *child,
-                taffy,
-            );
+            composed.handle_event(event, &mut ctx.reborrow(ctx.path, *child));
         }
     }
 
@@ -1627,21 +1606,11 @@ impl Widget for RoomCanvas {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 if let Some(index) = self.dragging {
                     let moved = self.to_room(self.cursor);
                     self.points.update(|points| {
@@ -1649,7 +1618,7 @@ impl Widget for RoomCanvas {
                             *point = moved;
                         }
                     });
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -1665,14 +1634,14 @@ impl Widget for RoomCanvas {
                     .filter(|(_, distance)| *distance <= DOT_RADIUS * 1.6)
                     .min_by(|left, right| left.1.total_cmp(&right.1))
                     .map(|(index, _)| index);
-                *handled |= self.dragging.is_some();
+                *ctx.handled |= self.dragging.is_some();
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
-                *handled |= self.dragging.take().is_some();
+                *ctx.handled |= self.dragging.take().is_some();
             }
             _ => {}
         }

@@ -203,21 +203,8 @@ impl Widget for LiveFixture {
             .borrow_mut()
             .draw(scene, transform, text, theme, presence);
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.keyboard.borrow_mut().handle_event(
-            event, scale, modifiers, doc, path, handled, focus, node, taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.keyboard.borrow_mut().handle_event(event, ctx);
     }
     fn name(&self) -> &'static str {
         "live-osk-fixture"

@@ -2767,14 +2767,16 @@ impl FrameBuilder {
             let (host, taffy) = self.host_and_taffy_mut();
             host.handle_event(
                 event,
-                1.0,
-                modifiers,
-                state,
-                root_obj,
-                &mut handled,
-                &mut focus_target,
-                child,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers,
+                    state,
+                    path: root_obj,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: child,
+                    taffy,
+                },
             );
         }
         // Apply the requested focus change: drop old widget's focus, raise

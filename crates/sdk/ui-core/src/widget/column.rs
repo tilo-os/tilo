@@ -424,18 +424,7 @@ impl Widget for Column {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // A child with a latched drag (e.g. a slider's knob) gets ALL
         // events exclusively for the frame, so the drag survives the
         // cursor crossing a peer widget's rect — otherwise the peer's
@@ -447,32 +436,12 @@ impl Widget for Column {
             let Some(child) = self.children.get_mut(idx) else {
                 return;
             };
-            child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cnode,
-                taffy,
-            );
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, cnode));
             return;
         }
         for (child_widget, &child_node) in self.children.iter_mut().zip(&self.child_nodes) {
-            child_widget.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
-            if *handled {
+            child_widget.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
+            if *ctx.handled {
                 break;
             }
         }

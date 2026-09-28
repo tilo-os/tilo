@@ -5,19 +5,17 @@
 //! instead of editing qdoc itself: the parent editor remains the sole owner of
 //! undoable document mutations.
 
-use automerge::{AutoCommit, ObjId};
 use qdoc::snapshot::BlockView;
-use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{TextInput, TextInputKind, Widget};
+use ui::widget::{EventCtx, TextInput, TextInputKind, Widget};
 
 use crate::i18n::{arg, t, t_args};
 use crate::num;
@@ -178,18 +176,6 @@ struct DrawCtx<'a> {
     palette: FindPalette,
 }
 
-/// Host routing state used by both embedded text fields for one event.
-pub(crate) struct FindEventContext<'a> {
-    pub(crate) scale_factor: f64,
-    pub(crate) modifiers: Modifiers,
-    pub(crate) state: &'a mut AutoCommit,
-    pub(crate) path: &'a ObjId,
-    pub(crate) handled: &'a mut bool,
-    pub(crate) focus_target: &'a mut Option<NodeId>,
-    pub(crate) node_id: NodeId,
-    pub(crate) taffy: &'a TaffyTree<()>,
-}
-
 impl FindBar {
     pub(crate) fn is_open(&self) -> bool {
         self.open
@@ -342,7 +328,7 @@ impl FindBar {
     pub(crate) fn handle_event(
         &mut self,
         event: &WindowEvent,
-        context: &mut FindEventContext<'_>,
+        context: &mut EventCtx<'_>,
         blocks: &[BlockView],
     ) -> FindEffect {
         if !self.open {
@@ -357,18 +343,7 @@ impl FindBar {
             // Each field must see cursor movement so hover/drag state stays
             // correct even when focus is about to move between them.
             for input in [&mut self.query, &mut self.replacement] {
-                Widget::handle_event(
-                    input,
-                    event,
-                    context.scale_factor,
-                    &context.modifiers,
-                    context.state,
-                    context.path,
-                    context.handled,
-                    context.focus_target,
-                    context.node_id,
-                    context.taffy,
-                );
+                Widget::handle_event(input, event, context);
             }
             return FindEffect::None;
         }
@@ -433,18 +408,7 @@ impl FindBar {
         } else {
             &mut self.query
         };
-        Widget::handle_event(
-            input,
-            event,
-            context.scale_factor,
-            &context.modifiers,
-            context.state,
-            context.path,
-            context.handled,
-            context.focus_target,
-            context.node_id,
-            context.taffy,
-        );
+        Widget::handle_event(input, event, context);
 
         let query_changed = self.query.take_dirty().is_some();
         let _ = self.replacement.take_dirty();
@@ -864,6 +828,9 @@ fn is_word_match(chars: &[char], start: usize, end: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
+    use taffy::{NodeId, TaffyTree};
+    use winit::event::Modifiers;
     use winit::keyboard::{NativeKeyCode, PhysicalKey, SmolStr};
 
     fn block(text: &str) -> BlockView {
@@ -899,9 +866,9 @@ mod tests {
         let mut focus_target = None;
         let effect = bar.handle_event(
             event,
-            &mut FindEventContext {
+            &mut EventCtx {
                 scale_factor: 1.0,
-                modifiers,
+                modifiers: &modifiers,
                 state: &mut state,
                 path: &automerge::ROOT,
                 handled: &mut handled,

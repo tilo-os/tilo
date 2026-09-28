@@ -43,7 +43,7 @@ use crate::WpFormat;
 use crate::compact_swatch_palette::{
     CompactSwatchPalette, PaletteChoice, PaletteKind, PaletteRequest,
 };
-use crate::find_bar::{FindBar, FindEffect, FindEventContext, FindPalette};
+use crate::find_bar::{FindBar, FindEffect, FindPalette};
 use crate::i18n::{arg, t, t_args};
 use crate::num;
 use crate::outline_pane::{OutlinePalette, OutlinePane};
@@ -10814,39 +10814,28 @@ impl Widget for WordProcessorWidget {
         clippy::too_many_lines,
         reason = "the widget's single event entry point routes each window event to overlays, panels and the editor in priority order"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let shift = modifiers.state().shift_key();
-        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let shift = ctx.modifiers.state().shift_key();
+        let ctrl = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
         if let Some(offer) = &mut self.file_choice {
-            offer.event(event, scale_factor);
+            offer.event(event, ctx.scale_factor);
             self.lifecycle.dirty = true;
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if self.unsaved_changes.is_open() {
-            if let Some(choice) = self
-                .unsaved_changes
-                .handle_event(event, scale_factor, *modifiers)
+            if let Some(choice) =
+                self.unsaved_changes
+                    .handle_event(event, ctx.scale_factor, *ctx.modifiers)
             {
-                self.resolve_unsaved_choice(state, choice);
+                self.resolve_unsaved_choice(ctx.state, choice);
             }
             self.lifecycle.dirty = true;
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if self.replace_after_save {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         // An open menu owns input until selection or dismissal. Forward
@@ -10857,7 +10846,8 @@ impl Widget for WordProcessorWidget {
             || self.style_menu.is_open()
         {
             if let WindowEvent::CursorMoved { position, .. } = event {
-                self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.pointer =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             let menu = if self.template_picker.is_open() {
                 self.template_picker.menu_mut()
@@ -10866,25 +10856,15 @@ impl Widget for WordProcessorWidget {
             } else {
                 &mut self.context_menu
             };
-            menu.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            menu.handle_event(event, ctx);
             if let Some(template) = self.template_picker.take_selection() {
-                self.request_template(state, template);
+                self.request_template(ctx.state, template);
             }
             if let Some(action) = self.style_menu.take_selection() {
-                self.dispatch_style_menu(action, state);
+                self.dispatch_style_menu(action, ctx.state);
             }
             if let Some(index) = self.context_menu.take_selection() {
-                self.dispatch_context_action(index, state);
+                self.dispatch_context_action(index, ctx.state);
             }
             if matches!(
                 event,
@@ -10896,18 +10876,32 @@ impl Widget for WordProcessorWidget {
                     | WindowEvent::Ime(_)
             ) {
                 self.lifecycle.dirty = true;
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
-        if self.pump_compact_swatch_palette(event, scale_factor, *modifiers, state, path, handled) {
+        if self.pump_compact_swatch_palette(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.path,
+            ctx.handled,
+        ) {
             return;
         }
         // While the colour-picker popover is open it captures input (modal-ish):
         // route drags to it, apply committed colours, and let an outside-click /
         // Escape dismiss it before any page/panel hit-testing.
         if self.color_picker.is_open()
-            && self.pump_color_picker(event, scale_factor, *modifiers, state, path, handled)
+            && self.pump_color_picker(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.handled,
+            )
         {
             return;
         }
@@ -10917,11 +10911,11 @@ impl Widget for WordProcessorWidget {
         let comment_thread_handled = self.handle_comment_thread_event(
             event,
             &mut EditorEventCtx {
-                scale_factor,
-                modifiers: *modifiers,
-                state,
-                path,
-                handled,
+                scale_factor: ctx.scale_factor,
+                modifiers: *ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
+                handled: ctx.handled,
             },
         );
         if comment_thread_handled {
@@ -10931,8 +10925,8 @@ impl Widget for WordProcessorWidget {
         // keeps capturing mid-drag). A restore flags `needs_commit`, handing the
         // commit to `App::commit_action` so it lands on the undo stack stamped and
         // attributed like a typed edit.
-        if self.handle_history_event(event, scale_factor, *modifiers, state, path) {
-            *handled = true;
+        if self.handle_history_event(event, ctx.scale_factor, *ctx.modifiers, ctx.state, ctx.path) {
+            *ctx.handled = true;
             return;
         }
         // The toolbar may have wrapped to several rows; hit-test against its
@@ -10947,22 +10941,16 @@ impl Widget for WordProcessorWidget {
             let mut find_handled = false;
             let effect = self.find.handle_event(
                 event,
-                &mut FindEventContext {
-                    scale_factor,
-                    modifiers: *modifiers,
-                    state,
-                    path,
+                &mut ui::widget::EventCtx {
                     handled: &mut find_handled,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
                 },
                 &self.blocks,
             );
-            self.apply_find_effect_mut(state, effect);
+            self.apply_find_effect_mut(ctx.state, effect);
             if find_handled {
                 self.lifecycle.dirty = true;
-                *handled = true;
+                *ctx.handled = true;
                 // Cursor movement still feeds the editor below so its shared
                 // pointer coordinate remains current for subsequent clicks.
                 if !matches!(event, WindowEvent::CursorMoved { .. }) {
@@ -10973,14 +10961,16 @@ impl Widget for WordProcessorWidget {
         match event {
             // Drag-and-drop a file onto the window inserts it as an image at the
             // drop point (see `handle_dropped_file`).
-            WindowEvent::DroppedFile(path) => self.handle_dropped_file(state, path, handled),
+            WindowEvent::DroppedFile(path) => {
+                self.handle_dropped_file(ctx.state, path, ctx.handled);
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 // Window groups offer unclaimed events to visible apps in
                 // presentation order. Ctrl+wheel represents a browser
                 // trackpad pinch, so an unfocused Writer must leave it for
                 // the host-selected app rather than zoom in the background.
                 if self.lifecycle.focused || !ctrl {
-                    self.handle_mouse_wheel(delta, scale_factor, ctrl, handled);
+                    self.handle_mouse_wheel(delta, ctx.scale_factor, ctrl, ctx.handled);
                 }
             }
             WindowEvent::PinchGesture { delta, phase, .. } => {
@@ -10988,7 +10978,7 @@ impl Widget for WordProcessorWidget {
                 // browser's Ctrl+wheel form above. Pointer geometry still
                 // determines where a focused Writer zooms.
                 if self.lifecycle.focused && self.zoom_viewport.contains(self.pointer) {
-                    *handled = true;
+                    *ctx.handled = true;
                     if delta.is_finite()
                         && *delta != 0.0
                         && *phase != winit::event::TouchPhase::Cancelled
@@ -11009,7 +10999,13 @@ impl Widget for WordProcessorWidget {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position.x, position.y, scale_factor, tb_h, handled);
+                self.handle_cursor_moved(
+                    position.x,
+                    position.y,
+                    ctx.scale_factor,
+                    tb_h,
+                    ctx.handled,
+                );
             }
             // Right (secondary) press opens the editing / spell-check context
             // menu on the page body. Toolbar / panel / status-bar chrome ignore
@@ -11019,10 +11015,10 @@ impl Widget for WordProcessorWidget {
                 button: MouseButton::Right,
                 ..
             } => {
-                let was_handled = *handled;
-                self.handle_right_press(state, tb_h, handled);
+                let was_handled = *ctx.handled;
+                self.handle_right_press(ctx.state, tb_h, ctx.handled);
                 if !was_handled && self.lifecycle.focused && self.rect.contains(self.pointer) {
-                    *focus_target = Some(node_id);
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
             }
             WindowEvent::MouseInput {
@@ -11030,32 +11026,32 @@ impl Widget for WordProcessorWidget {
                 button: MouseButton::Left,
                 ..
             } => {
-                let was_handled = *handled;
-                self.handle_left_press(state, tb_h, shift, ctrl, handled);
+                let was_handled = *ctx.handled;
+                self.handle_left_press(ctx.state, tb_h, shift, ctrl, ctx.handled);
                 if !was_handled && self.lifecycle.focused && self.rect.contains(self.pointer) {
-                    *focus_target = Some(node_id);
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } => self.handle_left_release(state, handled),
+            } => self.handle_left_release(ctx.state, ctx.handled),
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
                 self.ime_preedit.clear();
                 self.handle_key_press(
-                    state,
+                    ctx.state,
                     &Key::Character(text.as_str().into()),
                     Some(text),
                     false,
                     false,
-                    handled,
+                    ctx.handled,
                 );
             }
             WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) => {
                 self.ime_preedit.clone_from(text);
                 self.lifecycle.dirty = true;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::Ime(winit::event::Ime::Disabled) => {
                 self.ime_preedit.clear();
@@ -11071,16 +11067,16 @@ impl Widget for WordProcessorWidget {
                     },
                 ..
             } => {
-                if self.handle_modified_navigation(state, logical_key, *modifiers) {
-                    *handled = true;
+                if self.handle_modified_navigation(ctx.state, logical_key, *ctx.modifiers) {
+                    *ctx.handled = true;
                 } else {
                     self.handle_key_press(
-                        state,
+                        ctx.state,
                         logical_key,
                         text.as_deref(),
                         shift,
                         ctrl,
-                        handled,
+                        ctx.handled,
                     );
                 }
             }

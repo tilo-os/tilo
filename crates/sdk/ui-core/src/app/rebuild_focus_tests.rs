@@ -78,19 +78,6 @@ impl Widget for RebuildHarness {
         _p: &PresenceCtx,
     ) {
     }
-    fn handle_event(
-        &mut self,
-        _e: &WindowEvent,
-        _sf: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _r: &ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<NodeId>,
-        _n: NodeId,
-        _t: &TaffyTree<()>,
-    ) {
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         self.children.iter().map(Box::as_ref).collect()
     }

@@ -20,7 +20,6 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::time::{Duration, Instant};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Position, Size, Style, TaffyTree};
 use vello::{
     Scene,
@@ -1086,35 +1085,24 @@ impl Widget for ScreenshotMarkup {
         self.toolbar = settled_toolbar;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        handled: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 if self.move_active_gesture(Point::new(
-                    position.x / scale_factor,
-                    position.y / scale_factor,
+                    position.x / ctx.scale_factor,
+                    position.y / ctx.scale_factor,
                 )) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. } if self.viewport.contains(self.cursor) => {
                 let amount = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
-                    MouseScrollDelta::PixelDelta(position) => position.y / scale_factor / 48.0,
+                    MouseScrollDelta::PixelDelta(position) => position.y / ctx.scale_factor / 48.0,
                 }
                 .clamp(-4.0, 4.0);
                 self.set_zoom_around(self.zoom * 1.18_f64.powf(amount), self.cursor);
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1122,7 +1110,7 @@ impl Widget for ScreenshotMarkup {
                 ..
             } if self.viewport.contains(self.cursor) => {
                 self.panning = Some(self.cursor);
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1135,11 +1123,11 @@ impl Widget for ScreenshotMarkup {
                     .find(|(_, r)| r.contains(self.cursor))
                 {
                     self.activate(id);
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if self.tool_picker_open || self.color_picker_open {
                     self.tool_picker_open = false;
                     self.color_picker_open = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if self.viewport.contains(self.cursor) && self.canvas.contains(self.cursor) {
                     let (width_px, alpha) = match self.tool {
                         MarkupTool::Highlighter => (18.0, 92),
@@ -1159,7 +1147,7 @@ impl Widget for ScreenshotMarkup {
                         width_px,
                         points: vec![self.image_point(self.cursor)],
                     });
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -1170,7 +1158,7 @@ impl Widget for ScreenshotMarkup {
                 if let Some(stroke) = self.drawing.take() {
                     self.strokes.push(stroke);
                     self.redo.clear();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -1179,11 +1167,12 @@ impl Widget for ScreenshotMarkup {
                 ..
             } => {
                 if self.panning.take().is_some() {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                let command = modifiers.state().control_key() || modifiers.state().super_key();
+                let command =
+                    ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
                 match &event.logical_key {
                     Key::Named(NamedKey::Escape) => {
                         if self.tool_picker_open || self.color_picker_open {
@@ -1192,28 +1181,28 @@ impl Widget for ScreenshotMarkup {
                         } else {
                             self.pending.push(ScreenshotMarkupCommand::Cancel);
                         }
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::Enter) => {
                         self.pending
                             .push(ScreenshotMarkupCommand::Save(self.flattened()));
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Character(ch) if command && ch.eq_ignore_ascii_case("z") => {
-                        if modifiers.state().shift_key() {
+                        if ctx.modifiers.state().shift_key() {
                             if let Some(stroke) = self.redo.pop() {
                                 self.strokes.push(stroke);
                             }
                         } else if let Some(stroke) = self.strokes.pop() {
                             self.redo.push(stroke);
                         }
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Character(ch) if command && ch.eq_ignore_ascii_case("y") => {
                         if let Some(stroke) = self.redo.pop() {
                             self.strokes.push(stroke);
                         }
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     _ => {}
                 }

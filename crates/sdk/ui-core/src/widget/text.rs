@@ -13,7 +13,6 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
-use winit::event::WindowEvent;
 
 type DynamicTextSource = Box<dyn FnMut() -> Option<String>>;
 type DocumentTextSource = Box<dyn FnMut(&AutoCommit, &ObjId) -> String>;
@@ -929,20 +928,6 @@ impl Widget for Text {
             &self.cached,
             Some(transform.pre_translate(vello::kurbo::Vec2::new(dx, dy))),
         );
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

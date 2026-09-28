@@ -156,14 +156,16 @@ fn dispatch_to_host(host: &mut ShellOverlayHost, event: &WindowEvent) {
     let root = automerge::ROOT;
     host.handle_event(
         event,
-        1.0,
-        &winit::event::Modifiers::default(),
-        &mut doc,
-        &root,
-        &mut handled,
-        &mut focus_target,
-        node,
-        &tree,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &winit::event::Modifiers::default(),
+            state: &mut doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy: &tree,
+        },
     );
 }
 

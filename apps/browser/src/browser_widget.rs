@@ -5877,25 +5877,14 @@ impl Widget for BrowserWidget {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.window_scale = scale_factor as f32;
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.window_scale = ctx.scale_factor as f32;
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if let Some((node, id)) = self.pending_chrome_focus.take() {
             self.focus_control_preserving_selection(id);
-            *focus_target = Some(node);
+            *ctx.focus_target = Some(node);
         }
         if self.site.open || self.credentials.open {
             let dismiss = matches!(event,WindowEvent::KeyboardInput {event:key,..} if key.state==ElementState::Pressed && key.logical_key==WKey::Named(WNamedKey::Escape))
@@ -5904,40 +5893,20 @@ impl Widget for BrowserWidget {
                 self.site.close();
                 self.deactivate_credentials();
                 self.structure_dirty = true;
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if let Some(panel) = &mut self.site_panel
-                && let Ok(children) = taffy.children(node_id)
+                && let Ok(children) = ctx.taffy.children(ctx.node_id)
                 && let Some(&panel_node) = children.get(1)
             {
-                panel.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    panel_node,
-                    taffy,
-                );
+                panel.handle_event(event, &mut ctx.reborrow(ctx.path, panel_node));
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if self.page_menu.menu.is_open() {
-            self.page_menu.menu.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.page_menu.menu.handle_event(event, ctx);
             if let Some(index) = self.page_menu.menu.take_selection() {
                 self.page_menu.choose(index, &self.engine);
             } else if !self.page_menu.menu.is_open() {
@@ -5949,7 +5918,7 @@ impl Widget for BrowserWidget {
                     | WindowEvent::MouseInput { .. }
                     | WindowEvent::MouseWheel { .. }
             ) {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
@@ -5970,7 +5939,7 @@ impl Widget for BrowserWidget {
             && key.state == ElementState::Pressed
             && (key.logical_key == WKey::Named(WNamedKey::ContextMenu)
                 || (key.logical_key == WKey::Named(WNamedKey::F10)
-                    && modifiers.state().shift_key()))
+                    && ctx.modifiers.state().shift_key()))
             && let Some(direction) = [
                 (NavigationDirection::Back, self.can_go_back, "browser.back"),
                 (
@@ -5985,7 +5954,7 @@ impl Widget for BrowserWidget {
             })
         {
             self.request_navigation_history(direction);
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         match event {
@@ -6017,7 +5986,7 @@ impl Widget for BrowserWidget {
                 if let Some(direction) = navigation_hit {
                     self.request_navigation_history(direction);
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             WindowEvent::MouseInput {
@@ -6042,7 +6011,7 @@ impl Widget for BrowserWidget {
                             wake.wake();
                         });
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             WindowEvent::MouseInput {
@@ -6063,23 +6032,13 @@ impl Widget for BrowserWidget {
                         },
                     );
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             _ => {}
         }
         if self.back_menu.is_open() {
-            self.back_menu.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.back_menu.handle_event(event, ctx);
             if let Some(index) = self.back_menu.take_selection() {
                 self.choose_navigation_entry(index);
             }
@@ -6090,7 +6049,7 @@ impl Widget for BrowserWidget {
                     | WindowEvent::MouseInput { .. }
                     | WindowEvent::MouseWheel { .. }
             ) {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
@@ -6112,26 +6071,26 @@ impl Widget for BrowserWidget {
                 self.pip_feedback_rect = Rect::ZERO;
                 self.pip_float_page_rect = Rect::ZERO;
                 self.pip_select_area_rect = Rect::ZERO;
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if self.pip_float_page_rect.contains(self.cursor) {
                 self.float_current_page();
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
 
-        if self.handle_address_shortcut(event, *modifiers) {
-            *handled = true;
+        if self.handle_address_shortcut(event, *ctx.modifiers) {
+            *ctx.handled = true;
             return;
         }
 
         // Ctrl/Cmd+F is scoped to Library; normal page find remains the
         // website's concern. The visible filter has a canonical resource
         // operation too, so this is only a convenient focus path.
-        if self.handle_library_shortcut(event, *modifiers) {
-            *handled = true;
+        if self.handle_library_shortcut(event, *ctx.modifiers) {
+            *ctx.handled = true;
             return;
         }
 
@@ -6140,8 +6099,8 @@ impl Widget for BrowserWidget {
         // steal the browser's own history controls. The queued invocation is
         // the same canonical action the toolbar exposes to history, agents,
         // and collaboration.
-        if self.handle_browser_shortcut(event, *modifiers) {
-            *handled = true;
+        if self.handle_browser_shortcut(event, *ctx.modifiers) {
+            *ctx.handled = true;
             return;
         }
 
@@ -6150,16 +6109,16 @@ impl Widget for BrowserWidget {
         if self.daily.focus_pending == Some(crate::daily_controls::FIND_INPUT)
             && let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed
-            && !modifiers.state().super_key()
-            && !modifiers.state().control_key()
+            && !ctx.modifiers.state().super_key()
+            && !ctx.modifiers.state().control_key()
         {
             if key.logical_key == WKey::Named(WNamedKey::Enter) {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if let WKey::Character(text) = &key.logical_key {
                 self.daily.buffer_text(text);
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
@@ -6171,45 +6130,31 @@ impl Widget for BrowserWidget {
             let mut ov_handled = false;
             self.suggestions.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                &mut ov_handled,
-                focus_target,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    handled: &mut ov_handled,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
             if let Some(entry) = self.suggestions.take_chosen() {
                 self.suggestions.clear();
                 self.last_query = None;
                 self.address.set(entry.url.clone());
                 self.queue_navigate(entry.url);
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if ov_handled {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
 
         let filter_before = self.library_filter.get();
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child_node) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
         let filter_after = self.library_filter.get();
         if self.show_library && filter_after != filter_before {
@@ -6232,7 +6177,7 @@ impl Widget for BrowserWidget {
             self.navigate_to_input();
             self.suggestions.clear();
             self.last_query = None;
-            *handled = true;
+            *ctx.handled = true;
         }
     }
 
@@ -6525,14 +6470,16 @@ mod architecture_tests {
         let mut handled = false;
         widget.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut None,
-            node,
-            &tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut None,
+                node_id: node,
+                taffy: &tree,
+            },
         );
         handled
     }
@@ -6594,14 +6541,16 @@ mod architecture_tests {
             let node = tree.new_leaf(Style::default()).unwrap();
             widget.handle_event(
                 &WindowEvent::Focused(true),
-                2.0,
-                &winit::event::Modifiers::default(),
-                &mut AutoCommit::new(),
-                &automerge::ROOT,
-                &mut false,
-                &mut None,
-                node,
-                &tree,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 2.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut AutoCommit::new(),
+                    path: &automerge::ROOT,
+                    handled: &mut false,
+                    focus_target: &mut None,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             super::tests::layout_at(&mut widget, 800.0, 600.0);
             widget
@@ -6662,14 +6611,16 @@ mod architecture_tests {
                 }
                 widget.handle_event(
                     &event,
-                    1.0,
-                    &winit::event::Modifiers::default(),
-                    &mut doc,
-                    &automerge::ROOT,
-                    &mut false,
-                    &mut target,
-                    node,
-                    &tree,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: &mut doc,
+                        path: &automerge::ROOT,
+                        handled: &mut false,
+                        focus_target: &mut target,
+                        node_id: node,
+                        taffy: &tree,
+                    },
                 );
                 widget.daily.sync(&widget.engine);
             }
@@ -9390,14 +9341,16 @@ mod tests {
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &tree,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
 
             assert!(handled);

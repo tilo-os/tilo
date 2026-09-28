@@ -8,7 +8,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -424,18 +423,7 @@ impl Widget for DiffView {
         self.dirty = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        handled: &mut bool,
-        _focus: &mut Option<NodeId>,
-        _node: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && self.is_compact() =>
@@ -445,7 +433,7 @@ impl Widget for DiffView {
                     Key::Named(NamedKey::ArrowRight) => self.select_compact_side(true),
                     _ => return,
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
@@ -455,7 +443,7 @@ impl Widget for DiffView {
                 // Only consume when the pointer is plausibly over us — but the
                 // host routes wheel to the focused subtree, so just scroll.
                 self.scroll_by(dy);
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -469,7 +457,7 @@ impl Widget for DiffView {
                         .position(|rect| rect.contains(self.cursor))
                 {
                     self.select_compact_side(index == 1);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // Click on the minimap jumps to that proportion of content.
@@ -479,7 +467,7 @@ impl Widget for DiffView {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.cursor = p;
                 let minimap_x0 = self.rect.x1 - MINIMAP_W;
                 self.hovered_minimap = p.x >= minimap_x0 && p.x <= self.rect.x1;

@@ -201,14 +201,16 @@ impl EventPopovers {
                 let before = self.date_picker.selected();
                 self.date_picker.handle_event(
                     input.event,
-                    input.scale_factor,
-                    &input.modifiers,
-                    input.state,
-                    input.path,
-                    input.handled,
-                    input.focus_target,
-                    input.node_id,
-                    input.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: input.scale_factor,
+                        modifiers: &input.modifiers,
+                        state: input.state,
+                        path: input.path,
+                        handled: input.handled,
+                        focus_target: input.focus_target,
+                        node_id: input.node_id,
+                        taffy: input.taffy,
+                    },
                 );
                 let after = self.date_picker.selected();
                 if after != before {
@@ -228,14 +230,16 @@ impl EventPopovers {
                 let before = (picker.hours(), picker.minutes());
                 picker.handle_event(
                     input.event,
-                    input.scale_factor,
-                    &input.modifiers,
-                    input.state,
-                    input.path,
-                    input.handled,
-                    input.focus_target,
-                    input.node_id,
-                    input.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: input.scale_factor,
+                        modifiers: &input.modifiers,
+                        state: input.state,
+                        path: input.path,
+                        handled: input.handled,
+                        focus_target: input.focus_target,
+                        node_id: input.node_id,
+                        taffy: input.taffy,
+                    },
                 );
                 let after = (picker.hours(), picker.minutes());
                 if after != before {

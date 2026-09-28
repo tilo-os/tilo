@@ -3974,18 +3974,7 @@ impl Widget for DisksApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &ui::winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let lay = self.compute_layout();
 
         // The confirmation text is deliberately local-only: it gates a
@@ -3994,7 +3983,7 @@ impl Widget for DisksApp {
         // drag behavior come from the shared editor rather than a key shim.
         if self.pending.is_some() {
             if let WindowEvent::CursorMoved { position, .. } = event {
-                self.handle_cursor_moved(*position, scale_factor, &lay);
+                self.handle_cursor_moved(*position, ctx.scale_factor, &lay);
             }
             if let WindowEvent::KeyboardInput {
                 event:
@@ -4007,20 +3996,10 @@ impl Widget for DisksApp {
             } = event
                 && matches!(logical_key, Key::Named(NamedKey::Escape | NamedKey::Enter))
             {
-                self.handle_key_press(logical_key, state, &lay, handled);
+                self.handle_key_press(logical_key, ctx.state, &lay, ctx.handled);
                 return;
             }
-            self.confirm_input.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.confirm_input.handle_event(event, ctx);
             if self.confirm_input.take_dirty().is_some() {
                 self.dirty = true;
             }
@@ -4032,28 +4011,28 @@ impl Widget for DisksApp {
                     ..
                 }
             ) {
-                self.handle_mouse_click(state, &lay, handled);
+                self.handle_mouse_click(ctx.state, &lay, ctx.handled);
             } else {
                 // The open modal is fully blocking, including IME events and
                 // clicks/releases that the editor itself did not consume.
-                *handled = true;
+                *ctx.handled = true;
             }
             return;
         }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(*position, scale_factor, &lay);
+                self.handle_cursor_moved(*position, ctx.scale_factor, &lay);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_mouse_wheel(delta, &lay, handled);
+                self.handle_mouse_wheel(delta, &lay, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_mouse_click(state, &lay, handled);
+                self.handle_mouse_click(ctx.state, &lay, ctx.handled);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -4064,7 +4043,7 @@ impl Widget for DisksApp {
                     },
                 ..
             } => {
-                self.handle_key_press(logical_key, state, &lay, handled);
+                self.handle_key_press(logical_key, ctx.state, &lay, ctx.handled);
             }
             _ => {}
         }

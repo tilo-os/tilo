@@ -8,7 +8,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use automerge::{AutoCommit, ObjId};
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::{AppKind, AppWidget, IconDescriptor, Theme, Widget};
 
@@ -39,19 +38,6 @@ impl Widget for DummyApp {
         _text_renderer: &mut tilo_ui::text_render::TextRenderer,
         _theme: &Theme,
         _presence: &PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _event: &winit::event::WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<taffy::NodeId>,
-        _node_id: taffy::NodeId,
-        _taffy: &taffy::TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {

@@ -6398,18 +6398,7 @@ impl Widget for VideoEditorApp {
         clippy::too_many_lines,
         reason = "the window-event dispatcher: one arm per event kind, in the order they arrive"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Everything one input event edits is one undo step.
         let _gesture = self.actions.gesture();
         let r = self.regions();
@@ -6429,28 +6418,18 @@ impl Widget for VideoEditorApp {
                 if let Some(rect) = name_rect {
                     label.apply_layout_external(rect);
                 }
-                label.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                label.handle_event(event, ctx);
                 (*mid, label.take_outcome())
             };
             match outcome {
                 EditOutcome::Committed(name) => {
-                    self.commit_rename(state, mid, &name);
+                    self.commit_rename(ctx.state, mid, &name);
                     self.bin_rename = None;
                 }
                 EditOutcome::Cancelled => self.bin_rename = None,
                 EditOutcome::None => {}
             }
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
@@ -6466,14 +6445,16 @@ impl Widget for VideoEditorApp {
                 let root = automerge::ROOT;
                 dd.handle_event(
                     event,
-                    scale_factor,
-                    modifiers,
-                    local,
-                    &root,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: ctx.modifiers,
+                        state: local,
+                        path: &root,
+                        handled: ctx.handled,
+                        focus_target: ctx.focus_target,
+                        node_id: ctx.node_id,
+                        taffy: ctx.taffy,
+                    },
                 );
             }
             if let Some((mid, family)) = self.take_font_choice() {
@@ -6483,10 +6464,10 @@ impl Widget for VideoEditorApp {
                     .and_then(|m| m.text.as_ref())
                     .is_some_and(|t| t.font == family);
                 if !same {
-                    self.edit_title(state, move |t| t.font = family);
+                    self.edit_title(ctx.state, move |t| t.font = family);
                 }
             }
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
@@ -6500,16 +6481,16 @@ impl Widget for VideoEditorApp {
         // typed — losing a title to a stray click would be the worse
         // outcome, and the field says which keys do what under the box.
         if self.title_edit.is_some() {
-            if let Some(done) = title_edit_verdict(event, *modifiers) {
+            if let Some(done) = title_edit_verdict(event, *ctx.modifiers) {
                 let (mid, words) = {
                     let (mid, field) = self.title_edit.as_ref().unwrap();
                     (*mid, field.value().to_string())
                 };
                 if done {
-                    self.commit_title_text(state, mid, &words);
+                    self.commit_title_text(ctx.state, mid, &words);
                 }
                 self.title_edit = None;
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             let l = self.inspector_layout(&r);
@@ -6527,7 +6508,7 @@ impl Widget for VideoEditorApp {
                     let (mid, field) = self.title_edit.as_ref().unwrap();
                     (*mid, field.value().to_string())
                 };
-                self.commit_title_text(state, mid, &words);
+                self.commit_title_text(ctx.state, mid, &words);
                 self.title_edit = None;
                 // Not marked handled: the click still lands on whatever it
                 // was aimed at, which is what makes accepting-on-click-away
@@ -6537,19 +6518,9 @@ impl Widget for VideoEditorApp {
                 if let Some(rect) = l.title_text {
                     field.apply_layout_external(rect.inset(-4.0));
                 }
-                field.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                field.handle_event(event, ctx);
             }
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
@@ -6566,17 +6537,7 @@ impl Widget for VideoEditorApp {
                 if let Some(rect) = row {
                     label.apply_layout_external(rect);
                 }
-                label.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                label.handle_event(event, ctx);
                 (*target, label.take_outcome())
             };
             match outcome {
@@ -6585,7 +6546,7 @@ impl Widget for VideoEditorApp {
                     // regardless put the old name back with nothing said, so
                     // a marker whose name you had just cleared looked as
                     // though it had simply ignored you.
-                    if self.commit_marker_rename(state, target, &name) {
+                    if self.commit_marker_rename(ctx.state, target, &name) {
                         self.marker_rename = None;
                     } else {
                         self.project_notice =
@@ -6595,50 +6556,30 @@ impl Widget for VideoEditorApp {
                 EditOutcome::Cancelled => self.marker_rename = None,
                 EditOutcome::None => {}
             }
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
         // An open bin context menu is a transient overlay that owns clicks/keys.
         if self.bin_menu.is_open() {
-            self.bin_menu.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.bin_menu.handle_event(event, ctx);
             if let Some(idx) = self.bin_menu.take_selection() {
-                self.bin_menu_choose(state, idx);
+                self.bin_menu_choose(ctx.state, idx);
             }
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
         // Same for the project menu.
         if self.project_menu.is_open() {
-            self.project_menu.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.project_menu.handle_event(event, ctx);
             if let Some(idx) = self.project_menu.take_selection() {
                 if let Some(item) = self.project_menu_intent(idx) {
-                    self.run_project_menu_item(state, item);
+                    self.run_project_menu_item(ctx.state, item);
                 }
                 self.project_menu.close();
             }
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
@@ -6655,7 +6596,7 @@ impl Widget for VideoEditorApp {
                 }
             )
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         // Right-click on a bin item or a track header opens its context menu.
@@ -6668,15 +6609,15 @@ impl Widget for VideoEditorApp {
                 || self.open_track_menu_at_cursor(&r)
                 || self.open_clip_menu_at_cursor(&r))
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         match event {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                if self.handle_key(&key_event.logical_key, *modifiers, state, &r) {
-                    *handled = true;
+                if self.handle_key(&key_event.logical_key, *ctx.modifiers, ctx.state, &r) {
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -6694,13 +6635,13 @@ impl Widget for VideoEditorApp {
                 {
                     self.place_cursor_at(&r, self.last_mouse);
                 }
-                self.handle_press(state, &r, modifiers.state().shift_key());
+                self.handle_press(ctx.state, &r, ctx.modifiers.state().shift_key());
                 // Take the keyboard, the way every shared widget in `ui` does
                 // on a press. Without it the editor only ever held focus after
                 // a Tab, so a user who clicked into it and then used the arrow
                 // keys moved a pane cursor that nothing was allowed to paint.
-                *focus_target = Some(node_id);
-                *handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -6710,14 +6651,14 @@ impl Widget for VideoEditorApp {
                 if bin_overlay_open {
                     // Opening the flap cancels active drags. Consume the
                     // matching release so it cannot complete an edit below.
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if self.bin_drag.is_some() {
                     // A bin→timeline drag drops a clip at the release position;
                     // a bin press that never moved may instead begin a rename.
-                    self.release_bin_drag(state, &r);
-                    *handled = true;
+                    self.release_bin_drag(ctx.state, &r);
+                    *ctx.handled = true;
                 } else if self.drag.is_some() {
                     // A rubber band resolves to a selection; a press that never
                     // travelled falls back to scrubbing where it landed.
@@ -6729,21 +6670,21 @@ impl Widget for VideoEditorApp {
                     }
                     // Commit the drag's final position / trim / grade as one
                     // action (one undo boundary), then end the drag.
-                    self.commit_drag(state);
+                    self.commit_drag(ctx.state);
                     self.drag = None;
                     self.marquee = None;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_mouse = p;
                 self.update_hover(&r);
                 if !bin_overlay_open {
                     self.apply_drag(&r);
                     self.update_bin_drag();
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             // External file drop (an OS drag-and-drop onto the window) imports
             // media, exactly like the portal pick — the whole editor accepts it.
@@ -6752,28 +6693,28 @@ impl Widget for VideoEditorApp {
                 if bin_overlay_open {
                     // Importing through a covered canvas would contradict the
                     // scrim's input boundary. Dismiss first, then drop again.
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // A drop is a batch of one, and reports like one: a refusal
                 // still names the file and carries the probe's own reason.
-                let report = self.import_files(state, std::slice::from_ref(path));
+                let report = self.import_files(ctx.state, std::slice::from_ref(path));
                 self.import_notice = Some(import_report_notice(&report));
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::HoveredFile(_) => {
                 self.presentation.file_hovering = !bin_overlay_open;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::HoveredFileCancelled => {
                 self.presentation.file_hovering = false;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if bin_overlay_open && !r.bin.contains(self.last_mouse) {
                     // Do not pan/zoom a timeline which is visibly unavailable
                     // behind the narrow bin overlay.
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 let (dx, dy) = match delta {
@@ -6791,10 +6732,10 @@ impl Widget for VideoEditorApp {
                     {
                         self.help_scroll = (self.help_scroll - dy * 40.0).clamp(0.0, max);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
-                let shift = modifiers.state().shift_key();
+                let shift = ctx.modifiers.state().shift_key();
                 let over_bin = self.bin_is_visible(&r) && r.bin.contains(self.last_mouse);
                 let over_timeline = r.timeline.contains(self.last_mouse);
                 if self.inspector_is_visible(&r)
@@ -6805,14 +6746,14 @@ impl Widget for VideoEditorApp {
                     if dy.abs() > 0.0 {
                         let max = self.inspector_max_scroll(&r);
                         self.inspector_scroll = (self.inspector_scroll - dy * 28.0).clamp(0.0, max);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 } else if over_bin {
                     // Scroll the media bin list.
                     if dy.abs() > 0.0 {
                         let max = self.bin_max_scroll(&r);
                         self.bin_scroll = (self.bin_scroll - dy * 40.0).clamp(0.0, max);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 } else if !over_timeline {
                     // The preview and transport have nothing to scroll. A wheel
@@ -6826,7 +6767,7 @@ impl Widget for VideoEditorApp {
                     let notches = if dx.abs() > 0.0 { -dx } else { -dy };
                     let step = self.visible_seconds(&r) * 0.15;
                     self.scroll_by(notches * step, &r);
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if dy.abs() > 0.0 {
                     // Plain wheel zooms, anchored on the time under the pointer
                     // so the frame you are looking at stays put.
@@ -6835,7 +6776,7 @@ impl Widget for VideoEditorApp {
                         self.last_mouse.x,
                         &r,
                     );
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}

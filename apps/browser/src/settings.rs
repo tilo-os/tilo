@@ -22,7 +22,6 @@
 
 use std::path::{Path, PathBuf};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -631,30 +630,13 @@ impl Widget for SettingsPane {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child_node) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
     }
 
@@ -690,6 +672,7 @@ impl Widget for SettingsPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use automerge::ReadDoc;
     use std::collections::HashMap;
 
@@ -861,14 +844,16 @@ mod tests {
                 let mut focus = None;
                 pane.handle_event(
                     &ev,
-                    1.0,
-                    &mods,
-                    &mut doc,
-                    &root,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &mods,
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
                 );
             };
             dispatch(
