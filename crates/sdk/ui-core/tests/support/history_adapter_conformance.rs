@@ -9,7 +9,8 @@ fn history_adapter_selects_immutable_content_and_rejects_malformed_input() {
     // Phase `actual_root_declares_framework_history`.
     {
         assert!(
-            test_root().document_history_definition().is_some(),
+            ui::history_mode::capability::document_history_definition(test_root().as_ref())
+                .is_some(),
             "production root must declare its domain History"
         );
     }
@@ -91,8 +92,7 @@ fn history_adapter_selects_immutable_content_and_rejects_malformed_input() {
 }
 
 fn definition() -> &'static HistoryDefinition {
-    test_root()
-        .document_history_definition()
+    ui::history_mode::capability::document_history_definition(test_root().as_ref())
         .expect("production domain History")
 }
 

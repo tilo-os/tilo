@@ -280,12 +280,7 @@ pub async fn send(address: &ItemAddress, request: TrayRequest) -> zbus::Result<(
                 .menu_path
                 .as_deref()
                 .ok_or_else(|| zbus::Error::Failure("the item exports no menu".into()))?;
-            let timestamp = u32::try_from(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |elapsed| elapsed.as_secs()),
-            )
-            .unwrap_or(0);
+            let timestamp = u32::try_from(tilo_clock::unix_now()).unwrap_or(0);
             proxy(address, path, MENU_INTERFACE)
                 .await?
                 .call::<_, _, ()>("Event", &(id, "clicked", Value::from(0_i32), timestamp))

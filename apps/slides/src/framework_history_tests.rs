@@ -698,20 +698,13 @@ struct ResourceHarness {
     queue: std::rc::Rc<std::cell::RefCell<Vec<tilo_actions::ControlInvocation>>>,
 }
 impl ui::widget::Widget for ResourceHarness {
+    ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
+
     fn sync(&mut self, d: &mut AppModel, p: &ModelPath) {
         self.app.sync(d, p);
     }
     fn resources(&self, d: &AutoCommit) -> Vec<tilo_actions::Resource> {
         ui::widget::Widget::resources(&self.app, d)
-    }
-    fn document_action_applied(
-        &mut self,
-        a: &tilo_actions::EncodedAction,
-        b: &[automerge::ChangeHash],
-        d: &AutoCommit,
-        p: &automerge::ObjId,
-    ) {
-        self.app.document_action_applied(a, b, d, p);
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.queue.borrow_mut().pop()
@@ -749,6 +742,18 @@ impl ui::widget::Widget for ResourceHarness {
     }
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.app.get_rect()
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for ResourceHarness {
+    fn document_action_applied(
+        &mut self,
+        a: &tilo_actions::EncodedAction,
+        b: &[automerge::ChangeHash],
+        d: &AutoCommit,
+        p: &automerge::ObjId,
+    ) {
+        self.app.document_action_applied(a, b, d, p);
     }
 }
 

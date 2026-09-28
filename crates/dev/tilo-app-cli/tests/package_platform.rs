@@ -1,6 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-//! `tilo-app package --platform macos|windows` builds one static executable
-//! for the platform's triple and packs it under a signed desktop `[target]`.
+//! `tilo-app package --platform linux|macos|windows` builds one static executable
+//! for the platform's triple and packs it under a signed desktop `[target]`;
+//! `build`, `run` and `dev` take the same platforms and refuse what the host
+//! cannot run.
 
 use std::path::Path;
 use std::process::Command;
@@ -58,6 +60,7 @@ fn desktop_packages_ship_one_executable_under_a_signed_target() {
 
     for (platform, arch, triple, module) in [
         ("macos", "aarch64", "aarch64-apple-darwin", "bin/notes"),
+        ("linux", "x86_64", "x86_64-unknown-linux-gnu", "bin/notes"),
         (
             "windows",
             "x86_64",
@@ -131,4 +134,104 @@ fn desktop_packages_ship_one_executable_under_a_signed_target() {
         },
         "a Tilo OS package declares the one architecture it carries"
     );
+}
+
+#[test]
+fn build_run_and_dev_take_the_package_platforms() {
+    let dir = tempfile::tempdir().unwrap();
+    let cargo = dir.path().join("fake-cargo");
+    std::fs::write(&cargo, FAKE_CARGO).unwrap();
+    let mut permissions = std::fs::metadata(&cargo).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&cargo, permissions).unwrap();
+    let created = tilo_app(
+        dir.path(),
+        &cargo,
+        &["new", "notes", "--template", "starter"],
+    );
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let app = dir.path().join("notes");
+
+    let output = tilo_app(
+        &app,
+        &cargo,
+        &[
+            "build",
+            "--platform",
+            "linux",
+            "--arch",
+            "aarch64",
+            "--output",
+            "out",
+            "--json",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let args = std::fs::read_to_string(app.join("cargo-args")).unwrap();
+    let args: Vec<&str> = args.lines().collect();
+    let after = |flag: &str| {
+        args.iter()
+            .position(|arg| *arg == flag)
+            .map(|index| args[index + 1])
+    };
+    assert_eq!(
+        after("--target"),
+        Some("aarch64-unknown-linux-gnu"),
+        "{args:?}"
+    );
+    assert_eq!(after("--profile"), Some("release"), "{args:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["result"]["platform"], "linux");
+    assert_eq!(report["result"]["target"], "aarch64-unknown-linux-gnu");
+    assert_eq!(report["result"]["executables"][0]["bin"], "notes");
+    assert_eq!(
+        std::fs::read(app.join("out/notes")).unwrap(),
+        b"fake executable"
+    );
+
+    let other_os = if cfg!(target_os = "macos") {
+        "windows"
+    } else {
+        "macos"
+    };
+    let other_arch = if cfg!(target_arch = "aarch64") {
+        "x86_64"
+    } else {
+        "aarch64"
+    };
+    for (command, platform, arch, expected) in [
+        ("run", other_os, None, "does not run on"),
+        ("dev", other_os, None, "does not run on"),
+        ("run", "linux", Some(other_arch), "cannot run"),
+        ("dev", "tilo", Some(other_arch), "cannot run"),
+        (
+            "run",
+            "tilo",
+            Some("wasm32"),
+            "--arch wasm32 is for --platform web",
+        ),
+        (
+            "build",
+            "web",
+            Some("x86_64"),
+            "--platform web builds for wasm32",
+        ),
+    ] {
+        let mut args = vec![command, "--platform", platform];
+        if let Some(arch) = arch {
+            args.extend(["--arch", arch]);
+        }
+        let output = tilo_app(&app, &cargo, &args);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{args:?} should refuse");
+        assert!(stderr.contains(expected), "{args:?}: {stderr}");
+    }
 }

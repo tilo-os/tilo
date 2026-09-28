@@ -559,11 +559,10 @@ struct CustodyDeniedContainersRoot {
 }
 
 impl Widget for CustodyDeniedContainersRoot {
+    ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
+
     fn name(&self) -> &'static str {
         "CustodyDeniedContainersRoot"
-    }
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        self.child.document_history_definition()
     }
     fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         self.child.sync(doc, path);
@@ -620,6 +619,12 @@ impl Widget for CustodyDeniedContainersRoot {
         } else {
             self.child.take_control_invocation()
         }
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for CustodyDeniedContainersRoot {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        ui::history_mode::capability::document_history_definition(self.child.as_ref())
     }
 }
 

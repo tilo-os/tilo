@@ -856,7 +856,7 @@ impl App {
         // surface and custody. The standalone adapter serves unregistered roots.
         if self.history.is_some()
             || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
-            || self.root_widget.provides_document_history()
+            || crate::history_mode::capability::provides_document_history(self.root_widget.as_ref())
         {
             return;
         }

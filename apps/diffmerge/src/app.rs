@@ -1007,31 +1007,10 @@ impl Default for DiffMergeApp {
 }
 
 impl Widget for DiffMergeApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
-
-    fn document_action_applied(
-        &mut self,
-        action: &tilo_actions::EncodedAction,
-        before: &[ChangeHash],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) {
-        if action.type_id == crate::actions::DIFFMERGE_ACTION_TYPE
-            && doc
-                .clone()
-                .fork_at(before)
-                .ok()
-                .is_some_and(|prior| self.merge.context_matches(&prior))
-        {
-            self.merge.acknowledge_content(doc);
-        } else {
-            self.merge.reconcile_content(doc);
-        }
-    }
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::DIFFMERGE_OPERATION_TYPE]
@@ -1538,6 +1517,31 @@ impl Widget for DiffMergeApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for DiffMergeApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+    fn document_action_applied(
+        &mut self,
+        action: &tilo_actions::EncodedAction,
+        before: &[ChangeHash],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) {
+        if action.type_id == crate::actions::DIFFMERGE_ACTION_TYPE
+            && doc
+                .clone()
+                .fork_at(before)
+                .ok()
+                .is_some_and(|prior| self.merge.context_matches(&prior))
+        {
+            self.merge.acknowledge_content(doc);
+        } else {
+            self.merge.reconcile_content(doc);
+        }
     }
 }
 

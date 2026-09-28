@@ -254,12 +254,6 @@ struct AgentLiveState {
 
 static REGISTRY: Mutex<BTreeMap<String, AgentLiveState>> = Mutex::new(BTreeMap::new());
 
-fn wall_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64)
-}
-
 fn with_registry<R>(f: impl FnOnce(&mut BTreeMap<String, AgentLiveState>) -> R) -> Option<R> {
     let mut registry = REGISTRY.lock().ok()?;
     let now = Instant::now();
@@ -347,7 +341,7 @@ pub(crate) fn ingest(
         state.last_seq = update.seq;
         state.name = name.clone();
         state.updated = Some(Instant::now());
-        state.updated_at_ms = wall_ms();
+        state.updated_at_ms = tilo_clock::unix_now_ms();
         state.ended = None;
         if let Some(reply) = &update.reply {
             state.reply_partial = (!reply.text.is_empty()).then(|| reply.text.clone());
@@ -436,7 +430,7 @@ pub(crate) fn committed(
         let state = entry(registry, agent_id);
         state.name = name.clone();
         state.updated = Some(Instant::now());
-        state.updated_at_ms = wall_ms();
+        state.updated_at_ms = tilo_clock::unix_now_ms();
         if let Some(caret) = &caret {
             state.caret = Some((app.to_owned(), record.to_owned(), caret.clone()));
         }

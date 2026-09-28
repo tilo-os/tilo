@@ -1204,11 +1204,7 @@ fn owner_enrolled_device(
 }
 
 fn current_time_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
-        })
+    tilo_clock::unix_now_ns()
 }
 
 fn request_digest(value: &impl Serialize) -> Result<[u8; 32], CollaborationError> {

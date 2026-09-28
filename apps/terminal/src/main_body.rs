@@ -2430,6 +2430,8 @@ impl TerminalWidget {
 }
 
 impl Widget for TerminalWidget {
+    ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
+
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.gesture_effects.pop_front().or_else(|| {
             self.menu_effects
@@ -2461,10 +2463,6 @@ impl Widget for TerminalWidget {
         for (index, available) in availability {
             self.context_menu.set_item_enabled(index, available);
         }
-    }
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -3323,6 +3321,12 @@ impl Widget for TerminalWidget {
                 }
             }
         }
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for TerminalWidget {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 

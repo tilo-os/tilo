@@ -5625,12 +5625,9 @@ impl Widget for SlidesApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::AudiencePresentationProvider,
-        dyn ui::undo::CommittedActions
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory
     );
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::SLIDES_OPERATION_TYPE]
@@ -6354,6 +6351,12 @@ impl Widget for SlidesApp {
     /// search uses the same brokered navigation route as agents and a11y.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for SlidesApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 

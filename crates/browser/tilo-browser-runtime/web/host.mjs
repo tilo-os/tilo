@@ -11,6 +11,7 @@ import {MountRegistry,reopenedRecord,createInputScope,createFocusHandoff,createC
 import {acquireStorage} from './storage.mjs';
 import {semanticBridge} from './semantics.mjs';
 import {createLiveOverlay} from './live-overlay.mjs';
+import {createLegacyWindows} from './legacy-windows.mjs';
 import {settleComponentClose,recoverableClose} from './close-recovery.mjs';
 import {SideModuleLinker} from './dylink.mjs';
 import {createAppInstaller,canonicalAppId,localSeed} from './app-installer.mjs';
@@ -104,6 +105,7 @@ export async function mountDesktop(target,options={}) {
   if(local)config.local=local.seed;else delete config.local;
   let unsubscribeDesktopCommits;
   let liveOverlay;
+  let legacyWindows;
   let semantic,semanticKeys,hiddenKeys,composition,actionPalette,desktopCommands,desktopSpeculation,navigation,fontDemands,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
   const inputScope=createInputScope({active,read:()=>desktopOwnership?runtime.desktop_input_ownership(id):undefined,onChange:()=>{
     hiddenKeys?.invalidate();semanticKeys?.invalidate();composition?.cancel();semantic?.revokeInput();composing=false;editor.value='';pasteShift=false;
@@ -167,7 +169,7 @@ export async function mountDesktop(target,options={}) {
     lastState=retainStatus(lastState,state);report(state);
     if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;inputScope.capture();}
 
-    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();}
+    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();legacyWindows?.wake();}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);
     if(state.phase==='failed'){readyReject(Error(state.error));for(const waiter of presentationWaiters)waiter.reject(Error(state.error));presentationWaiters.clear();}
     if(state.phase==='presented'){for(const waiter of [...presentationWaiters])if((state.frames??0)>waiter.after){presentationWaiters.delete(waiter);waiter.resolve();}}
@@ -249,7 +251,7 @@ export async function mountDesktop(target,options={}) {
   let closeWrites=[];
   const cleanup=recoverableClose({
     begin(){
-      if(busyRetry!==null){clearTimeout(busyRetry);busyRetry=null;}liveOverlay?.close();liveOverlay=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();desktopSpeculation?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
+      if(busyRetry!==null){clearTimeout(busyRetry);busyRetry=null;}liveOverlay?.close();liveOverlay=undefined;legacyWindows?.close();legacyWindows=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();desktopSpeculation?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=JSON.parse(runtime.close(id));
       surface.remove();
     },
@@ -394,6 +396,11 @@ export async function mountDesktop(target,options={}) {
         members:()=>{const raw=options.liveMembers?.();return typeof raw==='string'?JSON.parse(raw):[];},
         presented:()=>lastState?.frames,
         onError:error=>options.onLiveError?.(error)});
+      // Legacy windows the session streams, drawn over their tabs; needs WebCodecs.
+      if(typeof globalThis.VideoDecoder==='function')legacyWindows=createLegacyWindows({surface,live:options.live,
+        snapshot:()=>active()?runtime.live_view_snapshot(id):null,
+        presented:()=>lastState?.frames,
+        onError:error=>options.onLiveError?.(error)});
     }
     if(options.actionsV2||options.actionsV1)actionPalette=bindActionPalette({actions:options.actionsV2??options.actionsV1,publish:rows=>{if(active())runtime.caller_actions(id,JSON.stringify(rows));},report});
     if(options.actionsV2||options.actionsV1){desktopSpeculation=createDesktopSpeculation({runtime,id,active});desktopCommands=bindDesktopCommands({actions:options.actionsV2??options.actionsV1,onPending:pending=>{desktopSpeculation.pending(pending);navigation?.commandPending(pending);liveOverlay?.commandPending(pending);},onUpdate:row=>{navigation?.commandUpdated(row);desktopSpeculation.update(row);},peek:()=>{if(!active())return null;const raw=runtime.pending_desktop_command(id);return raw?JSON.parse(raw):null;},ack:invocation=>{if(active())runtime.acknowledge_desktop_command(id,invocation);},report:data=>{desktopSpeculation.report(data);report(data);}});}
@@ -423,14 +430,15 @@ export async function mountDesktop(target,options={}) {
       get opened(){return opened;},
       actions:(resource,{window}={})=>JSON.parse(runtime.component_actions(actionSurface(),resource,window)),
       invokeAction:(resource,action,args={},{confirm=false,window}={})=>JSON.parse(runtime.invoke_component_action(actionSurface(),resource,action,JSON.stringify(args),confirm,window)),
-      openApp:app=>{if(!navigation)throw Error('the mount is not a desktop');return navigation.controller.dispatch({kind:'open',generation:navigation.controller.getSnapshot().generation,app});},
+      openApp:(app,{record}={})=>{if(!navigation)throw Error('the mount is not a desktop');return navigation.controller.dispatch({kind:'open',generation:navigation.controller.getSnapshot().generation,app,...(record===undefined?{}:{record})});},
       cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
       state:()=>lastState,canvas,get editor(){return editor;},semantics:accessibility,requestSemantics,
 
       durableState:()=>acquired.hydrate(),probePixels:async()=>JSON.parse(await runtime.probe_pixels(id)),failNextWrite:()=>{storage.abortNext=true;},destroyDevice:()=>runtime.destroy_device(id),recover:()=>runtime.recover(id),
       semantic:(...args)=>runtime.semantic(id,...args),
       liveSnapshot:()=>typeof runtime.live_view_snapshot==='function'&&active()?JSON.parse(runtime.live_view_snapshot(id)):null,
-      liveOverlay:()=>liveOverlay?.stats()??null};
+      liveOverlay:()=>liveOverlay?.stats()??null,
+      legacyWindows:()=>legacyWindows?{...legacyWindows.stats(),streams:legacyWindows.streams()}:null};
   }catch(error){registry.remove(token);await cleanup();throw error;}
 }
 /** Every application this build can mount standalone. */

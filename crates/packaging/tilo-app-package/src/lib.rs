@@ -119,7 +119,7 @@ pub const MAX_APP_TAPP_BYTES: u64 = APP_SIZE_LIMIT_BYTES;
 /// cannot turn a tiny tapp into an arbitrarily large install.
 pub const MAX_APP_UNPACKED_BYTES: u64 = APP_SIZE_LIMIT_BYTES;
 
-/// Wire size limit of a Windows or macOS build. Those systems ship no Tilo
+/// Wire size limit of a Linux, Windows or macOS build. Those systems ship no Tilo
 /// toolkit, so the executable links it in; the limit is a distribution
 /// policy, not a design target.
 pub const MAX_DESKTOP_APP_TAPP_BYTES: u64 = 64 * 1024 * 1024;
@@ -136,7 +136,7 @@ pub fn tapp_size_allowed(kind: Kind, size: u64) -> bool {
 }
 
 /// The wire and materialized size limit of the application `manifest`
-/// describes: [`MAX_DESKTOP_APP_TAPP_BYTES`] for a Windows or macOS build,
+/// describes: [`MAX_DESKTOP_APP_TAPP_BYTES`] for a desktop build,
 /// [`MAX_APP_TAPP_BYTES`] otherwise. `None` for non-app bundles.
 pub fn app_size_limit(manifest: &Manifest) -> Option<u64> {
     if manifest.package.kind != Kind::App {
