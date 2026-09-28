@@ -630,7 +630,7 @@ mod tests {
 
             let mut doc = AutoCommit::new();
             let address = hit.action_address().expect("canonical action address");
-            let resources = app.resources(&doc);
+            let resources = ui::resources::resources(&app, &doc);
             let spec = ui::tilo_actions::door::resolve(&resources, &address)
                 .expect("search address is exported");
             assert_eq!(spec.kind, ui::tilo_actions::OperationKind::View);

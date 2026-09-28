@@ -1174,7 +1174,7 @@ mod tests {
             app.sync(&mut doc, &automerge::ROOT);
             let before = doc.get_heads();
             let invocation = tilo_actions::InvocationId::new();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let action = resources[0]
                 .actions
                 .iter()

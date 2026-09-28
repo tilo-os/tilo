@@ -1884,7 +1884,7 @@ impl BrowserWidget {
                     .or_else(|| walk(&resource.children, wanted))
             })
         }
-        walk(&self.resources(&AutoCommit::new()), wanted)
+        walk(&ui::resources::resources(self, &AutoCommit::new()), wanted)
     }
 
     fn unit_binding(&self, resource: &str, action: &str) -> Option<ActionBinding<()>> {
@@ -4664,625 +4664,12 @@ impl Widget for BrowserWidget {
     ui::provides!(
         dyn ui::widget::Continuable,
         dyn ui::widget::FloatingSurfaceProvider,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[BROWSER_OPERATION_TYPE]
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Resource definitions stay together so their action contracts remain discoverable."
-    )]
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        const MATERIALIZED_LIMIT: usize = 100;
-        let operation =
-            |id: &str, label: &str, kind: OperationKind, operation: BrowserOperation| {
-                ActionSpec::operation(
-                    id,
-                    label,
-                    kind,
-                    BROWSER_OPERATION_TYPE,
-                    &browser_operation_payload(&operation),
-                )
-                .ok()
-            };
-        let mut page = Resource::new(
-            "browser.page",
-            "browser.page",
-            if self.title.is_empty() {
-                "Web page"
-            } else {
-                &self.title
-            },
-        );
-        for (id, label, operation, available, reason) in [
-            (
-                "back",
-                "Go back",
-                BrowserOperation::Back,
-                self.can_go_back,
-                "No previous page",
-            ),
-            (
-                "forward",
-                "Go forward",
-                BrowserOperation::Forward,
-                self.can_go_forward,
-                "No next page",
-            ),
-            ("reload", "Reload", BrowserOperation::Reload, true, ""),
-            (
-                "stop",
-                "Stop loading",
-                BrowserOperation::Stop,
-                self.progress < 1.0,
-                "Page is idle",
-            ),
-        ] {
-            let payload = browser_operation_payload(&operation);
-            if let Ok(spec) = ActionSpec::operation(
-                id,
-                label,
-                OperationKind::View,
-                BROWSER_OPERATION_TYPE,
-                &payload,
-            ) {
-                let spec = if id == "stop" {
-                    spec
-                } else {
-                    spec.with_contract(navigation_contract())
-                };
-                page.actions.push(if available {
-                    spec
-                } else {
-                    spec.unavailable("history_boundary", reason)
-                });
-            }
-        }
-        page.actions.push(
-            ActionSpec::typed_operation(
-                "navigate",
-                "Open address",
-                "https://…",
-                OperationKind::Effect,
-                BROWSER_OPERATION_TYPE,
-                vec![ActionParam::required_owned(
-                    "url",
-                    ParamType::Text,
-                    "Absolute URL or search terms",
-                )],
-                |args: &ActionArgs| {
-                    encode_browser_operation(&BrowserOperation::Navigate {
-                        url: args.text("url").unwrap_or("").to_string(),
-                    })
-                },
-            )
-            .with_contract(navigation_contract()),
-        );
-        if let Ok(spec) = ActionSpec::immediate(
-            "bookmark",
-            "Bookmark this page",
-            BROWSER_ACTION_TYPE,
-            &BrowserAction::AddBookmark {
-                url: self.current_uri.clone(),
-                title: self.title.clone(),
-                tag: format!("bookmark:{}", uuid::Uuid::new_v4().simple()),
-            },
-        ) {
-            page.actions.push(if self.current_uri.trim().is_empty() {
-                spec.unavailable("no_page", "Open a page before bookmarking it")
-            } else if self.bookmarks.contains(&self.current_uri) {
-                spec.unavailable("already_bookmarked", "This page is already bookmarked")
-            } else {
-                spec.reversible()
-            });
-        }
-        if let Some(spec) = operation(
-            "picture-in-picture",
-            if self.active_pip {
-                "Close Picture in Picture"
-            } else {
-                "Open Picture in Picture"
-            },
-            OperationKind::View,
-            BrowserOperation::TogglePictureInPicture,
-        ) {
-            page.actions
-                .push(spec.with_contract(local_background_contract(&[
-                    "device-local",
-                    "session",
-                    "media",
-                ])));
-        }
-        page.actions.extend(self.page_content_actions());
-
-        let mut session = Resource::new(
-            "browser.session",
-            "browser.history-pause",
-            if self.history_paused() {
-                "History paused"
-            } else {
-                "History recording"
-            },
-        );
-        if let Some(spec) = operation(
-            "toggle-history-pause",
-            if self.history_paused() {
-                "Resume history in this window"
-            } else {
-                "Pause history in this window"
-            },
-            OperationKind::Effect,
-            BrowserOperation::ToggleHistoryPause,
-        ) {
-            session
-                .actions
-                .push(spec.with_contract(local_effect_contract(&[
-                    "device-local",
-                    "session",
-                    "history-paused",
-                    "sensitive-data",
-                ])));
-        }
-
-        let mut history = Resource::new("browser.history", "browser.history", "History");
-        if let Some(spec) = operation(
-            "show",
-            "Show history",
-            OperationKind::View,
-            BrowserOperation::ShowLibrary {
-                section: LibrarySection::History,
-            },
-        ) {
-            history.actions.push(spec);
-        }
-        if let Some(spec) = operation(
-            "clear",
-            "Clear browsing history",
-            OperationKind::Effect,
-            BrowserOperation::ClearHistory,
-        ) {
-            history.actions.push(if self.history.is_empty() {
-                spec.with_contract(local_effect_contract(&[
-                    "device-local",
-                    "history",
-                    "sensitive-data",
-                ]))
-                .unavailable("already_empty", "Browsing history is already empty")
-            } else {
-                spec.with_contract(local_effect_contract(&[
-                    "device-local",
-                    "history",
-                    "sensitive-data",
-                ]))
-                .destructive()
-            });
-        }
-        for entry in self.history.entries().iter().rev().take(MATERIALIZED_LIMIT) {
-            let title = if entry.title.trim().is_empty() {
-                entry.url.as_str()
-            } else {
-                entry.title.as_str()
-            };
-            let mut child = Resource::new(
-                history_resource_id(&entry.url),
-                "browser.history-entry",
-                title,
-            );
-            if let Some(spec) = operation(
-                "open",
-                "Open page",
-                OperationKind::Effect,
-                BrowserOperation::Navigate {
-                    url: entry.url.clone(),
-                },
-            ) {
-                child
-                    .actions
-                    .push(spec.with_contract(navigation_contract()));
-            }
-            history.children.push(child);
-        }
-
-        let mut bookmarks = Resource::new("browser.bookmarks", "browser.bookmarks", "Bookmarks");
-        if let Some(spec) = operation(
-            "show",
-            "Show bookmarks",
-            OperationKind::View,
-            BrowserOperation::ShowLibrary {
-                section: LibrarySection::Bookmarks,
-            },
-        ) {
-            bookmarks.actions.push(spec);
-        }
-        for entry in self.bookmarks.entries().iter().take(MATERIALIZED_LIMIT) {
-            let mut child = Resource::new(
-                bookmark_resource_id(&entry.url),
-                "browser.bookmark",
-                entry.title.clone(),
-            );
-            if let Some(spec) = operation(
-                "open",
-                "Open bookmark",
-                OperationKind::Effect,
-                BrowserOperation::Navigate {
-                    url: entry.url.clone(),
-                },
-            ) {
-                child
-                    .actions
-                    .push(spec.with_contract(navigation_contract()));
-            }
-            if let Ok(spec) = ActionSpec::immediate(
-                "remove",
-                "Remove bookmark",
-                BROWSER_ACTION_TYPE,
-                &BrowserAction::RemoveBookmark {
-                    url: entry.url.clone(),
-                    observed_tags: crate::actions::observed_bookmark_tags(doc, &entry.url),
-                },
-            ) {
-                // Removing one bookmark is a reversible document edit.
-                child.actions.push(spec);
-            }
-            bookmarks.children.push(child);
-        }
-
-        let mut downloads = Resource::new("browser.downloads", "browser.downloads", "Downloads");
-        if let Some(spec) = operation(
-            "show",
-            "Show downloads",
-            OperationKind::View,
-            BrowserOperation::ShowLibrary {
-                section: LibrarySection::Downloads,
-            },
-        ) {
-            downloads.actions.push(spec);
-        }
-        downloads.actions.push(
-            ActionSpec::typed_operation(
-                "start",
-                "Download address",
-                "https://…",
-                OperationKind::Effect,
-                BROWSER_OPERATION_TYPE,
-                vec![ActionParam::required_owned(
-                    "url",
-                    ParamType::Text,
-                    "Absolute HTTP or HTTPS URL",
-                )],
-                |args: &ActionArgs| {
-                    encode_browser_operation(&BrowserOperation::StartDownload {
-                        url: args.text("url").unwrap_or_default().to_string(),
-                    })
-                },
-            )
-            .with_contract(local_background_contract(&[
-                "device-local",
-                "network",
-                "filesystem",
-                "download",
-            ])),
-        );
-        for entry in self
-            .downloads
-            .entries()
-            .iter()
-            .rev()
-            .take(MATERIALIZED_LIMIT)
-        {
-            let mut child = Resource::new(
-                entry.resource_id(),
-                "browser.download",
-                entry.display_name(),
-            );
-            if let Some(spec) = operation(
-                "show",
-                "Show download",
-                OperationKind::View,
-                BrowserOperation::ShowLibrary {
-                    section: LibrarySection::Downloads,
-                },
-            ) {
-                child.actions.push(spec);
-            }
-            match entry.status {
-                DownloadStatus::AwaitingDestination | DownloadStatus::Downloading => {
-                    if let Some(spec) = operation(
-                        "cancel",
-                        "Cancel download",
-                        OperationKind::Effect,
-                        BrowserOperation::CancelDownload {
-                            id: entry.id.clone(),
-                        },
-                    ) {
-                        child.actions.push(
-                            spec.with_contract(local_effect_contract(&[
-                                "device-local",
-                                "network",
-                                "download",
-                            ]))
-                            .destructive(),
-                        );
-                    }
-                }
-                DownloadStatus::Failed | DownloadStatus::Cancelled => {
-                    if let Some(spec) = operation(
-                        "retry",
-                        "Retry download",
-                        OperationKind::Effect,
-                        BrowserOperation::RetryDownload {
-                            id: entry.id.clone(),
-                        },
-                    ) {
-                        child
-                            .actions
-                            .push(spec.with_contract(local_background_contract(&[
-                                "device-local",
-                                "network",
-                                "filesystem",
-                                "download",
-                            ])));
-                    }
-                }
-                DownloadStatus::Completed => {
-                    for (id, label, browser_operation) in [
-                        (
-                            "open",
-                            "Open downloaded file",
-                            BrowserOperation::OpenDownload {
-                                id: entry.id.clone(),
-                            },
-                        ),
-                        (
-                            "reveal",
-                            "Show downloaded file in Files",
-                            BrowserOperation::RevealDownload {
-                                id: entry.id.clone(),
-                            },
-                        ),
-                    ] {
-                        if let Some(spec) =
-                            operation(id, label, OperationKind::Effect, browser_operation)
-                        {
-                            child
-                                .actions
-                                .push(spec.with_contract(local_background_contract(&[
-                                    "device-local",
-                                    "filesystem",
-                                    "portal",
-                                ])));
-                        }
-                    }
-                }
-            }
-            downloads.children.push(child);
-        }
-        let mut extensions =
-            Resource::new("browser.extensions", "browser.extensions", "Extensions");
-        if let Some(spec) = operation(
-            "show",
-            "Show extensions",
-            OperationKind::View,
-            BrowserOperation::ShowLibrary {
-                section: LibrarySection::Extensions,
-            },
-        ) {
-            extensions.actions.push(spec);
-        }
-        // Installed add-ons are durable local profile entities even while the
-        // WebKit activation API is unavailable. Publish each bounded,
-        // address-safe inventory item so the action directory, invocation
-        // history and agents use the same identity as the extension manager.
-        for extension in crate::extensions::list_installed() {
-            let mut child = Resource::new(
-                crate::extensions::resource_id(&extension.id),
-                "browser.extension",
-                extension.name,
-            );
-            if let Some(spec) = operation(
-                "show",
-                "Show extension details",
-                OperationKind::View,
-                BrowserOperation::ShowLibrary {
-                    section: LibrarySection::Extensions,
-                },
-            ) {
-                child.actions.push(spec);
-            }
-            extensions.children.push(child);
-        }
-        // Library is a first-class presentation resource rather than an
-        // unaddressable collection of tabs.  This lets keyboard users,
-        // assistive technology, global action search, and agents all use the
-        // same section and filter operations as the visible surface.
-        let mut library = Resource::new("browser.library", "browser.library", "Library");
-        for (id, label, section) in [
-            ("show-history", "Show history", LibrarySection::History),
-            (
-                "show-bookmarks",
-                "Show bookmarks",
-                LibrarySection::Bookmarks,
-            ),
-            (
-                "show-downloads",
-                "Show downloads",
-                LibrarySection::Downloads,
-            ),
-            (
-                "show-extensions",
-                "Show extensions",
-                LibrarySection::Extensions,
-            ),
-        ] {
-            if let Some(spec) = operation(
-                id,
-                label,
-                OperationKind::View,
-                BrowserOperation::ShowLibrary { section },
-            ) {
-                library.actions.push(spec);
-            }
-        }
-        library.actions.push(
-            ActionSpec::typed_operation(
-                "set-filter",
-                "Filter library",
-                "keyword",
-                OperationKind::View,
-                BROWSER_OPERATION_TYPE,
-                vec![ActionParam::required_owned(
-                    "query",
-                    ParamType::Text,
-                    "Words to match in the current library section",
-                )],
-                |args: &ActionArgs| {
-                    encode_browser_operation(&BrowserOperation::SetLibraryFilter {
-                        query: args.text("query").unwrap_or_default().to_string(),
-                    })
-                },
-            )
-            .with_contract(local_effect_contract(&[
-                "device-local",
-                "presentation",
-                "library",
-            ])),
-        );
-        if let Some(spec) = operation(
-            "clear-filter",
-            "Clear library filter",
-            OperationKind::View,
-            BrowserOperation::ClearLibraryFilter,
-        ) {
-            library
-                .actions
-                .push(if self.library_filter.get().trim().is_empty() {
-                    spec.unavailable("already_clear", "Library filter is already clear")
-                } else {
-                    spec
-                });
-        }
-        let mut settings = Resource::new("browser.settings", "browser.settings", "Settings");
-        if let Some(spec) = operation(
-            "show",
-            "Show browser settings",
-            OperationKind::View,
-            BrowserOperation::ShowSettings,
-        ) {
-            settings.actions.push(spec);
-        }
-        if let Some(spec) = operation(
-            "request-site-data-clear",
-            "Request local site-data clear",
-            OperationKind::Effect,
-            BrowserOperation::RequestWebsiteDataClear,
-        ) {
-            settings.actions.push(
-                spec.with_contract(local_effect_contract(&[
-                    "device-local",
-                    "site-data",
-                    "sensitive-data",
-                ]))
-                .destructive(),
-            );
-        }
-        for (id, label, operation) in [
-            ("set-adblock", "Set ad and tracker blocking", "set-adblock"),
-            (
-                "set-clear-on-exit",
-                "Set clear data on exit",
-                "set-clear-on-exit",
-            ),
-        ] {
-            settings.actions.push(
-                ActionSpec::typed(
-                    id,
-                    label,
-                    "enabled",
-                    ui::tilo_actions::ExecutionLocus::ClientLocal,
-                    vec![ActionParam::required_owned(
-                        "enabled",
-                        ParamType::Boolean,
-                        "Whether the setting is enabled",
-                    )],
-                    move |args: &ActionArgs| {
-                        let action = if operation == "set-adblock" {
-                            BrowserAction::SetAdblock {
-                                enabled: args.boolean("enabled").unwrap_or(false),
-                            }
-                        } else {
-                            BrowserAction::SetClearOnExit {
-                                enabled: args.boolean("enabled").unwrap_or(false),
-                            }
-                        };
-                        EncodedAction::encode(BROWSER_ACTION_TYPE, &action).unwrap_or_else(|_| {
-                            EncodedAction {
-                                type_id: BROWSER_ACTION_TYPE.into(),
-                                payload: Vec::new(),
-                            }
-                        })
-                    },
-                )
-                .reversible(),
-            );
-        }
-        for (id, label, parameter, operation) in [
-            ("set-homepage", "Set homepage", "url", "homepage"),
-            (
-                "set-search-engine",
-                "Set search engine template",
-                "template",
-                "search-engine",
-            ),
-        ] {
-            settings.actions.push(
-                ActionSpec::typed(
-                    id,
-                    label,
-                    parameter,
-                    ui::tilo_actions::ExecutionLocus::ClientLocal,
-                    vec![ActionParam::required_owned(
-                        parameter,
-                        ParamType::Text,
-                        parameter,
-                    )],
-                    move |args: &ActionArgs| {
-                        let action = if operation == "homepage" {
-                            BrowserAction::SetHomepage {
-                                url: args.text(parameter).unwrap_or_default().into(),
-                            }
-                        } else {
-                            BrowserAction::SetSearchEngine {
-                                template: args.text(parameter).unwrap_or_default().into(),
-                            }
-                        };
-                        EncodedAction::encode(BROWSER_ACTION_TYPE, &action).unwrap_or_else(|_| {
-                            EncodedAction {
-                                type_id: BROWSER_ACTION_TYPE.into(),
-                                payload: Vec::new(),
-                            }
-                        })
-                    },
-                )
-                .reversible(),
-            );
-        }
-
-        let mut browser = Resource::new("browser", "browser.application", "Browser");
-        if let Some(spec) = operation(
-            "show-page",
-            "Show current page",
-            OperationKind::View,
-            BrowserOperation::ShowPage,
-        ) {
-            browser.actions.push(spec);
-        }
-        browser.children = vec![
-            page, session, history, bookmarks, downloads, extensions, library, settings,
-        ];
-        vec![browser]
     }
 
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
@@ -6259,6 +5646,622 @@ impl Widget for BrowserWidget {
     }
 }
 
+impl ui::resources::PublishesResources for BrowserWidget {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Resource definitions stay together so their action contracts remain discoverable."
+    )]
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        const MATERIALIZED_LIMIT: usize = 100;
+        let operation =
+            |id: &str, label: &str, kind: OperationKind, operation: BrowserOperation| {
+                ActionSpec::operation(
+                    id,
+                    label,
+                    kind,
+                    BROWSER_OPERATION_TYPE,
+                    &browser_operation_payload(&operation),
+                )
+                .ok()
+            };
+        let mut page = Resource::new(
+            "browser.page",
+            "browser.page",
+            if self.title.is_empty() {
+                "Web page"
+            } else {
+                &self.title
+            },
+        );
+        for (id, label, operation, available, reason) in [
+            (
+                "back",
+                "Go back",
+                BrowserOperation::Back,
+                self.can_go_back,
+                "No previous page",
+            ),
+            (
+                "forward",
+                "Go forward",
+                BrowserOperation::Forward,
+                self.can_go_forward,
+                "No next page",
+            ),
+            ("reload", "Reload", BrowserOperation::Reload, true, ""),
+            (
+                "stop",
+                "Stop loading",
+                BrowserOperation::Stop,
+                self.progress < 1.0,
+                "Page is idle",
+            ),
+        ] {
+            let payload = browser_operation_payload(&operation);
+            if let Ok(spec) = ActionSpec::operation(
+                id,
+                label,
+                OperationKind::View,
+                BROWSER_OPERATION_TYPE,
+                &payload,
+            ) {
+                let spec = if id == "stop" {
+                    spec
+                } else {
+                    spec.with_contract(navigation_contract())
+                };
+                page.actions.push(if available {
+                    spec
+                } else {
+                    spec.unavailable("history_boundary", reason)
+                });
+            }
+        }
+        page.actions.push(
+            ActionSpec::typed_operation(
+                "navigate",
+                "Open address",
+                "https://…",
+                OperationKind::Effect,
+                BROWSER_OPERATION_TYPE,
+                vec![ActionParam::required_owned(
+                    "url",
+                    ParamType::Text,
+                    "Absolute URL or search terms",
+                )],
+                |args: &ActionArgs| {
+                    encode_browser_operation(&BrowserOperation::Navigate {
+                        url: args.text("url").unwrap_or("").to_string(),
+                    })
+                },
+            )
+            .with_contract(navigation_contract()),
+        );
+        if let Ok(spec) = ActionSpec::immediate(
+            "bookmark",
+            "Bookmark this page",
+            BROWSER_ACTION_TYPE,
+            &BrowserAction::AddBookmark {
+                url: self.current_uri.clone(),
+                title: self.title.clone(),
+                tag: format!("bookmark:{}", uuid::Uuid::new_v4().simple()),
+            },
+        ) {
+            page.actions.push(if self.current_uri.trim().is_empty() {
+                spec.unavailable("no_page", "Open a page before bookmarking it")
+            } else if self.bookmarks.contains(&self.current_uri) {
+                spec.unavailable("already_bookmarked", "This page is already bookmarked")
+            } else {
+                spec.reversible()
+            });
+        }
+        if let Some(spec) = operation(
+            "picture-in-picture",
+            if self.active_pip {
+                "Close Picture in Picture"
+            } else {
+                "Open Picture in Picture"
+            },
+            OperationKind::View,
+            BrowserOperation::TogglePictureInPicture,
+        ) {
+            page.actions
+                .push(spec.with_contract(local_background_contract(&[
+                    "device-local",
+                    "session",
+                    "media",
+                ])));
+        }
+        page.actions.extend(self.page_content_actions());
+
+        let mut session = Resource::new(
+            "browser.session",
+            "browser.history-pause",
+            if self.history_paused() {
+                "History paused"
+            } else {
+                "History recording"
+            },
+        );
+        if let Some(spec) = operation(
+            "toggle-history-pause",
+            if self.history_paused() {
+                "Resume history in this window"
+            } else {
+                "Pause history in this window"
+            },
+            OperationKind::Effect,
+            BrowserOperation::ToggleHistoryPause,
+        ) {
+            session
+                .actions
+                .push(spec.with_contract(local_effect_contract(&[
+                    "device-local",
+                    "session",
+                    "history-paused",
+                    "sensitive-data",
+                ])));
+        }
+
+        let mut history = Resource::new("browser.history", "browser.history", "History");
+        if let Some(spec) = operation(
+            "show",
+            "Show history",
+            OperationKind::View,
+            BrowserOperation::ShowLibrary {
+                section: LibrarySection::History,
+            },
+        ) {
+            history.actions.push(spec);
+        }
+        if let Some(spec) = operation(
+            "clear",
+            "Clear browsing history",
+            OperationKind::Effect,
+            BrowserOperation::ClearHistory,
+        ) {
+            history.actions.push(if self.history.is_empty() {
+                spec.with_contract(local_effect_contract(&[
+                    "device-local",
+                    "history",
+                    "sensitive-data",
+                ]))
+                .unavailable("already_empty", "Browsing history is already empty")
+            } else {
+                spec.with_contract(local_effect_contract(&[
+                    "device-local",
+                    "history",
+                    "sensitive-data",
+                ]))
+                .destructive()
+            });
+        }
+        for entry in self.history.entries().iter().rev().take(MATERIALIZED_LIMIT) {
+            let title = if entry.title.trim().is_empty() {
+                entry.url.as_str()
+            } else {
+                entry.title.as_str()
+            };
+            let mut child = Resource::new(
+                history_resource_id(&entry.url),
+                "browser.history-entry",
+                title,
+            );
+            if let Some(spec) = operation(
+                "open",
+                "Open page",
+                OperationKind::Effect,
+                BrowserOperation::Navigate {
+                    url: entry.url.clone(),
+                },
+            ) {
+                child
+                    .actions
+                    .push(spec.with_contract(navigation_contract()));
+            }
+            history.children.push(child);
+        }
+
+        let mut bookmarks = Resource::new("browser.bookmarks", "browser.bookmarks", "Bookmarks");
+        if let Some(spec) = operation(
+            "show",
+            "Show bookmarks",
+            OperationKind::View,
+            BrowserOperation::ShowLibrary {
+                section: LibrarySection::Bookmarks,
+            },
+        ) {
+            bookmarks.actions.push(spec);
+        }
+        for entry in self.bookmarks.entries().iter().take(MATERIALIZED_LIMIT) {
+            let mut child = Resource::new(
+                bookmark_resource_id(&entry.url),
+                "browser.bookmark",
+                entry.title.clone(),
+            );
+            if let Some(spec) = operation(
+                "open",
+                "Open bookmark",
+                OperationKind::Effect,
+                BrowserOperation::Navigate {
+                    url: entry.url.clone(),
+                },
+            ) {
+                child
+                    .actions
+                    .push(spec.with_contract(navigation_contract()));
+            }
+            if let Ok(spec) = ActionSpec::immediate(
+                "remove",
+                "Remove bookmark",
+                BROWSER_ACTION_TYPE,
+                &BrowserAction::RemoveBookmark {
+                    url: entry.url.clone(),
+                    observed_tags: crate::actions::observed_bookmark_tags(doc, &entry.url),
+                },
+            ) {
+                // Removing one bookmark is a reversible document edit.
+                child.actions.push(spec);
+            }
+            bookmarks.children.push(child);
+        }
+
+        let mut downloads = Resource::new("browser.downloads", "browser.downloads", "Downloads");
+        if let Some(spec) = operation(
+            "show",
+            "Show downloads",
+            OperationKind::View,
+            BrowserOperation::ShowLibrary {
+                section: LibrarySection::Downloads,
+            },
+        ) {
+            downloads.actions.push(spec);
+        }
+        downloads.actions.push(
+            ActionSpec::typed_operation(
+                "start",
+                "Download address",
+                "https://…",
+                OperationKind::Effect,
+                BROWSER_OPERATION_TYPE,
+                vec![ActionParam::required_owned(
+                    "url",
+                    ParamType::Text,
+                    "Absolute HTTP or HTTPS URL",
+                )],
+                |args: &ActionArgs| {
+                    encode_browser_operation(&BrowserOperation::StartDownload {
+                        url: args.text("url").unwrap_or_default().to_string(),
+                    })
+                },
+            )
+            .with_contract(local_background_contract(&[
+                "device-local",
+                "network",
+                "filesystem",
+                "download",
+            ])),
+        );
+        for entry in self
+            .downloads
+            .entries()
+            .iter()
+            .rev()
+            .take(MATERIALIZED_LIMIT)
+        {
+            let mut child = Resource::new(
+                entry.resource_id(),
+                "browser.download",
+                entry.display_name(),
+            );
+            if let Some(spec) = operation(
+                "show",
+                "Show download",
+                OperationKind::View,
+                BrowserOperation::ShowLibrary {
+                    section: LibrarySection::Downloads,
+                },
+            ) {
+                child.actions.push(spec);
+            }
+            match entry.status {
+                DownloadStatus::AwaitingDestination | DownloadStatus::Downloading => {
+                    if let Some(spec) = operation(
+                        "cancel",
+                        "Cancel download",
+                        OperationKind::Effect,
+                        BrowserOperation::CancelDownload {
+                            id: entry.id.clone(),
+                        },
+                    ) {
+                        child.actions.push(
+                            spec.with_contract(local_effect_contract(&[
+                                "device-local",
+                                "network",
+                                "download",
+                            ]))
+                            .destructive(),
+                        );
+                    }
+                }
+                DownloadStatus::Failed | DownloadStatus::Cancelled => {
+                    if let Some(spec) = operation(
+                        "retry",
+                        "Retry download",
+                        OperationKind::Effect,
+                        BrowserOperation::RetryDownload {
+                            id: entry.id.clone(),
+                        },
+                    ) {
+                        child
+                            .actions
+                            .push(spec.with_contract(local_background_contract(&[
+                                "device-local",
+                                "network",
+                                "filesystem",
+                                "download",
+                            ])));
+                    }
+                }
+                DownloadStatus::Completed => {
+                    for (id, label, browser_operation) in [
+                        (
+                            "open",
+                            "Open downloaded file",
+                            BrowserOperation::OpenDownload {
+                                id: entry.id.clone(),
+                            },
+                        ),
+                        (
+                            "reveal",
+                            "Show downloaded file in Files",
+                            BrowserOperation::RevealDownload {
+                                id: entry.id.clone(),
+                            },
+                        ),
+                    ] {
+                        if let Some(spec) =
+                            operation(id, label, OperationKind::Effect, browser_operation)
+                        {
+                            child
+                                .actions
+                                .push(spec.with_contract(local_background_contract(&[
+                                    "device-local",
+                                    "filesystem",
+                                    "portal",
+                                ])));
+                        }
+                    }
+                }
+            }
+            downloads.children.push(child);
+        }
+        let mut extensions =
+            Resource::new("browser.extensions", "browser.extensions", "Extensions");
+        if let Some(spec) = operation(
+            "show",
+            "Show extensions",
+            OperationKind::View,
+            BrowserOperation::ShowLibrary {
+                section: LibrarySection::Extensions,
+            },
+        ) {
+            extensions.actions.push(spec);
+        }
+        // Installed add-ons are durable local profile entities even while the
+        // WebKit activation API is unavailable. Publish each bounded,
+        // address-safe inventory item so the action directory, invocation
+        // history and agents use the same identity as the extension manager.
+        for extension in crate::extensions::list_installed() {
+            let mut child = Resource::new(
+                crate::extensions::resource_id(&extension.id),
+                "browser.extension",
+                extension.name,
+            );
+            if let Some(spec) = operation(
+                "show",
+                "Show extension details",
+                OperationKind::View,
+                BrowserOperation::ShowLibrary {
+                    section: LibrarySection::Extensions,
+                },
+            ) {
+                child.actions.push(spec);
+            }
+            extensions.children.push(child);
+        }
+        // Library is a first-class presentation resource rather than an
+        // unaddressable collection of tabs.  This lets keyboard users,
+        // assistive technology, global action search, and agents all use the
+        // same section and filter operations as the visible surface.
+        let mut library = Resource::new("browser.library", "browser.library", "Library");
+        for (id, label, section) in [
+            ("show-history", "Show history", LibrarySection::History),
+            (
+                "show-bookmarks",
+                "Show bookmarks",
+                LibrarySection::Bookmarks,
+            ),
+            (
+                "show-downloads",
+                "Show downloads",
+                LibrarySection::Downloads,
+            ),
+            (
+                "show-extensions",
+                "Show extensions",
+                LibrarySection::Extensions,
+            ),
+        ] {
+            if let Some(spec) = operation(
+                id,
+                label,
+                OperationKind::View,
+                BrowserOperation::ShowLibrary { section },
+            ) {
+                library.actions.push(spec);
+            }
+        }
+        library.actions.push(
+            ActionSpec::typed_operation(
+                "set-filter",
+                "Filter library",
+                "keyword",
+                OperationKind::View,
+                BROWSER_OPERATION_TYPE,
+                vec![ActionParam::required_owned(
+                    "query",
+                    ParamType::Text,
+                    "Words to match in the current library section",
+                )],
+                |args: &ActionArgs| {
+                    encode_browser_operation(&BrowserOperation::SetLibraryFilter {
+                        query: args.text("query").unwrap_or_default().to_string(),
+                    })
+                },
+            )
+            .with_contract(local_effect_contract(&[
+                "device-local",
+                "presentation",
+                "library",
+            ])),
+        );
+        if let Some(spec) = operation(
+            "clear-filter",
+            "Clear library filter",
+            OperationKind::View,
+            BrowserOperation::ClearLibraryFilter,
+        ) {
+            library
+                .actions
+                .push(if self.library_filter.get().trim().is_empty() {
+                    spec.unavailable("already_clear", "Library filter is already clear")
+                } else {
+                    spec
+                });
+        }
+        let mut settings = Resource::new("browser.settings", "browser.settings", "Settings");
+        if let Some(spec) = operation(
+            "show",
+            "Show browser settings",
+            OperationKind::View,
+            BrowserOperation::ShowSettings,
+        ) {
+            settings.actions.push(spec);
+        }
+        if let Some(spec) = operation(
+            "request-site-data-clear",
+            "Request local site-data clear",
+            OperationKind::Effect,
+            BrowserOperation::RequestWebsiteDataClear,
+        ) {
+            settings.actions.push(
+                spec.with_contract(local_effect_contract(&[
+                    "device-local",
+                    "site-data",
+                    "sensitive-data",
+                ]))
+                .destructive(),
+            );
+        }
+        for (id, label, operation) in [
+            ("set-adblock", "Set ad and tracker blocking", "set-adblock"),
+            (
+                "set-clear-on-exit",
+                "Set clear data on exit",
+                "set-clear-on-exit",
+            ),
+        ] {
+            settings.actions.push(
+                ActionSpec::typed(
+                    id,
+                    label,
+                    "enabled",
+                    ui::tilo_actions::ExecutionLocus::ClientLocal,
+                    vec![ActionParam::required_owned(
+                        "enabled",
+                        ParamType::Boolean,
+                        "Whether the setting is enabled",
+                    )],
+                    move |args: &ActionArgs| {
+                        let action = if operation == "set-adblock" {
+                            BrowserAction::SetAdblock {
+                                enabled: args.boolean("enabled").unwrap_or(false),
+                            }
+                        } else {
+                            BrowserAction::SetClearOnExit {
+                                enabled: args.boolean("enabled").unwrap_or(false),
+                            }
+                        };
+                        EncodedAction::encode(BROWSER_ACTION_TYPE, &action).unwrap_or_else(|_| {
+                            EncodedAction {
+                                type_id: BROWSER_ACTION_TYPE.into(),
+                                payload: Vec::new(),
+                            }
+                        })
+                    },
+                )
+                .reversible(),
+            );
+        }
+        for (id, label, parameter, operation) in [
+            ("set-homepage", "Set homepage", "url", "homepage"),
+            (
+                "set-search-engine",
+                "Set search engine template",
+                "template",
+                "search-engine",
+            ),
+        ] {
+            settings.actions.push(
+                ActionSpec::typed(
+                    id,
+                    label,
+                    parameter,
+                    ui::tilo_actions::ExecutionLocus::ClientLocal,
+                    vec![ActionParam::required_owned(
+                        parameter,
+                        ParamType::Text,
+                        parameter,
+                    )],
+                    move |args: &ActionArgs| {
+                        let action = if operation == "homepage" {
+                            BrowserAction::SetHomepage {
+                                url: args.text(parameter).unwrap_or_default().into(),
+                            }
+                        } else {
+                            BrowserAction::SetSearchEngine {
+                                template: args.text(parameter).unwrap_or_default().into(),
+                            }
+                        };
+                        EncodedAction::encode(BROWSER_ACTION_TYPE, &action).unwrap_or_else(|_| {
+                            EncodedAction {
+                                type_id: BROWSER_ACTION_TYPE.into(),
+                                payload: Vec::new(),
+                            }
+                        })
+                    },
+                )
+                .reversible(),
+            );
+        }
+
+        let mut browser = Resource::new("browser", "browser.application", "Browser");
+        if let Some(spec) = operation(
+            "show-page",
+            "Show current page",
+            OperationKind::View,
+            BrowserOperation::ShowPage,
+        ) {
+            browser.actions.push(spec);
+        }
+        browser.children = vec![
+            page, session, history, bookmarks, downloads, extensions, library, settings,
+        ];
+        vec![browser]
+    }
+}
+
 impl ui::widget::controls::ActionControls for BrowserWidget {
     fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
         self.pending_controls.pop_front().or_else(|| {
@@ -6715,7 +6718,7 @@ mod architecture_tests {
             widget.resource_navigation_invocation = Some(invocation);
             widget.set_loading_progress(0.2);
             let mut doc = AutoCommit::new();
-            let resources = widget.resources(&doc);
+            let resources = ui::resources::resources(&widget, &doc);
             let stop = resources[0]
                 .children
                 .iter()
@@ -7568,7 +7571,7 @@ mod tests {
             (engine, widget, doc, root)
         }
         fn page_action(widget: &BrowserWidget, doc: &AutoCommit, id: &str) -> ActionSpec {
-            Widget::resources(widget, doc)[0]
+            ui::resources::resources(widget, doc)[0]
                 .children
                 .iter()
                 .find(|resource| resource.id.0 == "browser.page")
@@ -9473,7 +9476,7 @@ mod tests {
             let mut w = BrowserWidget::with_engine(engine, true);
             let (mut doc, root) = synced(&mut w);
             w.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
-            let resources = Widget::resources(&w, &doc);
+            let resources = ui::resources::resources(&w, &doc);
             let page = resources[0]
                 .children
                 .iter()
@@ -9575,7 +9578,7 @@ mod tests {
             let engine = TestEngine::new();
             let mut w = BrowserWidget::with_engine(engine.clone(), true);
             let (mut doc, root) = synced(&mut w);
-            let resources = Widget::resources(&w, &doc);
+            let resources = ui::resources::resources(&w, &doc);
             assert_eq!(resources[0].id.0, "browser");
             for expected in [
                 "browser.page",
@@ -9779,7 +9782,7 @@ mod tests {
             let mut w = BrowserWidget::with_engine(engine.clone(), true);
             let (mut doc, root) = synced(&mut w);
             w.history.record_at("https://private.example", "Private", 1);
-            let resources = Widget::resources(&w, &doc);
+            let resources = ui::resources::resources(&w, &doc);
             let browser = &resources[0];
             let history = browser
                 .children
@@ -9881,7 +9884,7 @@ mod tests {
             let (mut doc, root) = synced(&mut w);
             w.history
                 .record_at("https://sensitive.example", "Sensitive", 1);
-            let resources = Widget::resources(&w, &doc);
+            let resources = ui::resources::resources(&w, &doc);
             let pause = resources[0]
                 .children
                 .iter()
@@ -9923,7 +9926,7 @@ mod tests {
                 panic!("history pausing changes only this running browser");
             };
             assert!(toggle.contract.result.validate(&output).is_ok());
-            let resources = Widget::resources(&w, &doc);
+            let resources = ui::resources::resources(&w, &doc);
             let history = resources[0]
                 .children
                 .iter()
@@ -9971,7 +9974,7 @@ mod tests {
                     && message.contains("Previous history was kept")
             }));
 
-            let resources = Widget::resources(&w, &doc);
+            let resources = ui::resources::resources(&w, &doc);
             let history = resources[0]
                 .children
                 .iter()
@@ -10009,7 +10012,7 @@ mod tests {
             let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
             w.bookmarks.add("https://test.example", "Test bookmark");
             let (doc, _root) = synced(&mut w);
-            let resources = w.resources(&doc);
+            let resources = ui::resources::resources(&w, &doc);
             let bookmarks = resources[0]
                 .children
                 .iter()

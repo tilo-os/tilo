@@ -17,7 +17,7 @@
 //! [`Widget::accessibility`] walk
 //! (roles/names/values/state, collapsing presentational widgets like the
 //! AccessKit bridge does) contributes generic verbs (focus, activate, …);
-//! the app's [`resources()`](crate::widget::Widget::resources) forest from
+//! the app's [`resources()`](crate::resources::resources) forest from
 //! the Tilo [action model](tilo_actions) contributes
 //! [`SemanticActionKind::App`] affordances carrying the exact
 //! [`EncodedAction`] the click action sends —

@@ -211,6 +211,7 @@ pub mod remote_actions;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod render_thread;
 pub mod reorder;
+pub mod resources;
 pub mod richtext;
 pub mod scale;
 pub mod screen_reader;

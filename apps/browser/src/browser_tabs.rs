@@ -2888,8 +2888,8 @@ mod tests {
         // Phase `resources_are_owned_only_by_the_page`.
         {
             let tabs = workspace();
-            assert!(tabs.resources(&AutoCommit::new()).is_empty());
-            assert!(!tabs.active().resources(&AutoCommit::new()).is_empty());
+            assert!(ui::resources::resources(&tabs, &AutoCommit::new()).is_empty());
+            assert!(!ui::resources::resources(tabs.active(), &AutoCommit::new()).is_empty());
         }
     }
     /// New tab typing, focus and stale layout nodes.
@@ -3028,7 +3028,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             tabs.sync(&mut doc, &root);
-            let resources = tabs.active().resources(&doc);
+            let resources = ui::resources::resources(tabs.active(), &doc);
             let page = resources[0]
                 .children
                 .iter()
@@ -3120,7 +3120,7 @@ mod tests {
             )
             .unwrap();
             tabs.active_mut().apply_layout(&tree, node, Point::ORIGIN);
-            let resources = tabs.active().resources(&doc);
+            let resources = ui::resources::resources(tabs.active(), &doc);
             let page = resources[0]
                 .children
                 .iter()

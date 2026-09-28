@@ -722,7 +722,7 @@ mod tests {
             let mut st = ui::State::new();
             app.sync(&mut st.doc, &st.root);
 
-            let resources = Widget::resources(&app, &st.doc);
+            let resources = ui::resources::resources(&app, &st.doc);
             assert_eq!(resources.len(), 1, "one library root");
             let lib = &resources[0];
             assert_eq!(lib.kind, "themes.library");

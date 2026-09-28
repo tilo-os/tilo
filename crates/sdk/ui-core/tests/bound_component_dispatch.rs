@@ -497,6 +497,8 @@ impl Leaf {
     }
 }
 impl Widget for Leaf {
+    tilo_ui::provides!(dyn tilo_ui::resources::PublishesResources);
+
     fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         let (doc, _) = tilo_ui::doc::document(doc, path);
         self.edit(doc, "sync");
@@ -614,14 +616,6 @@ impl Widget for Leaf {
         self.edit(doc, "synthetic-action");
         true
     }
-    fn resource(&self, doc: &AutoCommit, _: &str) -> Option<tilo_actions::Resource> {
-        assert_eq!(
-            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
-            Some(self.record.as_str())
-        );
-        self.capture("resource-resolve");
-        None
-    }
     #[allow(
         clippy::panic_in_result_fn,
         reason = "callback probe asserts its actual canonical record before returning the toolkit result"
@@ -680,6 +674,9 @@ impl Widget for Leaf {
                 })
         }
     }
+}
+
+impl tilo_ui::resources::PublishesResources for Leaf {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
@@ -687,6 +684,14 @@ impl Widget for Leaf {
         );
         self.capture("resources");
         vec![]
+    }
+    fn resource(&self, doc: &AutoCommit, _: &str) -> Option<tilo_actions::Resource> {
+        assert_eq!(
+            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
+            Some(self.record.as_str())
+        );
+        self.capture("resource-resolve");
+        None
     }
 }
 impl Drop for Leaf {

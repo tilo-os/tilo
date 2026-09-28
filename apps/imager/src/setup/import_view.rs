@@ -2529,12 +2529,10 @@ fn state_summary(state: OperationState) -> &'static str {
 }
 
 impl Widget for ImportApp {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[import_actions::IMPORT_OPERATION_TYPE]
-    }
-
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        vec![import_actions::resource(&self.import_projection())]
     }
 
     fn start_operation(
@@ -2946,6 +2944,12 @@ impl Widget for ImportApp {
     }
 }
 
+impl ui::resources::PublishesResources for ImportApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        vec![import_actions::resource(&self.import_projection())]
+    }
+}
+
 impl ImportApp {
     fn admit_resource_operation(
         &mut self,
@@ -3134,7 +3138,9 @@ mod tests {
     }
 
     fn root_resource(app: &ImportApp) -> tilo_actions::Resource {
-        Widget::resources(app, &AutoCommit::new()).pop().unwrap()
+        ui::resources::resources(app, &AutoCommit::new())
+            .pop()
+            .unwrap()
     }
 
     fn action(resource: &tilo_actions::Resource, id: &str) -> tilo_actions::ActionSpec {
@@ -3306,7 +3312,7 @@ mod tests {
             app.prepare_review().unwrap();
             let operation_id = app.operations[0].id().to_string();
 
-            let resources = Widget::resources(&app, &AutoCommit::new());
+            let resources = ui::resources::resources(&app, &AutoCommit::new());
 
             assert_eq!(resources.len(), 1);
             assert_eq!(resources[0].kind, "imager.import");

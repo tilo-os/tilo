@@ -2419,7 +2419,7 @@ mod event_tests {
             .first()
             .expect("sample seeds annotations")
             .clone();
-        let resources = Widget::resources(&app, &st.doc);
+        let resources = ui::resources::resources(&app, &st.doc);
         let want_id = format!("pdf.annotation:{}", anno.id);
         let res = resources[0]
             .children

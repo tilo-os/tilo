@@ -2391,19 +2391,12 @@ impl Widget for TubeApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
         dyn ui::undo::CommittedActions,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::TUBE_OPERATION_TYPE]
-    }
-
-    /// Publish the open-resource tree (the playing video + its comments) so the
-    /// host's Ctrl+K action palette scopes to it. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
@@ -2957,6 +2950,16 @@ impl Widget for TubeApp {
     }
 }
 
+impl ui::resources::PublishesResources for TubeApp {
+    /// Publish the open-resource tree (the playing video + its comments) so the
+    /// host's Ctrl+K action palette scopes to it. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+}
+
 impl ui::widget::controls::ActionControls for TubeApp {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.pending_device_actions
@@ -3360,7 +3363,7 @@ mod tests {
             assert!(app.model.is_subscribed(unknown_channel));
             assert!(app.model.is_queued(unknown_video));
 
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let library = resources[0]
                 .children
                 .iter()

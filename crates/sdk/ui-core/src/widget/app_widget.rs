@@ -551,7 +551,8 @@ mod component_adapter {
             dyn crate::undo::UndoControl,
             dyn crate::undo::LocalUndo,
             dyn crate::history_mode::capability::DocumentHistory,
-            dyn crate::widget::controls::ActionControls
+            dyn crate::widget::controls::ActionControls,
+            dyn crate::resources::PublishesResources
         );
 
         // A component's diagnostic probe observes its own record, the
@@ -1289,110 +1290,7 @@ mod component_adapter {
             let root = self.component.root.as_deref()?;
             root.permission_scope()
         }
-        fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let Some(root) = self.component.root.as_deref() else {
-                        return Vec::new();
-                    };
-                    root.resources(document)
-                })
-                .unwrap_or_else(|_| Vec::new())
-        }
-        fn action_directory_resource_page(
-            &self,
-            doc: &AutoCommit,
-            cursor: &[u8],
-            max_results: usize,
-        ) -> Option<ActionDirectoryResourcePage> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let root = self.component.root.as_deref()?;
-                    root.action_directory_resource_page(document, cursor, max_results)
-                })
-                .unwrap_or(None)
-        }
-        fn action_directory_revision(&self, doc: &AutoCommit) -> Option<String> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let root = self.component.root.as_deref()?;
-                    root.action_directory_revision(document)
-                })
-                .unwrap_or(None)
-        }
 
-        fn action_directory_invocation_domain(
-            &self,
-            doc: &AutoCommit,
-        ) -> crate::widget::ActionDirectoryInvocationDomain {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    self.component
-                        .root
-                        .as_deref()
-                        .map(|root| root.action_directory_invocation_domain(document))
-                        .unwrap_or_default()
-                })
-                .unwrap_or_default()
-        }
-        fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let root = self.component.root.as_deref()?;
-                    root.resource(document, id)
-                })
-                .unwrap_or(None)
-        }
-        /// A participant's tree is built against the component's own record
-        /// document, like [`Self::resources`]; the default would fall back to
-        /// this boundary's own view (the published schema) on the outer doc.
-        fn resources_for(
-            &self,
-            participant: Option<&tilo_actions::ParticipantId>,
-            doc: &AutoCommit,
-        ) -> Vec<tilo_actions::Resource> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let Some(root) = self.component.root.as_deref() else {
-                        return Vec::new();
-                    };
-                    root.resources_for(participant, document)
-                })
-                .unwrap_or_else(|_| Vec::new())
-        }
-        fn resource_for(
-            &self,
-            participant: Option<&tilo_actions::ParticipantId>,
-            doc: &AutoCommit,
-            id: &str,
-        ) -> Option<tilo_actions::Resource> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let root = self.component.root.as_deref()?;
-                    root.resource_for(participant, document, id)
-                })
-                .unwrap_or(None)
-        }
-        fn action_directory_visibility(
-            &self,
-            doc: &AutoCommit,
-            resource_id: &str,
-        ) -> Option<tilo_actions::ActionAddress> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let root = self.component.root.as_deref()?;
-                    root.action_directory_visibility(document, resource_id)
-                })
-                .unwrap_or(None)
-        }
         fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
             self.component.search_providers()
         }
@@ -1668,6 +1566,119 @@ mod component_adapter {
                 return;
             };
             root.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    impl crate::resources::PublishesResources for BoundAppWidget {
+        fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let Some(root) = self.component.root.as_deref() else {
+                        return Vec::new();
+                    };
+                    crate::resources::resources(root, document)
+                })
+                .unwrap_or_else(|_| Vec::new())
+        }
+        fn action_directory_resource_page(
+            &self,
+            doc: &AutoCommit,
+            cursor: &[u8],
+            max_results: usize,
+        ) -> Option<ActionDirectoryResourcePage> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let root = self.component.root.as_deref()?;
+                    crate::resources::action_directory_resource_page(
+                        root,
+                        document,
+                        cursor,
+                        max_results,
+                    )
+                })
+                .unwrap_or(None)
+        }
+        fn action_directory_revision(&self, doc: &AutoCommit) -> Option<String> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let root = self.component.root.as_deref()?;
+                    crate::resources::action_directory_revision(root, document)
+                })
+                .unwrap_or(None)
+        }
+        fn action_directory_invocation_domain(
+            &self,
+            doc: &AutoCommit,
+        ) -> crate::widget::ActionDirectoryInvocationDomain {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    self.component
+                        .root
+                        .as_deref()
+                        .map(|root| {
+                            crate::resources::action_directory_invocation_domain(root, document)
+                        })
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        }
+        fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let root = self.component.root.as_deref()?;
+                    crate::resources::resource(root, document, id)
+                })
+                .unwrap_or(None)
+        }
+        /// A participant's tree is built against the component's own record
+        /// document, like [`Self::resources`]; the default would fall back to
+        /// this boundary's own view (the published schema) on the outer doc.
+        fn resources_for(
+            &self,
+            participant: Option<&tilo_actions::ParticipantId>,
+            doc: &AutoCommit,
+        ) -> Vec<tilo_actions::Resource> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let Some(root) = self.component.root.as_deref() else {
+                        return Vec::new();
+                    };
+                    crate::resources::resources_for(root, participant, document)
+                })
+                .unwrap_or_else(|_| Vec::new())
+        }
+        fn resource_for(
+            &self,
+            participant: Option<&tilo_actions::ParticipantId>,
+            doc: &AutoCommit,
+            id: &str,
+        ) -> Option<tilo_actions::Resource> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let root = self.component.root.as_deref()?;
+                    crate::resources::resource_for(root, participant, document, id)
+                })
+                .unwrap_or(None)
+        }
+        fn action_directory_visibility(
+            &self,
+            doc: &AutoCommit,
+            resource_id: &str,
+        ) -> Option<tilo_actions::ActionAddress> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let root = self.component.root.as_deref()?;
+                    crate::resources::action_directory_visibility(root, document, resource_id)
+                })
+                .unwrap_or(None)
         }
     }
 
