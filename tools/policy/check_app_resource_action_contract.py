@@ -128,10 +128,6 @@ RATCHETS = {
         re.compile(r"\bfn\s+activate_search_result\s*\("),
         "opaque search activation bypass; return SearchResult::for_action with a published resource action",
     ),
-    "legacy_resource_operation_override": (
-        LEGACY_OPERATION_HANDLER,
-        "legacy resource-operation hook; implement Widget::start_operation, the single operation entry",
-    ),
 }
 
 
