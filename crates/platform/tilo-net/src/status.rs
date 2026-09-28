@@ -4,7 +4,7 @@
 //! [`Connectivity::Online`] means "worth trying", and a failed request
 //! remains the real answer. On the desktop it means a route to the public
 //! internet exists (IPv4 or IPv6); in a page it is `navigator.onLine`.
-//! Metering comes from NetworkManager on Linux and the Network Information
+//! Metering comes from `NetworkManager` on Linux and the Network Information
 //! API in a page; macOS does not say.
 
 /// Whether the device has a network path.
@@ -142,7 +142,7 @@ mod imp {
         }
     }
 
-    /// NetworkManager's view of the active devices, asked through `nmcli`
+    /// `NetworkManager`'s view of the active devices, asked through `nmcli`
     /// at most once a minute (the watch polls every few seconds).
     #[cfg(target_os = "linux")]
     pub(crate) mod metered {
