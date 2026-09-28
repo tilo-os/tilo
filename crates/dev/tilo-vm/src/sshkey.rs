@@ -103,6 +103,16 @@ pub fn smbios_credential(public: &str) -> String {
     )
 }
 
+/// Direct Linux boots on QEMU's ARM `virt` machine have no SMBIOS table for
+/// systemd to read. The public key can safely use systemd's kernel command
+/// line credential transport; private keys and passwords must never use it.
+pub fn kernel_credential(public: &str) -> String {
+    format!(
+        "systemd.set_credential_binary={CREDENTIAL}:{}",
+        encoded(public)
+    )
+}
+
 /// The one-time step for a VM that did not get the key as a credential:
 /// the dev account logs in with its password, and sudo appends the key to
 /// root's `authorized_keys`. Runs the same in a POSIX shell and `PowerShell`.
@@ -147,6 +157,14 @@ mod tests {
                 .strip_prefix("io.systemd.credential.binary:ssh.authorized_keys.root=")
                 .unwrap();
             assert!(!encoded.contains([' ', ',', '\'', '"']), "{encoded}");
+            assert_eq!(
+                STANDARD.decode(encoded).unwrap(),
+                format!("{PUBLIC}\n").as_bytes()
+            );
+            let kernel = kernel_credential(PUBLIC);
+            let encoded = kernel
+                .strip_prefix("systemd.set_credential_binary=ssh.authorized_keys.root:")
+                .unwrap();
             assert_eq!(
                 STANDARD.decode(encoded).unwrap(),
                 format!("{PUBLIC}\n").as_bytes()
