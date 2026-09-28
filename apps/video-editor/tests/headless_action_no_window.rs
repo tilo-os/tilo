@@ -22,23 +22,19 @@ const APP_ID: &str = "so.tilo.video-editor";
 /// Restores the previous value on drop, so a test that fails does not leave
 /// the variable pointing at a deleted temp directory for whatever runs next.
 struct DataHome {
-    dir: std::path::PathBuf,
+    _dir: tempfile::TempDir,
     _env: tilo_test_env::ScopedEnv,
 }
 
 impl DataHome {
     fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!("tilo-ve-headless-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("create the private data home");
+        let dir = tempfile::tempdir().expect("create the private data home");
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_DATA_HOME", &dir);
-        Self { dir, _env: env }
-    }
-}
-
-impl Drop for DataHome {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.dir).ok();
+        env.set("XDG_DATA_HOME", dir.path());
+        Self {
+            _dir: dir,
+            _env: env,
+        }
     }
 }
 
