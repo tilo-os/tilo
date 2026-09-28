@@ -2884,10 +2884,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         // Required, not incidental: the compositor only accepts
         // `set_selection` from the connection that owns the focused surface.
-        #[cfg(target_os = "linux")]
-        {
-            crate::host::native::attach_display(event_loop);
-        }
+        crate::host::native::attach_display(event_loop);
         // AccessKit's adapter asserts it's created while the window is
         // hidden, so build invisible, create the adapter, show.
         let title = resolve_window_title(self.app.window.title.as_deref());

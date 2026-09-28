@@ -376,7 +376,7 @@ impl SemanticTree {
         builder.order.push(root_id.clone());
 
         let mut root_children: Vec<SemanticId> = Vec::new();
-        builder.visit_widget(root, &root_id, &mut root_children);
+        builder.visit_widget(root, &root_id, true, &mut root_children);
 
         // Resource affordances hang off the root as their own subtrees.
         for res in resources {
@@ -768,10 +768,14 @@ impl<const BOUND: bool> Build<'_, BOUND> {
     }
     /// A presentational widget (`accessibility() == None`) is collapsed
     /// out and its children reparented — matching the AccessKit bridge.
+    ///
+    /// A keyed id embeds its parent's, so it is durable only under a
+    /// durable parent: a key under a layout id moves when the UI rebuilds.
     fn visit_widget(
         &mut self,
         w: &dyn Widget,
         semantic_parent: &SemanticId,
+        parent_durable: bool,
         parent_children: &mut Vec<SemanticId>,
     ) {
         let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
@@ -791,6 +795,7 @@ impl<const BOUND: bool> Build<'_, BOUND> {
                     let parent = parent_children.last().unwrap_or(&root);
                     SemanticId::synthetic(parent, parent_children.len())
                 };
+                let durable_identity = access.semantic_key.is_some() && parent_durable;
 
                 let mut children: Vec<SemanticId> = Vec::new();
                 let mut hosted = HostedByIndex::new();
@@ -801,12 +806,13 @@ impl<const BOUND: bool> Build<'_, BOUND> {
                         let parent_index = path.remove(0);
                         hosted.entry(parent_index).or_default().push((path, child));
                     } else {
-                        self.visit_widget(child, &id, &mut children);
+                        self.visit_widget(child, &id, durable_identity, &mut children);
                     }
                 }
                 for (i, synth) in access.children.iter().enumerate() {
                     let child = self.visit_synthetic(
                         &id,
+                        durable_identity,
                         i,
                         synth,
                         taffy_id,
@@ -831,7 +837,7 @@ impl<const BOUND: bool> Build<'_, BOUND> {
 
                 let node = SemanticNode {
                     id: id.clone(),
-                    durable_identity: access.semantic_key.is_some(),
+                    durable_identity,
                     role: access.role,
                     name: access.name.clone(),
                     value: if access.state.protected {
@@ -852,16 +858,23 @@ impl<const BOUND: bool> Build<'_, BOUND> {
             }
             None => {
                 for child in w.children() {
-                    self.visit_widget(child, semantic_parent, parent_children);
+                    self.visit_widget(child, semantic_parent, parent_durable, parent_children);
                 }
             }
         }
     }
 
     /// A virtual row/cell — has no backing widget, but may carry geometry.
+    /// `parent_durable` is passed down rather than read from `self.nodes`:
+    /// a parent is stored only after its children are visited.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one recursive visit; bundling these would only rename them"
+    )]
     fn visit_synthetic(
         &mut self,
         parent: &SemanticId,
+        parent_durable: bool,
         index: usize,
         access: &AccessNode,
         owner: Option<TaffyNodeId>,
@@ -871,6 +884,7 @@ impl<const BOUND: bool> Build<'_, BOUND> {
             || SemanticId::synthetic(parent, index),
             |key| SemanticId::keyed(parent, key),
         );
+        let durable_identity = access.key.is_some() && parent_durable;
         let semantic_target = access.action_target.as_deref();
         let mut children: Vec<SemanticId> = Vec::new();
         let direct = hosted
@@ -887,6 +901,7 @@ impl<const BOUND: bool> Build<'_, BOUND> {
             for (i, child) in access.children.iter().enumerate() {
                 let c = self.visit_synthetic(
                     &id,
+                    durable_identity,
                     i,
                     child,
                     owner,
@@ -896,16 +911,12 @@ impl<const BOUND: bool> Build<'_, BOUND> {
             }
         } else {
             for child in direct {
-                self.visit_widget(child, &id, &mut children);
+                self.visit_widget(child, &id, durable_identity, &mut children);
             }
         }
         let node = SemanticNode {
             id: id.clone(),
-            durable_identity: access.key.is_some()
-                && self
-                    .nodes
-                    .get(parent)
-                    .is_some_and(|node| node.durable_identity),
+            durable_identity,
             role: access.role,
             name: access.name.clone(),
             value: if access.state.protected {

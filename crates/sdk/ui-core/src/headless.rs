@@ -26,7 +26,10 @@
 //! second loads the store and dumps the document as JSON. Diffing the two
 //! dumps is the persistence proof for the app's document.
 
+mod controls;
 mod document_history;
+
+pub use controls::{CONTROL_RESOURCE_PREFIX, Control, ControlInput};
 
 use std::collections::{HashMap, HashSet};
 
@@ -451,9 +454,14 @@ use crate::history_mode::frame::FrameworkInputFrame;
 /// the same pass ordering documented by [`Self::relayout`].
 /// Borrowed renderer input plus semantic output from the same real widget frame.
 /// Cheap wake demand; deliberately excludes accessibility and inspection trees.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameSchedule {
     pub needs_redraw: bool,
+    /// The part of `needs_redraw` that is queued work: a component wake, a
+    /// pending invocation or a presence change. Widget dirtiness is left
+    /// out (leaves default to dirty), so a host that takes frames only for
+    /// input and this work stays idle while nothing happens.
+    pub queued_work: bool,
     pub needs_animation_frame: bool,
     pub next_wake_deadline: Option<crate::time::Instant>,
 }
@@ -1880,20 +1888,21 @@ impl FrameHarness {
     /// Read wake demand without materializing document text or semantic nodes.
     pub fn frame_schedule(&self) -> FrameSchedule {
         self.drain_component_wakes();
+        let queued_work = self.presence_redraw
+            || !self.bound_invocations.is_empty()
+            || !self.pending_control_invocations.is_empty()
+            || self
+                .component_wake
+                .as_ref()
+                .is_some_and(|wake| wake.dirty.get());
         let schedule = |roots: Vec<&dyn Widget>| FrameSchedule {
             needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame()),
             next_wake_deadline: roots
                 .iter()
                 .filter_map(|root| root.next_wake_deadline())
                 .min(),
-            needs_redraw: roots.iter().any(|root| root.needs_redraw())
-                || self.presence_redraw
-                || !self.bound_invocations.is_empty()
-                || !self.pending_control_invocations.is_empty()
-                || self
-                    .component_wake
-                    .as_ref()
-                    .is_some_and(|wake| wake.dirty.get()),
+            needs_redraw: roots.iter().any(|root| root.needs_redraw()) || queued_work,
+            queued_work,
         };
         if self.history_layout.is_some() && self.system_search_presentation().is_none() {
             return self.presentation(|history, _| {
@@ -6093,6 +6102,28 @@ impl FrameHarness {
         Ok(())
     }
 
+    /// What the focused widget publishes as presence (its caret or
+    /// selection), for a live host to send to peers.
+    pub fn focus_presence(
+        &self,
+    ) -> Option<(
+        crate::presence::PresenceKey,
+        crate::collaboration::PresencePayload,
+    )> {
+        self.focused.and_then(|id| {
+            self.inspect_node(id, |widget| widget.presence_payload())
+                .ok()
+                .flatten()
+        })
+    }
+
+    /// The collaborator state the draw pass renders (remote carets,
+    /// selections, names), for a live host applying peers' presence. Takes
+    /// effect in the next relayout.
+    pub fn presence_mut(&mut self) -> &mut PresenceCtx {
+        &mut self.presence
+    }
+
     /// Replace the host-projected collaborator state used by the real draw pass.
     /// Capture and integration hosts use this to exercise the same presence
     /// rendering that a live broker frame supplies, without a broker process.
@@ -6485,7 +6516,11 @@ impl FrameHarness {
                 return Err(tilo_actions::DoorError::ConfirmationRequired);
             }
         };
-        let result = self.invoke_address(address, arguments, confirmed);
+        let result = if controls::is_control_operation(spec) {
+            self.invoke_control_action(address, arguments)
+        } else {
+            self.invoke_address(address, arguments, confirmed)
+        };
         self.host_tick();
         self.relayout();
         result
@@ -10451,6 +10486,7 @@ mod a11y_driver_tests {
             Some(
                 AccessNode::new(Role::Canvas)
                     .with_name("Strip")
+                    .with_semantic_key("strip")
                     .with_state(AccessState::new().focusable(true).focused(self.focused))
                     .with_children(
                         self.items
@@ -10680,6 +10716,61 @@ mod a11y_driver_tests {
             assert!(err.contains("no accessibility node"), "got {err}");
             assert!(activated.borrow().is_empty());
         }
+    }
+
+    fn control_named(d: &Driver, name: &str) -> Control {
+        d.controls()
+            .into_iter()
+            .find(|control| control.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("no control named {name}"))
+    }
+
+    #[test]
+    fn every_on_screen_control_is_listed_with_what_it_answers() {
+        let (d, _a) = driver();
+        let beta = control_named(&d, "beta");
+        assert_eq!(beta.role, accesskit::Role::Button);
+        assert!(beta.verbs.iter().any(|verb| verb == "activate"), "{beta:?}");
+        assert!(beta.verbs.iter().any(|verb| verb == "focus"), "{beta:?}");
+        assert_eq!(
+            beta.id,
+            d.a11y_node_named("beta").unwrap().0.to_string(),
+            "a control is named by its exported node"
+        );
+    }
+
+    #[test]
+    fn pressing_and_focusing_a_control_reaches_the_element_inside_a_canvas() {
+        let (mut d, activated) = driver();
+        let gamma = control_named(&d, "gamma");
+        d.operate_control(&gamma.id, &ControlInput::Press).unwrap();
+        assert_eq!(*activated.borrow(), vec!["gamma".to_string()]);
+        let alpha = control_named(&d, "alpha");
+        d.operate_control(&alpha.id, &ControlInput::Focus).unwrap();
+        assert_eq!(*activated.borrow(), vec!["gamma".to_string()]);
+        assert!(
+            d.operate_control(&alpha.id, &ControlInput::SetValue("x".into()))
+                .is_err(),
+            "a button takes no value"
+        );
+        assert!(d.operate_control("nope", &ControlInput::Press).is_err());
+    }
+
+    #[test]
+    fn a_projected_control_action_runs_through_the_door() {
+        let (mut d, activated) = driver();
+        let resource = d
+            .resources()
+            .into_iter()
+            .find(|resource| {
+                resource.id.as_str().starts_with(CONTROL_RESOURCE_PREFIX)
+                    && resource.label == "beta"
+            })
+            .expect("the keyed element inside the canvas is published");
+        let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "activate");
+        d.invoke_action(&address, &serde_json::Map::new(), false, None)
+            .unwrap();
+        assert_eq!(*activated.borrow(), vec!["beta".to_string()]);
     }
 }
 
