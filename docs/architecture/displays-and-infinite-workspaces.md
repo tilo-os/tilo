@@ -125,10 +125,12 @@ computed.
 
 HDR, VRR and ICC controls are capability gated. EDID HDR support and the kernel
 `vrr_capable` property are reported separately from *usable compositor*
-support. The current DRM presenter uses XRGB8888 buffers (GBM render targets
-or dumb buffers) and sets neither HDR metadata/colorspace nor `VRR_ENABLED`,
-so Settings explains that limitation and provides no inert HDR/VRR toggle even
-when the sink supports it.
+support. An output driven in HDR scans out a 10-bit (or half-float) PQ
+BT.2020 signal: vello draws the desktop in 8-bit sRGB, and a final pass places
+it at the user's SDR white and composites HDR client surfaces and peer streams
+at their native precision in linear light (`shell::hdr_surface`). Anything
+that renders the scene without that pass — screenshots, screencasts, SDR
+outputs — shows those surfaces tone-mapped.
 
 ICC profiles are discovered from colord/XDG locations (`/var/lib/colord/icc`,
 system color directories, and the user's XDG data directory), bounded to 16 MiB

@@ -9027,7 +9027,8 @@ pub fn run() {
                 let mut frame_paint = if retained_damage_supported {
                     frame_builder.paint_with_damage()
                 } else {
-                    FramePaint::full(frame_builder.paint())
+                    let scene = frame_builder.paint();
+                    FramePaint::full(scene).with_hdr_layers(frame_builder.take_hdr_layers())
                 };
                 // Audience presentation surfaces bypass WorkspaceTree and
                 // paint only into their requested output rectangles. The DRM
@@ -12491,8 +12492,8 @@ fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder)
 
 /// Tell colour-managed clients what each output displays: the HDR signal of
 /// an output driven in HDR, SDR otherwise. Surfaces are asked to render in
-/// HDR only while every output is HDR, since an HDR surface on an SDR output
-/// would be shown with its PQ signal unconverted.
+/// HDR only while every output is HDR, since an SDR output can show an HDR
+/// surface only tone-mapped.
 fn publish_output_colors(state: &State, backend: &dyn crate::compositor::backend::Backend) {
     use crate::wayland::color_management::OutputDescription;
     let outputs = backend.outputs();
