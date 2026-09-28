@@ -149,6 +149,8 @@ pub struct SessionOwner {
     workspace_id: u64,
     live_publication_transition: Option<Arc<LivePublicationTransition>>,
     resources: Option<resources::OwnerResources>,
+    /// Documents proposed for this room, waiting for the owner's answer.
+    pub(crate) proposed_documents: crate::document_imports::HeldDocuments,
 }
 
 #[cfg(test)]
@@ -409,6 +411,7 @@ impl SessionOwner {
             workspace_id: workspace,
             live_publication_transition: None,
             resources: None,
+            proposed_documents: crate::document_imports::HeldDocuments::default(),
         })
     }
     pub fn open(root: &Path) -> Result<Self> {
@@ -444,6 +447,7 @@ impl SessionOwner {
             workspace_id,
             live_publication_transition: None,
             resources: None,
+            proposed_documents: crate::document_imports::HeldDocuments::default(),
         };
         if matches!(owner.aggregate.publication, PublicationStorage::V5 { .. }) {
             return Ok(owner);
@@ -1621,6 +1625,7 @@ impl SessionOwner {
             workspace_id,
             live_publication_transition: None,
             resources: None,
+            proposed_documents: crate::document_imports::HeldDocuments::default(),
         })
     }
 }

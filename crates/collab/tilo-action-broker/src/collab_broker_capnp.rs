@@ -1232,6 +1232,8 @@ mod launchable;
 pub use launchable::launchable_provider;
 #[path = "desktop_commands.rs"]
 mod desktop_commands;
+#[path = "document_imports.rs"]
+mod document_imports;
 #[path = "peer_action_broker.rs"]
 mod peer_action_broker;
 #[path = "policy_context.rs"]
@@ -10001,6 +10003,12 @@ pub(super) fn spawn_configured(
             local.block_on(&rt, async move {
                 let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
                 if let Err(error) = state.start_desktop_commands() {
+                    if let Ok(mut failure) = state.owner_commit_failure.lock() {
+                        failure.get_or_insert(error);
+                    }
+                    return;
+                }
+                if let Err(error) = state.start_document_imports() {
                     if let Ok(mut failure) = state.owner_commit_failure.lock() {
                         failure.get_or_insert(error);
                     }

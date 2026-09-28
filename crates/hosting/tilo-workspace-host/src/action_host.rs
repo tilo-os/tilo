@@ -372,6 +372,7 @@ impl ActionHost {
             },
             tilo_action_broker::services::HostServices {
                 desktop_commands: Some(signing.desktop_commands(owner.peer().room().into())),
+                document_imports: Some(signing.document_imports(owner.peer().room().into())),
                 collaboration_admin: collaboration_admin.map(|service| Arc::new(service) as Arc<_>),
                 ..Default::default()
             },
