@@ -2161,6 +2161,14 @@ fn parse_args_extended(
                 }
                 parsed.native_audit = true;
             }
+            // A Jump List task: run this host command once the window exists.
+            #[cfg(all(windows, feature = "native"))]
+            crate::host_chrome::windows_items::LAUNCH_OPTION => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                let invocation = crate::host_chrome::windows_items::decode(value)
+                    .ok_or_else(|| LaunchError::UnknownArgument(arg.clone()))?;
+                crate::host_chrome::windows::request_startup_command(invocation);
+            }
             extra
                 if (allowed_flags.contains(&extra) || allowed_live_flags.contains(&extra))
                     && inline.is_none() =>

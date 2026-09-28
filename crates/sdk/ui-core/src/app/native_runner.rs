@@ -85,8 +85,11 @@ struct AppHandler {
     /// The menu bar and title-bar search field, when the host draws them.
     #[cfg(target_os = "macos")]
     host_chrome: Option<crate::host_chrome::macos::MacChrome>,
+    /// The menu bar and Jump List, when the host draws them.
+    #[cfg(windows)]
+    host_chrome: Option<crate::host_chrome::windows::WindowsChrome>,
     /// What the host chrome last presented, to skip unchanged refreshes.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     host_commands_key: Option<super::host_commands::HostCommandsKey>,
     /// Who decorates the window, and the header bar when the app does.
     #[cfg(target_os = "linux")]
@@ -129,7 +132,10 @@ impl AppHandler {
         self.host_chrome = Some(chrome);
         self.host_commands_key = None;
     }
+}
 
+#[cfg(any(target_os = "macos", windows))]
+impl AppHandler {
     /// Hand the host chrome fresh commands when anything they show changed.
     fn refresh_host_chrome(&mut self) {
         if let Some(chrome) = &self.host_chrome {
@@ -139,6 +145,38 @@ impl AppHandler {
                 chrome.update(self.app.host_commands(true));
             }
         }
+    }
+}
+
+#[cfg(windows)]
+impl AppHandler {
+    /// Put History, Search and Undo into the window's menu bar and the Jump
+    /// List, and run the command a Jump List task launched this process with.
+    fn install_host_chrome(&mut self, window: &Window) {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let proxy = self.a11y_proxy.clone();
+        if let Some(invocation) = crate::host_chrome::windows::take_startup_command() {
+            let _ = proxy.send_event(UserEvent::HostCommand(invocation));
+        }
+        if crate::host_chrome::HostChrome::current(self.app.input.platform)
+            != crate::host_chrome::HostChrome::Native
+        {
+            return;
+        }
+        let Ok(handle) = window.window_handle() else {
+            return;
+        };
+        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+            return;
+        };
+        let hwnd = windows::Win32::Foundation::HWND(handle.hwnd.get() as *mut std::ffi::c_void);
+        self.host_chrome = Some(crate::host_chrome::windows::WindowsChrome::install(
+            hwnd,
+            move |invocation| {
+                let _ = proxy.send_event(UserEvent::HostCommand(invocation));
+            },
+        ));
+        self.host_commands_key = None;
     }
 }
 
@@ -3006,7 +3044,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             event_loop.exit();
             return;
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         self.install_host_chrome(&window);
         // Honour system/presentation roots before the first visible configure.
         // The normal reconcile path still owns output selection and later changes.
@@ -3111,7 +3149,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let Some(window) = self.window.clone() else {
             return;
         };
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         self.refresh_host_chrome();
         sync_safe_area(&mut self.app, &window);
         self.poll_touch_hold(&window);
@@ -3775,9 +3813,9 @@ impl App {
                 .dev_session
                 .as_deref()
                 .and_then(dev_reload_library),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             host_chrome: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             host_commands_key: None,
             #[cfg(target_os = "linux")]
             decorations: linux_header::Decorations::Unsettled,
