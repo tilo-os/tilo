@@ -1,6 +1,7 @@
 //! The role cap a workspace places on foreign devices: Tilo runtimes on an
 //! operating system Tilo does not control, marked as such in their device
-//! certificate.
+//! certificate. The cap applies only in rooms the device joins; a room the
+//! device governs itself is its own ([`cap_applies`]).
 //!
 //! The cap is one ordinary workspace capability, so it replicates and is
 //! governed like every other: [`foreign_device_cap`] with id
@@ -28,6 +29,12 @@ pub const FOREIGN_DEVICE_CAP_ID: &str = "foreign-device-cap";
 pub const FOREIGN_DEVICE_CEILING: Verb = Verb::Write;
 
 const FOREIGN_DEVICE_SUBJECT: &str = "tilo:foreign-device";
+
+/// Whether a device is held to the cap: it is foreign and does not govern
+/// the room itself.
+pub fn cap_applies(foreign: bool, governs_room: bool) -> bool {
+    foreign && !governs_room
+}
 
 /// The workspace capability capping foreign devices at `verb`. A verb above
 /// [`FOREIGN_DEVICE_CEILING`] leaves the ceiling in force.
