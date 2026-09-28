@@ -1323,7 +1323,7 @@ async fn checked_restore_scope_codecs_transport_and_parent_bounds_fail_closed() 
                     crate::namespace::ROOT_INO,
                     "test.bin",
                     crate::namespace::ROOT_INO,
-                    "test.qdoc",
+                    "test.tilo-doc",
                 )
                 .unwrap();
             let before = fixture.durable_bytes();
@@ -1340,7 +1340,7 @@ async fn checked_restore_scope_codecs_transport_and_parent_bounds_fail_closed() 
                 .fs
                 .rename_named(
                     crate::namespace::ROOT_INO,
-                    "test.qdoc",
+                    "test.tilo-doc",
                     crate::namespace::ROOT_INO,
                     "test.bin",
                 )
@@ -2388,7 +2388,7 @@ async fn history_reads_reject_stale_cursors_and_bind_them_to_live_scope() {
                 crate::namespace::ROOT_INO,
                 "test.bin",
                 crate::namespace::ROOT_INO,
-                "test.qdoc",
+                "test.tilo-doc",
             )
             .unwrap();
         assert!(matches!(

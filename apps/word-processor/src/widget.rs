@@ -11510,6 +11510,11 @@ impl ui::undo::CommittedActions for WordProcessorWidget {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }
+    fn take_action_revert(
+        &mut self,
+    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
+        self.actions.take_action_revert()
+    }
 }
 
 impl ui::collaboration::participants::Participants for WordProcessorWidget {

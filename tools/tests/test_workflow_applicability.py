@@ -205,10 +205,10 @@ jobs:
             self.doCleanups()
             self.setUp()
             paths = gate.declared_paths(ROOT/'.forgejo/workflows/release-relay.yml')
-            self.write('crates/doc/qdoc/src/lib.rs', 'dependency')
+            self.write('crates/doc/tilo-doc/src/lib.rs', 'dependency')
             head = self.commit()
             self.assertTrue(gate.applicable(self.repo, 'pull_request', self.event(self.base, head), paths)[0])
-            self.git('mv', 'crates/doc/qdoc/src/lib.rs', 'docs/moved.rs')
+            self.git('mv', 'crates/doc/tilo-doc/src/lib.rs', 'docs/moved.rs')
             moved = self.commit()
             self.assertTrue(gate.applicable(self.repo, 'pull_request', self.event(head, moved), paths)[0])
         with self.subTest(phase='build and publication contract changes build'):

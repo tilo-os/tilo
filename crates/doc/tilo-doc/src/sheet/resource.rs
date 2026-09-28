@@ -47,7 +47,7 @@ impl Action for WorkbookAction {
                 Ok(())
             }
             Self::AddSheet { name, after } => {
-                let c = open_or_init(doc)?;
+                let c = open_or_init(doc);
                 add_sheet(doc, &c, name, after.as_deref())?;
                 Ok(())
             }
@@ -107,10 +107,10 @@ impl Action for WorkbookAction {
     }
 }
 
-fn open_or_init(doc: &mut Doc) -> Result<SheetContainers, ActionError> {
+fn open_or_init(doc: &mut Doc) -> SheetContainers {
     match open(doc, &ROOT) {
-        Ok(c) => Ok(c),
-        Err(_) => Ok(init(doc, &ROOT)),
+        Ok(c) => c,
+        Err(_) => init(doc, &ROOT),
     }
 }
 
@@ -250,6 +250,10 @@ impl Resource for WorkbookDoc {
 }
 
 /// Containers for callers that already hold a live document.
+///
+/// # Errors
+///
+/// Returns [`ModelError::Invalid`] when the document has no workbook schema.
 pub fn containers(doc: &Doc) -> Result<SheetContainers, ModelError> {
     open(doc, &ROOT).map_err(|error| ModelError::invalid(error.to_string()))
 }

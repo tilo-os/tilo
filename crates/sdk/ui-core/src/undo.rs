@@ -237,7 +237,7 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
         if let Some(before) = crate::undo::take_committed_action(w) {
             brackets.push(before);
             if revert.is_none() {
-                revert = w.take_action_revert();
+                revert = crate::undo::take_action_revert(w);
             }
         }
     }
@@ -337,6 +337,17 @@ pub trait CommittedActions {
     /// action. Rising-edge: reading clears it.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>>;
 
+    /// Rising-edge compensating document actions for the bracket
+    /// [`Self::take_committed_action`] just opened: `(undo_via, redo_via)`.
+    /// Set when the forward action's
+    /// [`tilo_actions::Action::inverse_before`] recorded an outside
+    /// consequence. Default: none (pure CRDT undo via inverse patches).
+    fn take_action_revert(
+        &mut self,
+    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
+        None
+    }
+
     /// Whether the undo step the last boundary opened stays open for the
     /// actions that continue it (the rest of a word typed a keystroke at a
     /// time). Answered by the widget itself, never its children.
@@ -375,6 +386,13 @@ pub fn take_committed_action(
 ) -> Option<Vec<automerge::ChangeHash>> {
     crate::widget::capability::capability_mut::<dyn CommittedActions>(widget)?
         .take_committed_action()
+}
+
+/// Compensating `(undo_via, redo_via)` for `widget`'s last bracket, if any.
+pub fn take_action_revert(
+    widget: &mut (impl crate::widget::Widget + ?Sized),
+) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
+    crate::widget::capability::capability_mut::<dyn CommittedActions>(widget)?.take_action_revert()
 }
 
 /// Whether `widget` keeps its last undo step open.

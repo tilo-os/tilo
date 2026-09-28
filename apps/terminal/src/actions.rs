@@ -77,6 +77,14 @@
 //! opener, but never pretend transient process state is a durable document edit.
 //! The tests below prove each half of this split on the real production path.
 
+use ui::tilo_actions::ActionRegistry;
+use ui::tilo_resource::Resource;
+
+/// Install the session action decoder for palette execution and remote replay.
+pub fn register(registry: &mut ActionRegistry) {
+    <crate::resource::Terminal as Resource>::register(registry);
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Write};

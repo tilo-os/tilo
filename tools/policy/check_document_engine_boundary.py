@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """Keep document content behind the document layer, not the CRDT engine.
 
-Rich-text and spreadsheet content lives in qdoc resources. qdoc stores it on
-Automerge today, but that is qdoc's business: an app that edits document
-content through Automerge directly ties itself to the engine and to qdoc's
+Rich-text and spreadsheet content lives in tilo-doc resources. tilo-doc stores it on
+Automerge today, but that is tilo-doc's business: an app that edits document
+content through Automerge directly ties itself to the engine and to tilo-doc's
 private schema, and blocks any later change of either. Two things are
 therefore reserved to the crates that own a CRDT engine:
 
 * ``rich_text_engine`` — Automerge's rich-text primitives (``automerge::marks``,
-  ``ExpandMark``). Apps format text through the qdoc document API
+  ``ExpandMark``). Apps format text through the tilo-doc document API
   (``DocMut::add_mark``/``remove_mark``/``…_in``), not by marking Automerge
   text objects themselves.
-* ``document_schema`` — qdoc's storage keys (``qdoc::schema::KEY_*``, the block
+* ``document_schema`` — tilo-doc's storage keys (``tilo_doc::schema::KEY_*``, the block
   fields ``BLOCK_TEXT``/``BLOCK_KIND``/``BLOCK_ATTRS``/``BLOCK_ORDER``/
   ``BLOCK_CHILDREN``, and the preservation and binary-descriptor fields).
-  Outside qdoc they only serve to read or write qdoc's CRDT by hand.
+  Outside tilo-doc they only serve to read or write tilo-doc's CRDT by hand.
 
 Test modules and test files are exempt: tests may build a malformed document on
 purpose. Existing production uses are listed in
@@ -36,11 +36,11 @@ BASELINE = Path(__file__).with_name("document_engine_baseline.toml")
 
 # Crates that own a CRDT engine or the document layer itself.
 ENGINE_OWNERS = (
-    "crates/doc/qdoc/",
-    "crates/doc/qdoc-codecs/",
+    "crates/doc/tilo-doc/",
+    "crates/doc/tilo-doc-codecs/",
     # The rich-text resource: qdoc's rich text as a tilo-resource resource,
-    # which places changes by qdoc's storage keys.
-    "crates/doc/qdoc-rich-text/",
+    # which places changes by tilo-doc's storage keys.
+    "crates/doc/tilo-document/",
     "crates/sdk/ui-core/",
     # Toolkit lab/shots scenarios: lived under ui-core (an owner) until moved
     # into this non-default member; they still exercise the same surfaces.
@@ -53,9 +53,9 @@ SCANNED_ROOTS = ("apps", "crates", "examples")
 RULES = {
     "rich_text_engine": re.compile(r"\bautomerge::marks\b|\bExpandMark\b"),
     "document_schema": re.compile(
-        r"\bqdoc::schema::(?:KEY_[A-Z_]+|BLOCK_(?:TEXT|KIND|ATTRS|ORDER|CHILDREN)"
+        r"\btilo_doc::schema::(?:KEY_[A-Z_]+|BLOCK_(?:TEXT|KIND|ATTRS|ORDER|CHILDREN)"
         r"|PRESERVED_[A-Z_]+|BLOB_(?:MIME|LEN|W|H))\b"
-        r"|\buse\s+qdoc::schema::\{[^}]*\b(?:KEY_[A-Z_]+|BLOCK_(?:TEXT|KIND|ATTRS|ORDER|CHILDREN)"
+        r"|\buse\s+tilo_doc::schema::\{[^}]*\b(?:KEY_[A-Z_]+|BLOCK_(?:TEXT|KIND|ATTRS|ORDER|CHILDREN)"
         r"|PRESERVED_[A-Z_]+|BLOB_(?:MIME|LEN|W|H))\b[^}]*\}"
     ),
 }
@@ -131,7 +131,7 @@ def audit(root: Path = ROOT, baseline_path: Path = BASELINE) -> list[Violation]:
                     Violation(
                         path,
                         f"{rule}: {found} use(s), baseline allows {limit}; "
-                        "go through the qdoc document API instead",
+                        "go through the tilo-doc document API instead",
                     )
                 )
         for path, limit in sorted(allowed.items()):
