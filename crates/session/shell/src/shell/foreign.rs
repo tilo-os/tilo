@@ -2332,6 +2332,7 @@ pub struct ForeignSurfaceWidget {
     /// never showed a usable frame. The lookup consults launches then installed manifests, so it's not repeated on every rebuild.
     name: std::cell::OnceCell<String>,
     preserve_transparency: bool,
+    last_draw: Option<std::time::Instant>,
 }
 
 impl ForeignSurfaceWidget {
@@ -2348,6 +2349,7 @@ impl ForeignSurfaceWidget {
             test_id: format!("foreign-surface-{surface_id}"),
             name: std::cell::OnceCell::new(),
             preserve_transparency: false,
+            last_draw: None,
         }
     }
 
@@ -2430,6 +2432,18 @@ impl ForeignSurfaceWidget {
     /// unmapped.
     pub fn is_mapped(&self) -> bool {
         store().frame_size(self.surface_id).is_some()
+    }
+
+    /// Why this tile is asking for frames, for the paint-stats diagnostic.
+    pub(crate) fn animation_detail(&self) -> String {
+        format!(
+            "seq={} cached_seq={} cached={} presented={} drawn_ms_ago={:?}",
+            store().frame_seq(self.surface_id),
+            self.cached_seq,
+            self.cached.is_some(),
+            store().is_presented(self.surface_id),
+            self.last_draw.map(|at| at.elapsed().as_millis()),
+        )
     }
 
     /// Pull a fresh frame out of the store if one has landed since the last call; returns `true` when the cache changed.
@@ -2698,6 +2712,7 @@ impl Widget for ForeignSurfaceWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.last_draw = Some(std::time::Instant::now());
         self.refresh_cache();
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
@@ -2817,6 +2832,10 @@ impl Widget for ForeignSurfaceWidget {
 
     fn test_id(&self) -> Option<&str> {
         Some(&self.test_id)
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn get_rect(&self) -> Rect {
