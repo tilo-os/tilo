@@ -17,6 +17,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+lru.workspace = true
 fnv.workspace = true
 hex.workspace = true
 xdg-paths = { path = "../../crates/system/xdg-paths" }
