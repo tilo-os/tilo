@@ -312,12 +312,25 @@ rather than a second host:
     `NeighbourMsg::AppDocument` commits: the shell's own wire, with
     `channel-crypto` ciphertext on encrypted routes).
   - `/events` is a long-poll that returns the host's envelopes after a
-    host-MAC'd cursor and acknowledges the previous one.
+    host-MAC'd cursor and acknowledges the previous one. A page carries at
+    most 1 MiB of payload (and at least one envelope), so a late join's
+    checkpoint and tail stream as acknowledged pages.
   - The browser applies its edit to its local replica first and keeps it in
-    a persisted outbox until `Committed`.
+    a persisted outbox until `Committed`. The host keeps a durable ledger of
+    admitted commits by author and operation id: a resend is answered with
+    its original order and neither persisted nor fanned out again.
+  - Documents larger than one frame travel as signed segments; the session
+    reassembles them (bounded, digest-checked) before a mount sees them.
+    The page merges one drain's changes per record in one pass (a
+    checkpoint, then its tail as one Automerge change set), so catch-up is
+    linear in the history.
   - Reconnect runs the handshake again, re-subscribes (the host replays
-    retained checkpoints and this device's queue), and resends the whole
-    outbox. Replays are idempotent.
+    its retained coverage and this device's queue), and resends the whole
+    outbox; the ledger absorbs what was already committed.
+  - A session's host-side event log closes at 8192 envelopes; the device
+    then reconnects and gets a full replay. The relay's live fan-out keeps
+    durable coverage when a subscriber's channel is full rather than
+    disconnecting it, which a browser only recovers through that replay.
 - **Live plane over WebTransport.** It uses 541's `LIVE_V1` relay
   (`crates/hosting/tilo-moq`, ported from `qos-moq`), `moq-lite` at
   `/moq/live` on the same port number over UDP.
@@ -1149,7 +1162,9 @@ Status after integrating the parallel branches (`feat/browser-runtime`).
      frames from WebTransport members are not bridged back to iroh members
      (the agents branch adds that); `channel-crypto` group provisioning for
      the browser; `TlsSource::Managed`; a noq WebTransport; a native
-     approver UI; segmented inbound transfers.
+     approver UI; resumable reconnect (a host position instead of a full
+     replay); byte-budget backpressure with a per-subscriber disk queue;
+     host-side compaction of a long retained tail.
 7. **Actions.** *Agents done; `actionsV1` for apps open.*
    `tilo_actions::remote` as `actionsV1`/`actionsV2`, so agents can drive
    apps through the same routes as users. See [Agents](#agents).
