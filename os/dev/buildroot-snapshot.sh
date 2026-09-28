@@ -119,8 +119,10 @@ record() {
       unchanged=true
     fi
     printf '%s_UNCHANGED=%s\n' "$name" "$unchanged" >> "refs/$arch.env"
+    echo "::notice::$name=$ref (packages unchanged from the pin: $unchanged)"
+  else
+    echo "::notice::$name=$ref"
   fi
-  echo "::notice::$name=$ref (packages unchanged from the pin: $unchanged)"
 }
 
 promote() {
