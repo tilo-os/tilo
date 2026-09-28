@@ -4874,7 +4874,7 @@ mod tests {
     fn channel_service(
         key: &ed25519_dalek::SigningKey,
         dir: &std::path::Path,
-        directory: crate::shell::channel_encryption::tests::Directory,
+        directory: crate::shell::channel_encryption::testing::Directory,
     ) -> crate::shell::channel_encryption::ChannelEncryption {
         crate::shell::channel_encryption::ChannelEncryption::open(
             crate::shell::channel_encryption::ChannelEncryptionConfig {
@@ -4923,7 +4923,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn channel_encryption_runs_end_to_end_through_the_workspace_host() {
         use crate::shell::channel_encryption::ChannelAccess;
-        use crate::shell::channel_encryption::tests::{Directory, Policy};
+        use crate::shell::channel_encryption::testing::{Directory, Policy};
         use std::time::Instant;
 
         const SECRET: &[u8] = b"quarterly figures nobody outside may read";

@@ -4,6 +4,7 @@ pub mod agent_reads;
 pub mod agent_timing;
 pub mod app_actions;
 pub mod automation;
+pub mod channel_encryption;
 pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod collab_core;
