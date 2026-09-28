@@ -2,10 +2,14 @@
 """A Cargo local registry holding the packaged SDK and what it builds on.
 
 `publish_check.py` leaves each SDK crate's `.crate` in
-`target/package/tmp-registry/` (`cargo package`, in `target/package/`). This writes a local registry (Cargo's `local-registry`
-source: an index plus the `.crate` files) with those crates and every
-crates.io package the workspace lockfile pins, including the crates.io
-originals of the crates the workspace patches. An app outside the workspace
+`target/package/tmp-registry/` (`cargo package`, in `target/package/`). This
+writes a local registry (Cargo's `local-registry` source: an index plus the
+`.crate` files) with those crates and the crates.io packages they resolve to
+without the workspace's `[patch]`. That set is not the workspace lockfile's:
+a crates.io original can pull what its patched copy trims. A throwaway probe
+that depends on every packaged crate (patched to its unpacked package, so
+nothing needs to be published) resolves against crates.io to find it; the
+workspace lockfile's crates.io packages are added for optional features. An app outside the workspace
 then builds on the SDK exactly as it would once published, with version
 requirements and no `[patch]`, by replacing crates.io with the registry:
 
@@ -28,7 +32,9 @@ import os
 import pathlib
 import shutil
 import sys
+import subprocess
 import tarfile
+import tempfile
 import tomllib
 import urllib.error
 import urllib.request
@@ -66,11 +72,7 @@ def crates_io_versions(name: str) -> dict[str, dict]:
                 if line:
                     entry = json.loads(line)
                     entries[entry["vers"]] = entry
-    if not entries:
-        for line in fetch(f"https://index.crates.io/{index_path(name).as_posix()}").splitlines():
-            entry = json.loads(line)
-            entries[entry["vers"]] = entry
-    return entries
+    return entries or fetch_versions(name)
 
 
 def compatible(a: str, b: str) -> bool:
@@ -100,6 +102,29 @@ def place_crate(name: str, version: str, checksum: str, out: pathlib.Path) -> No
     if hashlib.sha256(data).hexdigest() != checksum:
         raise SystemExit(f"{name} {version}: checksum mismatch from crates.io")
     target.write_bytes(data)
+
+
+def probe_lock(crates: list[pathlib.Path], unpacked: pathlib.Path) -> dict:
+    """The lockfile of a project that depends on every packaged crate, each
+    patched to its unpacked package, resolved against crates.io."""
+    names = [crate.name.removesuffix(".crate") for crate in crates]
+    dependencies, patches = [], []
+    for stem in names:
+        name, _, version = stem.rpartition("-")
+        dependencies.append(f'{name} = "={version}"\n')
+        patches.append(f"{name} = {{ path = {json.dumps(str(unpacked / stem))} }}\n")
+    with tempfile.TemporaryDirectory(prefix="tilo-sdk-probe-") as directory:
+        root = pathlib.Path(directory)
+        (root / "lib.rs").write_text("")
+        (root / "Cargo.toml").write_text(
+            '[package]\nname = "tilo-sdk-probe"\nversion = "0.0.0"\nedition = "2024"\n'
+            'publish = false\n\n[lib]\npath = "lib.rs"\n\n[workspace]\n\n[dependencies]\n'
+            + "".join(dependencies)
+            + "\n[patch.crates-io]\n"
+            + "".join(patches)
+        )
+        subprocess.run(["cargo", "generate-lockfile"], cwd=root, check=True)
+        return tomllib.loads((root / "Cargo.lock").read_text())
 
 
 def packaged_entry(crate: pathlib.Path) -> dict:
@@ -187,10 +212,13 @@ def main() -> int:
         shutil.copyfile(crate, out / crate.name)
     print(f"{len(ours)} packaged SDK crates")
 
+    wanted: set[tuple[str, str, bool]] = set()
+    for package in probe_lock(ours, REPO / "target/package")["package"]:
+        if package.get("source") == CRATES_IO:
+            wanted.add((package["name"], package["version"], True))
     lock = tomllib.loads((REPO / "Cargo.lock").read_text())
     root = tomllib.loads((REPO / "Cargo.toml").read_text())
     patched = set(root.get("patch", {}).get("crates-io", {}))
-    wanted: set[tuple[str, str, bool]] = set()
     for package in lock["package"]:
         if package["name"] in entries:
             continue
@@ -206,6 +234,8 @@ def main() -> int:
     chosen: list[dict] = []
     for name, version, exact in sorted(wanted):
         versions = index.get(name) or {}
+        if exact and version not in versions:
+            versions = index[name] = fetch_versions(name)
         if version in versions:
             chosen.append(versions[version])
         elif not exact:
@@ -232,6 +262,11 @@ def main() -> int:
         path.write_text("".join(json.dumps(entry, separators=(",", ":")) + "\n" for entry in versions))
     print(f"registry: {out}")
     return 0
+
+
+def fetch_versions(name: str) -> dict[str, dict]:
+    lines = fetch(f"https://index.crates.io/{index_path(name).as_posix()}").splitlines()
+    return {entry["vers"]: entry for entry in map(json.loads, lines)}
 
 
 def crates_io_versions_or_none(name: str) -> dict[str, dict] | None:
