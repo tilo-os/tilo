@@ -2743,6 +2743,110 @@ fn highlights_are_written_and_recoloured_from_selections() {
     }
 }
 
+/// Standard Ebooks' Odyssey, Book I, set by the reader at phone widths: no
+/// justified line holds a single word or gapes open next to a tight one.
+#[test]
+fn em_dash_compounds_set_evenly_in_a_phone_reader() {
+    let summary = "A council of the gods\u{feff}—Deliberations concerning Ulysses\u{feff}—Mercury despatched to Calypso, to bid her send Ulysses to Ithaca\u{feff}—Visit of Pallas, in the shape of Mentor, to Telemachus, advising him to repair to Pylos and Sparta in quest of his father, Ulysses\u{feff}—Revels of the suitors of Penelope\u{feff}—Phemius, the minstrel, and his song of the return of the Grecians\u{feff}—The suitors rebuked by Telemachus.";
+    let word_joined = summary.replace("\u{feff}—", "\u{2060}—\u{2060}");
+    let mut failures = Vec::new();
+    for text in [summary, word_joined.as_str()] {
+        let mut app = app_with_sample();
+        let chapter = format!(
+            "<body xmlns=\"http://www.w3.org/1999/xhtml\"><h2>Book I</h2><p>{text}</p></body>"
+        );
+        Arc::make_mut(&mut Arc::make_mut(&mut app.library)[0]).chapters[0].blocks =
+            crate::xhtml::parse_xhtml(&chapter);
+        let mut doc = AutoCommit::new();
+        for width in (360..=430).step_by(2) {
+            app.layout = None;
+            frame(&mut app, &mut doc, f64::from(width), 900.0);
+            let block = &app.layout.as_ref().expect("laid out").blocks[1];
+            let lines = &block.lines;
+            for line in &lines[..lines.len() - 1] {
+                if line.runs.len() < 2 || line.adjustment_ratio > 7.0 {
+                    let words: Vec<_> = line.runs.iter().map(|run| &run.display_text).collect();
+                    failures.push(format!(
+                        "{width}px r={:.1} {words:?}",
+                        line.adjustment_ratio
+                    ));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Copy keeps verse lines on their own lines and blocks apart, while the
+/// annotation excerpt and every char offset keep the single-space text; the
+/// verse paragraph's semantic node covers the lines it paints.
+#[test]
+fn verse_copies_its_line_breaks_and_reports_its_geometry() {
+    let mut app = app_with_sample();
+    let chapter = r#"<body xmlns="http://www.w3.org/1999/xhtml">
+          <div class="verse"><p><span>Tell me, O Muse, of that sagacious man</span><br/>
+          <span class="i1">Who, having overthrown the city-towers</span><br/>
+          <span>Of Ilium, wandered far</span></p></div>
+          <p>And prose follows.</p>
+        </body>"#;
+    let blocks = crate::xhtml::parse_xhtml(chapter);
+    assert!(
+        matches!(blocks[0], crate::model::Block::Verse { .. }),
+        "{blocks:?}"
+    );
+    Arc::make_mut(&mut Arc::make_mut(&mut app.library)[0]).chapters[0].blocks = blocks;
+    app.layout = None;
+    let mut doc = AutoCommit::new();
+    frame(&mut app, &mut doc, 1000.0, 700.0);
+    app.sel = Some(TextSel {
+        anchor: DocPos { block: 0, ch: 0 },
+        head: DocPos {
+            block: 1,
+            ch: "And prose".len(),
+        },
+    });
+    assert_eq!(
+        app.selection_clipboard_text(),
+        "Tell me, O Muse, of that sagacious man\nWho, having overthrown the city-towers\nOf Ilium, wandered far\n\nAnd prose"
+    );
+    assert_eq!(
+        app.selection_text(),
+        "Tell me, O Muse, of that sagacious man Who, having overthrown the city-towers Of Ilium, wandered far And prose"
+    );
+
+    let tree = Widget::accessibility(&app).expect("Books semantic root");
+    let document = tree
+        .children
+        .iter()
+        .find(|node| node.role == Role::Document)
+        .expect("current page document");
+    let screen = app.rect;
+    let verse = document
+        .children
+        .iter()
+        .find(|node| {
+            node.name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("Tell me"))
+        })
+        .expect("verse paragraph node");
+    let bounds = verse.bounds.expect("verse paragraph has bounds").to_rect();
+    let runs: Vec<_> = app.sel_runs.iter().filter(|run| run.block == 0).collect();
+    assert!(runs.len() >= 3, "every verse line is painted");
+    assert!(
+        bounds.y0 >= screen.y0 && bounds.y1 <= screen.y1,
+        "{bounds:?} on screen"
+    );
+    assert!(runs.iter().all(|run| {
+        bounds.contains(Point::new(
+            f64::midpoint(run.x0, run.x1),
+            f64::midpoint(run.y0, run.y1),
+        ))
+    }));
+    let document_bounds = document.bounds.expect("page bounds").to_rect();
+    assert!(document_bounds.contains(bounds.center()));
+}
+
 /// Keyboard selection extends and copy targets the full active selection.
 #[allow(
     clippy::too_many_lines,
@@ -4052,16 +4156,21 @@ fn reader_shots_render_within_the_page_box() {
         settings.font_scale = Settings::FONT_MAX;
         BooksDoc::write_settings(&mut doc, &settings);
 
-        frame(&mut app, &mut doc, 390.0, 844.0);
-        let geom = app.reader_page_geometry(app.rect, app.settings.mode);
-        let right = geom.full_content_x + f64::from(geom.full_content_w);
-        assert!(right <= app.rect.x1 + 0.01, "content box fits the viewport");
-        assert!(
-            app.sel_runs
-                .iter()
-                .all(|run| { run.x0 >= geom.full_content_x - 0.5 && run.x1 <= right + 0.5 }),
-            "every measured painted text run reflows inside the narrow page box"
-        );
+        // Every phone width, so the proof does not hinge on where one font's
+        // metrics happen to put the line ends.
+        for width in (360..=420).step_by(2) {
+            app.layout = None;
+            frame(&mut app, &mut doc, f64::from(width), 844.0);
+            let geom = app.reader_page_geometry(app.rect, app.settings.mode);
+            let right = geom.full_content_x + f64::from(geom.full_content_w);
+            assert!(right <= app.rect.x1 + 0.01, "content box fits the viewport");
+            assert!(
+                app.sel_runs
+                    .iter()
+                    .all(|run| { run.x0 >= geom.full_content_x - 0.5 && run.x1 <= right + 0.5 }),
+                "{width}px: every measured painted text run reflows inside the narrow page box"
+            );
+        }
     }
 }
 

@@ -109,6 +109,9 @@ pub struct LaidBlock {
     pub text: String,
     /// Total chars in [`Self::text`].
     pub char_len: usize,
+    /// Char offsets of the spaces in [`Self::text`] that stand for a hard
+    /// line break (a verse line, a `<br/>`), ascending.
+    pub hard_breaks: Vec<usize>,
 }
 
 /// A fully laid-out chapter plus its page breaks.
@@ -296,6 +299,17 @@ fn weight(bold: bool) -> TextWeight {
     }
 }
 
+/// Reader font scale from which layout keeps natural glyph metrics inside
+/// the measured page box: no glyph expansion and no hanging punctuation.
+const ACCESSIBLE_FONT_SCALE: f32 = 1.35;
+
+/// Whether punctuation may hang into the margins: book composition at
+/// ordinary sizes. At accessibility sizes a hanging mark is a whole glyph
+/// width outside the measure on a narrow page.
+fn hangs_punctuation(settings: &Settings) -> bool {
+    settings.composition.justified() && settings.font_scale < ACCESSIBLE_FONT_SCALE
+}
+
 fn punctuation_protrusion(character: char) -> f32 {
     match character {
         '.' | ',' | '、' | '。' => 0.7,
@@ -377,6 +391,9 @@ fn push_math_word(
 ) {
     let space_before = span.space_before;
     if !built.canonical_text.is_empty() && space_before {
+        if span.line_break {
+            built.hard_breaks.push(built.char_count);
+        }
         built.canonical_text.push(' ');
         built.char_count += 1;
     }
@@ -422,16 +439,48 @@ struct WordBreaks {
     opening_fraction: f32,
 }
 
+fn is_em_dash(character: char) -> bool {
+    matches!(character, '—' | '―' | '⸺' | '⸻')
+}
+
+/// Byte offsets just after an em dash and any word joiners (U+2060) or
+/// zero-width no-break spaces (U+FEFF) that follow it. Producers such as
+/// Standard Ebooks glue every em dash to its neighbours so it never begins a
+/// line; UAX #14 then forbids any break in `gods⁠—⁠Deliberations`, but a
+/// line may still end after the dash, as in print.
+fn em_dash_breaks(w: &str) -> Vec<usize> {
+    let mut breaks = Vec::new();
+    let mut chars = w.char_indices().peekable();
+    while let Some((_, character)) = chars.next() {
+        if !is_em_dash(character) {
+            continue;
+        }
+        while chars
+            .next_if(|&(_, next)| matches!(next, '\u{2060}' | '\u{feff}'))
+            .is_some()
+        {}
+        if let Some(&(byte, next)) = chars.peek()
+            && !is_em_dash(next)
+        {
+            breaks.push(byte);
+        }
+    }
+    breaks
+}
+
 fn word_break_boundaries(w: &str, hyphenate: bool, language: &str) -> WordBreaks {
     let hyphen = if hyphenate {
         discretionary_hyphen_breaks(w, language)
     } else {
         Vec::new()
     };
-    let unicode: Vec<_> = line_break_opportunities(w)
+    let mut unicode: Vec<_> = line_break_opportunities(w)
         .map(|(byte, _)| byte)
         .filter(|&byte| byte > 0 && byte < w.len())
         .collect();
+    unicode.extend(em_dash_breaks(w).into_iter().filter(|&byte| byte > 0));
+    unicode.sort_unstable();
+    unicode.dedup();
     let mut boundaries = hyphen.clone();
     boundaries.extend(unicode.iter().copied());
     let opening_fraction = w.chars().next().map_or(0.0, opening_punctuation_protrusion);
@@ -529,6 +578,7 @@ struct BuiltWords {
     words: Vec<Word>,
     canonical_text: String,
     char_count: usize,
+    hard_breaks: Vec<usize>,
     line_height: f32,
 }
 
@@ -608,7 +658,7 @@ fn push_one_fragment(
         .0;
     let end_protrusion = if slice.byte_end == source.text.len() {
         fragment.chars().last().map_or(0.0, |character| {
-            let fraction = if ctx.settings.composition.justified() {
+            let fraction = if hangs_punctuation(ctx.settings) {
                 punctuation_protrusion(character)
             } else {
                 0.0
@@ -626,24 +676,22 @@ fn push_one_fragment(
     } else {
         0.0
     };
-    let start_protrusion = if ctx.settings.composition.justified()
-        && slice.index == 0
-        && breaks.opening_fraction > 0.0
-    {
-        fragment.chars().next().map_or(0.0, |character| {
-            protrusion_width(
-                character,
-                breaks.opening_fraction,
-                ctx.style,
-                bold,
-                italic,
-                ctx.text,
-                source.family,
-            )
-        })
-    } else {
-        0.0
-    };
+    let start_protrusion =
+        if hangs_punctuation(ctx.settings) && slice.index == 0 && breaks.opening_fraction > 0.0 {
+            fragment.chars().next().map_or(0.0, |character| {
+                protrusion_width(
+                    character,
+                    breaks.opening_fraction,
+                    ctx.style,
+                    bold,
+                    italic,
+                    ctx.text,
+                    source.family,
+                )
+            })
+        } else {
+            0.0
+        };
     ctx.words.push(Word {
         text: fragment.to_string(),
         bold,
@@ -718,6 +766,7 @@ fn build_words(text: &mut TextRenderer, input: &WordBuildInput<'_>) -> BuiltWord
         words: Vec::new(),
         canonical_text: String::new(),
         char_count: 0,
+        hard_breaks: Vec::new(),
         line_height: input.line_height,
     };
     for span in input.block.spans() {
@@ -738,6 +787,9 @@ fn build_words(text: &mut TextRenderer, input: &WordBuildInput<'_>) -> BuiltWord
             let space_before = if wi == 0 { span.space_before } else { true };
             // A separating space is one canonical char between words.
             if !built.canonical_text.is_empty() && space_before {
+                if wi == 0 && span.line_break {
+                    built.hard_breaks.push(built.char_count);
+                }
                 built.canonical_text.push(' ');
                 built.char_count += 1;
             }
@@ -969,7 +1021,7 @@ fn compose_block_lines(
     // phone one expanded line can otherwise exceed its measured paint box,
     // leaving the final word visibly clipped instead of reflowing.
     if !composition.settings.composition.justified()
-        || composition.settings.font_scale >= 1.35
+        || composition.settings.font_scale >= ACCESSIBLE_FONT_SCALE
         || verse
     {
         options.max_glyph_expansion = 0.0;
@@ -1086,6 +1138,7 @@ fn laid_math_block(text: &mut TextRenderer, input: &MathBlockInput<'_>) -> LaidB
         }),
         text: input.source.to_string(),
         char_len: input.source.chars().count(),
+        hard_breaks: Vec::new(),
     }
 }
 
@@ -1111,6 +1164,7 @@ fn laid_separator_block(index: usize, y: f32, st: &BlockStyle) -> LaidBlock {
         math: None,
         text: String::new(),
         char_len: 0,
+        hard_breaks: Vec::new(),
     }
 }
 
@@ -1227,16 +1281,16 @@ pub fn layout_chapter(tr: &mut TextRenderer, request: &ChapterLayoutRequest<'_>)
             math: None,
             char_len: built.char_count,
             text: built.canonical_text,
+            hard_breaks: built.hard_breaks,
         });
         y += height;
     }
 
-    let total_height = y;
     let pages = paginate(&laid, request.content_height);
 
     ChapterLayout {
         blocks: laid,
-        total_height,
+        total_height: y,
         pages,
         key,
     }
@@ -1857,6 +1911,116 @@ mod tests {
         }
     }
 
+    /// Standard Ebooks' Odyssey, Book I: a zero-width no-break space glues
+    /// every em dash to the word before it.
+    const ODYSSEY_BOOK_ONE_SUMMARY: &str = "A council of the gods\u{feff}—Deliberations concerning Ulysses\u{feff}—Mercury despatched to Calypso, to bid her send Ulysses to Ithaca\u{feff}—Visit of Pallas, in the shape of Mentor, to Telemachus, advising him to repair to Pylos and Sparta in quest of his father, Ulysses\u{feff}—Revels of the suitors of Penelope\u{feff}—Phemius, the minstrel, and his song of the return of the Grecians\u{feff}—The suitors rebuked by Telemachus.";
+
+    fn painted_line(line: &LaidLine) -> String {
+        let mut text = String::new();
+        for (index, run) in line.runs.iter().enumerate() {
+            if index > 0 && !text.ends_with(['—', '\u{feff}', '\u{2060}']) {
+                text.push(' ');
+            }
+            text.push_str(&run.display_text);
+        }
+        text
+    }
+
+    /// At phone measures, em-dash compounds glued by invisible joiners
+    /// break after the dash, and no justified line is left holding a lone
+    /// short word.
+    #[test]
+    fn em_dash_compounds_break_without_stranding_words_at_phone_widths() {
+        let mut tr = TextRenderer::new();
+        let word_joined = ODYSSEY_BOOK_ONE_SUMMARY.replace("\u{feff}—", "\u{2060}—\u{2060}");
+        for text in [ODYSSEY_BOOK_ONE_SUMMARY, word_joined.as_str()] {
+            for width in (300..=400).step_by(2) {
+                let width = width as f32;
+                let layout = test_layout(
+                    &mut tr,
+                    &[para(text)],
+                    width,
+                    4000.0,
+                    &Settings::default(),
+                    "en-US",
+                    &FontChoice::Serif,
+                );
+                let block = &layout.blocks[0];
+                let lines: Vec<String> = block.lines.iter().map(painted_line).collect();
+                let size = block.size;
+                for line in &lines[..lines.len() - 1] {
+                    let natural = tr
+                        .measure_font(
+                            line,
+                            size,
+                            None,
+                            TextWeight::Regular,
+                            false,
+                            &FontChoice::Serif,
+                        )
+                        .0;
+                    assert!(
+                        natural > width * 0.6,
+                        "{width}px: underfull justified line {line:?} in {lines:#?}"
+                    );
+                }
+                let source: String = block
+                    .lines
+                    .iter()
+                    .flat_map(|line| &line.runs)
+                    .map(|run| run.text.as_str())
+                    .collect();
+                assert_eq!(
+                    source.replace(' ', ""),
+                    block.text.replace(' ', ""),
+                    "breaks never drop or duplicate source text"
+                );
+            }
+        }
+    }
+
+    /// A line may end after an em dash even when joiners glue it to the next
+    /// word, and never inside a dash run or before the dash.
+    #[test]
+    fn em_dash_breaks_follow_the_dash_and_its_joiners() {
+        assert_eq!(
+            em_dash_breaks("gods\u{feff}—Deliberations"),
+            vec!["gods\u{feff}—".len()]
+        );
+        assert_eq!(
+            em_dash_breaks("gods\u{2060}—\u{2060}Deliberations"),
+            vec!["gods\u{2060}—\u{2060}".len()]
+        );
+        assert_eq!(em_dash_breaks("so——then"), vec!["so——".len()]);
+        assert!(em_dash_breaks("father—").is_empty());
+        assert!(em_dash_breaks("half-way").is_empty());
+    }
+
+    /// Word joiners and zero-width no-break spaces are invisible: they add
+    /// no advance and paint no glyph in any reader face.
+    #[test]
+    fn invisible_joiners_have_no_width() {
+        let mut tr = TextRenderer::new();
+        for family in [FontChoice::Serif, FontChoice::SansSerif] {
+            let mut width = |text: &str| {
+                tr.measure_font(text, 18.0, None, TextWeight::Regular, false, &family)
+                    .0
+            };
+            let plain = width("gods—Deliberations");
+            for joined in [
+                "gods\u{feff}—Deliberations",
+                "gods\u{2060}—\u{2060}Deliberations",
+            ] {
+                assert!(
+                    (width(joined) - plain).abs() < 0.5,
+                    "{joined:?} measures {} vs {plain}",
+                    width(joined)
+                );
+            }
+            assert!(width("\u{2060}\u{feff}") < 0.5);
+        }
+    }
+
     fn block_with_lines(kind: LayoutKind, top: f32, line_count: usize) -> LaidBlock {
         let line_height = 20.0;
         LaidBlock {
@@ -1880,6 +2044,7 @@ mod tests {
             math: None,
             text: String::new(),
             char_len: 0,
+            hard_breaks: Vec::new(),
         }
     }
 
