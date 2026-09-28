@@ -831,63 +831,16 @@ impl WordProcessor {
         let Some((start, end)) = self.selection_span(state) else {
             return false;
         };
-        let Some(containers) = self.containers.clone() else {
-            return false;
+        let action = crate::actions::RichTextAction::ReplaceSelection {
+            region: self.action_region(),
+            start_block: start.block.clone(),
+            start: start.offset,
+            end_block: end.block,
+            end: end.offset,
+            ins: String::new(),
         };
-        if start.block == end.block {
-            if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut {
-                    doc: state,
-                    c: &containers,
-                    ids,
-                };
-                dm.splice_text(
-                    &start.block,
-                    start.offset,
-                    num::isize_of_usize(end.offset - start.offset),
-                    "",
-                );
-            }
-        } else {
-            // Keep start[..start.offset] + end[end.offset..], drop the rest.
-            let end_text =
-                tilo_doc::model::block_text(state, &containers, &end.block).unwrap_or_default();
-            let tail: String = end_text.chars().skip(end.offset).collect();
-            let start_len = self.block_len(state, &start.block);
-            let blocks = self.ordered_blocks(state);
-            let (Some(si), Some(ei)) = (
-                blocks.iter().position(|b| b == &start.block),
-                blocks.iter().position(|b| b == &end.block),
-            ) else {
-                // Both endpoints came from `selection_span`, which only reports
-                // blocks still in `ordered_blocks`, so this should always resolve —
-                // but never leave a stale selection half-deleted over a desync.
-                return false;
-            };
-            let to_remove: Vec<String> = blocks
-                .get(si + 1..=ei)
-                .map_or_else(Vec::new, <[String]>::to_vec);
-            if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut {
-                    doc: state,
-                    c: &containers,
-                    ids,
-                };
-                if start.offset < start_len {
-                    dm.splice_text(
-                        &start.block,
-                        start.offset,
-                        num::isize_of_usize(start_len - start.offset),
-                        "",
-                    );
-                }
-                if !tail.is_empty() {
-                    dm.splice_text(&start.block, start.offset, 0, &tail);
-                }
-                for b in &to_remove {
-                    dm.remove_block(b);
-                }
-            }
+        if !self.apply_rich(state, action) {
+            return false;
         }
         self.caret = start;
         self.selection_anchor = None;
@@ -948,6 +901,17 @@ impl WordProcessor {
             value,
         };
         let _ = action.apply_under(state, &automerge::ROOT);
+    }
+
+    fn apply_rich(
+        &mut self,
+        state: &mut AutoCommit,
+        action: crate::actions::RichTextAction,
+    ) -> bool {
+        if self.containers.is_none() || self.ids.is_none() {
+            return false;
+        }
+        action.apply_under(state, &automerge::ROOT).is_ok()
     }
 
     fn action_region(&self) -> crate::actions::RegionKind {
@@ -1572,39 +1536,23 @@ impl WordProcessor {
     /// they edit/select/collaborate through the normal block machinery; the
     /// widget renders consecutive same-`table` cells as a grid.
     pub fn insert_table(&mut self, state: &mut AutoCommit, rows: usize, cols: usize) {
-        let Some(containers) = self.containers.clone() else {
+        let after = self.caret.block.clone();
+        let action = crate::actions::insert_table_action(&after, rows, cols);
+        if !self.apply_rich(state, action) {
+            return;
+        }
+        let blocks = self.ordered_blocks(state);
+        let Some(pos) = blocks.iter().position(|block| block == &after) else {
             return;
         };
-        let after = self.caret.block.clone();
-        let mut first_cell: Option<String> = None;
-        if let Some(ids) = self.ids.as_mut() {
-            let table_id = ids.mint(); // a unique id shared by every cell
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            let mut prev = Some(after);
-            for r in 0..rows {
-                for col in 0..cols {
-                    let id = dm.insert_block(prev.as_deref(), "cell");
-                    dm.set_attr(&id, "table", table_id.as_str());
-                    dm.set_attr(&id, "row", num::i64_of_usize(r));
-                    dm.set_attr(&id, "col", num::i64_of_usize(col));
-                    if first_cell.is_none() {
-                        first_cell = Some(id.clone());
-                    }
-                    prev = Some(id);
-                }
-            }
-        }
-        if let Some(fc) = first_cell {
-            self.caret = Caret {
-                block: fc,
-                offset: 0,
-            };
-            self.selection_anchor = None;
-        }
+        let Some(first) = blocks.get(pos + 1) else {
+            return;
+        };
+        self.caret = Caret {
+            block: first.clone(),
+            offset: 0,
+        };
+        self.selection_anchor = None;
     }
 
     /// Insert an image block carrying `bytes` at the caret; the bytes go in the
@@ -1616,9 +1564,9 @@ impl WordProcessor {
     /// Decodable bytes record intrinsic pixel `width`/`height` as attrs (matching
     /// ODF import); undecodable bytes still produce a valid block (a placeholder).
     pub fn insert_image_bytes(&mut self, state: &mut AutoCommit, bytes: &[u8]) {
-        let Some(containers) = self.containers.clone() else {
+        if self.containers.is_none() {
             return;
-        };
+        }
         // Store before changing the selection/text.  A quota rejection must be
         // a no-op, not a split paragraph with a dangling content reference.
         let hash = match self.content.put(bytes) {
@@ -1628,53 +1576,25 @@ impl WordProcessor {
                 return;
             }
         };
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            dm.reference_content(&hash, &tilo_content::sniff(bytes));
-        }
         self.delete_selection(state);
-        // Decode intrinsic dimensions up front (no doc borrow held), so the image
-        // block can carry width/height attrs like the ODF importer does.
-        let intrinsic = ui::widget::Image::from_encoded(bytes)
-            .ok()
-            .map(|im| im.intrinsic_size());
-
         let block = self.caret.block.clone();
         let offset = self.caret.offset;
-        let text = tilo_doc::model::block_text(state, &containers, &block).unwrap_or_default();
-        let char_count = text.chars().count();
-        // Tail after the caret moves into a new paragraph *below* the image so the
-        // split preserves the user's text around the insertion point.
-        let tail: String = text.chars().skip(offset).collect();
-
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            // Trim the caret block down to the head before the caret.
-            if offset < char_count {
-                dm.splice_text(&block, offset, num::isize_of_usize(char_count - offset), "");
-            }
-            let img = dm.insert_block(Some(&block), "image");
-            dm.set_attr(&img, "blob", hash.as_str());
-            if let Some((w, h)) = intrinsic {
-                dm.set_attr(&img, "width", i64::from(w));
-                dm.set_attr(&img, "height", i64::from(h));
-            }
-            // A paragraph after the image carries the split-off tail and hosts
-            // the caret so editing continues beneath the image.
-            let after = dm.insert_block(Some(&img), "paragraph");
-            if !tail.is_empty() {
-                dm.splice_text(&after, 0, 0, &tail);
-            }
+        let action = crate::actions::insert_image_action(
+            &block,
+            offset,
+            crate::actions::ImageInput::of(hash, bytes),
+        );
+        if !self.apply_rich(state, action) {
+            return;
+        }
+        // The action splits the caret block, inserts the image, then a paragraph
+        // that carries any tail. The caret continues in that paragraph.
+        let order = self.ordered_blocks(state);
+        if let Some(pos) = order.iter().position(|id| id == &block)
+            && let Some(after) = order.get(pos + 2)
+        {
             self.caret = Caret {
-                block: after,
+                block: after.clone(),
                 offset: 0,
             };
         }
@@ -1738,70 +1658,28 @@ impl WordProcessor {
             return;
         };
         let (cur_row, _) = self.caret_rc(&cells);
-        let ncols = cells.iter().map(|(_, _, c)| *c).max().unwrap_or(0) + 1;
-        // The new cells occupy `new_row`; every existing row at or past it shifts down.
         let new_row = if below { cur_row + 1 } else { cur_row };
-        // Block-order anchor: the last cell of the row directly above `new_row`
-        // (so the inserted cells land between that row and the rest). When the new
-        // row is the table's first (`new_row == 0`), anchor to the document block
-        // just before the table so the cells slot in immediately ahead of it.
-        let anchor = if new_row == 0 {
-            let order = self.ordered_blocks(state);
-            let first_idx = cells
-                .iter()
-                .filter_map(|(id, _, _)| order.iter().position(|b| b == id))
-                .min();
-            first_idx.and_then(|i| {
-                if i > 0 {
-                    order.get(i - 1).cloned()
-                } else {
-                    None
-                }
-            })
-        } else {
-            cells
-                .iter()
-                .filter(|(_, r, _)| *r == new_row - 1)
-                .max_by_key(|(_, _, c)| *c)
-                .map(|(id, _, _)| id.clone())
-        };
-        let to_bump: Vec<(String, usize)> = cells
-            .iter()
-            .filter(|(_, r, _)| *r >= new_row)
-            .map(|(id, r, _)| (id.clone(), *r))
-            .collect();
-        let Some(containers) = self.containers.clone() else {
+        let action = crate::actions::edit_table_action(
+            &tid,
+            crate::actions::TableEdit::InsertRow { at: new_row },
+        );
+        if !self.apply_rich(state, action) {
+            return;
+        }
+        let Some((_, cells)) = self.caret_table(state) else {
             return;
         };
-        let mut first_new = None;
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            for (id, r) in &to_bump {
-                dm.set_attr(id, "row", num::i64_of_usize(*r + 1));
-            }
-            let mut prev = anchor;
-            for col in 0..ncols {
-                let id = dm.insert_block(prev.as_deref(), "cell");
-                dm.set_attr(&id, "table", tid.as_str());
-                dm.set_attr(&id, "row", num::i64_of_usize(new_row));
-                dm.set_attr(&id, "col", num::i64_of_usize(col));
-                if first_new.is_none() {
-                    first_new = Some(id.clone());
-                }
-                prev = Some(id);
-            }
-        }
-        if let Some(fc) = first_new {
-            self.caret = Caret {
-                block: fc,
-                offset: 0,
-            };
-            self.selection_anchor = None;
-        }
+        let Some((id, _, _)) = cells
+            .iter()
+            .find(|(_, row, col)| *row == new_row && *col == 0)
+        else {
+            return;
+        };
+        self.caret = Caret {
+            block: id.clone(),
+            offset: 0,
+        };
+        self.selection_anchor = None;
     }
 
     /// Add a column to the right of the caret's column (toolbar `+Col`).
@@ -1829,79 +1707,28 @@ impl WordProcessor {
             return;
         };
         let (cur_row, cur_col) = self.caret_rc(&cells);
-        let nrows = cells.iter().map(|(_, r, _)| *r).max().unwrap_or(0) + 1;
         let new_col = if right { cur_col + 1 } else { cur_col };
-        let to_bump: Vec<(String, usize)> = cells
-            .iter()
-            .filter(|(_, _, c)| *c >= new_col)
-            .map(|(id, _, c)| (id.clone(), *c))
-            .collect();
-        // Precompute each row's insertion anchor (the block the new cell goes
-        // after) *before* borrowing the doc mutably. For `new_col > 0` the anchor
-        // is the original cell at `new_col - 1` in that row; for `new_col == 0`
-        // the new cell heads its row, so anchor to the previous row's last cell
-        // (or, for row 0, the document block just before the table).
-        let order = self.ordered_blocks(state);
-        let anchors: Vec<Option<String>> = (0..nrows)
-            .map(|r| {
-                if new_col == 0 {
-                    if r == 0 {
-                        let first_idx = cells
-                            .iter()
-                            .filter_map(|(id, _, _)| order.iter().position(|b| b == id))
-                            .min();
-                        first_idx.and_then(|i| {
-                            if i > 0 {
-                                order.get(i - 1).cloned()
-                            } else {
-                                None
-                            }
-                        })
-                    } else {
-                        cells
-                            .iter()
-                            .filter(|(_, rr, _)| *rr == r - 1)
-                            .max_by_key(|(_, _, cc)| *cc)
-                            .map(|(id, _, _)| id.clone())
-                    }
-                } else {
-                    cells
-                        .iter()
-                        .find(|(_, rr, cc)| *rr == r && *cc == new_col - 1)
-                        .map(|(id, _, _)| id.clone())
-                }
-            })
-            .collect();
-        let Some(containers) = self.containers.clone() else {
+        let action = crate::actions::edit_table_action(
+            &tid,
+            crate::actions::TableEdit::InsertColumn { at: new_col },
+        );
+        if !self.apply_rich(state, action) {
+            return;
+        }
+        let Some((_, cells)) = self.caret_table(state) else {
             return;
         };
-        let mut caret_new = None;
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            for (id, c) in &to_bump {
-                dm.set_attr(id, "col", num::i64_of_usize(*c + 1));
-            }
-            for (r, anchor) in anchors.iter().enumerate() {
-                let id = dm.insert_block(anchor.as_deref(), "cell");
-                dm.set_attr(&id, "table", tid.as_str());
-                dm.set_attr(&id, "row", num::i64_of_usize(r));
-                dm.set_attr(&id, "col", num::i64_of_usize(new_col));
-                if r == cur_row {
-                    caret_new = Some(id.clone());
-                }
-            }
-        }
-        if let Some(fc) = caret_new {
-            self.caret = Caret {
-                block: fc,
-                offset: 0,
-            };
-            self.selection_anchor = None;
-        }
+        let Some((id, _, _)) = cells
+            .iter()
+            .find(|(_, row, col)| *row == cur_row && *col == new_col)
+        else {
+            return;
+        };
+        self.caret = Caret {
+            block: id.clone(),
+            offset: 0,
+        };
+        self.selection_anchor = None;
     }
 
     /// `true` when the caret currently sits inside a table cell.
@@ -1992,7 +1819,7 @@ impl WordProcessor {
 
     /// Delete the caret's row (deletes the whole table if it was the last row).
     pub fn table_del_row(&mut self, state: &mut AutoCommit) {
-        let Some((_, cells)) = self.caret_table(state) else {
+        let Some((tid, cells)) = self.caret_table(state) else {
             return;
         };
         let nrows = cells.iter().map(|(_, r, _)| *r).max().unwrap_or(0) + 1;
@@ -2001,16 +1828,6 @@ impl WordProcessor {
             return;
         }
         let (cur_row, cur_col) = self.caret_rc(&cells);
-        let to_remove: Vec<String> = cells
-            .iter()
-            .filter(|(_, r, _)| *r == cur_row)
-            .map(|(id, _, _)| id.clone())
-            .collect();
-        let to_shift: Vec<(String, usize)> = cells
-            .iter()
-            .filter(|(_, r, _)| *r > cur_row)
-            .map(|(id, r, _)| (id.clone(), *r))
-            .collect();
         let target_row = if cur_row + 1 < nrows {
             cur_row + 1
         } else {
@@ -2020,21 +1837,12 @@ impl WordProcessor {
             .iter()
             .find(|(_, r, c)| *r == target_row && *c == cur_col)
             .map(|(id, _, _)| id.clone());
-        let Some(containers) = self.containers.clone() else {
+        let action = crate::actions::edit_table_action(
+            &tid,
+            crate::actions::TableEdit::DeleteRow { row: cur_row },
+        );
+        if !self.apply_rich(state, action) {
             return;
-        };
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            for id in &to_remove {
-                dm.remove_block(id);
-            }
-            for (id, r) in &to_shift {
-                dm.set_attr(id, "row", num::i64_of_usize(*r - 1));
-            }
         }
         if let Some(nc) = new_caret {
             self.caret = Caret {
@@ -2047,7 +1855,7 @@ impl WordProcessor {
 
     /// Delete the caret's column (deletes the whole table if it was the last).
     pub fn table_del_col(&mut self, state: &mut AutoCommit) {
-        let Some((_, cells)) = self.caret_table(state) else {
+        let Some((tid, cells)) = self.caret_table(state) else {
             return;
         };
         let ncols = cells.iter().map(|(_, _, c)| *c).max().unwrap_or(0) + 1;
@@ -2056,16 +1864,6 @@ impl WordProcessor {
             return;
         }
         let (cur_row, cur_col) = self.caret_rc(&cells);
-        let to_remove: Vec<String> = cells
-            .iter()
-            .filter(|(_, _, c)| *c == cur_col)
-            .map(|(id, _, _)| id.clone())
-            .collect();
-        let to_shift: Vec<(String, usize)> = cells
-            .iter()
-            .filter(|(_, _, c)| *c > cur_col)
-            .map(|(id, _, c)| (id.clone(), *c))
-            .collect();
         let target_col = if cur_col + 1 < ncols {
             cur_col + 1
         } else {
@@ -2075,21 +1873,12 @@ impl WordProcessor {
             .iter()
             .find(|(_, r, c)| *r == cur_row && *c == target_col)
             .map(|(id, _, _)| id.clone());
-        let Some(containers) = self.containers.clone() else {
+        let action = crate::actions::edit_table_action(
+            &tid,
+            crate::actions::TableEdit::DeleteColumn { column: cur_col },
+        );
+        if !self.apply_rich(state, action) {
             return;
-        };
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            for id in &to_remove {
-                dm.remove_block(id);
-            }
-            for (id, c) in &to_shift {
-                dm.set_attr(id, "col", num::i64_of_usize(*c - 1));
-            }
         }
         if let Some(nc) = new_caret {
             self.caret = Caret {
@@ -2102,7 +1891,7 @@ impl WordProcessor {
 
     /// Delete the whole table the caret is in; caret moves to the block before it.
     pub fn table_delete(&mut self, state: &mut AutoCommit) {
-        let Some((_, cells)) = self.caret_table(state) else {
+        let Some((tid, cells)) = self.caret_table(state) else {
             return;
         };
         let order = self.ordered_blocks(state);
@@ -2117,20 +1906,13 @@ impl WordProcessor {
                 None
             }
         });
-        let cell_ids: Vec<String> = cells.iter().map(|(id, _, _)| id.clone()).collect();
+        let action = crate::actions::edit_table_action(&tid, crate::actions::TableEdit::Delete);
+        if !self.apply_rich(state, action) {
+            return;
+        }
         let Some(containers) = self.containers.clone() else {
             return;
         };
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            for id in &cell_ids {
-                dm.remove_block(id);
-            }
-        }
         let remaining = self.ordered_blocks(state);
         match before.or_else(|| remaining.first().cloned()) {
             Some(t) => {
