@@ -5,6 +5,7 @@
 //! State lives entirely on the widget (no CRDT round-trip) because the
 //! segmented control's selection is ephemeral UI sugar — callers persist
 //! the choice via the `on_change` callback into their own CRDT slot.
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -1051,8 +1052,8 @@ impl Widget for ToggleGroup {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         let prefix = self.segment_prefix();
         let Some(index) = target

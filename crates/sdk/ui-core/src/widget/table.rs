@@ -27,6 +27,7 @@
 //! row height); the widget paints the grid lines, header band, row banding,
 //! and the insert / delete / resize affordances in the gutters on top.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use crate::widget::TaffyTreeExt;
@@ -1308,7 +1309,8 @@ fn cross(scene: &mut Scene, transform: Affine, c: Point, r: f64, color: Color, w
 }
 
 impl Widget for Table {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document(state, path);
         ensure(state, path);
         // First-run seed.
         if let Some((r, c)) = self.seed.take() {

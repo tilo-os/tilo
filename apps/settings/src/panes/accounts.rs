@@ -27,6 +27,7 @@
 
 use std::collections::HashMap;
 use ui::doc::read_bool;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
@@ -1986,7 +1987,8 @@ pub fn build_with(dir: &AccountDirectory) -> Box<dyn Widget> {
 }
 
 impl Widget for AccountsPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.handle_local_command();
         self.handle_add(state, root);
         self.handle_edit_triggers(state, root);

@@ -1,6 +1,7 @@
 use super::*;
 use crate::view::{FreezeThaw, ViewContribution};
 use crate::wake::{WakeEvent, WakeHandle, WakeScope};
+use crate::widget::{AppModel, ModelPath};
 use crate::{LatestRequest, LocalState};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -38,7 +39,7 @@ impl Drop for CaptureRoot {
 }
 
 impl Widget for CaptureRoot {
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
         self.capture("sync");
     }
 

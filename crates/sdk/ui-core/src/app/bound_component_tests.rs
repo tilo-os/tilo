@@ -3,6 +3,7 @@ use crate::application::{
     AppComponent, ApplicationDefinition, HostContext, LaunchTarget, RestoreInput,
 };
 use crate::widget::{AppKind, AppWidget, Column, IconDescriptor, TileHost};
+use crate::widget::{AppModel, ModelPath};
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -232,12 +233,8 @@ impl Widget for Probe {
             strict: self.strict,
         })]
     }
-    fn activate_search_result(
-        &mut self,
-        id: &str,
-        doc: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-    ) {
+    fn activate_search_result(&mut self, id: &str, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = crate::doc::document(doc, path);
         assert_eq!(id, "opaque");
         doc.put(ROOT, "navigation", true).unwrap();
     }
@@ -416,7 +413,8 @@ impl Widget for Probe {
         })
     }
 
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = crate::doc::document(doc, path);
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some("child")
@@ -487,9 +485,10 @@ impl Widget for Probe {
     fn perform_action(
         &mut self,
         _: &crate::a11y::Action,
-        doc: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
+        doc: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (doc, _) = crate::doc::document(doc, path);
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some("child")

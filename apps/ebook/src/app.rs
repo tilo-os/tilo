@@ -28,6 +28,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -5040,7 +5041,8 @@ impl Widget for BooksApp {
         clippy::too_many_lines,
         reason = "sync owns the ordered UI-thread handoff for document, portal, and lifecycle state"
     )]
-    fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, path) = ui::doc::document(doc, path);
         // Hydrate the persisted library on the first frame (when the document is
         // finally available), then pull in any book the host picker returned.
         self.ensure_library_loaded(doc);
@@ -5649,9 +5651,10 @@ impl Widget for BooksApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        doc: &mut AutoCommit,
-        path: &ObjId,
+        doc: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (doc, path) = ui::doc::document(doc, path);
         if target == "books.reader.progress" {
             self.semantic_focus = Some(target.to_string());
             let value = match action {

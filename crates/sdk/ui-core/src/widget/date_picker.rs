@@ -11,6 +11,7 @@
 //! [`DatePicker::from_state`], or be observed with `on_change` for an
 //! app-owned durable mutation.
 
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use chrono::{Datelike, Local, NaiveDate};
 use std::collections::HashMap;
@@ -297,7 +298,7 @@ pub enum ExternalDatePickerHit {
 }
 
 impl Widget for DatePicker {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         if let Some(date) = self
             .local_state
             .as_mut()
@@ -507,8 +508,8 @@ impl Widget for DatePicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
+        _state: &mut AppModel,
+        _root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         match action {

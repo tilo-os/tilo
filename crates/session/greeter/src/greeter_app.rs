@@ -24,6 +24,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use ui::doc::{read_bool, read_text};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, transaction::Transactable};
 use taffy::style_helpers::{length, percent};
@@ -1609,7 +1610,8 @@ impl ui::widget::FullscreenProvider for GreeterApp {
 }
 
 impl Widget for GreeterApp {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if !self.bootstrap_done {
             self.bootstrap_crdt(state, root);
             self.bootstrap_done = true;
@@ -1849,7 +1851,8 @@ impl Widget for GreeterApp {
         mine || child
     }
 
-    fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {
+    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if payload == CONSOLE_WAKE {
             self.serve_console(state);
             return;

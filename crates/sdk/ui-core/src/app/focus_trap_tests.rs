@@ -1,5 +1,6 @@
 use super::*;
 use crate::widget::modal_dialog::ModalDialog;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Widget};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -83,7 +84,7 @@ impl ModalHost {
     }
 }
 impl Widget for ModalHost {
-    fn sync(&mut self, s: &mut automerge::AutoCommit, p: &automerge::ObjId) {
+    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
         self.modal.set_open(self.want_open.get());
         for c in &mut self.outer {
             c.sync(s, p);

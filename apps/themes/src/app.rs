@@ -17,6 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
@@ -1516,7 +1517,8 @@ impl Widget for ThemesApp {
         self.actions.take_committed()
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         if let Some(preview) = self.narrow_view_request.take() {
             self.narrow_view_chosen = true;
             self.set_narrow_preview(preview);

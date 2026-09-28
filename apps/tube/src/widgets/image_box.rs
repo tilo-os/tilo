@@ -7,6 +7,7 @@
 //! the seed gradient shows, so the header never reads as an empty box.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
@@ -82,7 +83,7 @@ impl ImageBox {
 }
 
 impl Widget for ImageBox {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         if self.image.is_none()
             && !self.url.is_empty()
             && let Some(store) = &self.store

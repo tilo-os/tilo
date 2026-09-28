@@ -26,6 +26,7 @@
 
 use std::collections::HashMap;
 use ui::doc::{read_bool, read_str_or_text};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
@@ -622,7 +623,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for AppearancePane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if self.needs_seed {
             self.dispatch(state, &set_text_action(THEME_KEY, self.prefs.theme.clone()));
             self.dispatch(

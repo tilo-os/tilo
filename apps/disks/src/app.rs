@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc;
 use std::thread;
+use ui::widget::{AppModel, ModelPath};
 
 use ui::automerge::{AutoCommit, ObjId};
 use ui::format::bytes_si;
@@ -3668,7 +3669,8 @@ impl Widget for DisksApp {
         clippy::too_many_lines,
         reason = "one ordered reconciliation pass keeps the CRDT projection and operation lifecycle atomic"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         if !self.init.seeded {
             if DisksDoc::is_empty(state) {
                 // Live: reflect the real system only. If the probe finds
@@ -3835,7 +3837,7 @@ impl Widget for DisksApp {
         }
     }
 
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
         // Advance the eased slide every frame so the flap opens/collapses
         // smoothly. Mirrors the shared `NavSplit`'s fixed-step tick.
         let animating = self.flap.tick(self.split_layout(), 1.0 / 60.0);
@@ -4295,9 +4297,10 @@ impl Widget for DisksApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if let A11yAction::SetValue(value) = action
             && target == "disks.modal.confirm-input"
             && self.pending.is_some()

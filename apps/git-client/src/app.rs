@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
@@ -2814,7 +2815,8 @@ impl Widget for GitClientApp {
         &[crate::actions::GIT_CLIENT_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         self.drain_remote();
         if self.settings_seeded {
             // Adopt document changes: remote collaborators, and this app's own
@@ -3049,10 +3051,11 @@ impl Widget for GitClientApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let (state, path) = ui::doc::document(state, path);
 
         let field = match target {
             "git.open-path" => Some(Field::Open),

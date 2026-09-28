@@ -7,6 +7,7 @@ use taffy::{NodeId, TaffyTree};
 use tilo_actions::{ActionSpec, OperationKind, Resource};
 use ui::icons::Icon;
 use ui::widget::toggle_group::Segment;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Banner, Button, Card, CardGrid, Column, Container, CropSelection, Divider, Dropdown,
     IconWidget, Image, ImageCropEditor, NumberInput, PagePreview, ProgressBar, Row, ScrollAxis,
@@ -634,7 +635,7 @@ impl DashboardCard {
 }
 
 impl Widget for DashboardCard {
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.inner.update(state, path)
     }
 
@@ -3257,7 +3258,7 @@ impl Default for PrintCentre {
     }
 }
 impl Widget for PrintCentre {
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         if self.poll_picker() {
             self.inner.sync(state, path);
             return true;

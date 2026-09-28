@@ -1,6 +1,7 @@
 //! Real retained controls and owner operation polling exercise the host boundary.
 use super::host_tests::registration;
 use super::*;
+use crate::widget::{AppModel, ModelPath};
 use crate::{
     State,
     headless::Driver,
@@ -222,7 +223,7 @@ impl Widget for LiveOwner {
             self.resource_id
         })
     }
-    fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         self.text.sync(doc, path);
     }
     fn build_layout(

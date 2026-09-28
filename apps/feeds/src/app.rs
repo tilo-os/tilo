@@ -16,6 +16,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -4512,7 +4513,8 @@ impl Widget for FeedsApp {
         &[crate::actions::FEEDS_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         self.background_poll_deadline.set(None);
         self.now = chrono::Utc::now().timestamp();
         if !self.synced {
@@ -5279,9 +5281,10 @@ impl Widget for FeedsApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if matches!(action, A11yAction::Focus | A11yAction::ScrollIntoView) {
             return true;
         }

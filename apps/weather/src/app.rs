@@ -30,6 +30,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{NodeId, TaffyTree};
@@ -743,7 +744,8 @@ impl Widget for WeatherApp {
         )
     }
 
-    fn update(&mut self, state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         // Semantic actions reach the owning pane directly, so finish their
         // canonical writes and navigation here as well as on pointer input.
         let changed = self.flush_durable_actions(state);
@@ -754,7 +756,8 @@ impl Widget for WeatherApp {
         changed || navigate.is_some()
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         if !self.seeded_doc {
             // Only the explicit shot constructor seeds examples. A live blank
             // document is valid; its first deliberate add creates the schema.

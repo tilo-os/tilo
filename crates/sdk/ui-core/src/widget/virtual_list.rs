@@ -5,6 +5,7 @@
 //! instances survive reorder while their key remains visible.
 
 use crate::time::Instant;
+use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
@@ -1047,14 +1048,14 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         self.visible_window_changed();
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.reconcile_mounted();
         for row in &mut self.mounted {
             row.widget.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let now = crate::time::now();
         let elapsed = self
             .last_tick
@@ -1545,8 +1546,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
 

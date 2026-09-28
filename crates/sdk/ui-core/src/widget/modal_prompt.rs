@@ -17,6 +17,7 @@
 //! // …on submit: dialog.content().value()
 //! ```
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
@@ -146,7 +147,7 @@ fn px(v: f64) -> f32 {
 }
 
 impl Widget for PromptBody {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.input.sync(state, path);
     }
 

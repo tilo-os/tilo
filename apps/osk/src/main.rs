@@ -672,7 +672,7 @@ mod launch_tests {
             self.acks.set(self.acks.get() + 1);
             self.root.document_action_applied(action, before, doc, path);
         }
-        fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+        fn sync(&mut self, doc: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
             self.root.sync(doc, path);
         }
         fn build_layout(

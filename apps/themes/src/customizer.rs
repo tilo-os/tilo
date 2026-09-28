@@ -12,6 +12,7 @@
 //! widget on demand.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
@@ -387,7 +388,7 @@ impl Customizer {
 }
 
 impl Widget for Customizer {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.color_picker.sync(state, path);
         self.radius_slider.sync(state, path);
         self.spacing_slider.sync(state, path);

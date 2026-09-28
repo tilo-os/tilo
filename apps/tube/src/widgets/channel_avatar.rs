@@ -21,6 +21,7 @@
 //!    so a pure scroll stays on the cheap re-apply path.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -124,7 +125,7 @@ impl ChannelAvatar {
 }
 
 impl Widget for ChannelAvatar {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         // Lazily resolve the real avatar. Only touch the store until we have the
         // image (an `Arc` clone thereafter would be wasted work); a freshly
         // decoded photo flips `dirty` so the next frame repaints it — no rebuild.

@@ -1,5 +1,6 @@
 use super::*;
 use crate::time::{Duration, Instant};
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Column, Container, Widget};
 use std::{cell::Cell, rc::Rc};
 
@@ -93,7 +94,7 @@ struct OverlayProbe {
 }
 
 impl Widget for OverlayProbe {
-    crate::testing::inert_widget_methods!(sync, draw, name = "overlay-probe");
+    crate::testing::inert_widget_methods!(draw, name = "overlay-probe");
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -197,7 +198,6 @@ struct Scheduled {
 }
 impl Widget for Scheduled {
     crate::testing::inert_widget_methods!(
-        sync,
         leaf_layout,
         apply_layout,
         draw,
@@ -209,7 +209,7 @@ impl Widget for Scheduled {
         None
     }
 
-    fn update(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) -> bool {
+    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
         self.updates.set(self.updates.get() + 1);
         false
     }

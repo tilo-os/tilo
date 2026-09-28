@@ -7,6 +7,7 @@
 //! caller persists a choice into its own (e.g. CRDT-backed) storage.
 
 use crate::time::{Duration, Instant};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
@@ -2706,14 +2707,14 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.paint_dirty = true;
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.reconcile_mounted_rows();
         for row in &mut self.mounted_rows {
             row.widget.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let model_changes = self.model.poll_changes();
         let received_changes = !model_changes.is_empty();
         if received_changes {
@@ -3662,10 +3663,11 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, path) = crate::doc::document(state, path);
 
         self.paint_dirty = true;
         if let Some(performed) = self.perform_affordance_action(target, action, state, path) {

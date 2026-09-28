@@ -17,6 +17,7 @@
 //! the live `Theme`, so theming stays OS-controlled.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{fr, length, minmax, percent, repeat};
@@ -828,8 +829,8 @@ impl Widget for Flex {
     fn perform_action(
         &mut self,
         action_kind: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         match action_kind {
             ui::a11y::Action::Focus if self.is_actionable() => {

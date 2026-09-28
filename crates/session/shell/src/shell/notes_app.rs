@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
@@ -312,7 +313,8 @@ impl Widget for NotesApp {
         Some(&HISTORY)
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.body.sync(state, root);
         self.clamp_cursor();
     }

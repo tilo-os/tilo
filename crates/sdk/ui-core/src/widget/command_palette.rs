@@ -4,6 +4,7 @@
 //! root path directly — there is no message layer.
 
 use crate::search::ListIndex;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -2505,8 +2506,8 @@ impl Widget for CommandPalette {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         match action {
             crate::a11y::Action::Focus | crate::a11y::Action::Activate => {
@@ -2521,10 +2522,11 @@ impl Widget for CommandPalette {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, path) = crate::doc::document(state, path);
 
         if target == "command-palette:query" {
             return match action {

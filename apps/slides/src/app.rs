@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use taffy::prelude::*;
@@ -5795,7 +5796,8 @@ impl Widget for SlidesApp {
         None
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         self.reconcile_canonical(state);
         if let Some((save, file)) = self.resource_file.take() {
             let queued = if save {
@@ -6312,9 +6314,10 @@ impl Widget for SlidesApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         self.reconcile_canonical(state);
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;

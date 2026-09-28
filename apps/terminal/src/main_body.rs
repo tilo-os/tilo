@@ -1,4 +1,5 @@
 use ui::ColorCompat;
+use ui::widget::{AppModel, ModelPath};
 use ui::{
     Theme,
     text_render::{FontChoice, TextRenderer, TextStyle, TextWeight},
@@ -2561,7 +2562,8 @@ impl Widget for TerminalWidget {
         taffy::Size::ZERO
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.reset_stale_local_session(state, root);
         self.find_input.sync(state, root);
         // Drain any bytes the PTY reader thread has queued and replay them
@@ -2616,7 +2618,8 @@ impl Widget for TerminalWidget {
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, root: &ModelPath) -> bool {
+        let (state, root) = ui::doc::document(state, root);
         self.pump(state, root)
     }
 
@@ -2643,7 +2646,7 @@ impl Widget for TerminalWidget {
     /// flag so the reader can request the next one; the App's redraw drives
     /// `sync`, which drains the queued PTY bytes. The payload is unused — the
     /// wake itself is the signal.
-    fn on_external_event(&mut self, _payload: &str, _state: &mut AutoCommit, _root: &ObjId) {
+    fn on_external_event(&mut self, _payload: &str, _state: &mut AppModel, _root: &ModelPath) {
         self.wake_pending.store(false, Ordering::Release);
     }
 
@@ -3132,8 +3135,8 @@ impl Widget for TerminalWidget {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         match action {
             ui::a11y::Action::ShowContextMenu => {
@@ -3155,8 +3158,8 @@ impl Widget for TerminalWidget {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         if target == self.terminal_transcript_target() {
             return self.perform_action(action, state, path);

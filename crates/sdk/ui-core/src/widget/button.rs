@@ -8,6 +8,7 @@ use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::ActionEmitter;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -1131,7 +1132,7 @@ impl Widget for Button {
         }
     }
 
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.observe_i18n_revision();
     }
 
@@ -1675,10 +1676,11 @@ impl Widget for Button {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, root) = crate::doc::document(state, root);
         if !self.effectively_enabled() {
             return false;
         }

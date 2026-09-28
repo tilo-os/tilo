@@ -5,6 +5,7 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -468,7 +469,8 @@ impl Widget for Slider {
         clippy::cast_precision_loss,
         reason = "Automerge integer values are normalized into this f64 slider model"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = crate::doc::document(state, root);
         if let Some(value) = self
             .local_state
             .as_mut()
@@ -662,10 +664,11 @@ impl Widget for Slider {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, path) = crate::doc::document(state, path);
         const STEP: f64 = 0.05;
         if !self.effectively_enabled() {
             return false;

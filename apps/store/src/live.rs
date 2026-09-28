@@ -9,6 +9,7 @@ use taffy::{NodeId, TaffyTree};
 use ui::tilo_actions::{
     ControlInvocation, InvocationId, InvocationUpdate, OperationKind, Resource,
 };
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{ResourceOperationStart, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -105,7 +106,8 @@ impl Widget for LiveStore {
         clippy::too_many_lines,
         reason = "this is the single host sync point that drains worker snapshots and forwards every typed Store intent without optimistic state"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         while let Some(snap) = self.worker.try_snapshot() {
             if let Some(invocation) = snap.invocation {
                 self.inner

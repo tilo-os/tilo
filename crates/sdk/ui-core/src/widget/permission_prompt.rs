@@ -10,6 +10,7 @@
 //! one-shot output; the parent drains it each frame and applies the
 //! resulting `Capability` grant.
 
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -636,8 +637,8 @@ impl Widget for PermissionPrompt {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if matches!(action, crate::a11y::Action::Activate)
             && let Some(choice) = self.focused_choice
@@ -681,8 +682,8 @@ impl Widget for PermissionPrompt {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         let [key] = key_path else {
             return false;

@@ -29,6 +29,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size as TSize, Style, TaffyTree};
@@ -4854,7 +4855,8 @@ impl Widget for MailApp {
         &[crate::actions::MAIL_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         self.background_poll_deadline.set(None);
         if self.first_run.take_action() {
             self.open_setup_edit(None);
@@ -5416,9 +5418,10 @@ impl Widget for MailApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if let Some(raw) = target.strip_prefix("mail.context:") {
             let Some((message_raw, index_raw)) = raw.rsplit_once(':') else {
                 return false;

@@ -24,6 +24,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::mpsc::TryRecvError;
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -1920,7 +1921,7 @@ impl Widget for HexView {
             .flatten()
     }
 
-    fn sync(&mut self, _doc: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _doc: &mut AppModel, _path: &ModelPath) {
         if let Some((invocation, operation)) = self.pending_resource_io.take() {
             let result = match operation {
                 crate::actions::HexOperation::Open { path: Some(path) } => {
@@ -2262,8 +2263,8 @@ impl Widget for HexView {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if matches!(action, ui::a11y::Action::Activate) {
             match target {

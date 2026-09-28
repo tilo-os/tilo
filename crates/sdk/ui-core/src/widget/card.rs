@@ -10,6 +10,7 @@
 //!
 //! Every colour, radius, and gap is read from the [`Theme`].
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
@@ -133,7 +134,7 @@ fn surface(title: Option<String>, action: Option<Element>, body: Element) -> Ele
 }
 
 impl Widget for Card {
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.inner.update(state, path)
     }
 
@@ -418,7 +419,7 @@ impl CardGrid {
 }
 
 impl Widget for CardGrid {
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for card in &mut self.cards {
             changed |= card.update(state, path);

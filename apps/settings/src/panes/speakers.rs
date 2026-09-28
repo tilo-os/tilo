@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
@@ -1292,7 +1293,8 @@ fn from_unit(unit: f64) -> i32 {
 }
 
 impl Widget for SpeakersPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.poll_finished();
         if let Some(command_state) = &self.command_state
             && let Some(operation) = command_state.get()

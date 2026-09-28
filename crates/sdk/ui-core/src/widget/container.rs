@@ -4,6 +4,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::any::Any;
 use taffy::style_helpers::{auto, length, percent};
@@ -271,7 +272,7 @@ impl Widget for Container {
         )
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         match &mut self.child {
             Some(child) => child.update(state, path),
             None => false,

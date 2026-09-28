@@ -7,6 +7,7 @@
 )]
 use super::legacy_document::*;
 use super::*;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Column, TileContent, TileHost};
 use automerge::ReadDoc;
 use serde::{Deserialize, Serialize};
@@ -142,11 +143,11 @@ impl Widget for Probe {
                 .with_action(self.spec.borrow().clone())
         })
     }
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {
+    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
         let (u, s) = self.model_passes.get();
         self.model_passes.set((u, s + 1));
     }
-    fn update(&mut self, _: &mut AutoCommit, _: &ObjId) -> bool {
+    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
         let (u, s) = self.model_passes.get();
         self.model_passes.set((u + 1, s));
         false

@@ -4,6 +4,7 @@
 //! immediate or background operation closure. The host supplies the widget
 //! forwarding and invocation lifecycle; scaffolds do not need to copy that
 //! infrastructure into every new project.
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
@@ -396,7 +397,7 @@ impl ResourceActionHost {
 }
 
 impl Widget for ResourceActionHost {
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.root.update(state, path)
     }
 
@@ -516,8 +517,8 @@ impl Widget for ResourceActionHost {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.root.perform_action(action, state, path)
     }
@@ -526,8 +527,8 @@ impl Widget for ResourceActionHost {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.root.perform_action_at(action, key_path, state, path)
     }
@@ -536,8 +537,8 @@ impl Widget for ResourceActionHost {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.root
             .perform_semantic_action(target, action, state, path)

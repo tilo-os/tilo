@@ -10,6 +10,7 @@
 //! is also recorded on [`Link::last_activated`] so a parent can confirm the
 //! link fired.
 
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -329,8 +330,8 @@ impl Widget for Link {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
+        _state: &mut AppModel,
+        _root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         if !self.enabled {

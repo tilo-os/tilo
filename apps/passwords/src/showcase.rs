@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -3930,7 +3931,7 @@ impl PasswordsSurface {
 }
 
 impl Widget for PasswordsSurface {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.transfer_poll_deadline.set(None);
         self.poll_transfers();
         if self
@@ -5301,8 +5302,8 @@ impl Widget for PasswordsSurface {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
         match (target, action) {

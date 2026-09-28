@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::automerge::{AutoCommit, ObjId};
@@ -329,12 +330,14 @@ impl Drop for DiskUsageApp {
 }
 
 impl Widget for DiskUsageApp {
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         if !self.shot_mode {
             self.recent = DiskUsageDoc::recent(state);
         }
     }
-    fn update(&mut self, state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if let Some(outcome) = self
             .picker_rx
             .as_ref()
@@ -775,8 +778,8 @@ impl Widget for DiskUsageApp {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;

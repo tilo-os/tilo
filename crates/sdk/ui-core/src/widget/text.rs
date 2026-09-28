@@ -9,6 +9,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -752,7 +753,8 @@ impl Text {
 }
 
 impl Widget for Text {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document(state, path);
         self.observe_i18n_revision();
         self.observe_engine_revision();
         let label = match self.source.as_mut() {

@@ -5,6 +5,7 @@ use super::{
     PresenceCtx, PreviewSide, Rect, Scene, Size, Style, TaffyTree, TaffyTreeExt, TextRenderer,
     Theme, Widget, WindowEvent,
 };
+use crate::widget::{AppModel, ModelPath};
 
 impl HistoryHost {
     pub(crate) fn build_composition(
@@ -202,7 +203,7 @@ impl Widget for HistoryHost {
     fn name(&self) -> &'static str {
         "History"
     }
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {}
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,

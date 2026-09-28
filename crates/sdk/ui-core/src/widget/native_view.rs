@@ -7,6 +7,7 @@
 //! toolkit's layout, focus, platform conventions, visibility, accessibility,
 //! and teardown lifecycle.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
@@ -352,13 +353,13 @@ impl Widget for NativeView {
         }
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if let Some(fallback) = &mut self.fallback {
             fallback.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.fallback
             .as_mut()
             .is_some_and(|fallback| fallback.update(state, path))

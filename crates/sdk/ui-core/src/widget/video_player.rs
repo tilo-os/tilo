@@ -11,6 +11,7 @@
 //! builds the feed methods report that nothing was decoded.
 
 use crate::time::{Duration, Instant};
+use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
 
 use crate::text_metrics::renderer_type_size;
@@ -2424,7 +2425,7 @@ impl Widget for VideoPlayer {
     fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
         Some(self)
     }
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.pump_engine();
     }
 
@@ -2650,8 +2651,8 @@ impl Widget for VideoPlayer {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         self.activate_semantic_target(target, action)
     }

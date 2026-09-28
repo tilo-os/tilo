@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
@@ -819,7 +820,8 @@ impl EditorApp {
 }
 
 impl Widget for EditorApp {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.body.sync(state, root);
         self.reconcile_disk(state, root);
         self.clamp_cursor();

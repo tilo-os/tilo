@@ -14,6 +14,7 @@ use ui::widget::{
     AppKind, AppWidget, ContextMenu, Continuable, FloatingSurfaceProvider, FullscreenProvider,
     IconDescriptor, MenuItem, TabDescriptor, TaffyTreeExt, Widget, WindowCloseAdmission,
 };
+use ui::widget::{AppModel, ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
@@ -894,7 +895,7 @@ impl BrowserTabs {
 }
 
 impl Widget for BrowserTabs {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if self.fullscreen_hint_deadline.is_some()
             && !fullscreen_hint_visible(self.fullscreen_hint_deadline, Instant::now())
         {
@@ -1261,8 +1262,8 @@ impl Widget for BrowserTabs {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         if let Some(recovery) = self.recovery.as_mut() {
             return recovery

@@ -28,6 +28,7 @@ use ui::text_selection::{
     word_boundaries_chars,
 };
 use ui::theme::Theme;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{EmptyState, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
@@ -2397,7 +2398,8 @@ impl EditorView {
 }
 
 impl Widget for EditorView {
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         // Pull remote/undo edits: if the buffer text differs from our cache,
         // rebuild. Cheap string compare on the hot path.
         if let Some(t) = self.text_obj.clone() {

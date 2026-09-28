@@ -25,6 +25,7 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{TextInput, TextInputKind};
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -524,7 +525,8 @@ impl Widget for NumberInput {
         self.plus_hover &= environment.supports_hover();
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = crate::doc::document(state, root);
         // Flush a value committed while we lacked the state handle (blur).
         self.flush_crdt(state, root);
         if self.local_state.is_some() {
@@ -930,10 +932,11 @@ impl Widget for NumberInput {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, root) = crate::doc::document(state, root);
         if !self.effectively_enabled() {
             return false;
         }

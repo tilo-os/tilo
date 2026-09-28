@@ -15,6 +15,7 @@
 //! No further wiring: the host publishes the status and drains the request by
 //! sweeping its `node_map`, so the control works at any depth.
 
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -361,8 +362,8 @@ impl Widget for UndoButton {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         match action {
             crate::a11y::Action::Activate => self.activate(),

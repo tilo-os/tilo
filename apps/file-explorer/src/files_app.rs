@@ -30,6 +30,7 @@ use ui::tilo_actions::{
     OperationKind, PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
 use ui::widget::context_menu::{ContextMenu, MenuItem};
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Button, Collaborative, Column, EmptyState, NavShell, ResourceOperation, ScrollAxis, Scrollable,
     ShellMode, Spacer, Spinner, Text, TextInput, Widget,
@@ -7415,11 +7416,8 @@ impl Widget for FileExplorerWidget {
         self.has_action_control_bindings_impl()
     }
 
-    fn native_input_snapshot(
-        &self,
-        doc: &automerge::AutoCommit,
-        path: &automerge::ObjId,
-    ) -> Option<serde_json::Value> {
+    fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
+        let (doc, path) = ui::doc::document_ref(doc, path);
         Some(self.native_input_snapshot_impl(doc, path))
     }
 
@@ -8322,13 +8320,13 @@ impl Widget for FileExplorerWidget {
         }
     }
 
-    fn update(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) -> bool {
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
         // Service calls finishing on the app runtime wake the event loop.
         let received = self.poll_received_share();
         self.poll_share_result() | received
     }
 
-    fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.poll_deferred_document_open();
         self.refresh_framework_history_target();
         self.refresh_metadata_if_due(Instant::now());
@@ -8965,8 +8963,8 @@ impl Widget for FileExplorerWidget {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut automerge::AutoCommit,
-        _path: &automerge::ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
         if target == "files-retry-folder" && matches!(action, Action::Activate) {

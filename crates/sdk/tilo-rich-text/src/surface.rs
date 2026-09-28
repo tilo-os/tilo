@@ -3,10 +3,11 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
+use ui::widget::{AppModel, ModelPath};
 
 use qdoc::snapshot::BlockView;
 use qdoc_rich_text::{ChangeCursor, RichText, RichTextAction, RichTextState};
-use ui::automerge::{AutoCommit, ChangeHash, ObjId};
+use ui::automerge::{AutoCommit, ChangeHash};
 use ui::framework::{ResourceSurface, SurfaceCx};
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::Doc;
@@ -604,7 +605,8 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         &mut self.editor
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         self.source.sync(state);
         // An edit made outside an input event (an accessibility action).
         self.commit(state);
@@ -640,9 +642,10 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         match action {
             ui::a11y::Action::Focus => {
                 Widget::set_focus(&mut self.editor, true);

@@ -1,3 +1,4 @@
+use crate::widget::{AppModel, ModelPath};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -187,7 +188,12 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
             children: Vec<Box<dyn Widget>>,
         }
         impl Widget for Plain {
-            fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+            fn sync(
+                &mut self,
+                _state: &mut crate::widget::AppModel,
+                _path: &crate::widget::ModelPath,
+            ) {
+            }
             fn build_layout(
                 &mut self,
                 taffy: &mut TaffyTree<()>,
@@ -273,7 +279,7 @@ impl Recorder {
 use vello::kurbo::{Point, Rect};
 
 impl Widget for Recorder {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.note("sync");
     }
 
