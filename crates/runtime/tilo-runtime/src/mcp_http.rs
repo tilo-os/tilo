@@ -205,17 +205,11 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
         let rest = path.trim_start_matches(VIEWER_PREFIX);
         let segments: Vec<&str> = rest.split('/').filter(|part| !part.is_empty()).collect();
         let valid_id = |id: &str| id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit());
-        enum Call {
-            Issue,
-            Revoke(String),
-            Role(String),
-            Renew(String),
-        }
         let call = match (method, segments.as_slice()) {
-            (&Method::POST, []) => Call::Issue,
-            (&Method::DELETE, [id]) if valid_id(id) => Call::Revoke((*id).to_owned()),
-            (&Method::POST, [id, "role"]) if valid_id(id) => Call::Role((*id).to_owned()),
-            (&Method::POST, [id, "renew"]) if valid_id(id) => Call::Renew((*id).to_owned()),
+            (&Method::POST, []) => ViewerCall::Issue,
+            (&Method::DELETE, [id]) if valid_id(id) => ViewerCall::Revoke((*id).to_owned()),
+            (&Method::POST, [id, "role"]) if valid_id(id) => ViewerCall::Role((*id).to_owned()),
+            (&Method::POST, [id, "renew"]) if valid_id(id) => ViewerCall::Renew((*id).to_owned()),
             (_, [] | [_] | [_, "role" | "renew"]) => {
                 return plain(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
             }
@@ -223,10 +217,10 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
         };
         let body = body.to_vec();
         let result = tokio::task::spawn_blocking(move || match call {
-            Call::Issue => viewer.issue(&body),
-            Call::Revoke(id) => viewer.revoke(&id),
-            Call::Role(id) => viewer.set_role(&id, &body),
-            Call::Renew(id) => viewer.renew(&id, &body, crate::viewer::now_ms()),
+            ViewerCall::Issue => viewer.issue(&body),
+            ViewerCall::Revoke(id) => viewer.revoke(&id),
+            ViewerCall::Role(id) => viewer.set_role(&id, &body),
+            ViewerCall::Renew(id) => viewer.renew(&id, &body, crate::viewer::now_ms()),
         })
         .await;
         match result {
@@ -327,6 +321,14 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
             .lock()
             .is_ok_and(|mut sessions| sessions.remove(id).is_some())
     }
+}
+
+/// One `/viewer/invitations` route, with its invitation id.
+enum ViewerCall {
+    Issue,
+    Revoke(String),
+    Role(String),
+    Renew(String),
 }
 
 /// The human label of an agent run: the client's declared name, bounded.

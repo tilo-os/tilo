@@ -81,13 +81,11 @@ impl LoopbackHost {
         };
         let bytes = std::fs::read(&self.ready).map_err(|error| unavailable(&error))?;
         let ready: Value = serde_json::from_slice(&bytes).map_err(|error| unavailable(&error))?;
-        let address = ready["fixture_origin"]
-            .as_str()
+        let address = text(&ready, "fixture_origin")
             .and_then(|origin| origin.strip_prefix("http://"))
             .ok_or_else(|| unavailable(&"ready file names no loopback origin"))?
             .to_owned();
-        let state = ready["state_root"]
-            .as_str()
+        let state = text(&ready, "state_root")
             .ok_or_else(|| unavailable(&"ready file names no state root"))?;
         let capability = std::fs::read_to_string(Path::new(state).join("enrollment-capability"))
             .map_err(|error| unavailable(&error))?;
@@ -121,8 +119,8 @@ impl HostOperator for LoopbackHost {
         let response = exchange().map_err(|error| {
             ViewerError::unavailable(format!("viewer host unavailable: {error}"))
         })?;
-        let text = String::from_utf8_lossy(&response);
-        let (head, body) = text
+        let response = String::from_utf8_lossy(&response);
+        let (head, body) = response
             .split_once("\r\n\r\n")
             .ok_or_else(|| ViewerError::unavailable("viewer host answered no HTTP response"))?;
         let status = head
@@ -134,8 +132,7 @@ impl HostOperator for LoopbackHost {
         if status == 200 {
             return Ok(value);
         }
-        let message = value["error"]
-            .as_str()
+        let message = text(&value, "error")
             .unwrap_or("viewer host refused the request")
             .to_owned();
         Err(ViewerError::new(
@@ -207,12 +204,12 @@ pub struct Viewer {
 
 impl Viewer {
     /// Configure from [`ORIGIN_ENV`] and [`HOST_READY_ENV`]; `None` unless
-    /// both are set. The ledger lives in the runtime profile.
+    /// both are set. The ledger lives in the private directory `state`.
     ///
     /// # Errors
     ///
     /// Rejects an origin that is not an exact `https://` origin.
-    pub fn from_env(profile: &Path) -> io::Result<Option<Self>> {
+    pub fn from_env(state: &Path) -> io::Result<Option<Self>> {
         let (Some(origin), Some(ready)) = (
             std::env::var_os(ORIGIN_ENV),
             std::env::var_os(HOST_READY_ENV),
@@ -225,7 +222,7 @@ impl Viewer {
         Self::new(
             origin,
             Box::new(LoopbackHost::new(PathBuf::from(ready))),
-            profile.join("viewer-invitations.json"),
+            state.join("viewer-invitations.json"),
         )
         .map(Some)
     }
@@ -294,9 +291,9 @@ impl Viewer {
             })),
         )?;
         let (Some(invitation), Some(invite_id), Some(expires_at_ms)) = (
-            issued["invite"].as_str(),
-            issued["invite_id"].as_str(),
-            issued["expires_at_ms"].as_u64(),
+            text(&issued, "invite"),
+            text(&issued, "invite_id"),
+            issued.get("expires_at_ms").and_then(Value::as_u64),
         ) else {
             return Err(ViewerError::unavailable(
                 "viewer host answered a malformed invitation",
@@ -416,7 +413,7 @@ impl Viewer {
         }
         ledger.invitations = kept;
         self.store(&ledger)?;
-        Ok(before - ledger.invitations.len())
+        Ok(before.saturating_sub(ledger.invitations.len()))
     }
 
     /// Cancel a pending invitation or remove the member who redeemed it.
@@ -440,13 +437,18 @@ impl Viewer {
 
     fn status(&self, invite_id: &str) -> Result<(String, Option<String>), ViewerError> {
         let listed = self.host.call("invitation.list", None)?;
-        let entry = listed["invitations"]
-            .as_array()
-            .and_then(|entries| entries.iter().find(|entry| entry["id"] == invite_id))
+        let entry = listed
+            .get("invitations")
+            .and_then(Value::as_array)
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|entry| text(entry, "id") == Some(invite_id))
+            })
             .ok_or_else(|| ViewerError::new(409, "the host no longer lists this invitation"))?;
         Ok((
-            entry["status"].as_str().unwrap_or_default().to_owned(),
-            entry["participant_id"].as_str().map(str::to_owned),
+            text(entry, "status").unwrap_or_default().to_owned(),
+            text(entry, "participant_id").map(str::to_owned),
         ))
     }
 
@@ -473,6 +475,10 @@ impl Viewer {
     }
 }
 
+fn text<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(Value::as_str)
+}
+
 fn parse<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, ViewerError> {
     serde_json::from_slice(body).map_err(|error| ViewerError::new(400, error.to_string()))
 }
@@ -491,6 +497,22 @@ fn find(ledger: &Ledger, invite_id: &str) -> Result<usize, ViewerError> {
         .iter()
         .position(|entry| entry.invite_id == invite_id)
         .ok_or_else(|| ViewerError::new(404, "unknown viewer invitation"))
+}
+
+/// [`Viewer::from_env`] with its expiry sweeper running: what an MCP
+/// endpoint passes to [`crate::mcp_http::Endpoint::with_viewer`]. The ledger
+/// lives in the private directory `state`.
+///
+/// # Errors
+///
+/// Rejects an invalid origin, or an app runtime that cannot start.
+pub fn start_from_env(state: &Path) -> io::Result<Option<std::sync::Arc<Viewer>>> {
+    let Some(viewer) = Viewer::from_env(state)? else {
+        return Ok(None);
+    };
+    let viewer = std::sync::Arc::new(viewer);
+    spawn_sweeper(std::sync::Arc::clone(&viewer))?;
+    Ok(Some(viewer))
 }
 
 /// Remove expired viewers every [`SWEEP_INTERVAL`] on the app runtime.
@@ -528,24 +550,11 @@ pub fn now_ms() -> u64 {
 
 /// `YYYY-MM-DDTHH:MM:SSZ` for milliseconds since the epoch.
 fn rfc3339(ms: u64) -> String {
-    let seconds = ms / 1000;
-    let (days, rest) = (seconds / 86_400, seconds % 86_400);
-    // Civil date from days since 1970-01-01 (Hinnant's algorithm).
-    let z = days + 719_468;
-    let era = z / 146_097;
-    let doe = z % 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + u64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        rest / 3600,
-        rest % 3600 / 60,
-        rest % 60
-    )
+    i64::try_from(ms)
+        .ok()
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .unwrap_or(chrono::DateTime::<chrono::Utc>::MAX_UTC)
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 #[cfg(test)]

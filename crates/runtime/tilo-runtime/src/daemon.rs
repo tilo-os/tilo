@@ -691,10 +691,7 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     if let Some(config) = crate::mcp_http::Config::from_env()? {
         stages.enter("binding the MCP HTTP endpoint");
-        let viewer = crate::viewer::Viewer::from_env(profile)?.map(Arc::new);
-        if let Some(viewer) = viewer.clone() {
-            crate::viewer::spawn_sweeper(viewer)?;
-        }
+        let viewer = crate::viewer::start_from_env(profile)?;
         let endpoint = crate::mcp_http::Endpoint::with_viewer(
             host.clone(),
             session.room().to_owned(),
