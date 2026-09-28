@@ -136,11 +136,11 @@ pub fn check(
         let replayed = replay.frames_at(at)?;
         for stored in strip.frames.iter().filter(|frame| frame.at == at) {
             report.compared = report.compared.saturating_add(1);
-            let regions = layout.at(&stored.route, at).unwrap_or_default();
+            let regions = layout.for_comparison(&stored.route, at);
             let found = replayed
                 .iter()
                 .find(|frame| frame.same_surface(&stored.route));
-            let step = compare_frame(stored, found, regions, tolerance)?;
+            let step = compare_frame(stored, found, &regions, tolerance)?;
             if !step.regions.is_empty() {
                 report.steps.push(step);
             }
@@ -680,6 +680,32 @@ mod tests {
         let mut replay = Replay(vec![at(replayed, 100)], Vec::new());
         let report = check(&trace, &strip, &mut replay, &Tolerance::default()).unwrap();
         assert_eq!(report.layer, SessionLayer::Logic, "{:?}", report.steps);
+    }
+
+    #[test]
+    fn transient_feedback_is_left_out_at_every_step_it_ever_appeared_in() {
+        let pill = ElementRegion {
+            id: "root~transient:0".into(),
+            bounds: edges(8.0, 44.0, 80.0, 56.0),
+            masked: false,
+            described: true,
+            transient: true,
+        };
+        let mut shown = regions();
+        shown.push(pill.clone());
+        let layout = SemanticLayout::from_keyframes(vec![
+            (route("so.tilo.notes"), Offset(50), shown),
+            (route("so.tilo.notes"), Offset(90), regions()),
+        ]);
+        // At 100 the recording showed no pill, yet the replay may.
+        let compared = layout.for_comparison(&route("so.tilo.notes"), Offset(100));
+        assert!(compared.contains(&pill), "{compared:?}");
+        assert!(
+            layout
+                .for_comparison(&route("so.tilo.other"), Offset(100))
+                .is_empty(),
+            "another surface declared nothing"
+        );
     }
 
     #[test]

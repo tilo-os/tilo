@@ -232,6 +232,7 @@ pub mod text_render;
 pub mod text_selection;
 pub mod theme;
 pub mod tokens;
+pub mod transient;
 pub mod ui_graph;
 pub mod undo;
 pub mod uri;

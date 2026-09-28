@@ -33,9 +33,6 @@ pub struct StatusBubble {
     /// `None` while the pointer pins the bubble open.
     shown_at: Option<Instant>,
     hovered: bool,
-    /// Where the bubble paints (its fade layer included), as the last frame
-    /// laid it out, whether or not it is visible.
-    slot: Option<Rect>,
 }
 
 impl Default for StatusBubble {
@@ -50,27 +47,6 @@ impl StatusBubble {
             linger: DEFAULT_LINGER,
             shown_at: None,
             hovered: false,
-            slot: None,
-        }
-    }
-
-    /// Record where the bubble paints this frame: the pill and whatever its
-    /// fade layer covers. The owner calls it while laying the bubble out,
-    /// visible or not, so the area is known even between appearances.
-    pub fn place(&mut self, painted: Rect) {
-        self.slot = Some(painted);
-    }
-
-    /// `node`, the owner's accessible description of what the bubble says,
-    /// placed where the bubble paints and marked
-    /// [`transient`](crate::a11y::AccessNode::transient): when it appears and
-    /// how far it has faded follow this device's own clock and state, which
-    /// a recording's replay does not reproduce.
-    pub fn describe(&self, node: crate::a11y::AccessNode) -> crate::a11y::AccessNode {
-        let node = node.transient_pixels();
-        match self.slot {
-            Some(slot) => node.with_bounds(slot),
-            None => node,
         }
     }
 
@@ -191,6 +167,12 @@ pub fn draw_pill(
     text_size: f32,
 ) {
     let radius = rect.height() / 2.0;
+    // When the pill shows and how far it has faded follow this device's
+    // clock and local state, not the session.
+    crate::transient::declare(
+        transform,
+        crate::surface::shadow_extent(rect, &theme.tokens.elevation.e2),
+    );
 
     crate::surface::shadow(scene, transform, rect, radius, &theme.tokens.elevation.e2);
 

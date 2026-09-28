@@ -129,6 +129,10 @@ impl Widget for Spinner {
         let dot_r = size * DOT_RADIUS_FRAC;
         let orbit_r = size * ORBIT_RADIUS_FRAC;
         let centre = self.rect.center();
+        if !theme.reduce_motion {
+            // The orbit runs on the wall clock.
+            crate::transient::declare(transform, self.rect);
+        }
 
         // Phase ∈ [0, 1); ms (not seconds) keeps the divisor small for
         // long-lived spinners.
