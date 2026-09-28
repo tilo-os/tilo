@@ -279,6 +279,7 @@ pub const CAPABILITIES: Capabilities = Capabilities {
     pan: true,
     scroll: true,
     history: true,
+    swipe: true,
 };
 
 /// Check `command` against `generation` and `tree` without changing either.
@@ -490,6 +491,10 @@ pub struct Capabilities {
     pub scroll: bool,
     /// Per-window back and forward through the tab's own history.
     pub history: bool,
+    /// The surface takes sideways wheel input itself: a swipe steps focus
+    /// along the strip and otherwise pans it. A host must leave it the
+    /// wheel rather than turn it into `pan` commands.
+    pub swipe: bool,
 }
 
 /// The shown strip's horizontal geometry, in logical px.
@@ -996,6 +1001,7 @@ mod tests {
         let caps =
             serde_json::to_value(snapshot(&tree, "g", vec![])).unwrap()["capabilities"].clone();
         assert_eq!(caps["workspaceTasks"], true);
+        assert_eq!(caps["swipe"], true);
         assert_eq!(caps["workspaceHistory"], false);
         assert_eq!(caps["workspaceReplay"], false);
         assert_eq!(
