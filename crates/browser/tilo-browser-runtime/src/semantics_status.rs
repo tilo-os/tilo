@@ -9,7 +9,7 @@
 //! the tree's structure changing (nodes added or removed, roles or paths
 //! changed), the IME window moving to another line or field, or the host
 //! asking for a fresh tree.
-use crate::admitted_records::{PublicationDecision, PublicationSchedule};
+use crate::throttle::{PublicationDecision, PublicationSchedule};
 use std::hash::{Hash, Hasher};
 use ui::{
     a11y::AccessNode,
@@ -30,7 +30,7 @@ pub(crate) enum SemanticsDecision {
     /// true when a focus, structure, IME or host request bypassed the window.
     Deliver { forced: bool },
     /// A content-only change inside the window; deliver at the instant.
-    Deferred(ui::clock::Instant),
+    Deferred(ui::time::Instant),
 }
 
 pub(crate) struct SemanticsGate {
@@ -58,7 +58,7 @@ impl SemanticsGate {
         self.requested = true;
     }
     /// Deadline of a deferred content change, if one is pending.
-    pub(crate) fn due(&self) -> Option<ui::clock::Instant> {
+    pub(crate) fn due(&self) -> Option<ui::time::Instant> {
         self.schedule.due()
     }
     /// Serialized JSON of the tree from the last [`Self::decide`] call.
@@ -71,7 +71,7 @@ impl SemanticsGate {
         &mut self,
         snapshot: &InspectionSnapshot,
         ime: Option<&ImeWindowState>,
-        now: ui::clock::Instant,
+        now: ui::time::Instant,
     ) -> SemanticsDecision {
         self.text.clear();
         if serde_json::to_writer(&mut self.text, snapshot).is_err() {
@@ -139,8 +139,10 @@ pub(crate) fn structure_signature(snapshot: &InspectionSnapshot) -> u64 {
         }
     }
     let mut hasher = std::hash::DefaultHasher::new();
-    snapshot.keyboard_focus_owner.hash(&mut hasher);
     visit_node(&snapshot.root, &mut hasher);
+    if let Some(presentation) = &snapshot.presentation {
+        visit_node(presentation, &mut hasher);
+    }
     hasher.finish()
 }
 
@@ -230,7 +232,7 @@ mod tests {
 
     #[test]
     fn the_first_tree_and_unchanged_trees_follow_the_hash_gate() {
-        let t0 = ui::clock::Instant::now();
+        let t0 = ui::time::Instant::now();
         let mut gate = window();
         assert_eq!(
             gate.decide(&tree(&["a", ""], 0), None, t0),
@@ -250,7 +252,7 @@ mod tests {
     #[test]
     fn content_only_changes_inside_the_window_defer_to_the_deadline_and_the_final_tree_is_delivered()
      {
-        let t0 = ui::clock::Instant::now();
+        let t0 = ui::time::Instant::now();
         let ms = |n: u64| t0 + Duration::from_millis(n);
         let mut gate = window();
         assert_eq!(
@@ -291,7 +293,7 @@ mod tests {
 
     #[test]
     fn a_deferred_change_that_reverts_clears_the_deadline() {
-        let t0 = ui::clock::Instant::now();
+        let t0 = ui::time::Instant::now();
         let ms = |n: u64| t0 + Duration::from_millis(n);
         let mut gate = window();
         gate.decide(&tree(&["a", ""], 0), None, ms(0));
@@ -308,7 +310,7 @@ mod tests {
 
     #[test]
     fn focus_and_structure_changes_are_never_throttled() {
-        let t0 = ui::clock::Instant::now();
+        let t0 = ui::time::Instant::now();
         let ms = |n: u64| t0 + Duration::from_millis(n);
         let mut gate = window();
         gate.decide(&tree(&["a", ""], 0), None, ms(0));
@@ -340,7 +342,7 @@ mod tests {
 
     #[test]
     fn an_ime_line_change_is_delivered_at_once_but_horizontal_caret_motion_is_not() {
-        let t0 = ui::clock::Instant::now();
+        let t0 = ui::time::Instant::now();
         let ms = |n: u64| t0 + Duration::from_millis(n);
         let mut gate = window();
         gate.decide(&tree(&["a", ""], 0), Some(&ime(10, 20)), ms(0));
@@ -366,7 +368,7 @@ mod tests {
 
     #[test]
     fn a_host_request_resends_even_an_unchanged_tree() {
-        let t0 = ui::clock::Instant::now();
+        let t0 = ui::time::Instant::now();
         let ms = |n: u64| t0 + Duration::from_millis(n);
         let mut gate = window();
         gate.decide(&tree(&["a", ""], 0), None, ms(0));
@@ -398,7 +400,7 @@ mod tests {
 
     #[test]
     fn a_zero_window_delivers_every_changed_tree() {
-        let t0 = ui::clock::Instant::now();
+        let t0 = ui::time::Instant::now();
         let mut gate = SemanticsGate::new(Duration::ZERO);
         gate.decide(&tree(&["a", ""], 0), None, t0);
         assert_eq!(

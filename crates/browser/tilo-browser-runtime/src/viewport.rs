@@ -6,10 +6,15 @@ pub(crate) struct Viewport {
     pub dpr: f64,
 }
 impl Viewport {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "canvas sizes are small positive pixel counts, clamped to at least 1"
+    )]
     pub fn logical_size(self) -> (u32, u32) {
         (
-            (self.width as f64 / self.dpr).max(1.0) as u32,
-            (self.height as f64 / self.dpr).max(1.0) as u32,
+            (f64::from(self.width) / self.dpr).max(1.0) as u32,
+            (f64::from(self.height) / self.dpr).max(1.0) as u32,
         )
     }
 }
@@ -97,8 +102,8 @@ impl ViewportState {
             return (x, y);
         }
         (
-            x * self.applied.width as f64 / self.requested.width as f64,
-            y * self.applied.height as f64 / self.requested.height as f64,
+            x * f64::from(self.applied.width) / f64::from(self.requested.width),
+            y * f64::from(self.applied.height) / f64::from(self.requested.height),
         )
     }
 }
