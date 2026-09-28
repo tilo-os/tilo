@@ -48,6 +48,19 @@ impl ChannelGate {
         }
         !self.encryption_required || encryption.is_some_and(|metadata| metadata.channel == channel)
     }
+
+    /// [`Self::accepts`] for history a workspace host replays in its own
+    /// order: content sealed under an older epoch was current when the host
+    /// admitted it (the host admits only the room's members), so only
+    /// plaintext on an encrypted channel and ciphertext bound to another
+    /// channel are refused.
+    pub fn accepts_history(
+        &self,
+        encryption: Option<&EncryptionMetadata>,
+        channel: collab_types::ChannelId,
+    ) -> bool {
+        !self.encryption_required || encryption.is_some_and(|metadata| metadata.channel == channel)
+    }
 }
 
 /// Outcome of [`GovernanceJournal::append_mirrored`].
@@ -494,5 +507,30 @@ impl std::fmt::Debug for GovernanceJournal {
             )
             .field("encryption_required", &self.state.encryption_required)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::ChannelGate;
+    use collab_types::{ChannelId, ContentRetention, EncryptionMetadata};
+
+    /// Live content sealed under a key older than the latest membership
+    /// change is refused (a removed member still holds it); the same content
+    /// replayed by the host from its history was current when admitted and
+    /// is accepted. Plaintext and other channels are refused either way.
+    #[test]
+    fn host_history_under_an_older_epoch_is_accepted_live_content_is_not() {
+        let channel = ChannelId::new();
+        let gate = ChannelGate {
+            encryption_required: true,
+            head_epoch: Some(3),
+        };
+        let old = EncryptionMetadata::content_key(1, channel, ContentRetention::Delta);
+        assert!(!gate.accepts(Some(&old), channel));
+        assert!(gate.accepts_history(Some(&old), channel));
+        assert!(!gate.accepts_history(None, channel));
+        let other = EncryptionMetadata::content_key(3, ChannelId::new(), ContentRetention::Delta);
+        assert!(!gate.accepts_history(Some(&other), channel));
     }
 }
