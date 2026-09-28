@@ -1,0 +1,37 @@
+name: Build / OS dev
+
+# The loop for iterating on the OS image with tilo-vm: every main push and
+# every pull request that touches the image builds it fully cached and
+# publishes, per architecture,
+#
+#   registry.tilo.so/tilo/tilo-ci:<ref>-<sha7>-<arch>   the unsigned OS image
+#   registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-ci       its dev image
+#
+# (<ref> is main or pr-<number>), so `tilo-vm vm upgrade --from sha:<commit>`
+# moves a VM onto any pushed commit. No reproduction lane, no signing, no
+# release channel: those are Release / OS (build-image.yml), which this calls.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - "os/**"
+      - ".forgejo/workflows/os-dev.yml"
+      - ".forgejo/workflows/build-image.yml"
+      - ".forgejo/actions/setup-buildx/**"
+
+# The newest commit of a ref supersedes the build of the one before.
+concurrency:
+  group: os-dev-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    # Pull requests from forks get no registry credentials.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.forgejo/workflows/build-image.yml
+    secrets: inherit
+    # The app collection download and the package registry authenticate
+    # with the job's OIDC token, which a called workflow gets only from here.
+    enable-openid-connect: true
