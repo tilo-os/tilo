@@ -789,13 +789,13 @@ impl GlobalShortcutsBackend {
         &self,
         #[zbus(signal_emitter)] sig: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
-        #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,
         session: ObjectPath<'_>,
         shortcuts: Vec<ShortcutWire>,
         parent_window: String,
         _options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
+        let connection = sig.connection();
         let Some((auth, current)) = self.authenticate_session(hdr, &session).await else {
             return (2, HashMap::new());
         };
