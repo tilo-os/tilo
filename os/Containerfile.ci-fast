@@ -8,10 +8,27 @@ FROM ${TOOLS_IMAGE} AS tools
 
 # cargo-hakari checks that crates/workspace-hack matches the dependency graph.
 # Compile the pinned release with the reviewed builder toolchain; only the
-# binary ships.
+# binary ships. The build passes the shared compiler cache: its location as
+# build args, its credential as BuildKit secrets that never enter a layer.
+# Without them the stage compiles uncached.
 FROM ${TOOLS_IMAGE} AS hakari
 ARG CARGO_HAKARI_VERSION=0.9.39
-RUN cargo install --locked --root /opt/cargo-hakari cargo-hakari --version "${CARGO_HAKARI_VERSION}" \
+ARG SCCACHE_BUCKET=
+ARG SCCACHE_ENDPOINT=
+ARG SCCACHE_REGION=
+ARG SCCACHE_S3_USE_SSL=
+ARG SCCACHE_S3_KEY_PREFIX=
+RUN --mount=type=secret,id=aws_access_key_id \
+    --mount=type=secret,id=aws_secret_access_key \
+    if [ -n "$SCCACHE_BUCKET" ] && [ -s /run/secrets/aws_access_key_id ]; then \
+      export SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL SCCACHE_S3_KEY_PREFIX \
+        SCCACHE_IGNORE_SERVER_IO_ERROR=1 SCCACHE_DIRECT=false RUSTUP_AUTO_INSTALL=0 \
+        RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 \
+        AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id)" \
+        AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key)"; \
+    fi \
+    && cargo install --locked --root /opt/cargo-hakari cargo-hakari --version "${CARGO_HAKARI_VERSION}" \
+    && { [ -z "${RUSTC_WRAPPER:-}" ] || sccache --show-stats; } \
     && /opt/cargo-hakari/bin/cargo-hakari hakari --version
 
 FROM registry.fedoraproject.org/fedora:44@sha256:55159f5c92b7baf5f1c1ca1d727c95e77a4cb77c0829b2c11740a700ff4ea02b
@@ -41,6 +58,9 @@ COPY --from=tools /usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/ 
 COPY --from=tools /usr/local/cargo/bin/rustup /usr/local/cargo/bin/rustup
 COPY --from=tools /usr/local/cargo/bin/cargo-deny /usr/local/cargo/bin/cargo-deny
 COPY --from=tools /usr/local/cargo/bin/cargo-machete /usr/local/cargo/bin/cargo-machete
+# Jobs that compile in this image (tilo-app-cli for the app lints, security
+# fixtures) use the shared compiler cache through tools/ci/sccache.sh.
+COPY --from=tools /usr/local/bin/sccache /usr/local/bin/sccache
 COPY --from=hakari /opt/cargo-hakari/bin/cargo-hakari /usr/local/cargo/bin/cargo-hakari
 COPY --from=tools /usr/local/rustup/settings.toml /usr/local/rustup/settings.toml
 # Assembly may run on ARM64 under emulation. Run the full lint workflow and
@@ -48,4 +68,5 @@ COPY --from=tools /usr/local/rustup/settings.toml /usr/local/rustup/settings.tom
 RUN for tool in cargo rustc rustfmt cargo-fmt; do ln -s rustup /usr/local/cargo/bin/$tool; done \
     && test -x /usr/local/cargo/bin/cargo-deny \
     && test -x /usr/local/cargo/bin/cargo-machete \
-    && test -x /usr/local/cargo/bin/cargo-hakari
+    && test -x /usr/local/cargo/bin/cargo-hakari \
+    && sccache --version
