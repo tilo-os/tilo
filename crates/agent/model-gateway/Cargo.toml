@@ -15,13 +15,6 @@ name = "tilo-model-gateway"
 path = "src/main.rs"
 
 [dependencies]
-tilo-clock = { path = "../../system/tilo-clock" }
-agent-provider-config = { path = "../provider-config" }
-accounts = { path = "../../system/accounts" }
-reqwest = { workspace = true, features = ["json"] }
-tilo-net = { path = "../../system/tilo-net", features = ["http"] }
-tilo-rt.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
