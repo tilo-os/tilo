@@ -105,9 +105,23 @@ pixels silently missing, with no prior frame for `BumpBudget::observe` to have
 grown from yet. See the doc comment above `FLOOR_PTCL_PER_TILE` for the
 measurement this raised it from.
 
-Own test module (7 tests): the two faults above and the `ptcl` floor gap each
-have a dedicated regression test, plus growth-from-measurement, ceiling and
-the headline "far less than upstream" comparison.
+Own test module: the two faults above and the `ptcl` floor gap each have a
+dedicated regression test, plus growth-from-measurement, ceiling and the
+headline "far less than upstream" comparison.
+
+Every reservation is also bounded by the device. `BumpReservation` pairs the
+budget with the largest buffer the device binds, and
+`BufferSizes::new_reserved`/`RenderConfig::new_reserved` clamp each
+bump-allocated buffer to it: a buffer past `max_storage_buffer_binding_size`
+is a wgpu validation error, which wgpu's default handler turns into a panic.
+A frame that needs more than the device binds overflows and draws partially
+instead. The growth ceiling scales with the viewport
+(`BumpBudget::ceiling_for_viewport`) — the flat `CEILING` sat below what a
+5120x2880 desktop with one spilled blend level per tile needs, so its
+`blend_spill` overflowed on every frame and never converged — and
+`BumpBudget::within_binding` holds that ceiling to the device limit.
+
+## `vendor/vello/src/bump_budget.rs` (new)
 
 ## `vendor/vello/src/bump_budget.rs` (new)
 
@@ -116,14 +130,15 @@ the headline "far less than upstream" comparison.
 it (or an already-finished one) at the top of the next, and grows the budget
 to cover what was used. `VELLO_BUMP_LOG=1` logs used-vs-reserved per frame;
 `VELLO_BUMP_BUDGET=upstream` pins `BumpBudget::UPSTREAM` for an A/B
-comparison from one binary.
+comparison from one binary. The tracker reads the binding bound from the
+device's limits and grows only within it.
 
 ## `vendor/vello/src/lib.rs`
 
 `Renderer` gains a `budget: bump_budget::BudgetTracker` field. Both render
 paths (`render_to_texture`/`render_to_surface` and the async
 `render_to_texture_async`) collect the previous frame's counters, pass
-`self.budget.budget()` into `render::render_full`/`render_encoding_coarse`,
+`self.budget.reservation()` into `render::render_full`/`render_encoding_coarse`,
 and start or await the next readback; a budget that grew clears the engine's
 buffer pool so stale-size buffers are dropped rather than held for the life
 of the process. The async path always reads back now (upstream gated this on
@@ -135,7 +150,7 @@ same way the sync path does.
 ## `vendor/vello/src/render.rs`
 
 `render_full`, `render_encoding_full` and `render_encoding_coarse` take a
-`&vello_encoding::BumpBudget` and a `measure: bool` (threaded through as
+`&vello_encoding::BumpReservation` and a `measure: bool` (threaded through as
 upstream's existing `robust` readback flag — the fork reuses that plumbing
 rather than adding a second one), and hand back the bump-counter download
 buffer when `measure` is set.
@@ -145,6 +160,10 @@ buffer when `measure` is set.
 Adds `WgpuEngine::clear_pool()`: drops every buffer the size-class pool is
 holding for reuse. Called only when the budget just grew, so old size
 classes stop being kept for a request that will not come again.
+
+The pool rounds a request up to its size class only as far as the device
+binds: `ResourcePool` binds whole buffers, so rounding a legal 100 MiB storage
+request up to 128 MiB-plus would itself exceed the binding limit.
 
 ## `vendor/vello_encoding/src/resolve.rs`
 
@@ -162,4 +181,4 @@ Adds `ImageCache::atlas_size()`, the atlas's current live side length, for
 
 ## `vendor/vello_encoding/src/lib.rs`
 
-Re-exports `BumpBudget` from `config`.
+Re-exports `BumpBudget` and `BumpReservation` from `config`.

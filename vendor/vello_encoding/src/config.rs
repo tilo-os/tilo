@@ -172,6 +172,24 @@ impl RenderConfig {
         base_color: &peniko::Color,
         budget: &BumpBudget,
     ) -> Self {
+        Self::new_reserved(
+            layout,
+            width,
+            height,
+            base_color,
+            &BumpReservation::unbounded(*budget),
+        )
+    }
+
+    /// [`RenderConfig::new`], with every bump-allocated buffer held within
+    /// the device's binding limit; see [`BumpReservation`].
+    pub fn new_reserved(
+        layout: &Layout,
+        width: u32,
+        height: u32,
+        base_color: &peniko::Color,
+        reservation: &BumpReservation,
+    ) -> Self {
         let new_width = width.next_multiple_of(TILE_WIDTH);
         let new_height = height.next_multiple_of(TILE_HEIGHT);
         let width_in_tiles = new_width / TILE_WIDTH;
@@ -179,12 +197,12 @@ impl RenderConfig {
         let n_path_tags = layout.path_tags_size();
         let workgroup_counts =
             WorkgroupCounts::new(layout, width_in_tiles, height_in_tiles, n_path_tags);
-        let buffer_sizes = BufferSizes::new(
+        let buffer_sizes = BufferSizes::new_reserved(
             layout,
             &workgroup_counts,
             width_in_tiles,
             height_in_tiles,
-            budget,
+            reservation,
         );
         Self {
             gpu: ConfigUniform {
@@ -194,7 +212,12 @@ impl RenderConfig {
                 target_height: height,
                 base_color: base_color.premultiply().to_rgba8().to_u32(),
                 lines_size: buffer_sizes.lines.len(),
-                binning_size: buffer_sizes.bin_data.len() - layout.bin_data_start,
+                // Saturating: a binding limit below the scene's own info
+                // block leaves no binning room at all, never four billion.
+                binning_size: buffer_sizes
+                    .bin_data
+                    .len()
+                    .saturating_sub(layout.bin_data_start),
                 tiles_size: buffer_sizes.tiles.len(),
                 seg_counts_size: buffer_sizes.seg_counts.len(),
                 segments_size: buffer_sizes.segments.len(),
@@ -380,6 +403,55 @@ impl BufferSizes {
     /// upstream's own code. The bump-allocated ones are the reservation
     /// this fork exists to change: see [`BumpBudget`].
     pub fn new(
+        layout: &Layout,
+        workgroups: &WorkgroupCounts,
+        width_in_tiles: u32,
+        height_in_tiles: u32,
+        budget: &BumpBudget,
+    ) -> Self {
+        Self::new_reserved(
+            layout,
+            workgroups,
+            width_in_tiles,
+            height_in_tiles,
+            &BumpReservation::unbounded(*budget),
+        )
+    }
+
+    /// [`BufferSizes::new`], then every bump-allocated buffer cut to
+    /// `reservation.max_binding_bytes`.
+    ///
+    /// Each of those buffers is bound whole, so one byte past the device's
+    /// storage-binding limit is a validation error, and wgpu's default
+    /// response to a validation error is to abort the process. A buffer
+    /// cut short instead overflows on the GPU, which sets `failed` and
+    /// drops geometry the caller can see was dropped.
+    pub fn new_reserved(
+        layout: &Layout,
+        workgroups: &WorkgroupCounts,
+        width_in_tiles: u32,
+        height_in_tiles: u32,
+        reservation: &BumpReservation,
+    ) -> Self {
+        let mut sizes = Self::unbounded(
+            layout,
+            workgroups,
+            width_in_tiles,
+            height_in_tiles,
+            &reservation.budget,
+        );
+        let max = reservation.max_binding_bytes;
+        sizes.lines = bounded(sizes.lines, max);
+        sizes.bin_data = bounded(sizes.bin_data, max);
+        sizes.tiles = bounded(sizes.tiles, max);
+        sizes.seg_counts = bounded(sizes.seg_counts, max);
+        sizes.segments = bounded(sizes.segments, max);
+        sizes.blend_spill = bounded(sizes.blend_spill, max);
+        sizes.ptcl = bounded(sizes.ptcl, max);
+        sizes
+    }
+
+    fn unbounded(
         layout: &Layout,
         workgroups: &WorkgroupCounts,
         width_in_tiles: u32,
@@ -714,6 +786,11 @@ impl BumpBudget {
     /// from reporting their final demand, so convergence is not guaranteed
     /// in a single subsequent render.
     pub fn observe(&mut self, used: &BumpAllocators) -> bool {
+        self.observe_within(used, &Self::CEILING)
+    }
+
+    /// [`BumpBudget::observe`], growing no field past `ceiling`.
+    pub fn observe_within(&mut self, used: &BumpAllocators, ceiling: &Self) -> bool {
         let mut changed = false;
         let mut grow = |field: &mut u32, used: u32, ceiling: u32| {
             let want = used.saturating_mul(2).max(used).min(ceiling);
@@ -722,18 +799,63 @@ impl BumpBudget {
                 changed = true;
             }
         };
-        grow(&mut self.lines, used.lines, Self::CEILING.lines);
-        grow(&mut self.binning, used.binning, Self::CEILING.binning);
-        grow(&mut self.tiles, used.tile, Self::CEILING.tiles);
-        grow(
-            &mut self.seg_counts,
-            used.seg_counts,
-            Self::CEILING.seg_counts,
-        );
-        grow(&mut self.segments, used.segments, Self::CEILING.segments);
-        grow(&mut self.blend_spill, used.blend, Self::CEILING.blend_spill);
-        grow(&mut self.ptcl, used.ptcl, Self::CEILING.ptcl);
+        grow(&mut self.lines, used.lines, ceiling.lines);
+        grow(&mut self.binning, used.binning, ceiling.binning);
+        grow(&mut self.tiles, used.tile, ceiling.tiles);
+        grow(&mut self.seg_counts, used.seg_counts, ceiling.seg_counts);
+        grow(&mut self.segments, used.segments, ceiling.segments);
+        grow(&mut self.blend_spill, used.blend, ceiling.blend_spill);
+        grow(&mut self.ptcl, used.ptcl, ceiling.ptcl);
         changed
+    }
+
+    /// The most a viewport of `n_tiles` may grow to.
+    ///
+    /// [`BumpBudget::CEILING`] is flat, and upstream's constants it is
+    /// scaled from were picked at 1080p. The floors beneath it scale with
+    /// the viewport, so on a large enough target a flat ceiling sits below
+    /// what the viewport structurally needs: blend spill, in particular, is
+    /// `TILE_WIDTH * TILE_HEIGHT` words per tile per nesting level past the
+    /// on-chip stack, and a 5120x2880 desktop with one spilled level
+    /// everywhere asks for 14.7M words against a flat ceiling of 4.2M. A
+    /// frame like that overflows, observes, is refused growth, and
+    /// overflows again, forever -- a black screen that looks like progress.
+    pub fn ceiling_for_viewport(n_tiles: u32) -> Self {
+        let floor = Self::floor_for_viewport(n_tiles);
+        let scaled = |ceiling: u32, floor: u32| ceiling.max(floor.saturating_mul(CEILING_OVER_FLOOR));
+        Self {
+            lines: scaled(Self::CEILING.lines, floor.lines),
+            binning: scaled(Self::CEILING.binning, floor.binning),
+            tiles: scaled(Self::CEILING.tiles, floor.tiles),
+            seg_counts: scaled(Self::CEILING.seg_counts, floor.seg_counts),
+            segments: scaled(Self::CEILING.segments, floor.segments),
+            blend_spill: Self::CEILING.blend_spill.max(
+                n_tiles.saturating_mul(BLEND_SPILL_WORDS_PER_LEVEL * CEILING_BLEND_SPILL_LEVELS),
+            ),
+            ptcl: scaled(Self::CEILING.ptcl, floor.ptcl),
+        }
+    }
+
+    /// This budget with every field cut to what one storage binding of
+    /// `max_binding_bytes` holds at a viewport of `n_tiles`, the `ptcl`
+    /// structural prefix included.
+    ///
+    /// Growing past that would reserve a buffer the device refuses to bind.
+    #[must_use]
+    pub fn within_binding(self, max_binding_bytes: u64, n_tiles: u32) -> Self {
+        let cap = |len: u32, element: usize| len.min(elements_within(max_binding_bytes, element));
+        let structural_ptcl = n_tiles.saturating_mul(PTCL_INITIAL_ALLOC);
+        Self {
+            lines: cap(self.lines, size_of::<LineSoup>()),
+            binning: cap(self.binning, 4),
+            tiles: cap(self.tiles, size_of::<Tile>()),
+            seg_counts: cap(self.seg_counts, size_of::<SegmentCount>()),
+            segments: cap(self.segments, size_of::<PathSegment>()),
+            blend_spill: cap(self.blend_spill, 4),
+            ptcl: self
+                .ptcl
+                .min(elements_within(max_binding_bytes, 4).saturating_sub(structural_ptcl)),
+        }
     }
 
     /// Bytes this budget reserves, not counting the viewport floors.
@@ -754,13 +876,53 @@ impl Default for BumpBudget {
     }
 }
 
+/// How far [`BumpBudget::ceiling_for_viewport`] lets a viewport-scaled
+/// field grow past its first-frame floor.
+const CEILING_OVER_FLOOR: u32 = 4;
+/// Words of blend scratch one tile spills per nesting level past the
+/// on-chip stack: `TILE_WIDTH * TILE_HEIGHT` in `coarse.wgsl`.
+const BLEND_SPILL_WORDS_PER_LEVEL: u32 = 256;
+/// Spilled nesting levels the blend ceiling covers on every tile at once.
+const CEILING_BLEND_SPILL_LEVELS: u32 = 4;
+
+/// A [`BumpBudget`] and the device limit its buffers must be bound within.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct BumpReservation {
+    pub budget: BumpBudget,
+    /// The smaller of the device's `max_storage_buffer_binding_size` and
+    /// `max_buffer_size`: every bump-allocated buffer is bound whole.
+    pub max_binding_bytes: u64,
+}
+
+impl BumpReservation {
+    /// No device limit: [`BufferSizes::new`]'s behaviour.
+    pub const fn unbounded(budget: BumpBudget) -> Self {
+        Self {
+            budget,
+            max_binding_bytes: u64::MAX,
+        }
+    }
+}
+
+/// How many `element`-byte items fit in `max_bytes`, as a buffer length.
+fn elements_within(max_bytes: u64, element: usize) -> u32 {
+    u32::try_from(max_bytes / element as u64).unwrap_or(u32::MAX)
+}
+
+fn bounded<T>(size: BufferSize<T>, max_bytes: u64) -> BufferSize<T> {
+    BufferSize::new(size.len().min(elements_within(max_bytes, size_of::<T>())))
+}
+
 const fn align_up(len: u32, alignment: u32) -> u32 {
     len + (len.wrapping_neg() & (alignment - 1))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BufferSizes, BumpAllocators, BumpBudget, PTCL_INITIAL_ALLOC, RenderConfig};
+    use super::{
+        BLEND_SPILL_WORDS_PER_LEVEL, BufferSizes, BumpAllocators, BumpBudget, BumpReservation,
+        LineSoup, PTCL_INITIAL_ALLOC, RenderConfig,
+    };
     use crate::{Layout, WorkgroupCounts};
 
     /// A layout with nothing in it. The bump-allocated sizes do not
@@ -1056,5 +1218,139 @@ mod tests {
             ours * 7 < theirs,
             "reserved {ours} bytes against upstream's {theirs}; expected at least a sevenfold reduction",
         );
+    }
+
+    /// wgpu's default `max_storage_buffer_binding_size`, and the limit a
+    /// 5120x2880 + 1920x1080 session crashed against.
+    const DEFAULT_BINDING: u64 = 128 << 20;
+
+    /// `failed=0x10` from a 5120x2880 desktop whose windows nest one layer
+    /// past the on-chip blend stack on every tile. Against the flat
+    /// ceiling the budget grew to 4.2M words, the frame asked for 14.7M,
+    /// and every retry overflowed the same way: the session never
+    /// presented a frame.
+    #[test]
+    fn blend_spill_can_grow_to_cover_a_spilled_5k_desktop() {
+        let n_tiles = 5120_u32.div_ceil(16) * 2880_u32.div_ceil(16);
+        let used = BumpAllocators {
+            failed: 0x10,
+            blend: n_tiles * BLEND_SPILL_WORDS_PER_LEVEL,
+            ..BumpAllocators::default()
+        };
+        let mut budget = BumpBudget::INITIAL;
+        budget.observe_within(&used, &BumpBudget::ceiling_for_viewport(n_tiles));
+        assert!(
+            budget.blend_spill >= used.blend,
+            "grew to {} blend words, the frame needs {}: it would overflow on every retry",
+            budget.blend_spill,
+            used.blend,
+        );
+        // Nothing shrinks below the flat ceiling on a small viewport.
+        assert_eq!(
+            BumpBudget::ceiling_for_viewport(1),
+            BumpBudget::CEILING,
+            "a one-tile viewport keeps the flat ceiling"
+        );
+    }
+
+    /// The crash itself: `lines` grew to its ceiling of 8M, a 192 MiB
+    /// binding against a 128 MiB limit, and `create_bind_group` aborted
+    /// the compositor. Whatever the budget, no bump buffer may be sized
+    /// past the device's binding limit.
+    #[test]
+    fn reserved_sizes_never_exceed_the_binding_limit() {
+        let (width, height) = (7040_u32, 2880_u32);
+        let (w_tiles, h_tiles) = (width.div_ceil(16), height.div_ceil(16));
+        let n_tiles = w_tiles * h_tiles;
+        let layout = Layout {
+            bin_data_start: 4096,
+            ..Layout::default()
+        };
+        let wgs = WorkgroupCounts::new(&layout, w_tiles, h_tiles, 0);
+        let worst = BumpBudget::ceiling_for_viewport(n_tiles);
+        let unbounded = BufferSizes::new(&layout, &wgs, w_tiles, h_tiles, &worst);
+        assert!(
+            u64::from(unbounded.lines.size_in_bytes()) > DEFAULT_BINDING,
+            "the fixture must reach past the limit to prove anything"
+        );
+        let reservation = BumpReservation {
+            budget: worst,
+            max_binding_bytes: DEFAULT_BINDING,
+        };
+        let s = BufferSizes::new_reserved(&layout, &wgs, w_tiles, h_tiles, &reservation);
+        for (name, bytes) in [
+            ("lines", s.lines.size_in_bytes()),
+            ("bin_data", s.bin_data.size_in_bytes()),
+            ("tiles", s.tiles.size_in_bytes()),
+            ("seg_counts", s.seg_counts.size_in_bytes()),
+            ("segments", s.segments.size_in_bytes()),
+            ("blend_spill", s.blend_spill.size_in_bytes()),
+            ("ptcl", s.ptcl.size_in_bytes()),
+        ] {
+            assert!(
+                u64::from(bytes) <= DEFAULT_BINDING,
+                "{name} is {bytes} bytes against a {DEFAULT_BINDING}-byte binding limit"
+            );
+        }
+        let cfg = RenderConfig::new_reserved(
+            &layout,
+            width,
+            height,
+            &peniko::Color::BLACK,
+            &reservation,
+        );
+        assert_eq!(cfg.gpu.lines_size, s.lines.len(), "the shader sees the bound");
+        assert_eq!(cfg.gpu.ptcl_size, s.ptcl.len());
+    }
+
+    /// The tracker's growth ceiling and the sizes it produces agree: a
+    /// budget grown to the bound ceiling is not cut again, so the shader's
+    /// `*_size` never claims room the buffer does not have.
+    #[test]
+    fn growth_within_the_binding_bound_fits_the_binding() {
+        let n_tiles = 7040_u32.div_ceil(16) * 2880_u32.div_ceil(16);
+        let ceiling =
+            BumpBudget::ceiling_for_viewport(n_tiles).within_binding(DEFAULT_BINDING, n_tiles);
+        assert!(u64::from(ceiling.lines) * size_of::<LineSoup>() as u64 <= DEFAULT_BINDING);
+        assert!(
+            (u64::from(ceiling.ptcl) + u64::from(n_tiles * PTCL_INITIAL_ALLOC)) * 4
+                <= DEFAULT_BINDING,
+            "ptcl's structural prefix counts against the same binding"
+        );
+        let mut budget = BumpBudget::INITIAL;
+        let everything = BumpAllocators {
+            failed: 0x1f,
+            binning: u32::MAX,
+            ptcl: u32::MAX,
+            tile: u32::MAX,
+            seg_counts: u32::MAX,
+            segments: u32::MAX,
+            blend: u32::MAX,
+            lines: u32::MAX,
+        };
+        budget.observe_within(&everything, &ceiling);
+        assert_eq!(budget, ceiling);
+    }
+
+    /// A binding limit below the scene's own draw-info block leaves
+    /// binning no room, rather than wrapping `binning_size` to ~4 billion
+    /// and letting the shader write past the buffer.
+    #[test]
+    fn a_binding_limit_below_the_info_block_leaves_no_binning_room() {
+        let layout = Layout {
+            bin_data_start: 1 << 20,
+            ..Layout::default()
+        };
+        let cfg = RenderConfig::new_reserved(
+            &layout,
+            64,
+            64,
+            &peniko::Color::BLACK,
+            &BumpReservation {
+                budget: BumpBudget::INITIAL,
+                max_binding_bytes: 1 << 16,
+            },
+        );
+        assert_eq!(cfg.gpu.binning_size, 0);
     }
 }
