@@ -1192,7 +1192,11 @@ impl ImageEditorApp {
     }
 }
 impl Widget for ImageEditorApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
@@ -2654,9 +2658,6 @@ impl Widget for ImageEditorApp {
     fn is_focusable(&self) -> bool {
         true
     }
-    fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        vec![crate::actions::resource(&self.project)]
-    }
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(self.search.clone())]
     }
@@ -2885,18 +2886,6 @@ impl Widget for ImageEditorApp {
         )
     }
 
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        for (_, button) in &self.toolbar {
-            if button.get_rect().area() > 0.0
-                && let Some(id) = button.test_id()
-            {
-                bindings.push(ui::widget::ControlBindingMetadata::semantic(id));
-            }
-        }
-        bindings
-    }
-
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -3000,6 +2989,26 @@ impl Widget for ImageEditorApp {
             }
         }
         true
+    }
+}
+
+impl ui::resources::PublishesResources for ImageEditorApp {
+    fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        vec![crate::actions::resource(&self.project)]
+    }
+}
+
+impl ui::widget::controls::ActionControls for ImageEditorApp {
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        for (_, button) in &self.toolbar {
+            if button.get_rect().area() > 0.0
+                && let Some(id) = button.test_id()
+            {
+                bindings.push(ui::widget::ControlBindingMetadata::semantic(id));
+            }
+        }
+        bindings
     }
 }
 

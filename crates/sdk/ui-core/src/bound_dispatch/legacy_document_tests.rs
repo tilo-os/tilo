@@ -112,7 +112,9 @@ pub(crate) fn address() -> ActionAddress {
 impl Widget for Probe {
     crate::provides!(
         dyn crate::undo::CommittedActions,
-        dyn crate::history_mode::capability::DocumentHistory
+        dyn crate::history_mode::capability::DocumentHistory,
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources
     );
 
     crate::testing::inert_widget_methods!(
@@ -141,12 +143,6 @@ impl Widget for Probe {
             request.visit(child.as_mut())?;
         }
         Ok(())
-    }
-    fn resource(&self, _: &AutoCommit, id: &str) -> Option<Resource> {
-        (id == "controlled.value" && !self.eager.get() && self.declarations.get() > 0).then(|| {
-            Resource::new("controlled.value", "controlled", "Owned value")
-                .with_action(self.spec.borrow().clone())
-        })
     }
     fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
         let (u, s) = self.model_passes.get();
@@ -220,6 +216,9 @@ impl Widget for Probe {
             output: tilo_actions::ActionOutput::default(),
         })
     }
+}
+
+impl crate::resources::PublishesResources for Probe {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         self.value.set(
             doc.get(ROOT, "value")
@@ -237,6 +236,15 @@ impl Widget for Probe {
             })
             .collect()
     }
+    fn resource(&self, _: &AutoCommit, id: &str) -> Option<Resource> {
+        (id == "controlled.value" && !self.eager.get() && self.declarations.get() > 0).then(|| {
+            Resource::new("controlled.value", "controlled", "Owned value")
+                .with_action(self.spec.borrow().clone())
+        })
+    }
+}
+
+impl crate::widget::controls::ActionControls for Probe {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.queue.borrow_mut().pop_front()
     }
@@ -474,7 +482,7 @@ fn legacy_route_two_owners_exact_envelope_noop_undo_and_no_outer_fallback() {
     outer.commit();
     let outer_bytes = outer.save();
     assert!(select_local_target(&root, &outer, &address()).is_err());
-    assert!(root.take_control_invocation().is_none());
+    assert!(crate::widget::controls::take_control_invocation(&mut root).is_none());
     let controls = drain_legacy_controls(&mut root).controls;
     assert_eq!(controls.len(), 1);
     assert!(controls[0].0.owner.same_owner(&a.target.owner));

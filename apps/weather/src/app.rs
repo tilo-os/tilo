@@ -448,7 +448,8 @@ impl Default for WeatherApp {
 impl Widget for WeatherApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
-        dyn ui::history_mode::capability::DocumentHistory
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::resources::PublishesResources
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -457,188 +458,6 @@ impl Widget for WeatherApp {
             crate::actions::REFRESH_OPERATION,
             crate::actions::REFRESH_LOCATION_OPERATION,
         ]
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the root resource, its typed create form, effect contract, and child resource tree must remain visibly co-located"
-    )]
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let core = self.core.borrow();
-        let mut root = Resource::new("weather", "weather.locations", "Weather");
-        root.actions.push(
-            ActionSpec::typed(
-                "add-saved-location",
-                "Save location",
-                "Location name",
-                ExecutionLocus::ClientLocal,
-                vec![
-                    ActionParam::required("name", ParamType::Text, "City or place name"),
-                    ActionParam::required("country", ParamType::Text, "Country name"),
-                    ActionParam::required("latitude", ParamType::Number, "Latitude from -90 to 90"),
-                    ActionParam::required(
-                        "longitude",
-                        ParamType::Number,
-                        "Longitude from -180 to 180",
-                    ),
-                    ActionParam::optional("region", ParamType::Text, "Administrative region"),
-                    ActionParam::optional("country_code", ParamType::Text, "ISO country code"),
-                    ActionParam::optional(
-                        "timezone",
-                        ParamType::Text,
-                        "IANA timezone; defaults to auto",
-                    ),
-                ],
-                |args: &ActionArgs| {
-                    let name = args
-                        .text("name")
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty());
-                    let country = args
-                        .text("country")
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty());
-                    let latitude = args
-                        .number("latitude")
-                        .filter(|value| (-90.0..=90.0).contains(value));
-                    let longitude = args
-                        .number("longitude")
-                        .filter(|value| (-180.0..=180.0).contains(value));
-                    match (name, country, latitude, longitude) {
-                        (Some(name), Some(country), Some(latitude), Some(longitude)) => {
-                            crate::actions::encode(&crate::actions::WeatherAction::AddLocation {
-                                location: crate::model::SavedLocation::new(
-                                    name,
-                                    args.text("region").unwrap_or_default().trim(),
-                                    country,
-                                    args.text("country_code").unwrap_or_default().trim(),
-                                    latitude,
-                                    longitude,
-                                    args.text("timezone").unwrap_or("auto").trim(),
-                                ),
-                            })
-                        }
-                        _ => EncodedAction {
-                            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                            payload: b"name, country, and valid latitude/longitude are required"
-                                .to_vec(),
-                        },
-                    }
-                },
-            )
-            .reversible(),
-        );
-        if let Ok(spec) = ActionSpec::operation(
-            "refresh",
-            "Refresh forecasts",
-            OperationKind::Effect,
-            crate::actions::REFRESH_OPERATION,
-            &"",
-        ) {
-            root.actions.push(spec.with_contract(ActionContract {
-                availability: if !self.live {
-                    Availability::Unavailable {
-                        code: "network_disabled".into(),
-                        reason: "Network refresh is disabled for this weather view".into(),
-                    }
-                } else if core.model.locations.is_empty() {
-                    Availability::Unavailable {
-                        code: "no_locations".into(),
-                        reason: "Save a weather location before refreshing".into(),
-                    }
-                } else {
-                    Availability::Available
-                },
-                permission: PermissionRequirement::Read,
-                retry: RetryPolicy::Idempotent,
-                execution: ExecutionMode::Background { cancellable: false },
-                discovery: DiscoveryScope::Launchable,
-                result: ResultSpec::Job,
-                ..ActionContract::default()
-            }));
-        }
-        root.children.extend(
-            core.model
-                .locations
-                .iter()
-                .enumerate()
-                .map(|(index, location)| {
-                    let mut resource = Resource::new(
-                        crate::actions::location_resource_id(location.id),
-                        "weather.location",
-                        location.name.clone(),
-                    );
-                    if let Ok(spec) = ActionSpec::operation(
-                        "open",
-                        "Open forecast",
-                        OperationKind::View,
-                        crate::actions::OPEN_LOCATION_OPERATION,
-                        &location.id.to_string(),
-                    ) {
-                        resource
-                            .actions
-                            .push(spec.with_contract(ActionContract::view()));
-                    }
-                    if let Ok(spec) = ActionSpec::operation(
-                        "refresh",
-                        "Refresh this forecast",
-                        OperationKind::Effect,
-                        crate::actions::REFRESH_LOCATION_OPERATION,
-                        &location.id.to_string(),
-                    ) {
-                        resource.actions.push(spec.with_contract(ActionContract {
-                            availability: if self.live {
-                                Availability::Available
-                            } else {
-                                Availability::Unavailable {
-                                    code: "network_disabled".into(),
-                                    reason: "Network refresh is disabled for this weather view"
-                                        .into(),
-                                }
-                            },
-                            permission: PermissionRequirement::Read,
-                            retry: RetryPolicy::Idempotent,
-                            execution: ExecutionMode::Background { cancellable: false },
-                            discovery: DiscoveryScope::Launchable,
-                            result: ResultSpec::Job,
-                            ..ActionContract::default()
-                        }));
-                    }
-                    if let Ok(spec) = ActionSpec::immediate(
-                        "use-as-default",
-                        "Use as default location",
-                        crate::actions::WEATHER_ACTION_TYPE,
-                        &crate::actions::select_location_action(location.id),
-                    ) {
-                        resource.actions.push(spec.reversible());
-                    }
-                    if index > 0 {
-                        let rank = core
-                            .model
-                            .locations
-                            .first()
-                            .map_or(0.0, |first| first.order_rank - 1024.0);
-                        if let Ok(spec) = ActionSpec::immediate(
-                            "move-to-top",
-                            "Move to top",
-                            crate::actions::WEATHER_ACTION_TYPE,
-                            &crate::actions::location_rank_action(location.id, rank),
-                        ) {
-                            resource.actions.push(spec.reversible());
-                        }
-                    }
-                    if let Ok(spec) = ActionSpec::immediate(
-                        "remove",
-                        "Remove location",
-                        crate::actions::WEATHER_ACTION_TYPE,
-                        &crate::actions::remove_location_action(location.id),
-                    ) {
-                        resource.actions.push(spec.destructive().reversible());
-                    }
-                    resource
-                }),
-        );
-        vec![root]
     }
 
     fn start_operation(
@@ -902,6 +721,190 @@ impl Widget for WeatherApp {
 
     fn modal_capture(&self) -> Option<Rect> {
         self.nav.modal_capture()
+    }
+}
+
+impl ui::resources::PublishesResources for WeatherApp {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the root resource, its typed create form, effect contract, and child resource tree must remain visibly co-located"
+    )]
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let core = self.core.borrow();
+        let mut root = Resource::new("weather", "weather.locations", "Weather");
+        root.actions.push(
+            ActionSpec::typed(
+                "add-saved-location",
+                "Save location",
+                "Location name",
+                ExecutionLocus::ClientLocal,
+                vec![
+                    ActionParam::required("name", ParamType::Text, "City or place name"),
+                    ActionParam::required("country", ParamType::Text, "Country name"),
+                    ActionParam::required("latitude", ParamType::Number, "Latitude from -90 to 90"),
+                    ActionParam::required(
+                        "longitude",
+                        ParamType::Number,
+                        "Longitude from -180 to 180",
+                    ),
+                    ActionParam::optional("region", ParamType::Text, "Administrative region"),
+                    ActionParam::optional("country_code", ParamType::Text, "ISO country code"),
+                    ActionParam::optional(
+                        "timezone",
+                        ParamType::Text,
+                        "IANA timezone; defaults to auto",
+                    ),
+                ],
+                |args: &ActionArgs| {
+                    let name = args
+                        .text("name")
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty());
+                    let country = args
+                        .text("country")
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty());
+                    let latitude = args
+                        .number("latitude")
+                        .filter(|value| (-90.0..=90.0).contains(value));
+                    let longitude = args
+                        .number("longitude")
+                        .filter(|value| (-180.0..=180.0).contains(value));
+                    match (name, country, latitude, longitude) {
+                        (Some(name), Some(country), Some(latitude), Some(longitude)) => {
+                            crate::actions::encode(&crate::actions::WeatherAction::AddLocation {
+                                location: crate::model::SavedLocation::new(
+                                    name,
+                                    args.text("region").unwrap_or_default().trim(),
+                                    country,
+                                    args.text("country_code").unwrap_or_default().trim(),
+                                    latitude,
+                                    longitude,
+                                    args.text("timezone").unwrap_or("auto").trim(),
+                                ),
+                            })
+                        }
+                        _ => EncodedAction {
+                            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                            payload: b"name, country, and valid latitude/longitude are required"
+                                .to_vec(),
+                        },
+                    }
+                },
+            )
+            .reversible(),
+        );
+        if let Ok(spec) = ActionSpec::operation(
+            "refresh",
+            "Refresh forecasts",
+            OperationKind::Effect,
+            crate::actions::REFRESH_OPERATION,
+            &"",
+        ) {
+            root.actions.push(spec.with_contract(ActionContract {
+                availability: if !self.live {
+                    Availability::Unavailable {
+                        code: "network_disabled".into(),
+                        reason: "Network refresh is disabled for this weather view".into(),
+                    }
+                } else if core.model.locations.is_empty() {
+                    Availability::Unavailable {
+                        code: "no_locations".into(),
+                        reason: "Save a weather location before refreshing".into(),
+                    }
+                } else {
+                    Availability::Available
+                },
+                permission: PermissionRequirement::Read,
+                retry: RetryPolicy::Idempotent,
+                execution: ExecutionMode::Background { cancellable: false },
+                discovery: DiscoveryScope::Launchable,
+                result: ResultSpec::Job,
+                ..ActionContract::default()
+            }));
+        }
+        root.children.extend(
+            core.model
+                .locations
+                .iter()
+                .enumerate()
+                .map(|(index, location)| {
+                    let mut resource = Resource::new(
+                        crate::actions::location_resource_id(location.id),
+                        "weather.location",
+                        location.name.clone(),
+                    );
+                    if let Ok(spec) = ActionSpec::operation(
+                        "open",
+                        "Open forecast",
+                        OperationKind::View,
+                        crate::actions::OPEN_LOCATION_OPERATION,
+                        &location.id.to_string(),
+                    ) {
+                        resource
+                            .actions
+                            .push(spec.with_contract(ActionContract::view()));
+                    }
+                    if let Ok(spec) = ActionSpec::operation(
+                        "refresh",
+                        "Refresh this forecast",
+                        OperationKind::Effect,
+                        crate::actions::REFRESH_LOCATION_OPERATION,
+                        &location.id.to_string(),
+                    ) {
+                        resource.actions.push(spec.with_contract(ActionContract {
+                            availability: if self.live {
+                                Availability::Available
+                            } else {
+                                Availability::Unavailable {
+                                    code: "network_disabled".into(),
+                                    reason: "Network refresh is disabled for this weather view"
+                                        .into(),
+                                }
+                            },
+                            permission: PermissionRequirement::Read,
+                            retry: RetryPolicy::Idempotent,
+                            execution: ExecutionMode::Background { cancellable: false },
+                            discovery: DiscoveryScope::Launchable,
+                            result: ResultSpec::Job,
+                            ..ActionContract::default()
+                        }));
+                    }
+                    if let Ok(spec) = ActionSpec::immediate(
+                        "use-as-default",
+                        "Use as default location",
+                        crate::actions::WEATHER_ACTION_TYPE,
+                        &crate::actions::select_location_action(location.id),
+                    ) {
+                        resource.actions.push(spec.reversible());
+                    }
+                    if index > 0 {
+                        let rank = core
+                            .model
+                            .locations
+                            .first()
+                            .map_or(0.0, |first| first.order_rank - 1024.0);
+                        if let Ok(spec) = ActionSpec::immediate(
+                            "move-to-top",
+                            "Move to top",
+                            crate::actions::WEATHER_ACTION_TYPE,
+                            &crate::actions::location_rank_action(location.id, rank),
+                        ) {
+                            resource.actions.push(spec.reversible());
+                        }
+                    }
+                    if let Ok(spec) = ActionSpec::immediate(
+                        "remove",
+                        "Remove location",
+                        crate::actions::WEATHER_ACTION_TYPE,
+                        &crate::actions::remove_location_action(location.id),
+                    ) {
+                        resource.actions.push(spec.destructive().reversible());
+                    }
+                    resource
+                }),
+        );
+        vec![root]
     }
 }
 
@@ -2141,7 +2144,7 @@ mod interaction_tests {
         {
             let mut h = Harness::new(1280.0, 720.0);
             let (app, state) = h.parts();
-            let resources = Widget::resources(&*app, &state.doc);
+            let resources = ui::resources::resources(&*app, &state.doc);
             let handlers: std::collections::HashSet<String> = h
                 .app
                 .local_resource_operation_handlers()

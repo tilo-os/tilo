@@ -1889,102 +1889,17 @@ fn csv_field(value: &str) -> String {
 }
 
 impl Widget for DbClientApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[DB_OPERATION_TYPE]
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the resource tree intentionally keeps every externally searchable database capability in one auditable definition"
-    )]
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("database", "database.workspace", "Database");
-        let active_id = self.session.active_connection_id();
-        let query_connection_id = active_id.map_or_else(String::new, |id| id.to_string());
-        let mut query = ActionSpec::prompted_operation(
-            "query",
-            "Run SQL",
-            "SQL query",
-            "SELECT …",
-            OperationKind::Effect,
-            DB_OPERATION_TYPE,
-            move |sql| {
-                encode_operation(&DbClientOperation::RunQuery {
-                    connection_id: query_connection_id.clone(),
-                    sql: sql.to_string(),
-                })
-            },
-        );
-        // Prompted SQL may be a read, but agents cannot soundly classify an
-        // arbitrary dialect statement from this transport envelope. Declare
-        // the conservative write/confirmation contract; the editor keeps its
-        // lighter in-app path for clearly read-only SQL.
-        query = query
-            .execution(ExecutionMode::Background { cancellable: true })
-            .returns(ResultSpec::Job)
-            .destructive();
-        if !self.session.connected {
-            query = query.unavailable(
-                "not_connected",
-                "Open a saved connection before running SQL",
-            );
-        }
-        root.actions.push(query);
-        let sql = EditorDoc::read_sql(doc);
-        if !sql.trim().is_empty() {
-            root.actions.push(
-                ActionSpec::prompted(
-                    "save_query",
-                    "Save current query",
-                    "Query name",
-                    "Saved query",
-                    tilo_actions::ExecutionLocus::ClientLocal,
-                    move |name| {
-                        crate::actions::encode(&crate::actions::save_query_action(
-                            Uuid::new_v4(),
-                            name,
-                            &sql,
-                        ))
-                    },
-                )
-                .reversible(),
-            );
-        }
-        vec![root]
-    }
-
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(self.search_index.provider())]
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        // Remote directory enumeration never walks a live schema. Deeper
-        // catalog entries are reached through the retained SearchCatalog and
-        // resolved by their canonical resource ids.
-        let resources = if cursor.is_empty() && max_results > 0 {
-            self.resources(doc)
-        } else {
-            Vec::new()
-        };
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        (id == "database")
-            .then(|| self.resources(doc).pop())
-            .flatten()
-            .or_else(|| self.search_index.resource(id))
     }
 
     fn start_operation(
@@ -2741,6 +2656,94 @@ impl Widget for DbClientApp {
         (self.session.tab == MainTab::Query)
             .then(|| self.editor.text_review())
             .flatten()
+    }
+}
+
+impl ui::resources::PublishesResources for DbClientApp {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the resource tree intentionally keeps every externally searchable database capability in one auditable definition"
+    )]
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        let mut root = Resource::new("database", "database.workspace", "Database");
+        let active_id = self.session.active_connection_id();
+        let query_connection_id = active_id.map_or_else(String::new, |id| id.to_string());
+        let mut query = ActionSpec::prompted_operation(
+            "query",
+            "Run SQL",
+            "SQL query",
+            "SELECT …",
+            OperationKind::Effect,
+            DB_OPERATION_TYPE,
+            move |sql| {
+                encode_operation(&DbClientOperation::RunQuery {
+                    connection_id: query_connection_id.clone(),
+                    sql: sql.to_string(),
+                })
+            },
+        );
+        // Prompted SQL may be a read, but agents cannot soundly classify an
+        // arbitrary dialect statement from this transport envelope. Declare
+        // the conservative write/confirmation contract; the editor keeps its
+        // lighter in-app path for clearly read-only SQL.
+        query = query
+            .execution(ExecutionMode::Background { cancellable: true })
+            .returns(ResultSpec::Job)
+            .destructive();
+        if !self.session.connected {
+            query = query.unavailable(
+                "not_connected",
+                "Open a saved connection before running SQL",
+            );
+        }
+        root.actions.push(query);
+        let sql = EditorDoc::read_sql(doc);
+        if !sql.trim().is_empty() {
+            root.actions.push(
+                ActionSpec::prompted(
+                    "save_query",
+                    "Save current query",
+                    "Query name",
+                    "Saved query",
+                    tilo_actions::ExecutionLocus::ClientLocal,
+                    move |name| {
+                        crate::actions::encode(&crate::actions::save_query_action(
+                            Uuid::new_v4(),
+                            name,
+                            &sql,
+                        ))
+                    },
+                )
+                .reversible(),
+            );
+        }
+        vec![root]
+    }
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        // Remote directory enumeration never walks a live schema. Deeper
+        // catalog entries are reached through the retained SearchCatalog and
+        // resolved by their canonical resource ids.
+        let resources = if cursor.is_empty() && max_results > 0 {
+            self.resources(doc)
+        } else {
+            Vec::new()
+        };
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        (id == "database")
+            .then(|| self.resources(doc).pop())
+            .flatten()
+            .or_else(|| self.search_index.resource(id))
     }
 }
 
@@ -5527,7 +5530,7 @@ mod behavior_tests {
         {
             let (mut app, doc) = synced();
             app.session.connections[0].password = "never-publish-this".into();
-            let resources = app.resources(&doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "root discovery is bounded");
             assert!(resources[0].children.is_empty());
             let connection = app.session.active_connection().unwrap().id.to_string();
@@ -5535,9 +5538,8 @@ mod behavior_tests {
             let relation = &schema.tables[0];
             let relation_id =
                 catalog_resource_id("relation", &[&connection, &schema.name, &relation.name]);
-            let resolved = app
-                .publish_resource(&doc, &relation_id)
-                .expect("exact relation resolves");
+            let resolved =
+                ui::resources::resource(&app, &doc, &relation_id).expect("exact relation resolves");
             assert_eq!(resolved.id.as_str(), relation_id);
             assert!(resolved.actions.iter().any(|action| action.id == "browse"));
             let run_sql = resources[0]
@@ -5552,7 +5554,7 @@ mod behavior_tests {
                 "an arbitrary SQL envelope is never advertised as harmless"
             );
             assert!(
-                app.publish_resource(&doc, "database")
+                ui::resources::resource(&app, &doc, "database")
                     .expect("root resolves exactly")
                     .actions
                     .iter()
@@ -5582,9 +5584,8 @@ mod behavior_tests {
             let second_id =
                 catalog_resource_id("relation", &[&connection, "other:schema", &original.name]);
             assert_ne!(first_id, second_id, "encoded ids cannot collide on colons");
-            let resolved = app
-                .publish_resource(&doc, &second_id)
-                .expect("exact relation resolves");
+            let resolved =
+                ui::resources::resource(&app, &doc, &second_id).expect("exact relation resolves");
             let browse = resolved
                 .actions
                 .iter()

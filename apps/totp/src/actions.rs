@@ -782,7 +782,7 @@ mod tests {
             let mut state = ui::State::new();
             app.sync(&mut state.doc, &state.root); // seeds the demo vault into the doc
 
-            let resources = Widget::resources(&app, &state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             assert_eq!(resources.len(), 1, "one open vault");
             let vault = &resources[0];
             assert_eq!(vault.kind, "totp.vault");
@@ -805,7 +805,7 @@ mod tests {
                 .into_iter()
                 .next()
                 .expect("demo account");
-            let acct = Widget::resource(&app, &state.doc, &account_resource_id(account.id))
+            let acct = ui::resources::resource(&app, &state.doc, &account_resource_id(account.id))
                 .expect("account lazily resolves");
             assert_eq!(acct.kind, "totp.account");
             assert_eq!(

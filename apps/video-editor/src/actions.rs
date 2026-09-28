@@ -4350,7 +4350,7 @@ mod tests {
         // Drives the real resource hook.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "one open project");
             let project = &resources[0];
             assert_eq!(project.kind, "video.project");
@@ -4495,7 +4495,7 @@ mod tests {
         // stack through the same narrow effects action the inspector uses.
         {
             let (app, mut doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let clip_res = resources[0]
                 .children
                 .iter()
@@ -4542,7 +4542,7 @@ mod tests {
         let mut app = VideoEditorApp::new();
         let mut doc = doc.clone();
         app.sync(&mut doc, &automerge::ROOT);
-        Widget::resources(&app, &doc)
+        ui::resources::resources(&app, &doc)
     }
 
     fn clip_id(res: &Resource) -> Uuid {
@@ -4641,7 +4641,7 @@ mod tests {
         // inspector edit to 0.9 would — a slider value folded into one action.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let (clip_res, spec) = find_spec(&resources, "video.clip", "set-brightness");
             let from_spec = prompted_encode(spec, "0.9");
 
@@ -4754,7 +4754,7 @@ mod tests {
             use tilo_actions::params::ArgValue;
 
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let clip_res = resources[0]
                 .children
                 .iter()

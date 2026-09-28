@@ -134,7 +134,7 @@ fn invoke_search_hit(app: &mut CodeApp, doc: &mut AutoCommit, query: &str, kind:
         .find(|hit| hit.kind == kind)
         .expect("search hit");
     let address = hit.action_address().expect("canonical address");
-    let resource = Widget::resource(app, doc, &address.resource)
+    let resource = ui::resources::resource(app, doc, &address.resource)
         .expect("address resolves through current widget authority");
     let encoded = tilo_actions::door::encode(&[resource], &address, None)
         .expect("lazy resource exports the searched action");
@@ -195,14 +195,14 @@ fn stale_search_address_is_refused_by_current_widget_authority() {
         .expect("sample file")
         .clone();
     let address = crate::actions::open_file_address(&file.resource_id);
-    assert!(Widget::resource(&app, &doc, &address.resource).is_some());
+    assert!(ui::resources::resource(&app, &doc, &address.resource).is_some());
 
     app.session
         .project
         .remove_collaborative_file(&file.resource_id);
     app.invalidate_search_projection();
     app.refresh_search_catalog(&mut doc);
-    assert!(Widget::resource(&app, &doc, &address.resource).is_none());
+    assert!(ui::resources::resource(&app, &doc, &address.resource).is_none());
     assert!(
         app.search_providers()[0]
             .search("prime.rs")
@@ -331,7 +331,7 @@ fn large_resource_snapshot_is_bounded_but_late_file_activates_lazily() {
     }
     let mut doc = AutoCommit::new();
     app.refresh_search_catalog(&mut doc);
-    let snapshot = Widget::resources(&app, &doc);
+    let snapshot = ui::resources::resources(&app, &doc);
     assert!(
         snapshot[0].children.len() <= crate::actions::EAGER_RESOURCE_SNAPSHOT_LIMIT,
         "the eager tree must remain bounded by its resource cap"
@@ -342,7 +342,7 @@ fn large_resource_snapshot_is_bounded_but_late_file_activates_lazily() {
         tilo_actions::door::resolve(&snapshot, &address).is_none(),
         "the late file must not be eagerly materialized"
     );
-    let resource = Widget::resource(&app, &doc, &address.resource)
+    let resource = ui::resources::resource(&app, &doc, &address.resource)
         .expect("late file is still current widget authority");
     let encoded = tilo_actions::door::encode(&[resource], &address, None)
         .expect("the lazy resource retains its open action");
@@ -679,8 +679,7 @@ fn editor_gesture_and_replace_text_resource_encode_the_same_action() {
     app.editor.move_caret_to(0, 0);
     app.editor.insert_for_test(&mut doc, "λ");
     let next = format!("λ{base}");
-    let expected = app
-        .resources(&doc)
+    let expected = ui::resources::resources(&app, &doc)
         .iter()
         .find_map(|resource| {
             find_resource(resource, &actions::file_resource_id(app.buffer_key(node)))

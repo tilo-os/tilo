@@ -378,6 +378,8 @@ impl DisplayArrangement {
 }
 
 impl Widget for DisplayArrangement {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -509,21 +511,6 @@ impl Widget for DisplayArrangement {
         }
     }
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.moves
-            .iter_mut()
-            .find_map(|(_, emitter)| emitter.take())
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        for (_, emitter) in &mut self.moves {
-            emitter.refresh_availability(allowed);
-        }
-    }
-
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Role};
         let mapping = self.mapping();
@@ -589,6 +576,22 @@ impl Widget for DisplayArrangement {
     }
 }
 
+impl ui::widget::controls::ActionControls for DisplayArrangement {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.moves
+            .iter_mut()
+            .find_map(|(_, emitter)| emitter.take())
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        for (_, emitter) in &mut self.moves {
+            emitter.refresh_availability(allowed);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -642,14 +645,13 @@ mod tests {
         assert!(canvas.drag_to(target));
         assert!(canvas.release());
 
-        let invocation = canvas
-            .take_control_invocation()
+        let invocation = ui::widget::controls::take_control_invocation(&mut canvas)
             .expect("the drop is sent as the display's move action");
         assert_eq!(invocation.address.action, "move");
         let x = invocation.arguments["x"].as_i64().unwrap();
         let y = invocation.arguments["y"].as_i64().unwrap();
         assert_eq!((x, y), (0, 1080), "snapped flush under the panel");
-        assert!(canvas.take_control_invocation().is_none());
+        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
     }
 
     #[test]
@@ -659,7 +661,7 @@ mod tests {
         assert!(canvas.press(monitor.center()));
         assert!(canvas.drag_to(monitor.center() + (1.0, 1.0)));
         assert!(canvas.release());
-        assert!(canvas.take_control_invocation().is_none());
+        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
     }
 
     #[test]

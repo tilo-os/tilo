@@ -1203,7 +1203,10 @@ impl AuthenticatorApp {
 }
 
 impl Widget for AuthenticatorApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::TOTP_OPERATION_TYPE]
@@ -1489,42 +1492,6 @@ impl Widget for AuthenticatorApp {
         self.list.set_selected(self.selected);
     }
 
-    /// Publish the open vault + its accounts so the host's Ctrl+K palette scopes
-    /// to them. Delegates to the
-    /// [``]() impl in
-    /// [`crate::actions`], which reads the accounts straight from the document.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = crate::actions::provide_contextual_resources(&self.vault.accounts);
-        if self.persistence_pending
-            && let Some(root) = resources.first_mut()
-        {
-            *root = root
-                .clone()
-                .with_action(crate::actions::retry_persist_operation());
-        }
-        resources
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if id == "totp.vault" {
-            return self.resources(doc).pop();
-        }
-        let raw_id = id.strip_prefix("totp.account:")?;
-        let account_id = uuid::Uuid::parse_str(raw_id).ok()?;
-        let ordered = self.vault.ordered();
-        let index = ordered
-            .iter()
-            .position(|account| account.id == account_id)?;
-        ordered.get(index).map(|account| {
-            crate::actions::provide_account_resource(
-                account,
-                index,
-                ordered.len(),
-                account.secret_is_valid(),
-            )
-        })
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -1776,6 +1743,43 @@ impl Widget for AuthenticatorApp {
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.reduce_motion = reduced;
+    }
+}
+
+impl ui::resources::PublishesResources for AuthenticatorApp {
+    /// Publish the open vault + its accounts so the host's Ctrl+K palette scopes
+    /// to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`], which reads the accounts straight from the document.
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = crate::actions::provide_contextual_resources(&self.vault.accounts);
+        if self.persistence_pending
+            && let Some(root) = resources.first_mut()
+        {
+            *root = root
+                .clone()
+                .with_action(crate::actions::retry_persist_operation());
+        }
+        resources
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if id == "totp.vault" {
+            return self.resources(doc).pop();
+        }
+        let raw_id = id.strip_prefix("totp.account:")?;
+        let account_id = uuid::Uuid::parse_str(raw_id).ok()?;
+        let ordered = self.vault.ordered();
+        let index = ordered
+            .iter()
+            .position(|account| account.id == account_id)?;
+        ordered.get(index).map(|account| {
+            crate::actions::provide_account_resource(
+                account,
+                index,
+                ordered.len(),
+                account.secret_is_valid(),
+            )
+        })
     }
 }
 
@@ -2332,7 +2336,7 @@ mod tests {
 
             assert!(!app.has_local_secret(id));
             let resource =
-                Widget::resource(app, &state.doc, &crate::actions::account_resource_id(id))
+                ui::resources::resource(app, &state.doc, &crate::actions::account_resource_id(id))
                     .expect("the shared account resolves locally");
             let copy = resource
                 .actions
@@ -2422,7 +2426,7 @@ mod tests {
             let mut app = AuthenticatorApp::demo_persistence_error();
             let mut state = ui::State::new();
             app.sync(&mut state.doc, &state.root);
-            let root = Widget::resources(&app, &state.doc).remove(0);
+            let root = ui::resources::resources(&app, &state.doc).remove(0);
             let retry = root
                 .actions
                 .iter()
@@ -2524,7 +2528,7 @@ mod tests {
             assert!(app.persistence_pending);
 
             let state = ui::State::new();
-            let root = Widget::resources(&app, &state.doc).remove(0);
+            let root = ui::resources::resources(&app, &state.doc).remove(0);
             assert!(root.actions.iter().any(|action| action.id == "retry-save"));
         }
     }

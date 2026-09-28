@@ -3408,7 +3408,10 @@ fn draw_fold_caret(scene: &mut Scene, t: Affine, center: Point, color: Color, ex
 // ===========================================================================
 
 impl Widget for ApiTesterApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::API_TESTER_OPERATION_TYPE]
@@ -3925,15 +3928,6 @@ impl Widget for ApiTesterApp {
         self.rect
     }
 
-    /// Publish the resource tree the shell's one Ctrl+K palette walks — the
-    /// collections, saved requests, environments, and variables currently in the
-    /// shared document. Delegates to the
-    /// [``]() impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Self::publish_resources(self, doc)
-    }
-
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(self.search_provider.clone())]
     }
@@ -4031,6 +4025,17 @@ impl Widget for ApiTesterApp {
 
     fn needs_idle_sync(&self) -> bool {
         self.sending || !self.pending_history.is_empty() || !self.adopted
+    }
+}
+
+impl ui::resources::PublishesResources for ApiTesterApp {
+    /// Publish the resource tree the shell's one Ctrl+K palette walks — the
+    /// collections, saved requests, environments, and variables currently in the
+    /// shared document. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 }
 

@@ -2013,12 +2013,12 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
         assert!(app.search_provider.resource(&first_id).is_some());
         assert!(app.search_provider.resource(&second_id).is_none());
         assert!(app.status.contains("kept its previous index"));
-        let diagnostic = Widget::resource(&app, &doc, "photos.search-status")
+        let diagnostic = ui::resources::resource(&app, &doc, "photos.search-status")
             .expect("rejected refresh is an exact addressable resource");
         assert_eq!(diagnostic.kind, "photos.diagnostic");
         assert!(diagnostic.actions.iter().any(|action| action.id == "open"));
         assert!(
-            Widget::resources(&app, &doc)
+            ui::resources::resources(&app, &doc)
                 .iter()
                 .any(|resource| resource.id.0 == "photos.search-status")
         );
@@ -2418,7 +2418,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
                 },
             );
         }
-        let invocation = Widget::take_control_invocation(&mut app)
+        let invocation = ui::widget::controls::take_control_invocation(&mut app)
             .expect("pointer stop is exported through the host action door");
         assert_eq!(
             invocation.address.resource,

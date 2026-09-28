@@ -5626,7 +5626,8 @@ impl Widget for SlidesApp {
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::AudiencePresentationProvider,
         dyn ui::undo::CommittedActions,
-        dyn ui::history_mode::capability::DocumentHistory
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::resources::PublishesResources
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -6329,6 +6330,15 @@ impl Widget for SlidesApp {
         self.needs_commit = false;
     }
 
+    /// Fold the deck's slides, elements, text and notes into the unified Ctrl+K
+    /// palette. Every row addresses an exported resource `View` operation, so
+    /// search uses the same brokered navigation route as agents and a11y.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl ui::resources::PublishesResources for SlidesApp {
     /// The deck's resource tree for the shell's one Ctrl+K palette — every
     /// document-mutating affordance exported as the same action it dispatches on
     /// screen. See [`crate::actions`].
@@ -6338,19 +6348,11 @@ impl Widget for SlidesApp {
         }
         Self::publish_resources(self, doc)
     }
-
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         if !self.canonical_matches(doc) {
             return None;
         }
         Self::publish_resource(self, doc, id)
-    }
-
-    /// Fold the deck's slides, elements, text and notes into the unified Ctrl+K
-    /// palette. Every row addresses an exported resource `View` operation, so
-    /// search uses the same brokered navigation route as agents and a11y.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
     }
 }
 
@@ -11525,21 +11527,21 @@ mod history_interruption_tests {
             app.cur_slide = 1;
             app.begin_notes_edit(&mut doc);
             assert!(
-                Widget::resources(&app, &doc)
+                ui::resources::resources(&app, &doc)
                     .iter()
                     .any(|r| r.id.as_str().contains("slides"))
             );
             restore(&mut doc, &selected);
             let heads = doc.get_heads();
             assert!(
-                Widget::resources(&app, &doc).is_empty(),
+                ui::resources::resources(&app, &doc).is_empty(),
                 "unreconciled resources cannot retain old action payloads"
             );
             app.sync(&mut doc, &automerge::ROOT);
             assert!(!app.editing_notes);
             assert!(app.deck.index_of(&id).is_none());
             assert_eq!(doc.get_heads(), heads);
-            assert!(!Widget::resources(&app, &doc).is_empty());
+            assert!(!ui::resources::resources(&app, &doc).is_empty());
         }
     }
 }

@@ -573,7 +573,7 @@ mod tests {
         // one snippet with every action the model implies.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "one library root");
             let lib = &resources[0];
             assert_eq!(lib.kind, "snippets.library");
@@ -582,7 +582,8 @@ mod tests {
             assert!(lib.children.is_empty(), "the contextual root stays bounded");
             let snippet = first_snippet(&doc);
             let resource_id = snippet_resource_id(snippet.id);
-            let snip = Widget::resource(&app, &doc, &resource_id).expect("lazy snippet resource");
+            let snip =
+                ui::resources::resource(&app, &doc, &resource_id).expect("lazy snippet resource");
             assert_eq!(snip.kind, "snippets.snippet");
             let ids: Vec<&str> = snip.actions.iter().map(|a| a.id.as_str()).collect();
             for want in [
@@ -605,7 +606,7 @@ mod tests {
                 .first()
                 .expect("seeded snippet has a tag")
                 .clone();
-            let tag = Widget::resource(&app, &doc, &tag_resource_id(&tag_name))
+            let tag = ui::resources::resource(&app, &doc, &tag_resource_id(&tag_name))
                 .expect("seeded snippets lazily publish tag resources");
             let reveal = tag
                 .actions

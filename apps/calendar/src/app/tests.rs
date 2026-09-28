@@ -1201,7 +1201,7 @@ fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
         let mut state = AutoCommit::new();
         app.sync(&mut state, &automerge::ROOT);
         let resource_import = |app: &CalendarApp, state: &AutoCommit| {
-            Widget::resources(app, state)[0]
+            ui::resources::resources(app, state)[0]
                 .actions
                 .iter()
                 .find(|action| action.id == "import-latest-ics")

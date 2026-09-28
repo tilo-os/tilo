@@ -5084,7 +5084,8 @@ impl FloatingSurfaceProvider for MapsApp {
 impl Widget for MapsApp {
     ui::provides!(
         dyn ui::widget::FloatingSurfaceProvider,
-        dyn ui::undo::CommittedActions
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -5514,84 +5515,6 @@ impl Widget for MapsApp {
         "MapsApp"
     }
 
-    /// Publish the resource tree the shell's one Ctrl+K palette walks — the saved
-    /// places, the active route, and the offline regions currently in the shared
-    /// document. Delegates to the
-    /// [``]() impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = Self::publish_resources(self, doc);
-        if resources.is_empty() {
-            resources.push(Resource::new("maps.workspace", "maps.workspace", "Maps"));
-        }
-        if let Some(workspace) = resources.first_mut() {
-            workspace
-                .children
-                .extend(self.model.results.iter().take(12).map(|place| {
-                    Resource::new(
-                        format!("maps.search-result:{}", place.id),
-                        "maps.search-result",
-                        place.name.clone(),
-                    )
-                }));
-            workspace.children.extend(
-                self.nearby_pois()
-                    .into_iter()
-                    .take(12)
-                    .map(|poi| Resource::new(format!("maps.poi:{}", poi.id), "maps.poi", poi.name)),
-            );
-        }
-        for resource in &mut resources {
-            self.decorate_live_resource(resource);
-        }
-        resources
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let resources = if cursor.is_empty() && max_results > 0 {
-            self.resources(doc)
-        } else {
-            Vec::new()
-        };
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        let mut resource = Self::publish_resource(self, doc, id)
-            .or_else(|| {
-                (id == "maps.workspace")
-                    .then(|| Resource::new("maps.workspace", "maps.workspace", "Maps"))
-            })
-            .or_else(|| {
-                id.strip_prefix("maps.search-result:").and_then(|place_id| {
-                    self.model
-                        .results
-                        .iter()
-                        .find(|place| place.id == place_id)
-                        .map(|place| Resource::new(id, "maps.search-result", place.name.clone()))
-                })
-            })
-            .or_else(|| {
-                id.strip_prefix("maps.poi:").and_then(|poi_id| {
-                    self.pois
-                        .iter()
-                        .find(|poi| poi.id == poi_id)
-                        .map(|poi| Resource::new(id, "maps.poi", poi.name.clone()))
-                })
-            })?;
-        self.decorate_live_resource(&mut resource);
-        Some(resource)
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -5814,6 +5737,84 @@ impl Widget for MapsApp {
     ) {
         // Root fills the window — never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::resources::PublishesResources for MapsApp {
+    /// Publish the resource tree the shell's one Ctrl+K palette walks — the saved
+    /// places, the active route, and the offline regions currently in the shared
+    /// document. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        if resources.is_empty() {
+            resources.push(Resource::new("maps.workspace", "maps.workspace", "Maps"));
+        }
+        if let Some(workspace) = resources.first_mut() {
+            workspace
+                .children
+                .extend(self.model.results.iter().take(12).map(|place| {
+                    Resource::new(
+                        format!("maps.search-result:{}", place.id),
+                        "maps.search-result",
+                        place.name.clone(),
+                    )
+                }));
+            workspace.children.extend(
+                self.nearby_pois()
+                    .into_iter()
+                    .take(12)
+                    .map(|poi| Resource::new(format!("maps.poi:{}", poi.id), "maps.poi", poi.name)),
+            );
+        }
+        for resource in &mut resources {
+            self.decorate_live_resource(resource);
+        }
+        resources
+    }
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        let resources = if cursor.is_empty() && max_results > 0 {
+            self.resources(doc)
+        } else {
+            Vec::new()
+        };
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        let mut resource = <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+            .or_else(|| {
+                (id == "maps.workspace")
+                    .then(|| Resource::new("maps.workspace", "maps.workspace", "Maps"))
+            })
+            .or_else(|| {
+                id.strip_prefix("maps.search-result:").and_then(|place_id| {
+                    self.model
+                        .results
+                        .iter()
+                        .find(|place| place.id == place_id)
+                        .map(|place| Resource::new(id, "maps.search-result", place.name.clone()))
+                })
+            })
+            .or_else(|| {
+                id.strip_prefix("maps.poi:").and_then(|poi_id| {
+                    self.pois
+                        .iter()
+                        .find(|poi| poi.id == poi_id)
+                        .map(|poi| Resource::new(id, "maps.poi", poi.name.clone()))
+                })
+            })?;
+        self.decorate_live_resource(&mut resource);
+        Some(resource)
     }
 }
 

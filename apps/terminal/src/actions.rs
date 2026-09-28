@@ -397,7 +397,7 @@ mod tests {
             send(&mut widget, &mut doc, &char_event("x"));
             send(&mut widget, &mut doc, &left_press());
 
-            let resources = Widget::resources(&widget, &doc);
+            let resources = ui::resources::resources(&widget, &doc);
             assert_eq!(resources.len(), 1, "one terminal-session root");
             let terminal = &resources[0];
             assert_eq!(terminal.kind, "terminal.session");
@@ -625,7 +625,7 @@ mod tests {
             );
             widget.sync(&mut doc, &ROOT);
 
-            let transcript = Widget::resources(&widget, &doc)
+            let transcript = ui::resources::resources(&widget, &doc)
                 .into_iter()
                 .next()
                 .expect("session resource")
@@ -696,7 +696,7 @@ mod tests {
                     .is_some_and(|description| description.contains("Terminal input failed"))
             );
             assert!(
-                Widget::resources(&widget, &doc)
+                ui::resources::resources(&widget, &doc)
                     .into_iter()
                     .all(|resource| {
                         resource
@@ -771,7 +771,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: live_session().1,
         registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| Widget::resources(&live_session().0, doc),
+        resources: |doc| ui::resources::resources(&live_session().0, doc),
         palette: [
             "Send text",
             "Run command",

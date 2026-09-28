@@ -3509,31 +3509,13 @@ impl Widget for PlayerApp {
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::undo::CommittedActions,
-        dyn ui::history_mode::capability::DocumentHistory
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
-    }
-
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.framework_hosted {
-            return Vec::new();
-        }
-        let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
-        crate::actions::resources(
-            &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
-            doc,
-        )
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
-        crate::actions::resource(
-            &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
-            doc,
-            id,
-        )
     }
 
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
@@ -3755,34 +3737,6 @@ impl Widget for PlayerApp {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![&mut self.player as &mut (dyn Widget + '_)]
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.open_action
-            .as_mut()
-            .and_then(ActionEmitter::take)
-            .or_else(|| self.library_control_invocations.pop_front())
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.open_action {
-            action.refresh_availability(allowed);
-        }
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        if let Some(action) = &self.open_action
-            && let Some(binding) = bindings
-                .iter_mut()
-                .find(|binding| binding.control_id == "video-player.open")
-        {
-            *binding = action.metadata("video-player.open");
-        }
-        bindings
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -4222,6 +4176,55 @@ impl Widget for PlayerApp {
     }
 }
 
+impl ui::resources::PublishesResources for PlayerApp {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.framework_hosted {
+            return Vec::new();
+        }
+        let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
+        crate::actions::resources(
+            &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
+            doc,
+        )
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
+        crate::actions::resource(
+            &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
+            doc,
+            id,
+        )
+    }
+}
+
+impl ui::widget::controls::ActionControls for PlayerApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.open_action
+            .as_mut()
+            .and_then(ActionEmitter::take)
+            .or_else(|| self.library_control_invocations.pop_front())
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        if let Some(action) = &self.open_action
+            && let Some(binding) = bindings
+                .iter_mut()
+                .find(|binding| binding.control_id == "video-player.open")
+        {
+            *binding = action.metadata("video-player.open");
+        }
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.open_action {
+            action.refresh_availability(allowed);
+        }
+    }
+}
+
 impl ui::history_mode::capability::DocumentHistory for PlayerApp {
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
@@ -4583,7 +4586,8 @@ mod tests {
                 },
             );
             app.request_annotation_jump(&doc, "review-marker");
-            let invocation = Widget::take_control_invocation(&mut app).expect("marker jump intent");
+            let invocation = ui::widget::controls::take_control_invocation(&mut app)
+                .expect("marker jump intent");
             assert_eq!(
                 invocation.address.resource,
                 crate::actions::annotation_resource_id("review-marker")
@@ -4719,7 +4723,8 @@ mod tests {
         {
             let mut app = PlayerApp::new();
             app.request_open_action();
-            let invocation = Widget::take_control_invocation(&mut app).expect("open intent");
+            let invocation =
+                ui::widget::controls::take_control_invocation(&mut app).expect("open intent");
             assert_eq!(invocation.address.resource, "video-player.application");
             assert_eq!(invocation.address.action, "open");
             assert!(
@@ -4733,7 +4738,8 @@ mod tests {
             let item_id = app.queue[1].id.clone();
             let source_before = app.current_source_id.clone();
             app.request_library_play(&item_id);
-            let invocation = Widget::take_control_invocation(&mut app).expect("queue play intent");
+            let invocation =
+                ui::widget::controls::take_control_invocation(&mut app).expect("queue play intent");
             assert_eq!(
                 invocation.address.resource,
                 crate::actions::queue_item_resource_id(&item_id)
@@ -4749,14 +4755,16 @@ mod tests {
             let mut app = PlayerApp::for_shot(None, Some("library"));
             let item_id = app.queue[1].id.clone();
             app.request_library_remove(&item_id);
-            let remove = Widget::take_control_invocation(&mut app).expect("remove intent");
+            let remove =
+                ui::widget::controls::take_control_invocation(&mut app).expect("remove intent");
             assert_eq!(
                 remove.address.resource,
                 crate::actions::queue_item_resource_id(&item_id)
             );
             assert_eq!(remove.address.action, "remove");
             app.request_library_clear();
-            let clear = Widget::take_control_invocation(&mut app).expect("clear intent");
+            let clear =
+                ui::widget::controls::take_control_invocation(&mut app).expect("clear intent");
             assert_eq!(clear.address.resource, "video-player.history.local");
             assert_eq!(clear.address.action, "clear");
         }
@@ -4813,7 +4821,8 @@ mod tests {
                 &mut doc,
                 &path,
             ));
-            let recent = Widget::take_control_invocation(&mut app).expect("recent intent");
+            let recent =
+                ui::widget::controls::take_control_invocation(&mut app).expect("recent intent");
             assert_eq!(recent.address.resource, "video-player.history.local");
             assert_eq!(recent.address.action, "show");
             assert_eq!(
@@ -4828,7 +4837,8 @@ mod tests {
                 &mut doc,
                 &path,
             ));
-            let close = Widget::take_control_invocation(&mut app).expect("close intent");
+            let close =
+                ui::widget::controls::take_control_invocation(&mut app).expect("close intent");
             assert_eq!(close.address.resource, "video-player.application");
             assert_eq!(close.address.action, "hide-library");
             assert!(app.library_visible, "a11y did not bypass host routing");
@@ -4850,7 +4860,8 @@ mod tests {
                 ElementState::Pressed,
                 winit::event::Modifiers::default(),
             ));
-            let close = Widget::take_control_invocation(&mut app).expect("escape close intent");
+            let close = ui::widget::controls::take_control_invocation(&mut app)
+                .expect("escape close intent");
             assert_eq!(close.address.resource, "video-player.application");
             assert_eq!(close.address.action, "hide-library");
             assert!(
@@ -4861,7 +4872,7 @@ mod tests {
         // Case `library_navigation_is_published_as_canonical_actions`.
         {
             let app = PlayerApp::for_shot(None, Some("library"));
-            let resources = Widget::resources(&app, &AutoCommit::new());
+            let resources = ui::resources::resources(&app, &AutoCommit::new());
             let queue =
                 find_resource(&resources, "video-player.queue.local").expect("queue resource");
             let recent =
@@ -4923,11 +4934,13 @@ mod tests {
             app.library_button_rect = Rect::new(0.0, 0.0, 100.0, 44.0);
             app.last_cursor = Point::new(20.0, 20.0);
             assert!(app.handle_app_pointer(&mut doc));
-            let hide = Widget::take_control_invocation(&mut app).expect("pointer hide intent");
+            let hide = ui::widget::controls::take_control_invocation(&mut app)
+                .expect("pointer hide intent");
             assert_eq!(hide.address.action, "hide-library");
             app.perform_resource_operation(PlayerOperation::HideLibrary);
             assert!(app.handle_app_pointer(&mut doc));
-            let recent = Widget::take_control_invocation(&mut app).expect("pointer reopen intent");
+            let recent = ui::widget::controls::take_control_invocation(&mut app)
+                .expect("pointer reopen intent");
             assert_eq!(recent.address.resource, "video-player.history.local");
             assert_eq!(recent.address.action, "show");
 
@@ -4939,7 +4952,8 @@ mod tests {
                 ElementState::Pressed,
                 winit::event::Modifiers::default(),
             ));
-            let hide = Widget::take_control_invocation(&mut app).expect("shortcut hide intent");
+            let hide = ui::widget::controls::take_control_invocation(&mut app)
+                .expect("shortcut hide intent");
             assert_eq!(hide.address.action, "hide-library");
             app.perform_resource_operation(PlayerOperation::HideLibrary);
             assert!(app.handle_app_shortcut_input(
@@ -4947,7 +4961,8 @@ mod tests {
                 ElementState::Pressed,
                 winit::event::Modifiers::default(),
             ));
-            let shared = Widget::take_control_invocation(&mut app).expect("shortcut reopen intent");
+            let shared = ui::widget::controls::take_control_invocation(&mut app)
+                .expect("shortcut reopen intent");
             assert_eq!(shared.address.resource, "video-player.playlists.shared");
             assert_eq!(shared.address.action, "show");
 
@@ -4962,7 +4977,8 @@ mod tests {
                 &mut doc,
                 &path,
             ));
-            let hide = Widget::take_control_invocation(&mut app).expect("a11y hide intent");
+            let hide =
+                ui::widget::controls::take_control_invocation(&mut app).expect("a11y hide intent");
             assert_eq!(hide.address.action, "hide-library");
             app.perform_resource_operation(PlayerOperation::HideLibrary);
             assert!(Widget::perform_semantic_action(
@@ -4972,7 +4988,8 @@ mod tests {
                 &mut doc,
                 &path,
             ));
-            let queue = Widget::take_control_invocation(&mut app).expect("a11y reopen intent");
+            let queue = ui::widget::controls::take_control_invocation(&mut app)
+                .expect("a11y reopen intent");
             assert_eq!(queue.address.resource, "video-player.queue.local");
             assert_eq!(queue.address.action, "show");
         }
@@ -5009,7 +5026,7 @@ mod tests {
             let mut app = synth_app();
             app.open_path(Path::new("/tmp/Clip.mp4"))
                 .expect("source identity available");
-            let resources = Widget::resources(&app, &AutoCommit::new());
+            let resources = ui::resources::resources(&app, &AutoCommit::new());
             let app_resource = &resources[0];
             assert_eq!(app_resource.kind, "video-player.application");
             let media = &app_resource.children[0];

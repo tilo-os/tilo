@@ -1945,7 +1945,7 @@ mod tests {
         // remove + toggle-like. Drives the real resource hook.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "one library root");
             let lib = &resources[0];
             assert_eq!(lib.kind, "music.library");
@@ -2113,7 +2113,7 @@ mod tests {
         // Phase `document_mutations_advertise_write_permission_and_views_advertise_read`.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             for flat in tilo_actions::flatten(&resources) {
                 let permission = flat.action.contract.permission;
                 match flat.action.kind {
@@ -2179,7 +2179,7 @@ mod tests {
         // Phase `published_resource_action_surface_validates_with_music_handlers`.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let operation_handlers =
                 std::collections::HashSet::from([MUSIC_OPERATION_TYPE.to_string()]);
             let violations =
@@ -2257,7 +2257,7 @@ mod tests {
         // effect, not byte-equality against a second freshly-minted id).
         {
             let (app, mut doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let spec = resources[0]
                 .actions
                 .iter()
@@ -2425,7 +2425,7 @@ mod tests {
         // Phase `resource_arguments_refuse_wrong_kind_and_stale_tracks`.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let library = &resources[0];
             let player = library
                 .children

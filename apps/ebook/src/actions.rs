@@ -2007,7 +2007,6 @@ mod tests {
     use crate::app::BooksApp;
     use tilo_actions::{ActionInput, ActionRegistry, LocalTransport};
     use tilo_automerge::ApplyIncoming;
-    use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -2089,7 +2088,7 @@ mod tests {
     /// resolves for the document's annotations.
     fn resources_for(doc: &AutoCommit) -> Vec<Resource> {
         let (app, _seed, book_id, _group) = open_with_annotations();
-        let mut resources = Widget::resources(&app, doc);
+        let mut resources = ui::resources::resources(&app, doc);
         let lazy = std::iter::once(format!("ebook.book:{book_id}"))
             .chain(
                 BooksDoc::read_fonts(doc)
@@ -2102,8 +2101,9 @@ mod tests {
                     .map(|scheme| format!("ebook.scheme:{}", scheme.id)),
             );
         for id in lazy {
-            resources
-                .push(Widget::resource(&app, doc, &id).unwrap_or_else(|| panic!("{id} resolves")));
+            resources.push(
+                ui::resources::resource(&app, doc, &id).unwrap_or_else(|| panic!("{id} resolves")),
+            );
         }
         let books: Vec<crate::model::Book> = app
             .library()
@@ -2262,7 +2262,7 @@ mod tests {
         // the immutable search snapshot and never materialise siblings.
         {
             let (app, doc, book_id, _group) = open_with_annotations();
-            let roots = Widget::resources(&app, &doc);
+            let roots = ui::resources::resources(&app, &doc);
             assert_eq!(roots.len(), 2);
             assert_eq!(roots[0].id.as_str(), "ebook.library");
             assert!(roots[0].children.is_empty());
@@ -2289,7 +2289,7 @@ mod tests {
                     .iter()
                     .any(|action| action.id == "remove-from-library")
             );
-            let current = Widget::resource(&app, &doc, &format!("ebook.book:{book_id}"))
+            let current = ui::resources::resource(&app, &doc, &format!("ebook.book:{book_id}"))
                 .expect("current exact book");
             for id in [
                 "toggle-bookmark",
@@ -2305,14 +2305,18 @@ mod tests {
                     "missing current-book action {id}"
                 );
             }
-            let settings = Widget::resource(&app, &doc, "ebook.settings").expect("settings");
+            let settings = ui::resources::resource(&app, &doc, "ebook.settings").expect("settings");
             assert!(settings.children.is_empty());
             for font in BooksDoc::read_fonts(&doc) {
-                assert!(Widget::resource(&app, &doc, &format!("ebook.font:{}", font.id)).is_some());
+                assert!(
+                    ui::resources::resource(&app, &doc, &format!("ebook.font:{}", font.id))
+                        .is_some()
+                );
             }
             for scheme in BooksDoc::read_schemes(&doc) {
                 assert!(
-                    Widget::resource(&app, &doc, &format!("ebook.scheme:{}", scheme.id)).is_some()
+                    ui::resources::resource(&app, &doc, &format!("ebook.scheme:{}", scheme.id))
+                        .is_some()
                 );
             }
         }

@@ -1335,6 +1335,8 @@ impl ClocksApp {
 }
 
 impl Widget for ClocksApp {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
     }
@@ -1357,28 +1359,6 @@ impl Widget for ClocksApp {
                     ui::tilo_actions::ActionOutput::default(),
                 )
             }))
-    }
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let _ = doc;
-        self.state.with(crate::actions::provide_resources)
-    }
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        fn find(
-            resources: Vec<tilo_actions::Resource>,
-            id: &str,
-        ) -> Option<tilo_actions::Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource);
-                }
-                if let Some(found) = find(resource.children.clone(), id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        self.state
-            .with(|state| find(crate::actions::provide_resources(state), id))
     }
     fn sync(&mut self, d: &mut AppModel, p: &ModelPath) {
         let tick_base = std::time::Instant::now();
@@ -1516,6 +1496,31 @@ impl Widget for ClocksApp {
     }
     fn take_focus_reset(&mut self) -> bool {
         self.inner.take_focus_reset()
+    }
+}
+
+impl ui::resources::PublishesResources for ClocksApp {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let _ = doc;
+        self.state.with(crate::actions::provide_resources)
+    }
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        fn find(
+            resources: Vec<tilo_actions::Resource>,
+            id: &str,
+        ) -> Option<tilo_actions::Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource);
+                }
+                if let Some(found) = find(resource.children.clone(), id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        self.state
+            .with(|state| find(crate::actions::provide_resources(state), id))
     }
 }
 

@@ -698,16 +698,14 @@ struct ResourceHarness {
     queue: std::rc::Rc<std::cell::RefCell<Vec<tilo_actions::ControlInvocation>>>,
 }
 impl ui::widget::Widget for ResourceHarness {
-    ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
 
     fn sync(&mut self, d: &mut AppModel, p: &ModelPath) {
         self.app.sync(d, p);
-    }
-    fn resources(&self, d: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        ui::widget::Widget::resources(&self.app, d)
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.queue.borrow_mut().pop()
     }
     fn build_layout(
         &mut self,
@@ -742,6 +740,18 @@ impl ui::widget::Widget for ResourceHarness {
     }
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.app.get_rect()
+    }
+}
+
+impl ui::resources::PublishesResources for ResourceHarness {
+    fn resources(&self, d: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        ui::resources::resources(&self.app, d)
+    }
+}
+
+impl ui::widget::controls::ActionControls for ResourceHarness {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.queue.borrow_mut().pop()
     }
 }
 

@@ -136,6 +136,8 @@ impl BottomPanelToggle {
 }
 
 impl Widget for BottomPanelToggle {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.button.sync(state, path);
     }
@@ -304,21 +306,6 @@ impl Widget for BottomPanelToggle {
         self.button.perform_action(action, state, path)
     }
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.button.take_control_invocation()
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        self.button.control_action_bindings()
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
-    ) {
-        self.button.refresh_control_action_availability(allowed);
-    }
-
     fn set_interaction_environment(
         &mut self,
         environment: ui::interaction::InteractionEnvironment,
@@ -333,6 +320,21 @@ impl Widget for BottomPanelToggle {
     fn mark_drawn(&mut self) {
         self.dirty = false;
         self.button.mark_drawn();
+    }
+}
+
+impl ui::widget::controls::ActionControls for BottomPanelToggle {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.button.take_control_invocation()
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        self.button.control_action_bindings()
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &HashSet<tilo_actions::ActionAddress>,
+    ) {
+        self.button.refresh_control_action_availability(allowed);
     }
 }
 
@@ -3487,7 +3489,11 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
 }
 
 impl Widget for CodeApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
 
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
         fn rect(rect: Rect) -> [f64; 4] {
@@ -4112,26 +4118,6 @@ impl Widget for CodeApp {
         )
     }
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.palette.take_control_invocation().or_else(|| {
-            self.children_mut()
-                .into_iter()
-                .find_map(Widget::take_control_invocation)
-        })
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = self
-            .children()
-            .into_iter()
-            .flat_map(Widget::control_action_bindings)
-            .collect::<Vec<_>>();
-        if self.palette.is_visible() {
-            bindings.extend(self.palette.control_action_bindings());
-        }
-        bindings
-    }
-
     /// Expose the panes so headless driving can address them by name. Without
     /// this the whole editor is one opaque rect and `--headless-drive` can only
     /// click at raw coordinates.
@@ -4158,40 +4144,6 @@ impl Widget for CodeApp {
             out.push(&mut self.panel);
         }
         out
-    }
-
-    /// Publish a bounded contextual project snapshot for the shell's Ctrl+K
-    /// palette. Any omitted file/symbol/result resolves lazily below through
-    /// its canonical address. Delegates to the
-    /// [``]() impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Self::publish_resources(self, doc)
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        _doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let resources = if cursor.is_empty() && max_results > 0 {
-            vec![crate::actions::project_root(&self.code_resource_ctx())]
-        } else {
-            Vec::new()
-        };
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    /// Resolve a searched file, symbol, or result through the current widget
-    /// state. This is deliberately lazy: a palette row carries only an inert
-    /// canonical address until activation.
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        Self::publish_resource(self, doc, id)
     }
 
     fn start_operation(
@@ -4332,6 +4284,61 @@ impl Widget for CodeApp {
         self.editor.mark_drawn();
         self.panel.mark_drawn();
         self.find.mark_drawn();
+    }
+}
+
+impl ui::resources::PublishesResources for CodeApp {
+    /// Publish a bounded contextual project snapshot for the shell's Ctrl+K
+    /// palette. Any omitted file/symbol/result resolves lazily below through
+    /// its canonical address. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+    fn action_directory_resource_page(
+        &self,
+        _doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        let resources = if cursor.is_empty() && max_results > 0 {
+            vec![crate::actions::project_root(&self.code_resource_ctx())]
+        } else {
+            Vec::new()
+        };
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+    /// Resolve a searched file, symbol, or result through the current widget
+    /// state. This is deliberately lazy: a palette row carries only an inert
+    /// canonical address until activation.
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+    }
+}
+
+impl ui::widget::controls::ActionControls for CodeApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.palette.take_control_invocation().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = self
+            .children()
+            .into_iter()
+            .flat_map(ui::widget::controls::control_action_bindings)
+            .collect::<Vec<_>>();
+        if self.palette.is_visible() {
+            bindings.extend(self.palette.control_action_bindings());
+        }
+        bindings
     }
 }
 

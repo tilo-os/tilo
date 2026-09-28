@@ -397,6 +397,8 @@ impl ResourceActionHost {
 }
 
 impl Widget for ResourceActionHost {
+    crate::provides!(dyn crate::resources::PublishesResources);
+
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.root.update(state, path)
     }
@@ -548,10 +550,6 @@ impl Widget for ResourceActionHost {
         &[OPERATION_TYPE]
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        vec![self.resource.clone()]
-    }
-
     fn start_operation(
         &mut self,
         op: &ResourceOperation<'_>,
@@ -637,6 +635,12 @@ impl Widget for ResourceActionHost {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl crate::resources::PublishesResources for ResourceActionHost {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        vec![self.resource.clone()]
     }
 }
 

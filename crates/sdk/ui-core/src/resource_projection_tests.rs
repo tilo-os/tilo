@@ -10,7 +10,7 @@ fn counted_control_app(
 ) -> (App, std::rc::Rc<[Cell<usize>; 2]>, std::rc::Rc<Cell<bool>>) {
     let counts = std::rc::Rc::new([Cell::new(0), Cell::new(0)]);
     let visible = std::rc::Rc::new(Cell::new(true));
-    let resource = Publisher.resources(&AutoCommit::new()).remove(0);
+    let resource = crate::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
     let root = SemanticCountingPublisher {
         counts: counts.clone(),
         visible: visible.clone(),
@@ -141,6 +141,11 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
 }
 
 impl Widget for SemanticCountingPublisher {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources
+    );
+
     fn sync(&mut self, _s: &mut AppModel, _p: &ModelPath) {}
     fn build_layout(
         &mut self,
@@ -168,6 +173,22 @@ impl Widget for SemanticCountingPublisher {
     fn get_rect(&self) -> KurboRect {
         KurboRect::ZERO
     }
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        self.counts[1].set(self.counts[1].get() + 1);
+        Some(
+            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                .with_semantic_key("counted-catalogue"),
+        )
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.button]
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.button]
+    }
+}
+
+impl crate::resources::PublishesResources for SemanticCountingPublisher {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         self.counts[0].set(self.counts[0].get() + 1);
         let mut resources = if self.visible.get() {
@@ -180,23 +201,13 @@ impl Widget for SemanticCountingPublisher {
         }
         resources
     }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        self.counts[1].set(self.counts[1].get() + 1);
-        Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                .with_semantic_key("counted-catalogue"),
-        )
-    }
+}
+
+impl crate::widget::controls::ActionControls for SemanticCountingPublisher {
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         // Count full semantic construction, independently of inventory's
         // default accessibility-derived metadata implementation.
         self.button.control_action_bindings()
-    }
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.button]
-    }
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.button]
     }
 }
 
@@ -209,7 +220,7 @@ struct InventoryOnlyPublisher {
 }
 
 fn inventory_only_publisher() -> (Box<dyn Widget>, std::rc::Rc<Cell<bool>>) {
-    let resource = Publisher.resources(&AutoCommit::new()).remove(0);
+    let resource = crate::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
     let enabled = std::rc::Rc::new(Cell::new(false));
     (
         Box::new(InventoryOnlyPublisher {
@@ -240,7 +251,9 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
                     root,
                 )),
             };
-            assert!(root.has_action_control_bindings());
+            assert!(crate::widget::controls::has_action_control_bindings(
+                root.as_ref()
+            ));
             let mut app = App::new_with_controlled_inputs(State::new(), root);
             app.action_registry_mut().register::<Flip>(FLIP_TYPE);
             app.refresh_control_action_availability();
@@ -284,7 +297,7 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
     {
         for wrapper in 0..4 {
             let counts = std::rc::Rc::new([Cell::new(0), Cell::new(0)]);
-            let resource = Publisher.resources(&AutoCommit::new()).remove(0);
+            let resource = crate::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
             let root = FastInventoryPublisher {
                 counts: counts.clone(),
                 visible: std::rc::Rc::new(Cell::new(true)),
@@ -321,6 +334,11 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
 }
 
 impl Widget for InventoryOnlyPublisher {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources
+    );
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -347,6 +365,16 @@ impl Widget for InventoryOnlyPublisher {
     fn get_rect(&self) -> KurboRect {
         KurboRect::ZERO
     }
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        self.counts[1].set(self.counts[1].get() + 1);
+        Some(
+            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                .with_semantic_key("counted-catalogue"),
+        )
+    }
+}
+
+impl crate::resources::PublishesResources for InventoryOnlyPublisher {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         self.counts[0].set(self.counts[0].get() + 1);
         let mut resources = if self.visible.get() {
@@ -359,13 +387,9 @@ impl Widget for InventoryOnlyPublisher {
         }
         resources
     }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        self.counts[1].set(self.counts[1].get() + 1);
-        Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                .with_semantic_key("counted-catalogue"),
-        )
-    }
+}
+
+impl crate::widget::controls::ActionControls for InventoryOnlyPublisher {
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         // Count full semantic construction, independently of inventory's
         // default accessibility-derived metadata implementation.
@@ -389,6 +413,11 @@ struct FastInventoryPublisher {
 }
 
 impl Widget for FastInventoryPublisher {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources
+    );
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -415,6 +444,16 @@ impl Widget for FastInventoryPublisher {
     fn get_rect(&self) -> KurboRect {
         KurboRect::ZERO
     }
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        self.counts[1].set(self.counts[1].get() + 1);
+        Some(
+            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                .with_semantic_key("counted-catalogue"),
+        )
+    }
+}
+
+impl crate::resources::PublishesResources for FastInventoryPublisher {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         self.counts[0].set(self.counts[0].get() + 1);
         let mut resources = if self.visible.get() {
@@ -427,21 +466,17 @@ impl Widget for FastInventoryPublisher {
         }
         resources
     }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        self.counts[1].set(self.counts[1].get() + 1);
-        Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                .with_semantic_key("counted-catalogue"),
-        )
-    }
-    fn has_action_control_bindings(&self) -> bool {
-        true
-    }
+}
+
+impl crate::widget::controls::ActionControls for FastInventoryPublisher {
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         // Count full semantic construction, independently of inventory's
         // default accessibility-derived metadata implementation.
         self.counts[1].set(self.counts[1].get() + 1);
         self.button.control_action_bindings()
+    }
+    fn has_action_control_bindings(&self) -> bool {
+        true
     }
     fn refresh_control_action_availability(
         &mut self,

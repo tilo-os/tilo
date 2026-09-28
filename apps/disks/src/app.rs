@@ -3451,6 +3451,8 @@ fn status_color(theme: &Theme, status: SmartStatus) -> Color {
 }
 
 impl Widget for DisksApp {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn measure(
         &mut self,
         _known: ui::taffy::Size<Option<f32>>,
@@ -3465,58 +3467,6 @@ impl Widget for DisksApp {
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["disks.operation"]
-    }
-
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("disks", "disks.system", "Storage devices");
-        for drive in &self.topo.drives {
-            let mut disk = Resource::new(
-                format!("disk:{}", drive.name),
-                "disks.drive",
-                drive.model.clone(),
-            );
-            // Whole-drive operations are meaningful independently of any
-            // partition selection. Publishing them here (rather than only in
-            // the custom action bar) lets search, history, collaboration and
-            // agents address the same operation contract.
-            for action in [ActionKind::Format, ActionKind::Benchmark] {
-                if let Some(spec) = self.operation_spec(action, &drive.name, None) {
-                    disk.actions.push(spec);
-                }
-            }
-            if drive.removable
-                && let Some(spec) = self.operation_spec(ActionKind::Eject, &drive.name, None)
-            {
-                disk.actions.push(spec);
-            }
-            for part in &drive.partitions {
-                let mut partition = Resource::new(
-                    format!("partition:{}", part.name),
-                    "disks.partition",
-                    part.name.clone(),
-                );
-                let verb = if part.mountpoint.is_some() {
-                    "unmount"
-                } else {
-                    "mount"
-                };
-                let mount_action = if verb == "mount" {
-                    ActionKind::Mount
-                } else {
-                    ActionKind::Unmount
-                };
-                for action in [mount_action, ActionKind::Benchmark, ActionKind::Format] {
-                    if let Some(spec) =
-                        self.operation_spec(action, &part.name, part.fstype.as_deref())
-                    {
-                        partition.actions.push(spec);
-                    }
-                }
-                disk.children.push(partition);
-            }
-            root.children.push(disk);
-        }
-        vec![root]
     }
 
     fn start_operation(
@@ -4277,6 +4227,60 @@ impl Widget for DisksApp {
     }
 }
 
+impl ui::resources::PublishesResources for DisksApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let mut root = Resource::new("disks", "disks.system", "Storage devices");
+        for drive in &self.topo.drives {
+            let mut disk = Resource::new(
+                format!("disk:{}", drive.name),
+                "disks.drive",
+                drive.model.clone(),
+            );
+            // Whole-drive operations are meaningful independently of any
+            // partition selection. Publishing them here (rather than only in
+            // the custom action bar) lets search, history, collaboration and
+            // agents address the same operation contract.
+            for action in [ActionKind::Format, ActionKind::Benchmark] {
+                if let Some(spec) = self.operation_spec(action, &drive.name, None) {
+                    disk.actions.push(spec);
+                }
+            }
+            if drive.removable
+                && let Some(spec) = self.operation_spec(ActionKind::Eject, &drive.name, None)
+            {
+                disk.actions.push(spec);
+            }
+            for part in &drive.partitions {
+                let mut partition = Resource::new(
+                    format!("partition:{}", part.name),
+                    "disks.partition",
+                    part.name.clone(),
+                );
+                let verb = if part.mountpoint.is_some() {
+                    "unmount"
+                } else {
+                    "mount"
+                };
+                let mount_action = if verb == "mount" {
+                    ActionKind::Mount
+                } else {
+                    ActionKind::Unmount
+                };
+                for action in [mount_action, ActionKind::Benchmark, ActionKind::Format] {
+                    if let Some(spec) =
+                        self.operation_spec(action, &part.name, part.fstype.as_deref())
+                    {
+                        partition.actions.push(spec);
+                    }
+                }
+                disk.children.push(partition);
+            }
+            root.children.push(disk);
+        }
+        vec![root]
+    }
+}
+
 impl DisksApp {
     fn admit_resource_operation(
         &mut self,
@@ -4804,7 +4808,7 @@ mod tests {
         // --- phase: exported_disk_actions_declare_background_jobs ---
         {
             let (app, doc) = seeded_app();
-            for action in Widget::resources(&app, &doc)
+            for action in ui::resources::resources(&app, &doc)
                 .iter()
                 .flat_map(|root| root.children.iter())
                 .flat_map(|drive| {
@@ -4825,7 +4829,7 @@ mod tests {
         // --- phase: disk_resources_publish_whole_drive_format_and_benchmark ---
         {
             let (app, doc) = seeded_app();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let disk = resources
                 .first()
                 .and_then(|root| root.children.first())

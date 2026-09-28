@@ -1908,17 +1908,14 @@ pub(crate) fn plural(n: usize, singular: &str, plural: &str) -> String {
 }
 
 impl Widget for TypstApp {
-    ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
-    }
-
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.framework_hosted {
-            return Vec::new();
-        }
-        crate::actions::resources(doc)
     }
 
     fn start_operation(
@@ -2286,10 +2283,6 @@ impl Widget for TypstApp {
         }
     }
 
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        ui::widget::semantic_action_bindings(self.accessibility())
-    }
-
     fn needs_commit(&self) -> bool {
         self.native_edit_pending
     }
@@ -2353,6 +2346,21 @@ impl Widget for TypstApp {
         // sets `dirty`, so divider drags, preview text-selection, and inline
         // diagnostic tooltips all repaint smoothly.
         self.dirty
+    }
+}
+
+impl ui::resources::PublishesResources for TypstApp {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.framework_hosted {
+            return Vec::new();
+        }
+        crate::actions::resources(doc)
+    }
+}
+
+impl ui::widget::controls::ActionControls for TypstApp {
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        ui::widget::semantic_action_bindings(self.accessibility())
     }
 }
 

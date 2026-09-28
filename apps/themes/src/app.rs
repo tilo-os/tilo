@@ -1423,19 +1423,12 @@ impl ThemesApp {
 impl Widget for ThemesApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
-        dyn ui::history_mode::capability::DocumentHistory
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::resources::PublishesResources
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["themes.apply", "themes.export", "themes.new"]
-    }
-
-    /// Publish the open theme library + its themes so the host's Ctrl+K action
-    /// palette scopes to them. Delegates to the
-    /// [``]() impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Self::publish_resources(self, doc)
     }
 
     fn start_operation(
@@ -1936,6 +1929,16 @@ impl Widget for ThemesApp {
     }
 }
 
+impl ui::resources::PublishesResources for ThemesApp {
+    /// Publish the open theme library + its themes so the host's Ctrl+K action
+    /// palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+}
+
 impl ui::history_mode::capability::DocumentHistory for ThemesApp {
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
@@ -2139,9 +2142,7 @@ mod tests {
     }
 
     fn route_narrow_view_invocation(app: &mut ThemesApp, state: &mut ui::State) {
-        let invocation = app
-            .narrow_tabs
-            .take_control_invocation()
+        let invocation = ui::widget::controls::take_control_invocation(&mut app.narrow_tabs)
             .expect("view selection emitted its canonical invocation");
         let index = invocation.arguments["index"]
             .as_u64()
@@ -2546,7 +2547,7 @@ mod tests {
             );
             assert!(app.status.contains("Exported"));
 
-            let resources = Widget::resources(&app, &state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             assert!(
                 resources[0]
                     .actions
@@ -2590,7 +2591,7 @@ mod tests {
                 crate::actions::ThemesAction::CreateCustomTheme { .. }
             ));
             assert!(
-                Widget::resources(&app, &state.doc)[0]
+                ui::resources::resources(&app, &state.doc)[0]
                     .actions
                     .iter()
                     .any(|action| {
@@ -2768,7 +2769,7 @@ mod tests {
                 Some(tilo_actions::InvocationUpdate::Cancelled { .. })
             ));
 
-            let apply = Widget::resources(&app, &st.doc)
+            let apply = ui::resources::resources(&app, &st.doc)
                 .into_iter()
                 .flat_map(|resource| resource.children)
                 .flat_map(|theme| theme.actions)
