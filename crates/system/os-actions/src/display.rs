@@ -52,8 +52,11 @@ pub fn set_brightness(pct: f32) -> Result<(), String> {
                           with no sign loss"
             )]
             let percent = clamped.round() as u32;
-            run("brightnessctl", &["set", &format!("{percent}%")])
-                .map_err(|tool_err| format!("{sysfs_err}; brightnessctl also failed: {tool_err}"))
+            run(
+                "brightnessctl",
+                &["-c", "backlight", "set", &format!("{percent}%")],
+            )
+            .map_err(|tool_err| format!("{sysfs_err}; brightnessctl also failed: {tool_err}"))
         }
     }
 }
@@ -71,7 +74,9 @@ pub fn get_brightness() -> Result<f32, String> {
             if !which("brightnessctl") {
                 return Err(sysfs_err);
             }
-            let out = run_capture("brightnessctl", &["-m"])?;
+            // Without a class, brightnessctl falls back to any device, which on a
+            // machine with no backlight is a keyboard LED.
+            let out = run_capture("brightnessctl", &["-m", "-c", "backlight"])?;
             parse_brightness_machine(&out)
         }
     }
@@ -286,6 +291,9 @@ fn parse_brightness_machine(stdout: &str) -> Result<f32, String> {
     if fields.len() < 4 {
         return Err(format!("brightnessctl -m unexpected: {line}"));
     }
+    if fields.get(1) != Some(&"backlight") {
+        return Err(format!("brightnessctl -m found no backlight: {line}"));
+    }
     // Field 3 is the percentage with a trailing `%`.
     let pct_str = fields
         .get(3)
@@ -454,12 +462,16 @@ mod tests {
         // Phase `parse_brightness_machine_clamps_above_one`.
         {
             // brightnessctl will never emit >100%, but a hypothetical 110% must not surface as a >1.0 fraction.
-            let s = "x,b,11,110%,10";
+            let s = "x,backlight,11,110%,10";
             assert!((parse_brightness_machine(s).unwrap() - 1.0).abs() < f32::EPSILON);
         }
         // Phase `parse_brightness_machine_empty_is_err`.
         {
             assert!(parse_brightness_machine("").is_err());
+        }
+        // A machine with no backlight: a keyboard LED is not a display.
+        {
+            assert!(parse_brightness_machine("input3::capslock,leds,0,0%,1").is_err());
         }
     }
 
