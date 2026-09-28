@@ -15,5 +15,3 @@ mod support;
 
 #[path = "install.rs"]
 mod install;
-#[path = "migrate.rs"]
-mod migrate;
