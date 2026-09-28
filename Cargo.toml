@@ -635,11 +635,11 @@ debug = "line-tables-only"
 
 # Optimise the CRDT dependencies in development and test builds; their generic
 # data structures are otherwise disproportionately slow in workspace tests.
-[profile.dev.package.automerge]
+[profile.dev.package.tilo-automerge-fork]
 opt-level = 3
 [profile.dev.package.hexane]
 opt-level = 3
-[profile.test.package.automerge]
+[profile.test.package.tilo-automerge-fork]
 opt-level = 3
 [profile.test.package.hexane]
 opt-level = 3
