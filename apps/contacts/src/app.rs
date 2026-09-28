@@ -1408,12 +1408,6 @@ pub struct ContactsApp {
     relayout: bool,
     seeded: bool,
 
-    /// Where the address book is persisted. `Some` for the live app (loaded
-    /// on first `sync`, rewritten after every mutation); `None` for the
-    /// hermetic `--shots` / test path so those never touch the user's disk.
-    /// Legacy address-book file to seed from. `None` in production — the
-    /// document arrives already loaded from the shared store.
-    legacy_book: Option<PathBuf>,
     /// When `true`, a first `sync` onto an empty book seeds the varied sample
     /// address book. Only the `--shots` and test constructors set this — the
     /// live app never fabricates content.
@@ -1461,34 +1455,21 @@ impl ContactsApp {
     ///
     /// Nothing here touches the disk any more: the address book lives in the
     /// shared Automerge document, which `main` opens through `ui::persist`
-    /// and which is written back by `App::with_autosave`. The book this app
-    /// used to keep in its own file is imported once, on first launch after
-    /// the upgrade, by `ui::persist::open_migrating`.
+    /// and which is written back by `App::with_autosave`.
     pub fn new() -> Self {
-        Self::configured(None, false)
+        Self::configured(false)
     }
 
     /// The hermetic `--shots` / test app: seeds the varied sample address book
     /// and never touches the user's disk, so a headless frame is populated and
     /// tests are deterministic.
     pub fn sample() -> Self {
-        Self::configured(None, true)
+        Self::configured(true)
     }
 
-    /// An app that seeds itself from a legacy address-book file at `path`.
-    ///
-    /// Test-only. The legacy import in production runs one level up, in
-    /// `ui::persist::open_migrating`, against the whole document rather than
-    /// a projection of the contact list.
-    #[cfg(test)]
-    pub fn with_legacy_book(path: PathBuf) -> Self {
-        Self::configured(Some(path), false)
-    }
-
-    fn configured(legacy_book: Option<PathBuf>, seed_samples: bool) -> Self {
+    fn configured(seed_samples: bool) -> Self {
         let store = ContactStore::new();
         Self {
-            legacy_book,
             seed_samples,
             search_provider: crate::search_provider::ContactSearchProvider::new(&store),
             store,
@@ -6932,13 +6913,6 @@ impl Widget for ContactsApp {
                     if prefer.is_none() {
                         prefer = Some(c.id);
                     }
-                    ContactsDoc::upsert_contact(state, &c);
-                    self.store.upsert(c);
-                }
-            } else if let Some(path) = self.legacy_book.clone() {
-                // Test-only: seed from a legacy address-book file. The live
-                // app arrives with its document already loaded by the store.
-                for c in crate::storage::load(&path) {
                     ContactsDoc::upsert_contact(state, &c);
                     self.store.upsert(c);
                 }

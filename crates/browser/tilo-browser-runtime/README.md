@@ -161,6 +161,24 @@ document's own history is the app's (Writer: `invokeAction('word-processor.docum
 The rooms live as long as the mount; records persist in the profile's storage
 like a standalone mount's.
 
+### A person and an agent in Chat
+
+Two Chat mounts of one profile/device/room are two participants in the
+room's one workspace. `agent` makes a mount an agent: its `author` is an
+agent task participant and its posts show as `Reading agent · agent` on
+every mount. A channel asked for by name lists its latest messages; `read`
+returns one as a value (WEB_RUNTIME.md, "Chat with an agent").
+
+```js
+const you = await mountDesktop(youEl, {app: 'so.tilo.chat', author: 'Visitor', instance: 1, ...shared});
+const agent = await mountDesktop(agentEl, {app: 'so.tilo.chat', author: 'agent-task:reading',
+  agent: 'Reading agent', instance: 2, ...shared});
+const general = 'chat.channel:c_general';
+agent.invokeAction(general, 'post', {value: 'Which book are we reading?'});
+const latest = agent.actions(general).filter(a => a.resource_kind === 'chat.message').at(-1);
+const {author, agent: byAgent, text} = agent.invokeAction(latest.address.resource, 'read').output.value;
+```
+
 ## Lifetime and persistence
 
 `mountDesktop(element, options)` resolves after the first presentation. Supply an
@@ -207,6 +225,7 @@ node --test crates/browser/tilo-browser-runtime/web/host.test.mjs
 node --test crates/browser/tilo-browser-runtime/web/open-file.test.mjs
 cargo test --locked -j2 -p tilo-browser-runtime --lib catalog::
 cargo test --locked -j2 -p tilo-browser-runtime --lib local_desktop::
+cargo test --locked -j2 -p tilo-browser-runtime --lib mount_agent::
 cargo test --locked -j2 -p ebook --lib component::
 cargo test --locked -j2 -p ui --test it package_primary
 cargo test --locked -j2 -p word-processor --test it canonical_component

@@ -25,7 +25,6 @@ durable-store = { path = "../durable-store" }
 xdg-paths = { path = "../xdg-paths" }
 
 automerge.workspace = true
-tilo-automerge.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -38,6 +37,7 @@ same-file = "1.0.6"
 durable-store = { path = "../durable-store", features = ["conformance"] }
 tempfile.workspace = true
 serial_test.workspace = true
+tilo-automerge.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 # Confines a test to a sandbox-shaped home, as the launcher confines an app.
 landlock.workspace = true

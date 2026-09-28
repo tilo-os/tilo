@@ -41,7 +41,7 @@ web_jobs=${TILO_WEB_JOBS:-4}
 # built later in the same invocation then shares the core's units exactly.
 # An app outside it that needs more is refused until it joins, which changes
 # the runtime ABI id.
-read -r -a web_collection <<<"${TILO_WEB_COLLECTION:-ebook word-processor}"
+read -r -a web_collection <<<"${TILO_WEB_COLLECTION:-ebook word-processor chat}"
 # Cargo arguments selecting the core, the collection and any extra packages.
 web_roots() {
   local roots=(-p tilo-browser-runtime) package

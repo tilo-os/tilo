@@ -18,7 +18,7 @@ set -euo pipefail
 
 dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 vm="$dev_dir/vm.sh"
-medium="${1:?usage: test-installer-cycle.sh INSTALLER_QCOW2 [--out DIRECTORY] [--prepared-alongside|--guided-alongside] [--install-only] [--software-tpm] [--graphics gl|software] [--build-profile-encoder]}"
+medium="${1:?usage: test-installer-cycle.sh INSTALLER_QCOW2 [--out DIRECTORY] [--prepared-alongside|--guided-alongside] [--install-only] [--software-tpm] [--graphics gl|software] [--build-profile-encoder] [--selinux-audit-ssh]}"
 shift
 out=""
 install_mode=erase
@@ -26,6 +26,7 @@ software_tpm=0
 graphics=gl
 build_profile_encoder=0
 install_only=0
+selinux_audit_ssh=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --out) out="${2:-}"; shift 2;;
@@ -34,6 +35,7 @@ while [ "$#" -gt 0 ]; do
     --install-only) install_only=1; shift;;
     --software-tpm) software_tpm=1; shift;;
     --build-profile-encoder) build_profile_encoder=1; shift;;
+    --selinux-audit-ssh) selinux_audit_ssh=1; shift;;
     --graphics) graphics="${2:-}"; [ "$#" -ge 2 ] || exit 2; shift 2;;
     *) printf 'unknown option: %s\n' "$1" >&2; exit 2;;
   esac
@@ -84,6 +86,12 @@ fi
 
 command -v tesseract >/dev/null 2>&1 \
   || { printf 'tesseract is required for framebuffer verification\n' >&2; exit 1; }
+if [ "$selinux_audit_ssh" -eq 1 ]; then
+  # Guest audit inspection lives in installer-selinux-audit.sh so this release
+  # cycle script never grows a guest-shell inspection channel.
+  "$dev_dir/installer-selinux-audit.sh" require-host \
+    || { echo '--selinux-audit-ssh host prerequisites failed' >&2; exit 2; }
+fi
 
 out="${out:-$PWD/installer-cycle-artifacts}"
 export TILO_VM_CYCLE="${TILO_VM_CYCLE:-installer-cycle-$$}"
@@ -527,6 +535,11 @@ field() { python3 "$dev_dir/installer-console.py" field "$@"; }
 # this VM's command line attaches (a virtio-serial port; see vm.sh console).
 ic wait installer --timeout 600 --save "$out/01-disk.json" \
   || die "profiled live installer did not start at Disk"
+if [ "$selinux_audit_ssh" -eq 1 ]; then
+  # Opt-in --dev-login medium only; release media have no guest login.
+  "$dev_dir/installer-selinux-audit.sh" assert-ready "$out" \
+    || die 'live installer is not enforcing with an active, readable audit stream'
+fi
 [ "$(field "$out/01-disk.json" /step)" = disk ] \
   || die "profiled live installer did not start at Disk"
 field "$out/01-disk.json" /status | grep -Eqi 'setup choices are ready' \
@@ -590,6 +603,10 @@ install_seconds="$(ic wait-install --timeout "$max_wait" --save "$out/04-install
 printf 'finish_screen_wait=%s\n' "$install_seconds" > "$out/install-timing.txt"
 [ "$(field "$out/04-install.json" /recovery_key/available)" = true ] \
   || die "installer finished without generating a recovery key"
+if [ "$selinux_audit_ssh" -eq 1 ]; then
+  "$dev_dir/installer-selinux-audit.sh" assert-clean "$out" \
+    || die 'live installer recorded an AVC, lost audit records, or audit inspection failed'
+fi
 
 # Copy the key into the ephemeral live clipboard, acknowledge the disposable
 # test target, then Power off so the next boot contains only the produced

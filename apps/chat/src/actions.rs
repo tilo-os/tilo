@@ -132,6 +132,11 @@ pub enum ChatOperation {
     Comment {
         action: Box<ChatAction>,
     },
+    /// The message as a value (author, whether it is an agent, whole text,
+    /// agent work); changes nothing.
+    ReadMessage {
+        message: String,
+    },
 }
 
 /// Decode a Chat-local view operation addressed through a resource action.
@@ -1404,10 +1409,11 @@ pub struct CategoryResource {
 #[derive(Debug, Clone, Default)]
 pub struct MessageResource {
     pub id: String,
+    /// Who wrote it: an agent records its work only on its own messages.
+    pub author: String,
     pub label: String,
     pub pinned: bool,
     pub parent: Option<String>,
-    pub author: String,
     /// What the message is about, as its author selected it.
     pub reference: Option<tilo_reference::ResourceRef>,
     /// Further things it is about.
@@ -1788,7 +1794,18 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
             archived: channel.archived,
             feedback: channel.feedback,
         };
-        let mut resource = build_channel_resource(ctx, doc, &workspace_id, &model, &[]);
+        // Asked for by name, a channel lists its latest messages: a caller
+        // watching the conversation finds each new one here. The eager tree
+        // stays bounded and lists none.
+        let users = ChatDoc::list_users(doc);
+        let agents = ChatDoc::agent_authors(doc);
+        let mut messages = ChatDoc::list_messages(doc, &model.id);
+        let recent = messages.split_off(messages.len().saturating_sub(RESOLVED_CHANNEL_MESSAGES));
+        let recent = recent
+            .into_iter()
+            .map(|message| message_resource(ctx, &message, &users, &agents, model.feedback))
+            .collect::<Vec<_>>();
+        let mut resource = build_channel_resource(ctx, doc, &workspace_id, &model, &recent);
         annotate_contracts(&mut resource);
         return Some(resource);
     }
@@ -1911,16 +1928,34 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
         .find(|workspace| workspace.id == channel.workspace)?;
     let channel_model = channel_resource(&channel);
     let users = ChatDoc::list_users(doc);
+    let agents = ChatDoc::agent_authors(doc);
+    let message_model = message_resource(ctx, &message, &users, &agents, channel.feedback);
+    let mut resource = build_message_resource(ctx, &workspace.id, &channel_model, &message_model);
+    annotate_contracts(&mut resource);
+    Some(resource)
+}
+
+/// How many of a channel's latest messages its on-request resource lists.
+pub const RESOLVED_CHANNEL_MESSAGES: usize = 20;
+
+/// `message` as the resource tree sees it, labelled with its author's name
+/// (an agent's own when it wrote it). `feedback` says its channel is a
+/// feedback channel.
+fn message_resource(
+    ctx: &ChatResourceCtx,
+    message: &crate::model::Message,
+    users: &[crate::model::User],
+    agents: &std::collections::HashMap<String, String>,
+    feedback: bool,
+) -> MessageResource {
     let label = message_label(
         &message.author,
         &message.text,
         message.attachment.as_ref(),
-        &users,
+        users,
+        agents,
     );
-    let message_model = MessageResource::of(&message, label, &ctx.me, channel.feedback);
-    let mut resource = build_message_resource(ctx, &workspace.id, &channel_model, &message_model);
-    annotate_contracts(&mut resource);
-    Some(resource)
+    MessageResource::of(message, label, &ctx.me, feedback)
 }
 
 /// Resolve an immutable message row and its owning channel once. Resource
@@ -2419,6 +2454,11 @@ fn build_message_resource(
         &delete_message_action(&ch.id, &m.id),
     ));
 
+    message = message.with_action(read_message_spec(&m.id));
+    if m.author == ctx.me && acts_as_agent(ctx) {
+        message = message.with_action(set_work_spec(&ch.id, &m.id));
+    }
+
     if let Some(attachment) = &m.attachment {
         message = message.with_child(build_attachment_resource(
             workspace_id,
@@ -2449,6 +2489,141 @@ fn build_message_resource(
     }
 
     message
+}
+
+/// Whether the tree is authored as an agent: an agent task participant the
+/// room names as an agent (a delivered task, or a host that acts as one).
+fn acts_as_agent(ctx: &ChatResourceCtx) -> bool {
+    ctx.me
+        .starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
+        && ctx
+            .participants
+            .iter()
+            .any(|participant| participant.id == ctx.me && participant.is_agent)
+}
+
+/// What `read` returns for a message.
+pub fn message_read_schema() -> &'static serde_json::Value {
+    static SCHEMA: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        serde_json::json!({"type":"object",
+            "required":["id","channel","parent","author","authorName","agent","mine","ts","edited","text","work"],
+            "properties":{
+                "id":{"type":"string"},"channel":{"type":"string"},"parent":{"type":["string","null"]},
+                "author":{"type":"string"},"authorName":{"type":"string"},"agent":{"type":"boolean"},
+                "mine":{"type":"boolean"},"ts":{"type":"integer"},"edited":{"type":"boolean"},
+                "text":{"type":"string"},"work":{"type":["object","null"]}
+            }})
+    })
+}
+
+/// Read one message as a value, for a caller that follows the conversation
+/// through the action door rather than the screen: the label carries only
+/// the author's name and the first words.
+fn read_message_spec(message: &str) -> ActionSpec {
+    view_operation(
+        "read",
+        "Read message",
+        &ChatOperation::ReadMessage {
+            message: message.to_owned(),
+        },
+    )
+    .with_contract(tilo_actions::ActionContract {
+        result: tilo_actions::ResultSpec::Json {
+            schema: message_read_schema().clone(),
+        },
+        ..tilo_actions::ActionContract::view()
+    })
+}
+
+/// An agent's record of what it did, on a message it wrote: the same
+/// [`ChatAction::SetAgentWork`] a delivered agent task writes.
+fn set_work_spec(channel: &str, message: &str) -> ActionSpec {
+    use tilo_actions::{ActionParam, ParamType};
+    let channel = channel.to_owned();
+    let message = message.to_owned();
+    ActionSpec::typed(
+        "set-work",
+        "Record agent work",
+        "taken, doing, done or refused",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required("state", ParamType::Text, "Where the work stands")
+                .with_choices(["taken", "doing", "done", "refused"]),
+            ActionParam::optional(
+                "did",
+                ParamType::Text,
+                "The operation, as its app labels it (doing, done)",
+            ),
+            ActionParam::optional("about", ParamType::Text, "What it is about (doing)"),
+            ActionParam::optional("why", ParamType::Text, "How the agent decided"),
+            ActionParam::optional(
+                "steps",
+                ParamType::Array,
+                "Operations dispatched: {resource, label, outcome: asked|applied|no_change|refused, why?}",
+            ),
+            ActionParam::optional(
+                "say",
+                ParamType::Text,
+                "The agent's words, for a message that has none yet",
+            ),
+        ],
+        move |args| match agent_work_from_args(args) {
+            Ok(work) => encode(&set_agent_work_action(
+                &channel,
+                &message,
+                work,
+                args.text("say"),
+            )),
+            Err(error) => EncodedAction {
+                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                payload: error.into_bytes(),
+            },
+        },
+    )
+}
+
+fn agent_work_from_args(
+    args: &tilo_actions::ActionArgs,
+) -> Result<crate::model::AgentWork, String> {
+    use crate::model::{
+        AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
+    };
+    let did = || args.text("did").unwrap_or_default().to_owned();
+    let state = match args.text("state").unwrap_or_default() {
+        "taken" => AgentWorkState::Taken,
+        "doing" => AgentWorkState::Doing {
+            did: did(),
+            about: args.text("about").unwrap_or_default().to_owned(),
+        },
+        "done" => AgentWorkState::Done { did: did() },
+        "refused" => AgentWorkState::Refused,
+        other => return Err(format!("unknown agent work state `{other}`")),
+    };
+    let mut trace = Vec::new();
+    for (index, step) in args.array("steps").unwrap_or_default().iter().enumerate() {
+        let text = |field: &str| step.get(field).and_then(serde_json::Value::as_str);
+        let resource = text("resource").ok_or("a step names its resource")?;
+        let label = text("label").ok_or("a step names its operation's label")?;
+        let outcome = match text("outcome").unwrap_or("applied") {
+            "asked" => AgentStepOutcome::Asked,
+            "applied" => AgentStepOutcome::Applied,
+            "no_change" => AgentStepOutcome::NoChange,
+            "refused" => AgentStepOutcome::Refused {
+                why: text("why").unwrap_or_default().to_owned(),
+            },
+            other => return Err(format!("unknown step outcome `{other}`")),
+        };
+        trace.push(AgentStep::authored(resource, label, outcome, index as u64));
+    }
+    let mut work = AgentWork::new(state, unix_now_i64()).with_trace(trace);
+    if let Some(why) = args.text("why") {
+        work = work.because(AgentReasoning {
+            route: AgentRoute::Model,
+            why: why.to_owned(),
+        });
+    }
+    Ok(work)
 }
 
 /// What a Commenter does with a message — reply, meet its author, and on a
@@ -3011,11 +3186,17 @@ fn message_label(
     text: &str,
     attachment: Option<&crate::model::Attachment>,
     users: &[crate::model::User],
+    agents: &std::collections::HashMap<String, String>,
 ) -> String {
-    let author = users
-        .iter()
-        .find(|user| user.id == author_id)
-        .map_or(author_id, |user| user.name.as_str());
+    let author = agents.get(author_id).map_or_else(
+        || {
+            users
+                .iter()
+                .find(|user| user.id == author_id)
+                .map_or(author_id, |user| user.name.as_str())
+        },
+        String::as_str,
+    );
     let unnamed;
     let body = if text.trim().is_empty() {
         if let Some(attachment) = attachment {
@@ -3319,6 +3500,7 @@ mod tests {
             ctx.messages = (0..10_000)
                 .map(|id| MessageResource {
                     id: format!("message-{id}"),
+                    author: model::ME.to_owned(),
                     label: format!("Message {id}"),
                     pinned: false,
                     ..MessageResource::default()
@@ -3425,9 +3607,17 @@ mod tests {
                 message
                     .actions
                     .iter()
-                    .filter(|action| action.id != "open" && action.id != "open-author")
+                    .filter(|action| {
+                        action.id != "open" && action.id != "open-author" && action.id != "read"
+                    })
                     .all(|action| action.kind == OperationKind::Document)
             );
+            let read = message.actions.iter().find(|a| a.id == "read").unwrap();
+            assert_eq!(read.kind, OperationKind::View);
+            assert!(matches!(
+                read.contract.result,
+                tilo_actions::ResultSpec::Json { .. }
+            ));
             let delete = channel.actions.iter().find(|a| a.id == "delete").unwrap();
             assert_eq!(delete.contract.risk, tilo_actions::RiskLevel::Destructive);
             assert_eq!(

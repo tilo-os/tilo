@@ -3081,7 +3081,7 @@ fn saved_book_persists_across_restarts_and_imports() {
     // The property the old save path destroyed, asserted in the app that
     // had the bug.
     //
-    // `storage::save` rebuilt a fresh `AutoCommit` from the contact list on
+    // The old save path rebuilt a fresh `AutoCommit` from the contact list on
     // every write. The document it produced shared no history — and no
     // object identity — with the one it came from, so merging it with a
     // replica that had diverged produced two unrelated `contacts` objects
@@ -3151,35 +3151,6 @@ fn saved_book_persists_across_restarts_and_imports() {
             "history was preserved, so the merge reconciled one object rather \
              than colliding two unrelated ones"
         );
-    }
-
-    // --- phase: a_legacy_address_book_is_imported_into_the_store ---
-    // An address book written by the release that kept its own file must
-    // come across on the first launch after the upgrade.
-    {
-        let home = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_DATA_HOME", home.path())
-            .remove("TILO_PACKAGE_ID");
-        let (dir, legacy) = scratch_book();
-        let book = sample_contacts();
-        crate::storage::save(&legacy, &book).unwrap();
-
-        let mut store = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
-        assert!(
-            store.migrate_from(&legacy).unwrap(),
-            "the legacy file is imported"
-        );
-        let mut doc = store.load().unwrap().expect("document after migration");
-
-        let mut app = ContactsApp::new();
-        app.sync(&mut doc, &ROOT);
-        assert_eq!(
-            app.store.len(),
-            book.len(),
-            "every contact from the old file is in the book"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // --- phase: import_reads_real_vcf_files_and_persists_them ---

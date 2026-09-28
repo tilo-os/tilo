@@ -2293,7 +2293,18 @@ impl ChatApp {
         let c = &theme.tokens.colors;
         let u = self.user(&m.author).cloned();
         let (initials, cidx, status) = u.as_ref().map_or_else(
-            || ("?".into(), 0, None),
+            // An agent writes no user row; its name is on record.
+            || {
+                if self.agent_authors.contains_key(&m.author) {
+                    (
+                        self.initials_for(&m.author),
+                        crate::identity::color_index_for(m.author.as_bytes()),
+                        None,
+                    )
+                } else {
+                    ("?".into(), 0, None)
+                }
+            },
             |u| (u.initials.clone(), u.color_idx, Some(u.status)),
         );
         draw_avatar(

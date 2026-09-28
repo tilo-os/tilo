@@ -21,7 +21,9 @@ default = ["live-media"]
 # Calls themselves run through the shell's native voice service
 # (`ui::native_media`). This feature only adds the legacy custom-Iroh media
 # transport and the device-free Opus codec diagnostics. Disable default
-# features for explicitly media-free builds and hermetic tests.
+# features for explicitly media-free builds and hermetic tests. Its
+# dependencies are native only: in the browser (a web side module) the
+# feature adds nothing.
 live-media = [
     "media/voice",
     "dep:iroh",
@@ -67,14 +69,6 @@ xdg-paths = { path = "../../crates/system/xdg-paths" }
 # Attachment bytes live in the app's content store; no
 # sender-local path is stored in the chat document.
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
-
-# Live-media dependencies. Versions match the workspace media and transport
-# stacks to avoid duplicate copies.
-iroh = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true, features = ["sync"] }
-# Length-prefixed media frames on the call stream.
-wire-frame = { path = "../../crates/system/wire-frame", optional = true, features = ["tokio"] }
-
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
@@ -91,6 +85,12 @@ media = { path = "../../crates/media/core", default-features = false }
 # per-peer identity the collab layer signs with. Chat uses its public key +
 # display name so every running instance is a distinct participant.
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
+# Live-media dependencies. Versions match the workspace media and transport
+# stacks to avoid duplicate copies.
+iroh = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["sync"] }
+# Length-prefixed media frames on the call stream.
+wire-frame = { path = "../../crates/system/wire-frame", optional = true, features = ["tokio"] }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
