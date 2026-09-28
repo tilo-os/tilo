@@ -717,7 +717,7 @@ impl TabMenuAction {
 
     /// Stable semantic address of the menu row (`tabmenu:<slug>`): the
     /// `semantic:` target a script or the bench names, and the
-    /// `perform_semantic_action` target an assistive technology activates.
+    /// `ActionTarget::Semantic` an assistive technology activates.
     pub fn semantic_key(self) -> &'static str {
         match self {
             Self::CloseTab => "tabmenu:close",

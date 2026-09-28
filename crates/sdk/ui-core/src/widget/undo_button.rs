@@ -358,9 +358,8 @@ impl Widget for UndoButton {
 
     /// Keyboard (Enter / Space) and assistive-technology activation.
     ///
-    /// [`perform_action_at`](Widget::perform_action_at) defaults to forwarding
-    /// here with the empty key path, so an AT operating the node lands on the
-    /// same request a mouse release makes.
+    /// The widget and an empty key path are handled alike, so an AT operating
+    /// the node lands on the same request a mouse release makes.
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
@@ -611,7 +610,7 @@ mod tests {
 
         // Case `assistive_activation_takes_the_same_route_as_a_click`.
         // Assistive technology reaches the same request as a mouse release —
-        // `perform_action_at` forwards the empty key path here.
+        // an empty key path takes the widget's own route.
         {
             let mut doc = AutoCommit::new();
             let mut b = button_at(UndoRequest::Redo, Rect::new(0.0, 0.0, 32.0, 32.0));

@@ -3615,7 +3615,7 @@ impl FrameHarness {
         let (taffy_id, key_path, ordinal_path, semantic_target) = match resolved {
             A11yTarget::Root => return Err("the window root cannot be operated".into()),
             A11yTarget::Widget(id) => (id, Vec::new(), Vec::new(), None),
-            // Keys here: the driver dispatches through `perform_action_at`,
+            // Keys here: the driver dispatches `ActionTarget::Key`,
             // which identifies a synthetic child by identity.
             A11yTarget::Synthetic {
                 owner,
@@ -3655,11 +3655,12 @@ impl FrameHarness {
         }
         let handled = self
             .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
-                if let Some(target) = semantic_target.as_deref() {
-                    widget.perform_action(action, ActionTarget::Semantic(target), doc, root)
-                } else {
-                    widget.perform_action(action, ActionTarget::Key(&key_path), doc, root)
-                }
+                let mut keyed = Vec::new();
+                let target = match semantic_target.as_deref() {
+                    Some(target) => ActionTarget::semantic(target, &mut keyed),
+                    None => ActionTarget::Key(&key_path),
+                };
+                widget.perform_action(action, target, doc, root)
             })
             .map_err(|error| format!("component dispatch refused: {error:?}"))?;
         if handled
@@ -3683,7 +3684,7 @@ impl FrameHarness {
                 }
                 // Fall back the way the App does: a click at the widget's
                 // centre. Widget-granular by nature — it cannot reach inside a
-                // canvas, which is why `perform_action_at` exists.
+                // canvas, which is why `ActionTarget::Key` exists.
                 crate::a11y::Action::Activate | crate::a11y::Action::ToggleCheck => {
                     let rect = (!ordinal_path.is_empty())
                         .then(|| {
@@ -3704,7 +3705,7 @@ impl FrameHarness {
                 _ => {}
             }
         }
-        // The widget may have mutated the document from `perform_action_at` —
+        // The widget may have mutated the document from `perform_action` —
         // dispatching an action, or asking for a commit — and this route does
         // not go through `send`. Close the tick here too, or an app driven the
         // way an assistive technology drives it leaves no history behind.
@@ -3885,11 +3886,12 @@ impl FrameHarness {
             }
             let handled = self
                 .dispatch_node(node, |widget, doc, root| {
-                    if let Some(target) = semantic_target {
-                        widget.perform_action(action, ActionTarget::Semantic(target), doc, root)
-                    } else {
-                        widget.perform_action(action, ActionTarget::Widget, doc, root)
-                    }
+                    let mut keyed = Vec::new();
+                    let target = match semantic_target {
+                        Some(target) => ActionTarget::semantic(target, &mut keyed),
+                        None => ActionTarget::Widget,
+                    };
+                    widget.perform_action(action, target, doc, root)
                 })
                 .map_err(|error| format!("History input refused: {error:?}"))?;
             if !handled && !matches!(action, SemanticAction::Focus) {
@@ -3916,11 +3918,12 @@ impl FrameHarness {
         };
         let handled = self
             .dispatch_semantic_node(node, action, |widget, doc, root| {
-                if let Some(target) = semantic_target {
-                    widget.perform_action(action, ActionTarget::Semantic(target), doc, root)
-                } else {
-                    widget.perform_action(action, ActionTarget::Widget, doc, root)
-                }
+                let mut keyed = Vec::new();
+                let target = match semantic_target {
+                    Some(target) => ActionTarget::semantic(target, &mut keyed),
+                    None => ActionTarget::Widget,
+                };
+                widget.perform_action(action, target, doc, root)
             })
             .map_err(|error| format!("component dispatch refused: {error:?}"))?;
         if handled {
@@ -10423,6 +10426,9 @@ mod a11y_driver_tests {
         fn name(&self) -> &'static str {
             "Strip"
         }
+        fn test_id(&self) -> Option<&str> {
+            Some("strip")
+        }
         fn get_rect(&self) -> Rect {
             Rect::new(0.0, 0.0, 300.0, 80.0)
         }
@@ -10459,7 +10465,7 @@ mod a11y_driver_tests {
                     )
                     // This is the high-complexity custom-canvas path: one
                     // keyed tree becomes searchable/agent-driveable while AT
-                    // still reaches the existing `perform_action_at` switch.
+                    // still reaches the existing `ActionTarget::Key` switch.
                     .with_keyed_action_routes("test-strip"),
             )
         }
@@ -10535,6 +10541,21 @@ mod a11y_driver_tests {
             activated,
             items,
         )
+    }
+
+    #[test]
+    fn a_keyed_route_named_by_its_semantic_target_reaches_the_key_arm() {
+        // Strip handles only `ActionTarget::Key`, so this lands only if the
+        // dispatcher decodes the published route instead of passing it on as
+        // `ActionTarget::Semantic`.
+        let (mut d, activated) = driver();
+        let target = format!(
+            "tilo.key-action:test-strip:{}",
+            crate::a11y::hash_key(&"beta")
+        );
+        d.perform_semantic_named("strip", Some(&target), &Action::Activate)
+            .expect("the keyed route is published and handled");
+        assert_eq!(*activated.borrow(), vec!["beta".to_string()]);
     }
 
     #[test]
@@ -10943,7 +10964,7 @@ mod dispatched_action_driver_tests {
     /// `needs_commit` — that is the whole distinction under test.
     ///
     /// Two ways in, because a canvas app has two: a keystroke, and an
-    /// accessibility verb routed to `perform_action_at` (how an assistive
+    /// accessibility verb routed to a keyed `perform_action` (how an assistive
     /// technology, and every headless scenario over a canvas, drives it).
     struct ActionEditor {
         rect: vello::kurbo::Rect,

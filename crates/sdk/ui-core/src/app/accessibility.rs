@@ -1081,23 +1081,13 @@ impl App {
         }
         let handled = self
             .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
-                if let Some(target) = semantic_target.as_deref() {
-                    widget.perform_action(
-                        action,
-                        crate::widget::ActionTarget::Semantic(target),
-                        doc,
-                        root,
-                    )
-                } else if synthetic {
-                    widget.perform_action(
-                        action,
-                        crate::widget::ActionTarget::Key(&key_path),
-                        doc,
-                        root,
-                    )
-                } else {
-                    widget.perform_action(action, crate::widget::ActionTarget::Widget, doc, root)
-                }
+                let mut keyed = Vec::new();
+                let target = match semantic_target.as_deref() {
+                    Some(target) => crate::widget::ActionTarget::semantic(target, &mut keyed),
+                    None if synthetic => crate::widget::ActionTarget::Key(&key_path),
+                    None => crate::widget::ActionTarget::Widget,
+                };
+                widget.perform_action(action, target, doc, root)
             })
             .ok()?;
         drop(history_frame);
@@ -1460,7 +1450,7 @@ impl App {
                     // A custom-painted widget may expose stable semantic
                     // targets and geometry while intentionally reusing its
                     // production pointer hit-testing instead of duplicating a
-                    // `perform_semantic_action` switch. Route the action back
+                    // semantic `perform_action` switch. Route the action back
                     // through that exact event path.
                     if let Some(bounds) = bounds {
                         let center = bounds.center();

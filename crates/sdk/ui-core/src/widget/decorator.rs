@@ -49,14 +49,14 @@
 //!   `let mut all = mine; all.extend(self.inner().resources(doc)); all`.
 //! * **Override the host's entry point.** Some [`Widget`] defaults are
 //!   derived from another method (`draw_with_presence` calls `draw`,
-//!   `perform_action_at` calls `perform_action`, `tooltip_target_at` calls
-//!   `tooltip`, `adjust_layout_with_measure` calls `adjust_layout_style`,
-//!   `collect_damage` calls `needs_redraw`). Here each forwards to the inner
-//!   widget's own method, so an override of the derived-from method alone is
-//!   not what the host calls: override the entry point the host uses
-//!   (`draw_with_presence` for painting in a live frame, and `draw` for
-//!   callers that paint directly). Input has a single entry point,
-//!   [`handle_event`](Widget::handle_event).
+//!   `tooltip_target_at` calls `tooltip`, `adjust_layout_with_measure`
+//!   calls `adjust_layout_style`, `collect_damage` calls `needs_redraw`).
+//!   Here each forwards to the inner widget's own method, so an override of
+//!   the derived-from method alone is not what the host calls: override the
+//!   entry point the host uses (`draw_with_presence` for painting in a live
+//!   frame, and `draw` for callers that paint directly). Input has a single
+//!   entry point, [`handle_event`](Widget::handle_event); accessibility
+//!   actions have [`perform_action`](Widget::perform_action).
 //! * **The inner widget owns its layout node.** The inner widget registers
 //!   itself in the node map during `build_layout`, so hooks the host reaches
 //!   by sweeping or hit-testing that map (`cursor_shape`, `tooltip`,
@@ -460,33 +460,11 @@ pub trait Decorator {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        self.inner_mut()
-            .perform_action(action, ActionTarget::Widget, state, path)
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
-        key_path: &[u64],
-        state: &mut AppModel,
-        path: &ModelPath,
-    ) -> bool {
-        self.inner_mut()
-            .perform_action(action, ActionTarget::Key(key_path), state, path)
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &crate::a11y::Action,
-        state: &mut AppModel,
-        path: &ModelPath,
-    ) -> bool {
-        self.inner_mut()
-            .perform_action(action, ActionTarget::Semantic(target), state, path)
+        self.inner_mut().perform_action(action, target, state, path)
     }
 
     fn is_enabled(&self) -> bool {

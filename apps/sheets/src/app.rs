@@ -10251,18 +10251,18 @@ mod tests {
 
         // Case `semantic_toolbar_and_tabs_use_the_same_live_controls`.
         {
-            use ui::widget::Widget as _;
-
             let (mut app, mut doc) = seeded_app();
             let root = automerge::ROOT;
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                &mut app,
                 &ui::a11y::Action::Activate,
                 ActionTarget::Semantic("sheets.toolbar.formula-view"),
                 &mut doc,
                 &root
             ));
             assert!(app.grid.formula_view());
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                &mut app,
                 &ui::a11y::Action::Focus,
                 ActionTarget::Semantic("sheets.name-box"),
                 &mut doc,
@@ -10270,7 +10270,8 @@ mod tests {
             ));
             assert!(app.name_box_edit.is_some());
             let target = format!("sheets.tab:{}", app.sheet_identity(1));
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                &mut app,
                 &ui::a11y::Action::Activate,
                 ActionTarget::Semantic(&target),
                 &mut doc,

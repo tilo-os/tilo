@@ -451,7 +451,8 @@ mod tests {
             )
             .unwrap();
         let key = ui::a11y::hash_key(&"file-choice:1");
-        assert!(widget.perform_action(
+        assert!(ui::Widget::perform_action(
+            &mut widget,
             &ui::a11y::Action::Activate,
             ActionTarget::Key(&[key]),
             &mut document,

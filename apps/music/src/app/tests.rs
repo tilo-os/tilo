@@ -899,7 +899,8 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
                 .iter()
                 .any(|node| node.action_target.as_deref() == Some("music.toggle-play"))
         );
-        assert!(app.perform_action(
+        assert!(ui::Widget::perform_action(
+            &mut app,
             &A11yAction::Activate,
             ActionTarget::Semantic("music.toggle-play"),
             &mut doc,
@@ -949,7 +950,8 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
             .find(|node| node.action_target.as_deref() == Some("music.empty-search"))
             .expect("empty-state Search button has an accessible action");
         assert_eq!(search.name.as_deref(), Some("Search for music"));
-        assert!(app.perform_action(
+        assert!(ui::Widget::perform_action(
+            &mut app,
             &A11yAction::Activate,
             ActionTarget::Semantic("music.empty-search"),
             &mut doc,
@@ -984,7 +986,8 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
             .find_map(|node| node.action_target.as_deref())
             .expect("track row has a semantic play action")
             .to_string();
-        assert!(app.perform_action(
+        assert!(ui::Widget::perform_action(
+            &mut app,
             &A11yAction::Activate,
             ActionTarget::Semantic(&play),
             &mut doc,
@@ -1028,7 +1031,8 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
             })
             .and_then(|node| node.action_target.clone())
             .expect("move down action");
-        assert!(app.perform_action(
+        assert!(ui::Widget::perform_action(
+            &mut app,
             &A11yAction::Activate,
             ActionTarget::Semantic(&move_down),
             &mut doc,
@@ -1040,10 +1044,10 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
     // Phase `assistive_search_edits_and_navigation_use_normal_routes`.
     {
         use ui::a11y::Action as A11yAction;
-        use ui::widget::Widget as _;
 
         let (mut app, mut doc) = app_with_doc();
-        assert!(app.perform_action(
+        assert!(ui::Widget::perform_action(
+            &mut app,
             &A11yAction::SetValue("Aurora".into()),
             ActionTarget::Semantic("music.search"),
             &mut doc,
@@ -1053,7 +1057,8 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
         assert_eq!(app.search_input.value(), "Aurora");
         assert!(app.search_edit_at.is_some());
 
-        assert!(app.perform_action(
+        assert!(ui::Widget::perform_action(
+            &mut app,
             &A11yAction::Activate,
             ActionTarget::Semantic("music.nav.albums"),
             &mut doc,
@@ -1272,7 +1277,8 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
             .find_map(|node| node.action_target.as_deref())
             .expect("failed track has an assistive Retry action")
             .to_string();
-        assert!(app.perform_action(
+        assert!(ui::Widget::perform_action(
+            &mut app,
             &A11yAction::Activate,
             ActionTarget::Semantic(&retry),
             &mut doc,

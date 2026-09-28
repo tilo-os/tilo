@@ -4709,9 +4709,10 @@ mod helper_tests {
             let mut pane = crate::panes::OverviewPane::new(core.clone());
             let mut state = AutoCommit::new();
             let search = pane.accessibility().unwrap().children.remove(0);
+            let mut key_path = Vec::new();
             assert!(pane.perform_action(
                 &Action::SetValue("city".into()),
-                ActionTarget::Semantic(search.action_target.as_deref().unwrap()),
+                ActionTarget::semantic(search.action_target.as_deref().unwrap(), &mut key_path),
                 &mut state,
                 &automerge::ROOT
             ));
@@ -4722,9 +4723,10 @@ mod helper_tests {
             let search = pane.accessibility().unwrap().children.remove(0);
             let row = &search.children[1];
             assert_eq!(row.name.as_deref(), Some(result_label(&chosen).as_str()));
+            let mut key_path = Vec::new();
             assert!(pane.perform_action(
                 &Action::Activate,
-                ActionTarget::Semantic(row.action_target.as_deref().unwrap()),
+                ActionTarget::semantic(row.action_target.as_deref().unwrap(), &mut key_path),
                 &mut state,
                 &automerge::ROOT
             ));

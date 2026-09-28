@@ -2711,7 +2711,8 @@ mod history_input_tests {
             MergeDoc::merged_text(&doc),
             "Restored output without matching original inputs\n"
         );
-        assert!(!app.perform_action(
+        assert!(!ui::Widget::perform_action(
+            &mut app,
             &ui::a11y::Action::Activate,
             ActionTarget::Semantic(&format!("diffmerge.merge.resolve:{hunk}:ours")),
             &mut doc,

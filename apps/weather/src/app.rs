@@ -1358,9 +1358,10 @@ mod interaction_tests {
                 .as_deref()
                 .unwrap();
             let (app, state) = h.parts();
+            let mut key_path = Vec::new();
             assert!(app.nav.children_mut()[0].perform_action(
                 &ui::a11y::Action::Activate,
-                ActionTarget::Semantic(target),
+                ActionTarget::semantic(target, &mut key_path),
                 &mut state.doc,
                 &state.root
             ));

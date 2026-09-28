@@ -6440,7 +6440,8 @@ mod tests {
                     semantics.contains("Opening PDF") && !semantics.contains("pdf.page:"),
                     "a document awaiting its record offers no page to act on"
                 );
-                assert!(!app.perform_action(
+                assert!(!ui::Widget::perform_action(
+                    &mut app,
                     &ui::a11y::Action::Activate,
                     ActionTarget::Semantic("pdf.tool:2"),
                     &mut st.doc,
@@ -6453,7 +6454,8 @@ mod tests {
             record_frame(&mut app, &mut st, &mut set, &mut room);
             assert!(!app.awaiting_markup_record);
             assert!(!Widget::resources(&app, &st.doc).is_empty());
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                &mut app,
                 &ui::a11y::Action::Activate,
                 ActionTarget::Semantic("pdf.tool:2"),
                 &mut st.doc,
@@ -6713,7 +6715,8 @@ mod tests {
                 == Some("pdf.zoom-in")));
 
             let sidebar_before = app.show_sidebar;
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                &mut app,
                 &Action::Activate,
                 ActionTarget::Semantic("pdf.toggle-sidebar"),
                 &mut state.doc,
@@ -6731,7 +6734,8 @@ mod tests {
             app.reorder_pages(0, 2);
             assert_eq!(app.resource_page_ids[2], target_id);
 
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                &mut app,
                 &Action::Activate,
                 ActionTarget::Semantic(&format!("pdf.page:{target_id}")),
                 &mut state.doc,
@@ -6739,7 +6743,8 @@ mod tests {
             ));
             assert_eq!(app.current_page, 3, "the addressed page, not ordinal 1");
             assert!(
-                !app.perform_action(
+                !ui::Widget::perform_action(
+                    &mut app,
                     &Action::Activate,
                     ActionTarget::Semantic("pdf.page:deleted-page"),
                     &mut state.doc,

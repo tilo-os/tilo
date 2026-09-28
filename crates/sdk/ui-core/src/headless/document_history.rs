@@ -735,11 +735,12 @@ impl FrameHarness {
         self.try_presentation(|_, _| ())?;
         let handled = self
             .dispatch_node(node, |widget, doc, path| {
-                if let Some(target) = semantic_target {
-                    widget.perform_action(action, ActionTarget::Semantic(target), doc, path)
-                } else {
-                    widget.perform_action(action, ActionTarget::Widget, doc, path)
-                }
+                let mut keyed = Vec::new();
+                let target = match semantic_target {
+                    Some(target) => ActionTarget::semantic(target, &mut keyed),
+                    None => ActionTarget::Widget,
+                };
+                widget.perform_action(action, target, doc, path)
             })
             .map_err(|error| format!("History action refused: {error:?}"))?;
         if matches!(action, crate::a11y::Action::Focus) {

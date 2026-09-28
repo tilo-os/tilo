@@ -6306,14 +6306,16 @@ mod tests {
             let tree = a.accessibility().expect("feeds exports a semantic window");
             assert_eq!(tree.role, Role::Window);
             assert!(tree.children.iter().any(|node| node.role == Role::Toolbar));
-            assert!(a.perform_action(
+            assert!(ui::Widget::perform_action(
+                a,
                 &A11yAction::ToggleCheck,
                 ActionTarget::Semantic(&format!("feeds.star:{id}")),
                 &mut st.doc,
                 &st.root
             ));
             assert_ne!(a.store.article(id).expect("sample article").starred, before);
-            assert!(a.perform_action(
+            assert!(ui::Widget::perform_action(
+                a,
                 &A11yAction::Activate,
                 ActionTarget::Semantic(&format!("feeds.article:{id}")),
                 &mut st.doc,
@@ -6580,7 +6582,8 @@ mod tests {
             a.select_featured();
             headless_frame(&mut mounted);
             let (a, st) = Framed::split(&mut mounted);
-            assert!(a.perform_action(
+            assert!(ui::Widget::perform_action(
+                a,
                 &A11yAction::Activate,
                 ActionTarget::Semantic(&format!("feeds.reader-tag:{key}")),
                 &mut st.doc,

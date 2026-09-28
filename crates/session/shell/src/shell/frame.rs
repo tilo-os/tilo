@@ -2644,15 +2644,13 @@ impl FrameBuilder {
             return false;
         };
 
-        let handled = unsafe {
-            if let Some(target) = semantic_target.as_deref() {
-                (*widget).perform_action(action, ActionTarget::Semantic(target), state, root_obj)
-            } else if synthetic {
-                (*widget).perform_action(action, ActionTarget::Key(&key_path), state, root_obj)
-            } else {
-                (*widget).perform_action(action, ActionTarget::Widget, state, root_obj)
-            }
+        let mut keyed = Vec::new();
+        let target = match semantic_target.as_deref() {
+            Some(target) => ActionTarget::semantic(target, &mut keyed),
+            None if synthetic => ActionTarget::Key(&key_path),
+            None => ActionTarget::Widget,
         };
+        let handled = unsafe { (*widget).perform_action(action, target, state, root_obj) };
         if handled {
             if matches!(action, Action::Focus) {
                 self.set_native_focus(focus, Some(taffy_id));

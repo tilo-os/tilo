@@ -512,6 +512,19 @@ impl ColorPicker {
 
     /// Re-emits the canonical hex string into the embedded input after
     /// the SV square/hue strip/sliders mutate `self.color`.
+    /// Assistive technology sets the colour by typing a hex value.
+    fn set_value_action(&mut self, action: &crate::a11y::Action) -> bool {
+        let crate::a11y::Action::SetValue(value) = action else {
+            return false;
+        };
+        let Some(color) = parse_hex(value) else {
+            return false;
+        };
+        self.set_rgb(color.r(), color.g(), color.b());
+        self.sync_input();
+        true
+    }
+
     fn sync_input(&mut self) {
         let hex = self.hex_string();
         self.hex_input.set_text(&hex);
@@ -1376,21 +1389,11 @@ impl Widget for ColorPicker {
         &mut self,
         action: &crate::a11y::Action,
         target: ActionTarget<'_>,
-        state: &mut AppModel,
-        root: &ModelPath,
+        _state: &mut AppModel,
+        _root: &ModelPath,
     ) -> bool {
         match target {
-            ActionTarget::Widget | ActionTarget::Key(_) => {
-                let crate::a11y::Action::SetValue(value) = action else {
-                    return false;
-                };
-                let Some(color) = parse_hex(value) else {
-                    return false;
-                };
-                self.set_rgb(color.r(), color.g(), color.b());
-                self.sync_input();
-                true
-            }
+            ActionTarget::Widget | ActionTarget::Key(_) => self.set_value_action(action),
             ActionTarget::Semantic(target) => {
                 use crate::a11y::Action;
                 if let Some(index) = target.strip_prefix(TARGET_SWATCH) {
@@ -1408,9 +1411,7 @@ impl Widget for ColorPicker {
                         self.confirm();
                         true
                     }
-                    (TARGET_VALUE, _) => {
-                        self.perform_action(action, ActionTarget::Widget, state, root)
-                    }
+                    (TARGET_VALUE, _) => self.set_value_action(action),
                     _ => false,
                 }
             }

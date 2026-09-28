@@ -1815,7 +1815,8 @@ mod tests {
             let mut framed = framed(app_with_state(), 640, 700);
             let (app, state) = Framed::split(&mut framed);
             let id = app.vault.ordered()[0].id;
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                app,
                 &A11yAction::Activate,
                 ActionTarget::Semantic(&format!("totp.copy:{id}")),
                 &mut state.doc,
@@ -1950,14 +1951,16 @@ mod tests {
                 .expect("protected secret field");
             assert!(secret.state.protected);
             assert!(secret.value.is_none());
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                app,
                 &A11yAction::SetValue("Acme".into()),
                 ActionTarget::Semantic("totp.dialog.issuer"),
                 &mut state.doc,
                 &state.root
             ));
             assert_eq!(app.add_panel.field_snapshot().0, "Acme");
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                app,
                 &A11yAction::Activate,
                 ActionTarget::Semantic("totp.dialog.save"),
                 &mut state.doc,
@@ -1981,19 +1984,22 @@ mod tests {
             let (app, state) = Framed::split(&mut framed);
             app.add_panel.open();
             app.add_panel.layout(app.rect);
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                app,
                 &A11yAction::Activate,
                 ActionTarget::Semantic("totp.dialog.advanced"),
                 &mut state.doc,
                 &state.root
             ));
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                app,
                 &A11yAction::Activate,
                 ActionTarget::Semantic("totp.dialog.algorithm:1"),
                 &mut state.doc,
                 &state.root
             ));
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                app,
                 &A11yAction::Activate,
                 ActionTarget::Semantic("totp.dialog.digits:8"),
                 &mut state.doc,
@@ -2450,7 +2456,8 @@ mod tests {
             );
             assert!(retry.state.focusable);
 
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                app,
                 &A11yAction::Activate,
                 ActionTarget::Semantic("totp.retry-persist"),
                 &mut state.doc,

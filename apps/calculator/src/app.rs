@@ -2626,7 +2626,7 @@ mod tests {
 
     /// The semantic tree exposes the topbar, keypad, expression and graph
     /// formula controls, and activating/setting them through
-    /// `perform_semantic_action` drives the model. Fresh app per phase.
+    /// `perform_action` drives the model. Fresh app per phase.
     #[test]
     #[allow(
         clippy::items_after_statements,
@@ -2671,7 +2671,8 @@ mod tests {
 
             let mut doc = AutoCommit::new();
             assert!(
-                app.perform_action(
+                ui::Widget::perform_action(
+                    &mut app,
                     &Action::Activate,
                     ActionTarget::Semantic("calculator.mode:1"),
                     &mut doc,
@@ -2681,7 +2682,8 @@ mod tests {
             );
             assert_eq!(app.model.mode, Mode::Graph2d, "topbar: mode switched");
             assert!(
-                app.perform_action(
+                ui::Widget::perform_action(
+                    &mut app,
                     &Action::ToggleCheck,
                     ActionTarget::Semantic("calculator.angle:degrees"),
                     &mut doc,
@@ -2721,7 +2723,8 @@ mod tests {
                 .expect("digit key is actionable");
             let mut doc = AutoCommit::new();
             assert!(
-                app.perform_action(
+                ui::Widget::perform_action(
+                    &mut app,
                     &Action::Activate,
                     ActionTarget::Semantic(seven.action_target.as_deref().unwrap_or_default()),
                     &mut doc,
@@ -2731,7 +2734,8 @@ mod tests {
             );
             assert_eq!(app.model.expr, "7", "keypad: key 7 appended");
             assert!(
-                app.perform_action(
+                ui::Widget::perform_action(
+                    &mut app,
                     &Action::SetValue("sqrt(9)".into()),
                     ActionTarget::Semantic(expression.action_target.as_deref().unwrap_or_default()),
                     &mut doc,
@@ -2757,7 +2761,8 @@ mod tests {
                 .find(|node| node.role == ui::a11y::Role::TextInput)
                 .expect("formula editor is a text input");
             assert!(
-                app.perform_action(
+                ui::Widget::perform_action(
+                    &mut app,
                     &Action::SetValue("2*x".into()),
                     ActionTarget::Semantic(formula.action_target.as_deref().unwrap_or_default()),
                     &mut doc,

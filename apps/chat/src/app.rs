@@ -3748,6 +3748,10 @@ impl Widget for ChatApp {
     /// assistive-technology activation from taking a separate, untracked
     /// mutation path: `on_hit` builds the same `ChatAction` and delegates it
     /// to `ActionHost` for history and collaboration.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one semantic dispatcher keeps every chat control beside the state it mutates"
+    )]
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,

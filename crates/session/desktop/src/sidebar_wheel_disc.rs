@@ -1303,11 +1303,11 @@ impl Widget for SidebarWheelDisc {
         (rect.area() > 0.0).then_some(rect)
     }
 
-    /// Key-path route for hosts that address nodes by ordinal; the same
-    /// nodes, the same effect as [`Widget::perform_semantic_action`].
-    /// The production route: the a11y dispatcher hands a node's
+    /// The production route is semantic: the a11y dispatcher hands a node's
     /// `action_target` here. `wheel:workspace:N` turns the wheel to that
-    /// sector exactly as a click does; `wheel:add` creates a workspace.
+    /// sector exactly as a click does; `wheel:add` creates a workspace. Hosts
+    /// that address nodes by ordinal key path reach the same nodes with the
+    /// same effect.
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
@@ -4231,7 +4231,7 @@ mod tests {
         assert_eq!(add.bounds.map(ui::AccessBounds::to_rect), Some(d.plus_rect));
 
         // The dispatcher hands a node's `action_target` to
-        // `perform_semantic_action`; the click fallback asks
+        // `perform_action`; the click fallback asks
         // `synthetic_accessibility_rect` where the node is.
         assert_eq!(
             d.synthetic_accessibility_rect(&[2]),

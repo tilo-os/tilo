@@ -711,6 +711,41 @@ pub(crate) unsafe fn node_sweep_identity(pointer: *const dyn Widget) -> (*const 
     let concrete = unsafe { (*pointer).concrete_type_name() };
     (pointer.cast::<()>(), concrete)
 }
+/// Which part of a widget an accessibility [`Action`](crate::a11y::Action)
+/// addresses; see [`Widget::perform_action`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActionTarget<'a> {
+    /// The widget itself.
+    Widget,
+    /// One of the widget's synthetic accessibility nodes: one element per
+    /// level of [`AccessNode::children`](crate::a11y::AccessNode::children)
+    /// nesting — `[row]` for a table row, `[row, cell]` for a cell inside it.
+    /// Each element is the node's [`key`](crate::a11y::AccessNode::key), or
+    /// its ordinal among its siblings when it declared none. An empty path
+    /// addresses the widget itself.
+    Key(&'a [u64]),
+    /// A synthetic child published with
+    /// [`AccessNode::with_action_target`](crate::a11y::AccessNode::with_action_target):
+    /// the opaque stable value it was given. Targets published by
+    /// [`AccessNode::with_keyed_action_routes`](crate::a11y::AccessNode::with_keyed_action_routes)
+    /// never arrive here; [`ActionTarget::semantic`] decodes them to `Key`.
+    Semantic(&'a str),
+}
+
+impl<'a> ActionTarget<'a> {
+    /// The target a dispatcher passes for a published semantic target:
+    /// [`Key`](Self::Key) for a reserved keyed route (the decoded path is
+    /// kept in `key_path`), otherwise [`Semantic`](Self::Semantic).
+    pub fn semantic(target: &'a str, key_path: &'a mut Vec<u64>) -> Self {
+        match crate::a11y::key_action_path(target) {
+            Some(path) => {
+                *key_path = path;
+                Self::Key(key_path)
+            }
+            None => Self::Semantic(target),
+        }
+    }
+}
 
 pub trait Widget {
     /// Concrete identity for host-side frame maps that must distinguish a
@@ -1347,45 +1382,30 @@ pub trait Widget {
             .map(|parent| vec![parent])
     }
 
+    /// Perform an accessibility [`Action`](crate::a11y::Action). Assistive
+    /// technology, the action palette, agents and the control socket all
+    /// arrive here; [`ActionTarget`] says which part of this widget they mean.
+    ///
     /// May mutate the CRDT like [`handle_event`](Widget::handle_event).
-    /// Default `false` ("not handled") falls back to generic dispatch
-    /// (`Focus` moves keyboard focus, `Activate` synthesises a click);
-    /// widgets with richer semantics (slider inc/dec, combo
-    /// expand/collapse) override to handle those verbs precisely.
-    fn perform_action(
-        &mut self,
-        _action: &crate::a11y::Action,
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) -> bool {
-        false
-    }
-
-    /// Perform an accessibility [`Action`](crate::a11y::Action) aimed at one of
-    /// this widget's **synthetic** accessibility nodes — the routed counterpart
-    /// to [`perform_action`](Widget::perform_action).
+    /// Returns `true` if the widget consumed the action. The default `false`
+    /// ("not handled") falls back to the host's generic dispatch (`Focus`
+    /// moves keyboard focus, `Activate` synthesises a click). That fallback is
+    /// widget-granular (it focuses, or clicks the centre of, the whole
+    /// widget), so widgets with richer semantics (slider inc/dec, combo
+    /// expand/collapse) or per-element operation override this.
     ///
     /// A widget that paints its own contents (a timeline of clips, a
     /// spreadsheet grid, a table of rows) has no child widgets to receive an
     /// action, so it describes its structure through
-    /// [`AccessNode::children`](crate::a11y::AccessNode::children) instead. When
-    /// an assistive technology activates one of those nodes, the host resolves
-    /// the node's id back to `(this widget, key path)` and calls this method, so
-    /// the widget knows **which** element the user meant.
-    ///
-    /// `key_path` names the target relative to this widget: one element per
-    /// level of [`AccessNode::children`](crate::a11y::AccessNode::children)
-    /// nesting — `[row]` for a table row, `[row, cell]` for a cell inside it.
-    /// Each element is the node's [`key`](crate::a11y::AccessNode::key), or its
-    /// ordinal among its siblings when it declared none. An **empty** path means
-    /// the action targets the widget itself.
-    ///
-    /// For an element keyed by identity rather than position, compare the
-    /// incoming key against [`hash_key`](crate::a11y::hash_key) of your own id:
+    /// [`AccessNode::children`](crate::a11y::AccessNode::children) instead,
+    /// and the host resolves an activated element back to
+    /// [`ActionTarget::Key`]. For an element keyed by identity rather than
+    /// position, compare the incoming key against
+    /// [`hash_key`](crate::a11y::hash_key) of your own id:
     ///
     /// ```ignore
-    /// fn perform_action_at(&mut self, action: &Action, key_path: &[u64], ..) -> bool {
-    ///     let Some(&clip_key) = key_path.first() else { return false };
+    /// fn perform_action(&mut self, action: &Action, target: ActionTarget<'_>, ..) -> bool {
+    ///     let ActionTarget::Key(&[clip_key, ..]) = target else { return false };
     ///     let Some(clip) = self.clips.iter().find(|c| hash_key(&c.id) == clip_key) else {
     ///         return false;   // stale reference — do nothing, never guess
     ///     };
@@ -1393,64 +1413,16 @@ pub trait Widget {
     /// }
     /// ```
     ///
-    /// Returns `true` if the widget consumed the action. The **default forwards
-    /// to [`perform_action`](Widget::perform_action)**, ignoring the path — so
-    /// every existing widget keeps behaving exactly as it did, and a widget with
-    /// no synthetic children (where the path is always empty) need not override
-    /// this at all. If a widget declines, the host falls back to its generic
-    /// dispatch just as it does for `perform_action`; note that the fallback is
-    /// widget-granular (it moves focus to, or clicks the centre of, the whole
-    /// widget), so a canvas that wants per-element operation must implement this.
-    fn perform_action_at(
+    /// A wrapper that forwards to one inner widget passes `target` through
+    /// unchanged.
+    fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
-        key_path: &[u64],
-        state: &mut AppModel,
-        path: &ModelPath,
+        _action: &crate::a11y::Action,
+        _target: ActionTarget<'_>,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
-        let _ = key_path;
-        self.perform_action(action, ActionTarget::Widget, state, path)
-    }
-
-    /// Handle an action addressed to a synthetic accessibility child created
-    /// by this widget. `target` is the opaque stable value supplied through
-    /// [`AccessNode::with_action_target`](crate::a11y::AccessNode::with_action_target).
-    ///
-    /// Custom canvases using
-    /// [`AccessNode::with_keyed_action_routes`](crate::a11y::AccessNode::with_keyed_action_routes)
-    /// do not need to override this method: the default decodes the published
-    /// semantic target and forwards it to [`Widget::perform_action_at`].
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &crate::a11y::Action,
-        state: &mut AppModel,
-        path: &ModelPath,
-    ) -> bool {
-        // `AccessNode::with_keyed_action_routes` publishes a custom-painted
-        // control through the same semantic target that search and agents
-        // consume. Decode that target here, at the Widget boundary, so the
-        // app author implements `perform_action_at` once and gets every input
-        // route promised by the adapter. Explicit semantic targets keep using
-        // their widget-specific implementations because they do not carry
-        // this reserved prefix.
-        let Some((_, encoded_path)) = target
-            .strip_prefix("tilo.key-action:")
-            .and_then(|target| target.rsplit_once(':'))
-        else {
-            return false;
-        };
-        let Ok(key_path) = encoded_path
-            .split('/')
-            .map(str::parse::<u64>)
-            .collect::<Result<Vec<_>, _>>()
-        else {
-            return false;
-        };
-        if key_path.is_empty() {
-            return false;
-        }
-        self.perform_action(action, ActionTarget::Key(&key_path), state, path)
+        false
     }
 
     /// A disabled (`false`) widget is excluded from focus traversal, must

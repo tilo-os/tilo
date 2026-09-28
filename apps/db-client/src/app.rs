@@ -2600,7 +2600,7 @@ impl Widget for DbClientApp {
                         self.flap.toggle(self.split_layout());
                     }
                     "db.query.run" if matches!(action, Action::Activate) => {
-                        self.run_current_query()
+                        self.run_current_query();
                     }
                     "db.query.snippets" if matches!(action, Action::Activate) => {
                         self.snippets_open = !self.snippets_open;

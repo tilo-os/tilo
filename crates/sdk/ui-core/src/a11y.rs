@@ -270,8 +270,8 @@ pub struct AccessNode {
     /// chaining these keys from the owning widget downwards, so an AT that
     /// holds a reference to "the clip named `intro`" keeps pointing at that
     /// clip across repaints — and the same key path is what comes back on
-    /// [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at)
-    /// when the AT operates the node.
+    /// [`ActionTarget::Key`](crate::widget::ActionTarget::Key) when the AT
+    /// operates the node.
     ///
     /// `None` (the default) means "key me by my ordinal position among my
     /// siblings". That is the right choice for **position-addressed**
@@ -338,8 +338,8 @@ impl AccessNode {
     }
 
     /// Route every keyed actionable descendant through its existing
-    /// [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at)
-    /// implementation. This is the high-complexity custom-canvas adapter:
+    /// [`ActionTarget::Key`](crate::widget::ActionTarget::Key) handling in
+    /// [`Widget::perform_action`](crate::widget::Widget::perform_action). This is the high-complexity custom-canvas adapter:
     /// timeline/editor authors keep one stable keyed semantic tree instead of
     /// duplicating an action id and handler for every painted affordance.
     pub fn with_keyed_action_routes(mut self, namespace: &str) -> Self {
@@ -485,7 +485,7 @@ impl AccessNode {
 /// This is the *inverse-less* half of the key contract: a widget hashes its
 /// element ids on the way out, and compares an incoming key path element back
 /// against `hash_key(&id)` on the way in (see
-/// [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at)).
+/// [`Widget::perform_action`](crate::widget::Widget::perform_action)).
 /// The hash is a plain FNV-1a with a fixed basis, so it is deterministic within
 /// and across processes — unlike [`std::collections::hash_map::RandomState`],
 /// which would hand an assistive technology a different id every launch.
@@ -493,6 +493,19 @@ pub fn hash_key(value: &impl std::hash::Hash) -> u64 {
     let mut h = fnv::FnvHasher::default();
     std::hash::Hash::hash(value, &mut h);
     std::hash::Hasher::finish(&h)
+}
+
+/// The key path of a semantic target published by
+/// [`AccessNode::with_keyed_action_routes`], or `None` for any other target
+/// (including a keyed route whose path is empty or malformed).
+pub fn key_action_path(target: &str) -> Option<Vec<u64>> {
+    let (_, encoded) = target.strip_prefix("tilo.key-action:")?.rsplit_once(':')?;
+    encoded
+        .split('/')
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()
+        .filter(|path| !path.is_empty())
 }
 
 /// Serializable absolute logical-pixel geometry for a synthetic
@@ -556,6 +569,43 @@ pub use crate::color::{contrast_ratio, relative_luminance};
 mod tests {
     use super::*;
     use vello::peniko::Color;
+
+    #[test]
+    fn keyed_routes_decode_to_their_key_path_and_nothing_else_does() {
+        use crate::widget::ActionTarget;
+        let published = AccessNode::new(Role::Canvas)
+            .with_children(vec![
+                AccessNode::new(Role::Group)
+                    .with_key(4)
+                    .with_children(vec![AccessNode::new(Role::Button).with_key(9)]),
+            ])
+            .with_keyed_action_routes("clips");
+        let target = published.children[0].children[0]
+            .action_target
+            .clone()
+            .expect("a keyed actionable descendant is routed");
+        assert_eq!(key_action_path(&target), Some(vec![4, 9]));
+
+        let mut storage = Vec::new();
+        assert_eq!(
+            ActionTarget::semantic(&target, &mut storage),
+            ActionTarget::Key(&[4, 9])
+        );
+        for other in [
+            "clips.play",
+            "tilo.key-action:clips:",
+            "tilo.key-action:clips:4/x",
+            "tilo.key-action:no-path",
+        ] {
+            let mut storage = Vec::new();
+            assert_eq!(key_action_path(other), None, "{other}");
+            assert_eq!(
+                ActionTarget::semantic(other, &mut storage),
+                ActionTarget::Semantic(other),
+                "{other}"
+            );
+        }
+    }
 
     #[test]
     fn access_state_and_settings_default_clear_and_builders_set_only_their_field() {

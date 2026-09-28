@@ -1249,6 +1249,10 @@ fn schemes_are_listed_created_and_applied() {
 }
 
 /// The colour picker applies a colour, leaves the scheme untouched on cancel and works through semantics.
+#[expect(
+    clippy::too_many_lines,
+    reason = "each case keeps its original fixture and assertions"
+)]
 #[test]
 fn colour_picker_edits_or_leaves_a_scheme() {
     // --- phase: color_picker_returns_a_colour_applied_to_a_scheme ---
@@ -1342,7 +1346,8 @@ fn colour_picker_edits_or_leaves_a_scheme() {
             .and_then(|node| node.action_target.clone())
             .expect("each swatch carries its own action");
         let root = automerge::ROOT;
-        assert!(app.perform_action(
+        assert!(ui::Widget::perform_action(
+            &mut app,
             &A11yAction::Activate,
             ActionTarget::Semantic(&red),
             &mut doc,
@@ -1353,7 +1358,8 @@ fn colour_picker_edits_or_leaves_a_scheme() {
             before,
             "a swatch pick is pending"
         );
-        assert!(app.perform_action(
+        assert!(ui::Widget::perform_action(
+            &mut app,
             &A11yAction::Activate,
             ActionTarget::Semantic("color_picker.done"),
             &mut doc,

@@ -2762,7 +2762,8 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
             &theme,
             &PresenceCtx::empty(),
         );
-        assert!(app.perform_action(
+        assert!(ui::Widget::perform_action(
+            &mut app,
             &A11yAction::ToggleCheck,
             ActionTarget::Semantic(&target),
             &mut state,
@@ -2835,7 +2836,8 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
                 && node.action_target.as_deref() == Some("calendar.new-event")
         }));
         let before = app.model.events.len();
-        assert!(app.perform_action(
+        assert!(ui::Widget::perform_action(
+            &mut app,
             &A11yAction::Activate,
             ActionTarget::Semantic("calendar.new-event"),
             &mut state,

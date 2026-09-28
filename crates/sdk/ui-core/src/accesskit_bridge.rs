@@ -46,8 +46,8 @@
 //!   announced.
 //! * **Actions.** [`resolve_node_id`] inverts a synthetic id back to
 //!   `(owning widget, key path)` so an incoming `ActionRequest` reaches the
-//!   clip the user was on, via
-//!   [`Widget::perform_action_at`].
+//!   clip the user was on, via [`Widget::perform_action`] with
+//!   [`ActionTarget::Key`](crate::widget::ActionTarget::Key).
 //!   Inversion re-walks the live tree rather than caching an index, so a stale
 //!   id from a previous frame resolves to `None` instead of to the wrong clip.
 
@@ -269,10 +269,10 @@ pub fn widget_ak_id<S: BuildHasher>(
 ///
 /// [`build_tree_update`] uses the same rule to aim the exported focus. This is
 /// the other half: the host uses it to aim *keyboard* activation at the element
-/// the user is on, so a canvas widget implements
-/// [`Widget::perform_action_at`] once
-/// and gets both the assistive-technology and the Enter/arrow paths, instead of
-/// having to implement `perform_action` again for the keyboard.
+/// the user is on, so a canvas widget handles
+/// [`ActionTarget::Key`](crate::widget::ActionTarget::Key) once and gets both
+/// the assistive-technology and the Enter/arrow paths, instead of having to
+/// handle the keyboard separately.
 pub fn active_descendant_path(access: &AccessNode) -> Option<Vec<u64>> {
     fn walk(children: &[AccessNode], path: &mut Vec<u64>) -> bool {
         for (ordinal, child) in children.iter().enumerate() {
@@ -306,7 +306,7 @@ pub enum A11yTarget {
         owner: TaffyNodeId,
         /// Keys from `owner`'s direct synthetic child down to the target.
         /// Keys, for a widget that identifies a synthetic child by identity
-        /// — `perform_action_at` matches a clip by `hash_key(uuid)`, which is
+        /// — a keyed `perform_action` matches a clip by `hash_key(uuid)`, which is
         /// nothing like a position.
         key_path: Vec<u64>,
         /// Ordinals, for a widget that identifies one by position —

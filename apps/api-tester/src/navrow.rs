@@ -406,34 +406,32 @@ impl Widget for NavRow {
         &mut self,
         action: &Action,
         target: ActionTarget<'_>,
-        state: &mut AppModel,
-        path: &ModelPath,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
-        match target {
-            ActionTarget::Widget | ActionTarget::Key(_) => {
-                if let Some(adjust) = &mut self.on_adjust {
-                    match action {
-                        Action::Increment => {
-                            adjust(24.0);
-                            return true;
-                        }
-                        Action::Decrement => {
-                            adjust(-24.0);
-                            return true;
-                        }
-                        _ => {}
-                    }
+        if let ActionTarget::Semantic(target) = target
+            && target != self.id
+        {
+            return false;
+        }
+        if let Some(adjust) = &mut self.on_adjust {
+            match action {
+                Action::Increment => {
+                    adjust(24.0);
+                    return true;
                 }
-                if matches!(action, Action::Activate) {
-                    self.activate();
-                    true
-                } else {
-                    false
+                Action::Decrement => {
+                    adjust(-24.0);
+                    return true;
                 }
+                _ => {}
             }
-            ActionTarget::Semantic(target) => {
-                target == self.id && self.perform_action(action, ActionTarget::Widget, state, path)
-            }
+        }
+        if matches!(action, Action::Activate) {
+            self.activate();
+            true
+        } else {
+            false
         }
     }
 }

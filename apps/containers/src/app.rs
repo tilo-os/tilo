@@ -2902,6 +2902,10 @@ impl Widget for ContainersApp {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one semantic dispatcher keeps every container control beside the state it mutates"
+    )]
     fn perform_action(
         &mut self,
         action: &AccessibilityAction,

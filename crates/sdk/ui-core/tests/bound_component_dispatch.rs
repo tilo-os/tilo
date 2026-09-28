@@ -611,8 +611,7 @@ impl Widget for Leaf {
     ) -> bool {
         match target {
             ActionTarget::Widget => {
-                let path = doc_path;
-                let (doc, _) = tilo_ui::doc::document(doc, path);
+                let (doc, _) = tilo_ui::doc::document(doc, doc_path);
                 self.edit(doc, "action");
                 true
             }

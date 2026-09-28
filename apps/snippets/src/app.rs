@@ -3248,14 +3248,16 @@ mod tests {
             app.sync(&mut doc, &automerge::ROOT);
             app.new_snippet_for_test(&mut doc);
             let id = app.open_id_for_test().unwrap();
-            app.perform_action(
+            ui::Widget::perform_action(
+                &mut app,
                 &ui::a11y::Action::SetValue("Hello ${name}".into()),
                 ActionTarget::Semantic("snippets.body"),
                 &mut doc,
                 &automerge::ROOT,
             );
             app.start_expand(id);
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                &mut app,
                 &ui::a11y::Action::SetValue("Grün".into()),
                 ActionTarget::Semantic("snippets.expand.field.name"),
                 &mut doc,
@@ -3266,13 +3268,15 @@ mod tests {
                 "Hello Grün"
             );
             assert_eq!(SnippetsDoc::get(&doc, id).unwrap().body, "Hello ${name}");
-            assert!(!app.perform_action(
+            assert!(!ui::Widget::perform_action(
+                &mut app,
                 &ui::a11y::Action::SetValue("hidden edit".into()),
                 ActionTarget::Semantic("snippets.body"),
                 &mut doc,
                 &automerge::ROOT
             ));
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                &mut app,
                 &ui::a11y::Action::Activate,
                 ActionTarget::Semantic("snippets.expand.cancel"),
                 &mut doc,
@@ -3291,7 +3295,8 @@ mod tests {
             ui::undo::take_committed_action(&mut app);
             app.sync(&mut state.doc, &state.root);
             app.layout_at_width_for_test(1280.0).unwrap();
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                &mut app,
                 &ui::a11y::Action::Focus,
                 ActionTarget::Semantic("snippets.body"),
                 &mut state.doc,
@@ -3378,7 +3383,8 @@ mod tests {
             app.sync(&mut doc, &automerge::ROOT);
             app.new_snippet_for_test(&mut doc);
             let first = app.open_id_for_test().unwrap();
-            app.perform_action(
+            ui::Widget::perform_action(
+                &mut app,
                 &ui::a11y::Action::SetValue("first\n".into()),
                 ActionTarget::Semantic("snippets.body"),
                 &mut doc,

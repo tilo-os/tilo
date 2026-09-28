@@ -4221,7 +4221,8 @@ mod tests {
             }));
 
             let mut doc = AutoCommit::new();
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                &mut app,
                 &A11yAction::Activate,
                 ActionTarget::Semantic("firewall.zone:home"),
                 &mut doc,
@@ -4265,7 +4266,8 @@ mod tests {
 
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                &mut app,
                 &A11yAction::Activate,
                 ActionTarget::Semantic(&target),
                 &mut doc,
@@ -4276,7 +4278,8 @@ mod tests {
                 .selected_zone_ref()
                 .and_then(|zone| zone.rules.iter().find(|rule| rule.id == id))
                 .is_some_and(|rule| rule.enabled);
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                &mut app,
                 &A11yAction::ToggleCheck,
                 ActionTarget::Semantic(&toggle_target),
                 &mut doc,
@@ -4289,7 +4292,8 @@ mod tests {
                 was_enabled
             );
             let before = app.selected_zone_ref().map_or(0, |zone| zone.rules.len());
-            assert!(app.perform_action(
+            assert!(ui::Widget::perform_action(
+                &mut app,
                 &A11yAction::Activate,
                 ActionTarget::Semantic(&delete_target),
                 &mut doc,
@@ -4599,7 +4603,8 @@ mod tests {
                 let ssh_was_enabled = app
                     .selected_zone_ref()
                     .is_some_and(|zone| zone.has_service("ssh"));
-                assert!(app.perform_action(
+                assert!(ui::Widget::perform_action(
+                    &mut app,
                     &A11yAction::ToggleCheck,
                     ActionTarget::Semantic("firewall.service.toggle:public:ssh"),
                     &mut doc,

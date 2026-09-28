@@ -2301,8 +2301,8 @@ impl<Row: 'static> Widget for DataTable<Row> {
         &mut self,
         action: &crate::a11y::Action,
         target: ActionTarget<'_>,
-        state: &mut AppModel,
-        path: &ModelPath,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         match target {
             ActionTarget::Widget => false,
@@ -2310,7 +2310,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 use crate::a11y::Action;
                 // Empty path: the table itself, not a row — nothing table-specific to do.
                 let Some(&row_key) = key_path.first() else {
-                    return self.perform_action(action, ActionTarget::Widget, state, path);
+                    return false;
                 };
                 // A read-only table's rows aren't operable.
                 if !self.selectable {

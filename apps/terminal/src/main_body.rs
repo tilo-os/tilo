@@ -3137,9 +3137,17 @@ impl Widget for TerminalWidget {
         &mut self,
         action: &ui::a11y::Action,
         target: ui::widget::ActionTarget<'_>,
-        state: &mut AppModel,
-        path: &ModelPath,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
+        let target = match target {
+            ui::widget::ActionTarget::Semantic(target)
+                if target == self.terminal_transcript_target() =>
+            {
+                ui::widget::ActionTarget::Widget
+            }
+            other => other,
+        };
         match target {
             ui::widget::ActionTarget::Widget | ui::widget::ActionTarget::Key(_) => match action {
                 ui::a11y::Action::ShowContextMenu => {
@@ -3156,14 +3164,6 @@ impl Widget for TerminalWidget {
                 _ => false,
             },
             ui::widget::ActionTarget::Semantic(target) => {
-                if target == self.terminal_transcript_target() {
-                    return self.perform_action(
-                        action,
-                        ui::widget::ActionTarget::Widget,
-                        state,
-                        path,
-                    );
-                }
                 let find_prefix = format!("terminal.find:{}:", self.pane_id);
                 if let Some(control) = target.strip_prefix(&find_prefix) {
                     match (control, action) {
