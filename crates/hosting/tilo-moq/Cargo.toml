@@ -2,7 +2,8 @@
 name = "tilo-moq"
 version = "0.1.0"
 edition = "2024"
-publish = false
+publish.workspace = true
+description = "Tilo live plane over MoQ: the moq-lite live relay, its WebTransport admission carrier and the HTTPS fallback, plus the tilo-voice/1 object profile."
 license.workspace = true
 
 [features]

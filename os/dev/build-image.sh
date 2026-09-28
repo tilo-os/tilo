@@ -416,7 +416,7 @@ if [ "$TILO_SKIP_BUILD" != 1 ] && [ "$TILO_WITH_BROWSER" = 1 ] && [ -z "$WPE_BUI
     WPE_BUILDROOT_REF="$("$TILO_OS_DIR/dev/build-wpe-buildroot.sh")"
   else
     die "no promoted WPE buildroot for $(uname -m).
-Run the snapshot-wpe-buildroot workflow, or explicitly bootstrap a local-only
+Run the build-buildroots workflow, or explicitly bootstrap a local-only
 build with TILO_WPE_BOOTSTRAP=1. Release CI never permits bootstrap mode."
   fi
 fi

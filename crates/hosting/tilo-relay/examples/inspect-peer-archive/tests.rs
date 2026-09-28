@@ -54,12 +54,12 @@ fn fixture() -> (PublicEnrollment, Vec<Source>, SigningKey) {
     .unwrap();
     state
         .install_seed(
-            tilo_browser_runtime::fixture_seed(room, &cert, &[cert.clone()]).unwrap(),
+            super::peer_fixture::fixture_seed(room, &cert, &[cert.clone()]).unwrap(),
             &key,
             now,
         )
         .unwrap();
-    tilo_browser_runtime::fixture_writer_insert(&mut state, &key, "Recovery test", now).unwrap();
+    super::peer_fixture::fixture_writer_insert(&mut state, &key, "Recovery test", now).unwrap();
     let messages = state.bootstrap_messages(&key, now).unwrap();
     let mut directory = WorkspaceDirectory::new(cert.user_public_key, cert.device_public_key);
     directory.add_workspace(workspace, "archive test").unwrap();

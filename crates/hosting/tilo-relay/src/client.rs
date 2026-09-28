@@ -16,6 +16,7 @@ use iroh::endpoint::Endpoint;
 use iroh_base::EndpointAddr;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
+use tilo_relay_client::DeviceSigner;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck};
@@ -94,11 +95,12 @@ struct ExpectedServer {
     interactive_scope: Option<InteractiveWorkspaceScope>,
 }
 
-/// This device's own relay credential: its certificate, signing key and the
-/// revocation list it checks the server against.
-struct ClientCredentials {
+/// This device's own relay credential: its certificate, the signer holding
+/// its device key (a key in memory, or a browser's non-extractable one) and
+/// the revocation list it checks the server against.
+struct ClientCredentials<'a> {
     cert: DeviceCert,
-    signing_key: ed25519_dalek::SigningKey,
+    signer: &'a dyn DeviceSigner,
     revocations: RevocationList,
 }
 
@@ -113,9 +115,14 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::SyncRequest { workspace_id, .. }
         | Envelope::SyncResponse { workspace_id, .. }
         | Envelope::RemoteAction { workspace_id, .. }
-        | Envelope::RemoteActionUndeliverable { workspace_id, .. } => {
-            *workspace_id == scope.workspace_id
-        }
+        | Envelope::RemoteActionUndeliverable { workspace_id, .. }
+        | Envelope::Commit { workspace_id, .. }
+        | Envelope::Committed { workspace_id, .. }
+        | Envelope::CommitRefused { workspace_id, .. }
+        | Envelope::LiveJoin { workspace_id }
+        | Envelope::LiveLeave { workspace_id }
+        | Envelope::Live { workspace_id, .. }
+        | Envelope::LiveMember { workspace_id, .. } => *workspace_id == scope.workspace_id,
         Envelope::Ping | Envelope::Pong => true,
         Envelope::PeerRelayHello { .. } => false,
     }
@@ -179,6 +186,9 @@ pub enum ClientError {
     /// The private v2 sender has closed with its shared relay transport.
     #[error("private transport closed")]
     PrivateTransportClosed,
+    /// The device signer refused or failed.
+    #[error("signer: {0}")]
+    Sign(String),
 }
 
 fn classify_connect_error(error: &iroh::endpoint::ConnectError) -> ClientError {
@@ -576,6 +586,43 @@ impl RelayClient {
         .await
     }
 
+    /// Connect with a device key held by `signer`, for devices that cannot
+    /// hand over the key bytes (a browser's non-extractable `WebCrypto` key).
+    /// `expected_server_user` pins the relay's user root (`None` accepts any
+    /// valid host certificate behind the pinned endpoint);
+    /// `expected_server_device` additionally pins its device key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] as [`Self::connect`] does, or
+    /// [`ClientError::Sign`] when the signer fails.
+    pub async fn connect_with_signer(
+        endpoint: Endpoint,
+        relay_addr: EndpointAddr,
+        expected_server_user: Option<[u8; 32]>,
+        expected_server_device: Option<[u8; 32]>,
+        own_cert: DeviceCert,
+        signer: &dyn DeviceSigner,
+        revocations: RevocationList,
+    ) -> Result<Self, ClientError> {
+        Self::connect_version(
+            endpoint,
+            relay_addr,
+            ExpectedServer {
+                user: expected_server_user,
+                device: expected_server_device,
+                interactive_scope: None,
+            },
+            ClientCredentials {
+                cert: own_cert,
+                signer,
+                revocations,
+            },
+            RelayWireProtocol::TiloV1,
+        )
+        .await
+    }
+
     async fn connect_with_server_trust(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
@@ -595,7 +642,7 @@ impl RelayClient {
             },
             ClientCredentials {
                 cert: own_cert,
-                signing_key: own_sk,
+                signer: &own_sk,
                 revocations,
             },
             RelayWireProtocol::TiloV1,
@@ -629,7 +676,7 @@ impl RelayClient {
             },
             ClientCredentials {
                 cert: own_cert,
-                signing_key: own_sk,
+                signer: &own_sk,
                 revocations,
             },
             RelayWireProtocol::TiloAgentReadsV1,
@@ -674,7 +721,7 @@ impl RelayClient {
             },
             ClientCredentials {
                 cert: own_cert,
-                signing_key: own_sk,
+                signer: &own_sk,
                 revocations,
             },
             RelayWireProtocol::TiloAgentReadsV1,
@@ -690,7 +737,7 @@ impl RelayClient {
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
         server: ExpectedServer,
-        credentials: ClientCredentials,
+        credentials: ClientCredentials<'_>,
         protocol: RelayWireProtocol,
     ) -> Result<Self, ClientError> {
         let ExpectedServer {
@@ -700,9 +747,14 @@ impl RelayClient {
         } = server;
         let ClientCredentials {
             cert: own_cert,
-            signing_key: own_sk,
+            signer,
             revocations,
         } = credentials;
+        if signer.device_public_key() != own_cert.device_public_key {
+            return Err(ClientError::Sign(
+                "signer does not hold the certified device key".into(),
+            ));
+        }
         let v2 = protocol.is_v2();
         let endpoint_keepalive = endpoint.clone();
         let conn = endpoint
@@ -760,7 +812,9 @@ impl RelayClient {
             }
         };
 
-        let ack2 = auth::build_hello_ack2(&own_sk, &ack.server_nonce);
+        let ack2 = tilo_relay_client::signer::signed_ack2(signer, &ack.server_nonce)
+            .await
+            .map_err(ClientError::Sign)?;
         let own_ack2_bytes =
             postcard::to_allocvec(&ack2).map_err(|e| ClientError::Codec(e.to_string()))?;
         write_frame(&mut send, &own_ack2_bytes).await?;

@@ -456,9 +456,41 @@ pub struct Loopback {
 /// Returns a message when the certificate cannot be generated or the port
 /// cannot be bound.
 pub fn loopback() -> Result<Loopback, String> {
-    let mut params =
-        rcgen::CertificateParams::new(vec!["localhost".to_owned(), "127.0.0.1".to_owned()])
-            .map_err(|error| error.to_string())?;
+    let identity = dev_identity(vec!["localhost".to_owned(), "127.0.0.1".to_owned()])?;
+    let endpoint = listener(
+        std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0)),
+        identity.chain,
+        identity.key,
+    )?;
+    let port = endpoint
+        .local_addr()
+        .map_err(|error| error.to_string())?
+        .port();
+    Ok(Loopback {
+        endpoint,
+        port,
+        fingerprints: vec![identity.fingerprint],
+    })
+}
+
+/// A development TLS identity browsers can pin with WebTransport
+/// `serverCertificateHashes`: ECDSA P-256, valid 13 days (the limit is 14).
+pub struct DevIdentity {
+    /// The self-signed certificate.
+    pub chain: Vec<CertificateDer<'static>>,
+    /// Its private key.
+    pub key: rustls::pki_types::PrivateKeyDer<'static>,
+    /// SHA-256 of the certificate (lowercase hex).
+    pub fingerprint: String,
+}
+
+/// Generate a [`DevIdentity`] for `hosts`.
+///
+/// # Errors
+///
+/// Returns a message when the certificate cannot be generated.
+pub fn dev_identity(hosts: Vec<String>) -> Result<DevIdentity, String> {
+    let mut params = rcgen::CertificateParams::new(hosts).map_err(|error| error.to_string())?;
     // Browsers accept pinned certificate hashes only for at most 14 days.
     let now = std::time::SystemTime::now();
     params.not_before = now.into();
@@ -475,25 +507,23 @@ pub fn loopback() -> Result<Loopback, String> {
         use sha2::Digest as _;
         hex::encode(sha2::Sha256::digest(der.as_ref()))
     };
-    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into());
-    let endpoint = listener(
-        std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0)),
-        vec![der],
-        key,
-    )?;
-    let port = endpoint
-        .local_addr()
-        .map_err(|error| error.to_string())?
-        .port();
-    Ok(Loopback {
-        endpoint,
-        port,
-        fingerprints: vec![fingerprint],
+    Ok(DevIdentity {
+        chain: vec![der],
+        key: rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()),
+        fingerprint,
     })
 }
 
-/// A WebTransport QUIC listener with TLS 1.3, the HTTP/3 ALPN, no 0-RTT and
-/// at most [`MAX_STREAMS`] streams per direction.
+/// A connection with no packets for this long is gone.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+/// The host pings every idle connection this often. A browser's page timers
+/// are throttled in background tabs (a presence keepalive may not run for a
+/// minute), but its network stack still answers QUIC pings, so without the
+/// host's pings an idle page lost its session at [`IDLE_TIMEOUT`].
+const KEEP_ALIVE: Duration = Duration::from_secs(3);
+
+/// A WebTransport QUIC listener with TLS 1.3, the HTTP/3 ALPN, no 0-RTT, at
+/// most [`MAX_STREAMS`] streams per direction and host keepalives.
 ///
 /// # Errors
 ///
@@ -522,9 +552,9 @@ pub fn listener(
         .max_concurrent_bidi_streams(MAX_STREAMS.into())
         .max_concurrent_uni_streams(MAX_STREAMS.into())
         .max_idle_timeout(Some(
-            quinn::IdleTimeout::try_from(Duration::from_secs(10))
-                .map_err(|error| error.to_string())?,
-        ));
+            quinn::IdleTimeout::try_from(IDLE_TIMEOUT).map_err(|error| error.to_string())?,
+        ))
+        .keep_alive_interval(Some(KEEP_ALIVE));
     config.transport_config(std::sync::Arc::new(transport));
     quinn::Endpoint::server(config, address).map_err(|error| error.to_string())
 }
