@@ -28,7 +28,8 @@ use lru::LruCache;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use ui::time::Instant;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -196,6 +197,11 @@ impl TileId {
     /// Relative path under the cache root: `z/x/y.png`.
     fn cache_rel(&self) -> PathBuf {
         PathBuf::from(format!("{}/{}/{}.png", self.z, self.x, self.y))
+    }
+
+    /// [`Self::cache_rel`] inside the cache's [`tilo_files::Dir`].
+    fn cache_vpath(&self) -> Option<tilo_files::VPath> {
+        tilo_files::VPath::new(&format!("{}/{}/{}.png", self.z, self.x, self.y)).ok()
     }
 
     fn url(&self, base: &str) -> String {
@@ -558,7 +564,7 @@ impl TileLayer {
         // hammer the tile server. The entry is kept until a later fetch
         // succeeds, so repeated failures keep doubling the delay.
         if let Some(f) = self.failed.get(&id)
-            && Instant::now() < f.retry_at
+            && ui::time::now() < f.retry_at
         {
             return;
         }
@@ -573,7 +579,7 @@ impl TileLayer {
     /// waits [`FAIL_BACKOFF_MIN`]; each consecutive failure doubles the window
     /// up to [`FAIL_BACKOFF_MAX`].
     fn note_failure(&mut self, id: TileId, fault: TileFault) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let delay = match self.failed.get(&id) {
             Some(f) => (f.delay * 2).min(FAIL_BACKOFF_MAX),
             None => FAIL_BACKOFF_MIN,
@@ -686,7 +692,9 @@ impl TileLayer {
             .clone()
             .unwrap_or_else(|| self.cache_dir.clone());
         let freed = dir_size(&target);
-        let _ = std::fs::remove_dir_all(&target);
+        if let Ok((parent, name)) = tilo_files::file_at(&target) {
+            let _ = tilo_files::blocking::remove_all(&parent, &name);
+        }
         freed
     }
 
@@ -696,13 +704,16 @@ impl TileLayer {
     /// region it means to keep, so shared imagery isn't dropped.
     pub fn delete_tiles(&mut self, ids: &[TileId]) -> u64 {
         let mut freed = 0u64;
+        let cache = cache_files(&self.cache_dir);
         for id in ids {
             self.mem.pop(id);
-            let path = self.cache_dir.join(id.cache_rel());
-            if let Ok(meta) = std::fs::metadata(&path) {
-                freed += meta.len();
+            let (Some(cache), Some(path)) = (&cache, id.cache_vpath()) else {
+                continue;
+            };
+            if let Ok(meta) = tilo_files::blocking::metadata(cache, &path) {
+                freed += meta.len;
             }
-            let _ = std::fs::remove_file(&path);
+            let _ = tilo_files::blocking::remove(cache, &path);
         }
         freed
     }
@@ -881,8 +892,9 @@ fn load_tile(
     base_url: &str,
     id: TileId,
 ) -> Result<(Vec<u8>, u32, u32), TileFault> {
-    let path = cache_dir.join(id.cache_rel());
-    if let Ok(bytes) = std::fs::read(&path)
+    let cache = cache_files(cache_dir).zip(id.cache_vpath());
+    if let Some((dir, path)) = &cache
+        && let Ok(bytes) = tilo_files::blocking::read(dir, path)
         && let Ok(t) = decode_png(&bytes)
     {
         return Ok(t);
@@ -892,7 +904,9 @@ fn load_tile(
         tracing::warn!("maps tile {id:?} does not decode as PNG: {e}");
         TileFault::Rejected
     })?;
-    write_cache(&path, &bytes);
+    if let Some((dir, path)) = &cache {
+        write_cache(dir, path, &bytes);
+    }
     Ok(decoded)
 }
 
@@ -905,7 +919,9 @@ fn fetch_to_disk(
 ) -> bool {
     match fetch_tile(client, base_url, id) {
         Ok(bytes) if decode_png(&bytes).is_ok() => {
-            write_cache(&cache_dir.join(id.cache_rel()), &bytes);
+            if let (Some(dir), Some(path)) = (cache_files(cache_dir), id.cache_vpath()) {
+                write_cache(&dir, &path, &bytes);
+            }
             true
         }
         _ => false,
@@ -951,11 +967,15 @@ fn fetch_tile(
         .map_err(|_| TileFault::Unreachable)?
 }
 
-fn write_cache(path: &std::path::Path, bytes: &[u8]) {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(path, bytes);
+/// The on-disk tile cache rooted at `root`.
+fn cache_files(root: &std::path::Path) -> Option<tilo_files::Dir> {
+    tilo_files::Dir::open(tilo_files::Location::Native(root.to_path_buf())).ok()
+}
+
+/// A fetched tile is only a cache entry: it is written in place, without the
+/// cost of a crash-safe replacement, and fetched again if a crash tore it.
+fn write_cache(dir: &tilo_files::Dir, path: &tilo_files::VPath, bytes: &[u8]) {
+    let _ = tilo_files::blocking::write(dir, path, bytes);
 }
 
 /// Wrap RGBA bytes in a `peniko::ImageData` for painting.
@@ -991,16 +1011,30 @@ fn default_cache_dir() -> PathBuf {
 /// Recursively sum file sizes under `dir` (bytes). Cheap enough for the
 /// manage-cache view; the cache is a shallow `z/x/y` tree.
 fn dir_size(dir: &std::path::Path) -> u64 {
-    let mut total = 0;
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    cache_files(dir).map_or(0, |files| tree_size(&files, &tilo_files::VPath::root()))
+}
+
+/// Bytes of the files below `path`; a symbolic link is not followed.
+fn tree_size(files: &tilo_files::Dir, path: &tilo_files::VPath) -> u64 {
+    let Ok(entries) = tilo_files::blocking::list(files, path) else {
         return 0;
     };
-    for entry in entries.flatten() {
-        let Ok(meta) = entry.metadata() else { continue };
-        if meta.is_dir() {
-            total += dir_size(&entry.path());
+    let mut total = 0;
+    for entry in entries {
+        let Ok(name) = tilo_files::VPath::new(&entry.name) else {
+            continue;
+        };
+        let child = path.join(&name);
+        let Ok(meta) = tilo_files::blocking::metadata(files, &child) else {
+            continue;
+        };
+        if meta.symlink {
+            continue;
+        }
+        if meta.kind == tilo_files::Kind::Dir {
+            total += tree_size(files, &child);
         } else {
-            total += meta.len();
+            total += meta.len;
         }
     }
     total
