@@ -11,6 +11,12 @@
 //! again, and leaving, deleting the group or disabling media continuity ends
 //! it.
 //!
+//! Calibration may listen with the microphones of any of the person's
+//! devices, not only the leader's. Each such device asks its own user once
+//! ("Let the desk use this microphone to calibrate 'Living room'?") and, on
+//! approval, authors a [`SpeakerListener`] in its own snapshot, bound to the
+//! group, its leader and that one microphone.
+//!
 //! Outputs are named by [`EndpointSelector`]s the owning compositor mints from
 //! its local audio graph. `PipeWire` node ids and node names never leave the
 //! device; a selector means something only to the compositor that published
@@ -26,6 +32,7 @@ use crate::shell::personal_continuity::DeviceId;
 pub const MAX_SPEAKER_GROUPS: usize = 16;
 pub const MAX_SPEAKER_GROUP_MEMBERS: usize = 8;
 pub const MAX_SPEAKER_MEMBERSHIPS: usize = 16;
+pub const MAX_SPEAKER_LISTENERS: usize = 16;
 pub const MAX_AUDIO_ENDPOINTS: usize = 32;
 pub const MAX_SPEAKER_GROUP_NAME_CHARS: usize = 64;
 pub const MAX_AUDIO_ENDPOINT_LABEL_BYTES: usize = 128;
@@ -482,6 +489,39 @@ impl SpeakerMembership {
     }
 }
 
+/// A device's durable, locally approved consent to let one group's leader
+/// listen with one exact microphone while it calibrates that group. The
+/// recording never leaves the device: only the arrival time, level and
+/// response measured from it do.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpeakerListener {
+    pub group: SpeakerGroupId,
+    pub leader: DeviceId,
+    pub microphone: EndpointSelector,
+    pub stamp: FabricStamp,
+}
+
+impl SpeakerListener {
+    fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
+        if &self.stamp.device != owner {
+            return Err(FabricError::ForeignAuthorship);
+        }
+        // The leader listens with its own microphones without asking.
+        if !self.group.valid() || &self.leader == owner || !self.microphone.valid() {
+            return Err(FabricError::InvalidSpeakerGroup);
+        }
+        Ok(())
+    }
+
+    /// Whether this consent covers `microphone` for `group` as its leader
+    /// publishes it now.
+    #[must_use]
+    pub fn covers(&self, group: &SpeakerGroup, microphone: EndpointSelector) -> bool {
+        let same_group = self.group == group.id;
+        same_group && self.leader == group.leader && self.microphone == microphone
+    }
+}
+
 /// The speaker-group slice of one device's fabric snapshot.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpeakerFabricState {
@@ -491,6 +531,9 @@ pub struct SpeakerFabricState {
     pub groups: Vec<SpeakerGroup>,
     /// Groups led elsewhere that this device agreed to play in.
     pub memberships: Vec<SpeakerMembership>,
+    /// Groups led elsewhere that may listen with one of this device's
+    /// microphones while calibrating.
+    pub listeners: Vec<SpeakerListener>,
 }
 
 impl SpeakerFabricState {
@@ -501,6 +544,7 @@ impl SpeakerFabricState {
         if self.endpoints.len() > MAX_AUDIO_ENDPOINTS
             || self.groups.len() > MAX_SPEAKER_GROUPS
             || self.memberships.len() > MAX_SPEAKER_MEMBERSHIPS
+            || self.listeners.len() > MAX_SPEAKER_LISTENERS
         {
             return Err(FabricError::SnapshotTooLarge);
         }
@@ -512,6 +556,9 @@ impl SpeakerFabricState {
         }
         for membership in &self.memberships {
             membership.validate(owner)?;
+        }
+        for listener in &self.listeners {
+            listener.validate(owner)?;
         }
         let unique = |ok: bool| {
             if ok {
@@ -534,6 +581,12 @@ impl SpeakerFabricState {
                 .iter()
                 .all(|membership| memberships.insert(membership.group)),
         )?;
+        let mut listeners = BTreeSet::new();
+        unique(
+            self.listeners
+                .iter()
+                .all(|listener| listeners.insert(listener.group)),
+        )?;
         Ok(())
     }
 
@@ -542,6 +595,25 @@ impl SpeakerFabricState {
         self.endpoints.iter().find(|endpoint| {
             endpoint.selector == selector && endpoint.kind == AudioEndpointKind::Output
         })
+    }
+
+    #[must_use]
+    pub fn microphone(&self, selector: EndpointSelector) -> Option<&AudioEndpoint> {
+        self.endpoints.iter().find(|endpoint| {
+            endpoint.selector == selector && endpoint.kind == AudioEndpointKind::Microphone
+        })
+    }
+
+    /// The microphone calibration listens with: the default one, else the
+    /// first.
+    #[must_use]
+    pub fn calibration_microphone(&self) -> Option<&AudioEndpoint> {
+        let mut microphones = self
+            .endpoints
+            .iter()
+            .filter(|endpoint| endpoint.kind == AudioEndpointKind::Microphone);
+        let first = microphones.clone().next();
+        microphones.find(|endpoint| endpoint.is_default).or(first)
     }
 }
 

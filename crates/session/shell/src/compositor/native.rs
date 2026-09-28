@@ -4489,16 +4489,21 @@ fn install_device_fabric_bridge(
                         session_id,
                     )?;
                 }
-                DeviceFabricUiAction::ResolveSpeakerGroupConsent { group, approved } => {
+                DeviceFabricUiAction::ResolveSpeakerGroupConsent {
+                    group,
+                    kind,
+                    approved,
+                } => {
                     crate::shell::device_fabric_runtime::require_speaker_groups()?;
                     crate::shell::speaker_group_runtime::resolve_consent(
                         &fabric_net,
                         group,
+                        kind,
                         approved,
                     )?;
                 }
-                DeviceFabricUiAction::LeaveSpeakerGroup { group } => {
-                    crate::shell::speaker_group_runtime::leave_group(&fabric_net, group)?;
+                DeviceFabricUiAction::LeaveSpeakerGroup { group, kind } => {
+                    crate::shell::speaker_group_runtime::leave_group(&fabric_net, group, kind)?;
                 }
                 DeviceFabricUiAction::StartSpeakerGroupAudio {
                     source_token,

@@ -28,6 +28,7 @@ use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
+use crate::shell::speaker_group_runtime::SpeakerConsentKind;
 
 pub const DEVICE_PROVIDER_ID: &str = "continuity.devices";
 pub const CALL_PROVIDER_ID: &str = "continuity.calls";
@@ -440,29 +441,23 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         opaque("so.tilo.continuity.speaker-group.v1", &group.0)
     };
     for consent in &view.speaker_groups.consents {
-        for (approved, title_key) in [
-            (true, "search-continuity-speaker-join"),
-            (false, "search-continuity-speaker-decline"),
-        ] {
+        let kind = consent.scope.kind();
+        for approved in [true, false] {
             actions.push(DeviceAction {
                 id: format!(
-                    "speakers.consent.{}.{}",
+                    "speakers.{}.{}.{}",
+                    match kind {
+                        SpeakerConsentKind::Play => "consent",
+                        SpeakerConsentKind::Listen => "listen",
+                    },
                     if approved { "allow" } else { "decline" },
                     speaker_id(consent.group)
                 ),
-                title: t_args(
-                    title_key,
-                    &[
-                        ("group", consent.name.as_str().into()),
-                        ("role", consent.role.describe().into()),
-                    ],
-                ),
-                subtitle: t_args(
-                    "search-continuity-speaker-consent-subtitle",
-                    &[("device", consent.leader_label.as_str().into())],
-                ),
+                title: consent.action_title(approved),
+                subtitle: consent.action_subtitle(),
                 action: DeviceFabricUiAction::ResolveSpeakerGroupConsent {
                     group: consent.group,
+                    kind,
                     approved,
                 },
                 confirm: approved,
@@ -470,18 +465,21 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         }
     }
     for membership in &view.speaker_groups.memberships {
+        let kind = membership.scope.kind();
         actions.push(DeviceAction {
-            id: format!("speakers.leave.{}", speaker_id(membership.group)),
-            title: t_args(
-                "search-continuity-speaker-leave",
-                &[("group", membership.name.as_str().into())],
-            ),
-            subtitle: t_args(
-                "search-continuity-speaker-leave-subtitle",
-                &[("role", membership.role.describe().into())],
-            ),
+            id: match kind {
+                SpeakerConsentKind::Play => {
+                    format!("speakers.leave.{}", speaker_id(membership.group))
+                }
+                SpeakerConsentKind::Listen => {
+                    format!("speakers.listen.stop.{}", speaker_id(membership.group))
+                }
+            },
+            title: membership.leave_title(),
+            subtitle: membership.leave_subtitle(),
             action: DeviceFabricUiAction::LeaveSpeakerGroup {
                 group: membership.group,
+                kind,
             },
             confirm: false,
         });
@@ -1756,7 +1754,8 @@ mod tests {
                 StereoSide,
             };
             use crate::shell::speaker_group_runtime::{
-                SpeakerConsentView, SpeakerGroupView, SpeakerMemberView, SpeakerMembershipView,
+                SpeakerConsentKind, SpeakerConsentScope, SpeakerConsentView, SpeakerGroupView,
+                SpeakerMemberView, SpeakerMembershipView,
             };
             let mut view = fixture();
             let group = SpeakerGroupId([0x51; 16]);
@@ -1773,14 +1772,28 @@ mod tests {
                 name: "Living room".into(),
                 leader: device("desk"),
                 leader_label: "Desk".into(),
-                role: right,
-                output_label: Some("Speakers".into()),
+                scope: SpeakerConsentScope::Play(right),
+                endpoint_label: Some("Speakers".into()),
+            });
+            view.speaker_groups.consents.push(SpeakerConsentView {
+                group,
+                name: "Living room".into(),
+                leader: device("desk"),
+                leader_label: "Desk".into(),
+                scope: SpeakerConsentScope::Listen,
+                endpoint_label: Some("Microphone".into()),
             });
             view.speaker_groups.memberships.push(SpeakerMembershipView {
                 group,
                 name: "Living room".into(),
                 leader_label: "Desk".into(),
-                role: right,
+                scope: SpeakerConsentScope::Play(right),
+            });
+            view.speaker_groups.memberships.push(SpeakerMembershipView {
+                group,
+                name: "Living room".into(),
+                leader_label: "Desk".into(),
+                scope: SpeakerConsentScope::Listen,
             });
             view.speaker_groups.groups.push(SpeakerGroupView {
                 id: group,
@@ -1805,6 +1818,7 @@ mod tests {
                     action.action
                         == DeviceFabricUiAction::ResolveSpeakerGroupConsent {
                             group,
+                            kind: SpeakerConsentKind::Play,
                             approved: true,
                         }
                 })
@@ -1812,8 +1826,35 @@ mod tests {
             assert!(join.confirm, "joining needs explicit confirmation");
             assert_eq!(join.title, "Join Living room as the right speaker");
             assert!(actions.iter().any(|action| {
-                action.action == DeviceFabricUiAction::LeaveSpeakerGroup { group }
+                action.action
+                    == DeviceFabricUiAction::LeaveSpeakerGroup {
+                        group,
+                        kind: SpeakerConsentKind::Play,
+                    }
                     && !action.confirm
+            }));
+            let listen = actions
+                .iter()
+                .find(|action| {
+                    action.action
+                        == DeviceFabricUiAction::ResolveSpeakerGroupConsent {
+                            group,
+                            kind: SpeakerConsentKind::Listen,
+                            approved: true,
+                        }
+                })
+                .unwrap();
+            assert!(listen.confirm, "a microphone needs explicit confirmation");
+            assert_eq!(
+                listen.title,
+                "Let Living room calibrate with this microphone"
+            );
+            assert!(actions.iter().any(|action| {
+                action.action
+                    == DeviceFabricUiAction::LeaveSpeakerGroup {
+                        group,
+                        kind: SpeakerConsentKind::Listen,
+                    }
             }));
             assert!(actions.iter().any(|action| {
                 action.action
