@@ -26,7 +26,6 @@ argon2.workspace = true
 # Key identifiers and the HKDF steps of formats this crate still reads.
 hkdf = "0.13"
 sha2.workspace = true
-blake3.workspace = true
 getrandom.workspace = true
 subtle = "2.6"
 zeroize.workspace = true
