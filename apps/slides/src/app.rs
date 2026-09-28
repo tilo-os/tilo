@@ -5591,27 +5591,15 @@ impl AudiencePresentationProvider for SlidesApp {
 }
 
 impl Widget for SlidesApp {
+    ui::provides!(
+        dyn ui::widget::FullscreenProvider,
+        dyn ui::widget::AudiencePresentationProvider
+    );
+
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
     }
 
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        Some(self)
-    }
-
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        Some(self)
-    }
-
-    fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
-        Some(self)
-    }
-
-    fn audience_presentation_provider_mut(
-        &mut self,
-    ) -> Option<&mut dyn AudiencePresentationProvider> {
-        Some(self)
-    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::SLIDES_OPERATION_TYPE]
     }

@@ -5166,13 +5166,8 @@ impl FloatingSurfaceProvider for MapsApp {
 }
 
 impl Widget for MapsApp {
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
+    ui::provides!(dyn ui::widget::FloatingSurfaceProvider);
 
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "maps.locate",

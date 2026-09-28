@@ -1610,6 +1610,8 @@ impl ui::widget::FullscreenProvider for GreeterApp {
 }
 
 impl Widget for GreeterApp {
+    ui::provides!(dyn ui::widget::FullscreenProvider);
+
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         if !self.bootstrap_done {
@@ -1658,14 +1660,6 @@ impl Widget for GreeterApp {
             let _ = state.put(root, POWEROFF_PATH, false);
             self.request_power(PowerAction::PowerOff);
         }
-    }
-
-    fn fullscreen_provider(&self) -> Option<&dyn ui::widget::FullscreenProvider> {
-        Some(self)
-    }
-
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn ui::widget::FullscreenProvider> {
-        Some(self)
     }
 
     fn build_layout(

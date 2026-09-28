@@ -4661,21 +4661,10 @@ impl FloatingSurfaceProvider for BrowserWidget {
 }
 
 impl Widget for BrowserWidget {
-    fn continuable(&self) -> Option<&dyn Continuable> {
-        Some(self)
-    }
-
-    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
-        Some(self)
-    }
-
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
-
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
+    ui::provides!(
+        dyn ui::widget::Continuable,
+        dyn ui::widget::FloatingSurfaceProvider
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[BROWSER_OPERATION_TYPE]

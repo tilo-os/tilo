@@ -768,13 +768,7 @@ impl Continuable for MusicApp {
 }
 
 impl Widget for MusicApp {
-    fn continuable(&self) -> Option<&dyn Continuable> {
-        Some(self)
-    }
-
-    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
-        Some(self)
-    }
+    ui::provides!(dyn ui::widget::Continuable);
 
     fn take_structure_dirty(&mut self) -> bool {
         self.open_file_layout_visible != Some(matches!(self.view, View::Home))
