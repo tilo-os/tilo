@@ -659,6 +659,33 @@ def app_fingerprint(app: str) -> str:
     return digest.hexdigest()
 
 
+def bake_runtime(app: str, output) -> subprocess.CompletedProcess:
+    """Bake, with the release script (os/scripts/bake-runtime-bundle.sh), the
+    runtime `app`'s thin package just linked against: the host's loader and
+    libc plus this build's toolkit dylib and the libstd it was built with,
+    under the runtime version the app's manifest names. Installed into a dev
+    session's own store, it stands in for the image's runtime."""
+    import re
+    manifest = (REPO / "apps" / app / "tilo-app.toml").read_text()
+    named = re.search(r'^runtime\s*=\s*"[^"/]+/([^"]+)"', manifest, re.M)
+    if not named:
+        raise Fix(f"apps/{app}/tilo-app.toml names no runtime", "add `runtime = \"tilo-runtime/<version>\"`")
+    dylib = REPO / "target" / "x86_64-unknown-linux-gnu" / "thin-app" / "libruntime_dylib.so"
+    sysroot = subprocess.run(["rustc", "--print", "sysroot"], cwd=REPO, capture_output=True,
+                             text=True, check=True).stdout.strip()
+    libstd = sorted(pathlib.Path(sysroot).glob("lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd-*.so"))
+    if not dylib.exists() or not libstd:
+        raise Fix(f"the thin build left no toolkit dylib ({dylib}) or libstd ({sysroot})",
+                  f"see {APPS / (app + '.log')}")
+    return subprocess.run(
+        ["bash", str(REPO / "os" / "scripts" / "bake-runtime-bundle.sh")],
+        env={**os.environ, "OUT_DIR": str(APPS / "runtime"), "RUNTIME_VERSION": named.group(1),
+             "FROM": "/", "EXTRA_LIBS": f"{dylib} {libstd[0]}",
+             "BUNDLE_BIN": binary("tilo-runtime-bundle")},
+        cwd=REPO, stdout=output, stderr=subprocess.STDOUT, timeout=600,
+    )
+
+
 def package_apps(rebuild: bool) -> Apps:
     """This worktree's apps, packaged thin. Packaged once and kept; with
     `rebuild`, packaged again only when their sources changed since."""
@@ -681,16 +708,17 @@ def package_apps(rebuild: bool) -> Apps:
         shutil.rmtree(APPS / "runtime", ignore_errors=True)
         log = APPS / f"{app}.log"
         with open(log, "wb") as output:
-            # Thin, against a runtime bundle baked from this same build — the
-            # shipped apps' shape; `tilo-app package --help` explains it.
+            # Thin, the shipped apps' shape; `tilo-app package --help`
+            # explains it. It links against this build's toolkit dylib, which
+            # no installed runtime carries, so that runtime is baked next.
             result = subprocess.run(
                 [binary("tilo-app"), "package", str(REPO / "apps" / app),
-                 "--output", str(out), "--force",
-                 "--runtime-out", str(APPS / "runtime")],
-                env={**os.environ, "CARGO": "rcargo", "TILO_PKG": binary("tilo-app-package"),
-                     "BUNDLE_BIN": binary("tilo-runtime-bundle")},
+                 "--output", str(out), "--force"],
+                env={**os.environ, "CARGO": "rcargo", "TILO_PKG": binary("tilo-app-package")},
                 cwd=REPO, stdout=output, stderr=subprocess.STDOUT, timeout=3600,
             )
+            if result.returncode == 0:
+                result = bake_runtime(app, output)
         if result.returncode != 0:
             raise Fix(f"packaging apps/{app} failed:\n{tail(log)}", f"see {log}")
         stamp.write_text(fingerprint)
