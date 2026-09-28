@@ -691,9 +691,9 @@ impl NavSplit {
     /// first and solves with its own renderer, so it never lands here.
     fn resolve_children_fallback(&mut self) {
         let theme = self.layout_theme.clone();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(theme.text_scale);
-        self.place_children(&theme, &mut tr);
+        crate::text_render::with_layout_renderer(theme.text_scale, |tr| {
+            self.place_children(&theme, tr)
+        });
     }
 
     /// Re-apply the children onto the **cached** inner tree at the current
