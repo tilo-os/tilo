@@ -2081,6 +2081,7 @@ mod tests {
     use super::*;
     use tilo_automerge::ApplyIncoming;
     use tilo_test_env::ScopedEnv;
+    use ui::headless::Framed;
 
     /// Point the shared theme store at a throwaway config dir for as long as
     /// the returned scope lives, so Apply never writes the developer's real
@@ -2125,6 +2126,11 @@ mod tests {
         app.sync(&mut st.doc, &st.root);
     }
 
+    /// Mount `app` over `st` in the shared frame harness at `width`x`height`.
+    fn framed((app, st): (ThemesApp, ui::State), width: u32, height: u32) -> Framed<ThemesApp> {
+        Framed::new(st, app, (width, height), Theme::dark())
+    }
+
     fn layout_at(app: &mut ThemesApp, width: f32, height: f32) -> (TaffyTree<()>, NodeId) {
         app.build_width = f64::from(width);
         let mut tree = TaffyTree::new();
@@ -2150,6 +2156,19 @@ mod tests {
 
     fn layout_narrow(app: &mut ThemesApp, width: f32) -> (TaffyTree<()>, NodeId) {
         layout_at(app, width, 900.0)
+    }
+
+    fn dispatch(
+        app: &mut Framed<ThemesApp>,
+        event: &WindowEvent,
+        focus: &mut Option<NodeId>,
+    ) -> bool {
+        let outcome = Framed::harness_mut(app)
+            .dispatch_to_root_outcome(event, &winit::event::Modifiers::default());
+        if outcome.focus_target.is_some() {
+            *focus = outcome.focus_target;
+        }
+        outcome.handled
     }
 
     fn narrow_view_state(app: &ThemesApp) -> (String, [bool; 2]) {
@@ -2229,8 +2248,8 @@ mod tests {
     fn narrow_layout_shows_the_editor_and_a_scrollable_full_preview() {
         // Case `narrow_editor_is_visible_before_full_preview`.
         {
-            let (mut app, _, _env) = seeded_demo();
-            layout_narrow(&mut app, 480.0);
+            let (app, st, _env) = seeded_demo();
+            let app = framed((app, st), 480, 900);
             assert_eq!(
                 narrow_view_state(&app),
                 ("Customize".to_owned(), [true, false])
@@ -2254,8 +2273,8 @@ mod tests {
 
         // Case `live_preset_starts_with_its_full_specimen`.
         {
-            let (mut app, _, _env) = seeded();
-            layout_narrow(&mut app, 480.0);
+            let (app, st, _env) = seeded();
+            let app = framed((app, st), 480, 900);
             assert!(app.narrow_preview);
             assert_eq!(
                 narrow_view_state(&app),
@@ -2272,7 +2291,7 @@ mod tests {
             app.seed_shot(480.0, "preview");
             let mut state = ui::State::new();
             app.sync(&mut state.doc, &state.root);
-            layout_narrow(&mut app, 480.0);
+            let app = framed((app, state), 480, 900);
             assert!(app.narrow_preview);
             assert_eq!(
                 narrow_view_state(&app),
@@ -2282,8 +2301,8 @@ mod tests {
 
         // Case `narrow_full_preview_contains_and_can_scroll_to_the_specimen_tail`.
         {
-            let (mut app, _, _env) = seeded();
-            let (tree, node) = layout_at(&mut app, 480.0, 480.0);
+            let (app, st, _env) = seeded();
+            let mut app = framed((app, st), 480, 480);
             let card = app.preview.specimen_card_rect();
             let tail = app.preview.specimen_tail_rect();
             let preview = app.preview.get_rect();
@@ -2299,20 +2318,10 @@ mod tests {
                 delta: MouseScrollDelta::LineDelta(0.0, -100.0),
                 phase: winit::event::TouchPhase::Moved,
             };
-            let mut handled = false;
-            let mut focus = None;
-            app.handle_event(
-                &event,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut AutoCommit::new(),
-                &automerge::ROOT,
-                &mut handled,
-                &mut focus,
-                node,
-                &tree,
-            );
-            app.apply_layout(&tree, node, Point::ZERO);
+            let handled = dispatch(&mut app, &event, &mut None);
+            Framed::harness_mut(&mut app)
+                .relayout_at((480, 480))
+                .expect("layout settles");
             let max_scroll = app.scroll_content_h - app.scroll_viewport_h;
             assert!(handled);
             assert!((app.scroll - max_scroll).abs() < f64::EPSILON);
