@@ -23,6 +23,7 @@
 //! (that lives in the app's top strip).
 
 use std::collections::HashMap;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -562,9 +563,13 @@ impl Widget for SidebarRow {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         match action {
             ui::a11y::Action::Activate => {
                 self.activate();
@@ -699,6 +704,7 @@ fn section_block(label: &str, rows: Vec<El>) -> El {
 mod tests {
     use super::*;
     use automerge::AutoCommit;
+    use ui::widget::ActionTarget;
 
     fn count_rows(w: &dyn Widget) -> usize {
         let mut n = usize::from(w.name() == "SidebarRow");
@@ -933,7 +939,12 @@ mod tests {
             assert_eq!(node.state.checked, Some(false));
 
             let mut doc = AutoCommit::new();
-            assert!(row.perform_action(&ui::a11y::Action::Activate, &mut doc, &automerge::ROOT,));
+            assert!(row.perform_action(
+                &ui::a11y::Action::Activate,
+                ActionTarget::Widget,
+                &mut doc,
+                &automerge::ROOT
+            ));
             assert_eq!(
                 request.with(|selection| *selection),
                 Some(Category::Accessibility),

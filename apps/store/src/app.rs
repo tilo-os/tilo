@@ -4887,6 +4887,7 @@ mod tests {
     use super::*;
     use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
     use ui::search::SearchProvider;
+    use ui::widget::ActionTarget;
 
     fn item(name: &str, source: StoreSource, cat: &str, installed: InstalledState) -> StoreItem {
         let trust = match &source {
@@ -5553,6 +5554,7 @@ mod tests {
                     assert_eq!(
                         primary.perform_action(
                             &ui::a11y::Action::Activate,
+                            ActionTarget::Widget,
                             &mut doc,
                             &automerge::ROOT
                         ),

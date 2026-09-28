@@ -16,6 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, SyncSender};
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -3747,21 +3748,24 @@ impl Widget for ChatApp {
     /// assistive-technology activation from taking a separate, untracked
     /// mutation path: `on_hit` builds the same `ChatAction` and delegates it
     /// to `ActionHost` for history and collaboration.
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, path) = ui::doc::document(state, path);
         if target.starts_with("context-menu:item:") {
             let Some(mut menu) = self.menu.take() else {
                 return false;
             };
-            let menu_handled = menu
-                .widget
-                .perform_semantic_action(target, action, state, path);
+            let menu_handled =
+                menu.widget
+                    .perform_action(action, ActionTarget::Semantic(target), state, path);
             let selection = menu.widget.take_selection();
             let selected = selection.and_then(|index| menu.items.get(index).copied());
             let menu_target = menu.target.clone();
@@ -3809,7 +3813,12 @@ impl Widget for ChatApp {
                         self.focus = Focus::Main;
                         ChatDoc::ensure_rich_draft(state, &self.active_channel);
                         self.composer_main.sync(state);
-                        if !self.composer_main.perform_action(action, state, path) {
+                        if !self.composer_main.perform_action(
+                            action,
+                            ActionTarget::Widget,
+                            state,
+                            path,
+                        ) {
                             return false;
                         }
                         self.reload(state);
@@ -3821,7 +3830,12 @@ impl Widget for ChatApp {
                         self.focus = Focus::Thread;
                         ChatDoc::ensure_rich_draft(state, &key);
                         self.composer_thread.sync(state);
-                        if !self.composer_thread.perform_action(action, state, path) {
+                        if !self.composer_thread.perform_action(
+                            action,
+                            ActionTarget::Widget,
+                            state,
+                            path,
+                        ) {
                             return false;
                         }
                         self.reload(state);
@@ -3830,8 +3844,13 @@ impl Widget for ChatApp {
                         if self.rename.is_none() {
                             return false;
                         }
-                        if !ui::Widget::perform_action(&mut self.rename_input, action, state, path)
-                        {
+                        if !ui::Widget::perform_action(
+                            &mut self.rename_input,
+                            action,
+                            ActionTarget::Widget,
+                            state,
+                            path,
+                        ) {
                             return false;
                         }
                     }
@@ -3839,7 +3858,12 @@ impl Widget for ChatApp {
                         if self.editing.is_none() {
                             return false;
                         }
-                        if !self.edit_input.perform_action(action, state, path) {
+                        if !self.edit_input.perform_action(
+                            action,
+                            ActionTarget::Widget,
+                            state,
+                            path,
+                        ) {
                             return false;
                         }
                     }

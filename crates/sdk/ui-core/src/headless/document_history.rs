@@ -7,6 +7,7 @@ use super::{
 };
 use crate::standalone_history::{HistoryError, HistoryReadContext, HistoryTarget};
 use crate::standalone_history_host::HISTORY_OPERATION;
+use crate::widget::ActionTarget;
 use crate::widget::layout::CompositionFocus;
 
 #[allow(dead_code, reason = "standalone history methods are feature-gated")]
@@ -735,9 +736,9 @@ impl FrameHarness {
         let handled = self
             .dispatch_node(node, |widget, doc, path| {
                 if let Some(target) = semantic_target {
-                    widget.perform_semantic_action(target, action, doc, path)
+                    widget.perform_action(action, ActionTarget::Semantic(target), doc, path)
                 } else {
-                    widget.perform_action(action, doc, path)
+                    widget.perform_action(action, ActionTarget::Widget, doc, path)
                 }
             })
             .map_err(|error| format!("History action refused: {error:?}"))?;

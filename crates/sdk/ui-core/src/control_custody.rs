@@ -701,6 +701,7 @@ impl ControlDomain {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use crate::widget::{ActionEmitter, Widget};
     fn invocation(value: bool) -> ControlInvocation {
         crate::widget::test_bool_action_binding()
@@ -1011,6 +1012,7 @@ mod tests {
         assert!(domain.drain_live().is_empty());
         assert!(view.children_mut()[0].perform_action(
             &crate::a11y::Action::Activate,
+            ActionTarget::Widget,
             &mut doc,
             &automerge::ROOT
         ));

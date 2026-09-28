@@ -30,6 +30,7 @@ use ui::tilo_actions::{
     ActionContract, ActionSpec, Availability, ConfirmationPolicy, EncodedAction, ExecutionMode,
     OperationKind, PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
+use ui::widget::ActionTarget;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
@@ -8540,14 +8541,17 @@ impl Widget for FileExplorerWidget {
         Some(root)
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         if target == "files-retry-folder" && matches!(action, Action::Activate) {
             let changed = self.apply_command(FileCommand::Refresh);
             self.structure_dirty |= changed;

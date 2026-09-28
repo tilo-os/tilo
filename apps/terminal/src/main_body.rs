@@ -3136,89 +3136,90 @@ impl Widget for TerminalWidget {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) -> bool {
-        match action {
-            ui::a11y::Action::ShowContextMenu => {
-                self.open_context_menu_at(self.rect.center());
-                true
-            }
-            ui::a11y::Action::Focus | ui::a11y::Action::Activate => {
-                self.focused = true;
-                true
-            }
-            ui::a11y::Action::SetSelection { anchor, focus } => {
-                self.set_visible_grapheme_selection(*anchor, *focus)
-            }
-            _ => false,
-        }
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &ui::a11y::Action,
+        target: ui::widget::ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        if target == self.terminal_transcript_target() {
-            return self.perform_action(action, state, path);
-        }
-        let find_prefix = format!("terminal.find:{}:", self.pane_id);
-        if let Some(control) = target.strip_prefix(&find_prefix) {
-            match (control, action) {
-                ("query", ui::a11y::Action::Focus | ui::a11y::Action::Activate) => {
-                    self.open_find();
+        match target {
+            ui::widget::ActionTarget::Widget | ui::widget::ActionTarget::Key(_) => match action {
+                ui::a11y::Action::ShowContextMenu => {
+                    self.open_context_menu_at(self.rect.center());
+                    true
+                }
+                ui::a11y::Action::Focus | ui::a11y::Action::Activate => {
+                    self.focused = true;
+                    true
+                }
+                ui::a11y::Action::SetSelection { anchor, focus } => {
+                    self.set_visible_grapheme_selection(*anchor, *focus)
+                }
+                _ => false,
+            },
+            ui::widget::ActionTarget::Semantic(target) => {
+                if target == self.terminal_transcript_target() {
+                    return self.perform_action(
+                        action,
+                        ui::widget::ActionTarget::Widget,
+                        state,
+                        path,
+                    );
+                }
+                let find_prefix = format!("terminal.find:{}:", self.pane_id);
+                if let Some(control) = target.strip_prefix(&find_prefix) {
+                    match (control, action) {
+                        ("query", ui::a11y::Action::Focus | ui::a11y::Action::Activate) => {
+                            self.open_find();
+                            return true;
+                        }
+                        ("query", ui::a11y::Action::SetValue(value)) => {
+                            self.open_find();
+                            self.set_find_query(value);
+                            return true;
+                        }
+                        ("previous", ui::a11y::Action::Activate) => {
+                            self.step_find_match(true);
+                            return true;
+                        }
+                        ("next", ui::a11y::Action::Activate) => {
+                            self.step_find_match(false);
+                            return true;
+                        }
+                        ("close", ui::a11y::Action::Activate) => {
+                            self.close_find();
+                            return true;
+                        }
+                        _ => return false,
+                    }
+                }
+                if !matches!(action, ui::a11y::Action::Activate) {
+                    return false;
+                }
+                let link_prefix = format!("terminal.link:{}:", self.pane_id);
+                if let Some(link_id) = target
+                    .strip_prefix(&link_prefix)
+                    .and_then(|id| id.parse::<u16>().ok())
+                {
+                    let Some(url) = self.links.get(&link_id) else {
+                        return false;
+                    };
+                    open_url(url);
                     return true;
                 }
-                ("query", ui::a11y::Action::SetValue(value)) => {
-                    self.open_find();
-                    self.set_find_query(value);
-                    return true;
+                let menu_prefix = format!("terminal.menu:{}:", self.pane_id);
+                let Some(index) = target
+                    .strip_prefix(&menu_prefix)
+                    .and_then(|id| id.parse::<usize>().ok())
+                else {
+                    return false;
+                };
+                self.context_menu.click_item(index);
+                if let Some(index) = self.context_menu.take_selection() {
+                    self.activate_context_menu_item(index);
+                    true
+                } else {
+                    false
                 }
-                ("previous", ui::a11y::Action::Activate) => {
-                    self.step_find_match(true);
-                    return true;
-                }
-                ("next", ui::a11y::Action::Activate) => {
-                    self.step_find_match(false);
-                    return true;
-                }
-                ("close", ui::a11y::Action::Activate) => {
-                    self.close_find();
-                    return true;
-                }
-                _ => return false,
             }
-        }
-        if !matches!(action, ui::a11y::Action::Activate) {
-            return false;
-        }
-        let link_prefix = format!("terminal.link:{}:", self.pane_id);
-        if let Some(link_id) = target
-            .strip_prefix(&link_prefix)
-            .and_then(|id| id.parse::<u16>().ok())
-        {
-            let Some(url) = self.links.get(&link_id) else {
-                return false;
-            };
-            open_url(url);
-            return true;
-        }
-        let menu_prefix = format!("terminal.menu:{}:", self.pane_id);
-        let Some(index) = target
-            .strip_prefix(&menu_prefix)
-            .and_then(|id| id.parse::<usize>().ok())
-        else {
-            return false;
-        };
-        self.context_menu.click_item(index);
-        if let Some(index) = self.context_menu.take_selection() {
-            self.activate_context_menu_item(index);
-            true
-        } else {
-            false
         }
     }
 

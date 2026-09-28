@@ -9,6 +9,7 @@ use super::{
     idx_to_f64, px,
 };
 use crate::a11y::{AccessNode, AccessState, Role};
+use crate::widget::ActionTarget;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::{Chip, ChipLead, ChipStyle, Widget};
 
@@ -749,9 +750,9 @@ impl<T, M: TreeModel> TreeView<T, M> {
     ) -> Option<bool> {
         use crate::a11y::Action;
         if let Some(target) = target.strip_prefix(MENU_TARGET) {
-            let performed = self
-                .menu
-                .perform_semantic_action(target, action, state, path);
+            let performed =
+                self.menu
+                    .perform_action(action, ActionTarget::Semantic(target), state, path);
             if performed {
                 self.drain_menu_selection();
             }
@@ -795,7 +796,11 @@ impl<T, M: TreeModel> TreeView<T, M> {
             else {
                 return Some(false);
             };
-            return Some(field.input.perform_action(action, state, path));
+            return Some(
+                field
+                    .input
+                    .perform_action(action, ActionTarget::Widget, state, path),
+            );
         }
         None
     }

@@ -19,6 +19,7 @@
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -6133,13 +6134,16 @@ impl Widget for BrowserWidget {
             ]))
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         if self
             .suggestions
             .perform_accessibility_action(target, action)
@@ -6399,6 +6403,7 @@ impl AppWidget for BrowserWidget {
 mod architecture_tests {
     use super::*;
     use ui::webview::WebViewEngine;
+    use ui::widget::ActionTarget;
 
     fn compose(widget: &mut BrowserWidget) {
         let mut doc = AutoCommit::new();
@@ -7394,16 +7399,16 @@ mod architecture_tests {
             assert!(widget.back_menu.is_open());
             let node = widget.accessibility().unwrap();
             let target = node.children[0].children[0].action_target.clone().unwrap();
-            assert!(widget.perform_semantic_action(
-                &target,
+            assert!(widget.perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut AutoCommit::new(),
                 &automerge::ROOT
             ));
             assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
-            assert!(!widget.perform_semantic_action(
-                &target,
+            assert!(!widget.perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut AutoCommit::new(),
                 &automerge::ROOT
             ));
@@ -7435,9 +7440,9 @@ mod architecture_tests {
             let node = widget.accessibility().unwrap();
             let target = node.children[0].children[0].action_target.clone().unwrap();
             assert!(target.contains(":forward:"));
-            assert!(widget.perform_semantic_action(
-                &target,
+            assert!(widget.perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut AutoCommit::new(),
                 &automerge::ROOT
             ));
@@ -7534,6 +7539,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use ui::webview::WebViewEngine;
+    use ui::widget::ActionTarget;
 
     fn synced(widget: &mut BrowserWidget) -> (AutoCommit, ObjId) {
         let mut state = AutoCommit::new();
@@ -8412,12 +8418,12 @@ mod tests {
                 "browser.address-suggestion:{}",
                 blake3::hash(b"https://accessible.example/reading").to_hex()
             );
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut widget,
-                &target,
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             let invocation = widget
                 .take_control_invocation()

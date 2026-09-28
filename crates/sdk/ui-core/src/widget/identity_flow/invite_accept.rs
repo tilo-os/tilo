@@ -621,6 +621,7 @@ impl Widget for InviteAcceptScreen {
 mod tests {
     use super::*;
     use crate::time::Duration;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
     use collab_types::{ChannelId, Role as ChannelRole, generate_keypair};
 
@@ -682,8 +683,9 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s.url,
                 &crate::a11y::Action::SetValue(url.clone()),
+                ActionTarget::Widget,
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(s.url(), url, "the value landed in the shared field");
             assert!(

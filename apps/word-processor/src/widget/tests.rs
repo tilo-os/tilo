@@ -3,6 +3,7 @@ use automerge::transaction::Transactable;
 use std::fmt::Write as _;
 use ui::headless::Framed;
 use ui::permissions::PermissionContext;
+use ui::widget::ActionTarget;
 
 /// Minimal, valid 2×3 RGB PNG shared by image layout, accessibility, portal,
 /// and inspector tests.
@@ -1540,12 +1541,12 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             ToolAction::TextColor(Some(STYLE_PALETTE[4])),
         );
         wp.open_compact_swatch_palette(PaletteKind::Text);
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Focus,
-            &[ui::a11y::hash_key(&"compact-swatch:clear")],
+            ActionTarget::Key(&[ui::a11y::hash_key(&"compact-swatch:clear")]),
             &mut state.doc,
-            &state.root,
+            &state.root
         ));
         assert_compact_clear_footer(
             wp,
@@ -1553,12 +1554,12 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             wp.compact_swatch_palette.clear_rect(),
             true,
         );
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
-            &[ui::a11y::hash_key(&"compact-swatch:clear")],
+            ActionTarget::Key(&[ui::a11y::hash_key(&"compact-swatch:clear")]),
             &mut state.doc,
-            &state.root,
+            &state.root
         ));
         assert_eq!(wp.current_text_color(), None);
 
@@ -1587,12 +1588,12 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             ToolAction::Highlight(Some(HIGHLIGHT_PALETTE[4])),
         );
         wp.open_compact_swatch_palette(PaletteKind::Highlight);
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
-            &[ui::a11y::hash_key(&"compact-swatch:clear")],
+            ActionTarget::Key(&[ui::a11y::hash_key(&"compact-swatch:clear")]),
             &mut state.doc,
-            &state.root,
+            &state.root
         ));
         assert_eq!(wp.current_highlight_color(), None);
     }
@@ -3356,24 +3357,24 @@ fn the_zoom_stepper_drives_zoom_and_the_scroll_range() {
         assert_eq!(zoom_in.node.value.as_deref(), Some("100%"));
         assert!(zoom_in.node.bounds.is_some());
 
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
-            &[ui::a11y::hash_key(&ZoomControl::TARGET_IN)],
+            ActionTarget::Key(&[ui::a11y::hash_key(&ZoomControl::TARGET_IN)]),
             &mut state.doc,
-            &state.root,
+            &state.root
         ));
         assert!(
             (wp.zoom.factor() - (1.0 + ZOOM_STEP)).abs() < 1e-6,
             "semantic activation uses the same +10% step as the toolbar"
         );
 
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
-            &[ui::a11y::hash_key(&ZoomControl::TARGET_RESET)],
+            ActionTarget::Key(&[ui::a11y::hash_key(&ZoomControl::TARGET_RESET)]),
             &mut state.doc,
-            &state.root,
+            &state.root
         ));
         assert_eq!(wp.zoom.factor(), 1.0, "semantic reset returns to 100%");
     }
@@ -5204,12 +5205,12 @@ fn review_markup_registers_card_hits_and_toggles_off() {
 
         let resolve_target = review_action_target(&ReviewAction::ResolveComment(cid.clone()));
         let root = state.root.clone();
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
-            &[ui::a11y::hash_key(&resolve_target)],
+            ActionTarget::Key(&[ui::a11y::hash_key(&resolve_target)]),
             &mut state.doc,
-            &root,
+            &root
         ));
         assert!(
             snapshot(state, &c)
@@ -6627,12 +6628,12 @@ fn accessibility_exposes_and_activates_real_toolbar_buttons() {
         let (wp, state) = Framed::split(&mut framed);
         assert!(!wp.view.styles_panel_visible);
         let target = "word-processor.toolbar:toggle-styles".to_string();
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
-            &[ui::a11y::hash_key(&target)],
+            ActionTarget::Key(&[ui::a11y::hash_key(&target)]),
             &mut state.doc,
-            &state.root,
+            &state.root
         ));
         assert!(
             wp.view.styles_panel_visible,
@@ -7959,12 +7960,12 @@ fn image_controls_are_named_and_resize_and_flip() {
         }));
 
         let target = "word-processor.image-placement:left".to_string();
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
-            &[ui::a11y::hash_key(&target)],
+            ActionTarget::Key(&[ui::a11y::hash_key(&target)]),
             &mut state.doc,
-            &state.root,
+            &state.root
         ));
         let containers = wp.model().containers.clone().expect("open document");
         let image = qdoc::model::materialize(&state.doc, &containers)

@@ -16,6 +16,7 @@
 
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -2901,25 +2902,34 @@ impl Widget for ContainersApp {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &AccessibilityAction,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, _) = ui::doc::document(state, path);
         if self.palette_open {
-            return self
-                .palette
-                .perform_semantic_action(target, action, state, &automerge::ROOT);
+            return self.palette.perform_action(
+                action,
+                ActionTarget::Semantic(target),
+                state,
+                &automerge::ROOT,
+            );
         }
         if self.confirm.is_some() {
             self.ensure_confirm_dialog();
             let handled = self.confirm_dialog.as_mut().is_some_and(|dialog| {
-                dialog
-                    .dialog
-                    .perform_semantic_action(target, action, state, &automerge::ROOT)
+                dialog.dialog.perform_action(
+                    action,
+                    ActionTarget::Semantic(target),
+                    state,
+                    &automerge::ROOT,
+                )
             });
             let (confirm, cancel) = self
                 .confirm_dialog
@@ -2947,9 +2957,12 @@ impl Widget for ContainersApp {
         if self.prompt.is_some() {
             self.ensure_prompt_dialog();
             let handled = self.prompt_dialog.as_mut().is_some_and(|dialog| {
-                dialog
-                    .dialog
-                    .perform_semantic_action(target, action, state, &automerge::ROOT)
+                dialog.dialog.perform_action(
+                    action,
+                    ActionTarget::Semantic(target),
+                    state,
+                    &automerge::ROOT,
+                )
             });
             let (submit, cancel) = self
                 .prompt_dialog

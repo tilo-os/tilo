@@ -722,6 +722,7 @@ impl HistoryHost {
             if widget.test_id() == Some(id) {
                 return widget.perform_action(
                     &crate::a11y::Action::Activate,
+                    crate::widget::ActionTarget::Widget,
                     &mut AutoCommit::new(),
                     &automerge::ROOT,
                 );

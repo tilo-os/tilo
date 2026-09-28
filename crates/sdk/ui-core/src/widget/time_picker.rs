@@ -10,6 +10,7 @@
 //! [`TimePicker::from_state`], or be observed with `on_change` for an
 //! app-owned durable mutation.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -683,9 +684,13 @@ impl Widget for TimePicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
-        _root: &ModelPath,
+        _path: &ModelPath,
     ) -> bool {
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         let crate::a11y::Action::SetValue(value) = action else {
             return false;
         };
@@ -923,6 +928,7 @@ impl TimePicker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
@@ -1162,8 +1168,9 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("21:07:09".into()),
+                ActionTarget::Widget,
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(state.with(|value| *value), expected);
             assert_eq!(*captured.borrow(), Some(expected));
@@ -1171,8 +1178,9 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("24:00".into()),
+                ActionTarget::Widget,
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(state.with(|value| *value), expected);
         }

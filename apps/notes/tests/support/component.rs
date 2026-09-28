@@ -1,4 +1,5 @@
 //! Explicit temporary canonical records and controlled runner fonts.
+use ui::widget::ActionTarget;
 #[path = "canonical.rs"]
 pub mod canonical;
 pub use canonical::LegacyFixture;
@@ -327,9 +328,9 @@ impl BoundNotes {
                 &mut self.outer,
                 &automerge::ROOT,
                 |widget, doc, root| {
-                    widget.perform_semantic_action(
-                        &format!("notes.block-move:{block}:up"),
+                    widget.perform_action(
                         &ui::a11y::Action::Activate,
+                        ActionTarget::Semantic(&format!("notes.block-move:{block}:up")),
                         doc,
                         root,
                     )

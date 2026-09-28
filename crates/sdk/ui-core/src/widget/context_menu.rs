@@ -6,6 +6,7 @@
 //! Callers push `MenuItem::action(label, fn)` and optional
 //! `MenuItem::separator()` entries, then call `open_at` on right-click.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -1127,13 +1128,16 @@ impl Widget for ContextMenu {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         if !self.open || !matches!(action, crate::a11y::Action::Activate) {
             return false;
         }
@@ -1229,6 +1233,7 @@ mod a11y_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -1501,12 +1506,12 @@ mod tests {
             let (mut menu, fired) = open_menu();
             let mut doc = AutoCommit::new();
 
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut menu,
-                "context-menu:item:2",
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic("context-menu:item:2"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(fired.load(Ordering::SeqCst), 100);
             assert_eq!(menu.take_selection(), Some(2));
@@ -1518,12 +1523,12 @@ mod tests {
             menu.set_item_enabled(2, false);
             let mut doc = AutoCommit::new();
 
-            assert!(!Widget::perform_semantic_action(
+            assert!(!Widget::perform_action(
                 &mut menu,
-                "context-menu:item:2",
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic("context-menu:item:2"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(fired.load(Ordering::SeqCst), 0);
             assert_eq!(menu.take_selection(), None);

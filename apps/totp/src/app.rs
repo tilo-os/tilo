@@ -17,6 +17,7 @@
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -1678,13 +1679,16 @@ impl Widget for AuthenticatorApp {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &A11yAction,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, _) = ui::doc::document(state, path);
         if self.add_panel.is_open() {
             let handled = self.add_panel.perform_a11y_target(target, action);
@@ -1736,6 +1740,7 @@ impl ui::undo::CommittedActions for AuthenticatorApp {
 mod tests {
     use super::*;
     use ui::headless::Framed;
+    use ui::widget::ActionTarget;
 
     // The demo root is used so tests get a deterministic sample vault and
     // never read or write the real on-disk vault.
@@ -1810,11 +1815,11 @@ mod tests {
             let mut framed = framed(app_with_state(), 640, 700);
             let (app, state) = Framed::split(&mut framed);
             let id = app.vault.ordered()[0].id;
-            assert!(app.perform_semantic_action(
-                &format!("totp.copy:{id}"),
+            assert!(app.perform_action(
                 &A11yAction::Activate,
+                ActionTarget::Semantic(&format!("totp.copy:{id}")),
                 &mut state.doc,
-                &state.root,
+                &state.root
             ));
             assert_eq!(app.selected_account(), Some(id));
             assert!(app.last_copied().is_some());
@@ -1945,16 +1950,16 @@ mod tests {
                 .expect("protected secret field");
             assert!(secret.state.protected);
             assert!(secret.value.is_none());
-            assert!(app.perform_semantic_action(
-                "totp.dialog.issuer",
+            assert!(app.perform_action(
                 &A11yAction::SetValue("Acme".into()),
+                ActionTarget::Semantic("totp.dialog.issuer"),
                 &mut state.doc,
                 &state.root
             ));
             assert_eq!(app.add_panel.field_snapshot().0, "Acme");
-            assert!(app.perform_semantic_action(
-                "totp.dialog.save",
+            assert!(app.perform_action(
                 &A11yAction::Activate,
+                ActionTarget::Semantic("totp.dialog.save"),
                 &mut state.doc,
                 &state.root
             ));
@@ -1976,21 +1981,21 @@ mod tests {
             let (app, state) = Framed::split(&mut framed);
             app.add_panel.open();
             app.add_panel.layout(app.rect);
-            assert!(app.perform_semantic_action(
-                "totp.dialog.advanced",
+            assert!(app.perform_action(
                 &A11yAction::Activate,
+                ActionTarget::Semantic("totp.dialog.advanced"),
                 &mut state.doc,
                 &state.root
             ));
-            assert!(app.perform_semantic_action(
-                "totp.dialog.algorithm:1",
+            assert!(app.perform_action(
                 &A11yAction::Activate,
+                ActionTarget::Semantic("totp.dialog.algorithm:1"),
                 &mut state.doc,
                 &state.root
             ));
-            assert!(app.perform_semantic_action(
-                "totp.dialog.digits:8",
+            assert!(app.perform_action(
                 &A11yAction::Activate,
+                ActionTarget::Semantic("totp.dialog.digits:8"),
                 &mut state.doc,
                 &state.root
             ));
@@ -2445,11 +2450,11 @@ mod tests {
             );
             assert!(retry.state.focusable);
 
-            assert!(app.perform_semantic_action(
-                "totp.retry-persist",
+            assert!(app.perform_action(
                 &A11yAction::Activate,
+                ActionTarget::Semantic("totp.retry-persist"),
                 &mut state.doc,
-                &state.root,
+                &state.root
             ));
             assert!(!app.persistence_pending);
         }

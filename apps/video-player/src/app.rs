@@ -14,6 +14,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -3987,13 +3988,16 @@ impl Widget for PlayerApp {
         }
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, _) = ui::doc::document(state, path);
         if target == "video-player.open" && matches!(action, ui::a11y::Action::Activate) {
             self.request_open_action();
@@ -4331,6 +4335,7 @@ impl PlayerApp {
 mod tests {
     use super::*;
     use ui::headless::Framed;
+    use ui::widget::ActionTarget;
 
     #[test]
     fn opening_sources_sets_identity_without_exposing_paths() {
@@ -4764,12 +4769,12 @@ mod tests {
             assert_eq!(app.library_focus_id.as_deref(), Some("library-tab-recent"));
             let mut doc = AutoCommit::new();
             let path = root();
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut app,
-                "video-player.library.tab.recent",
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("video-player.library.tab.recent"),
                 &mut doc,
-                &path,
+                &path
             ));
             let recent = Widget::take_control_invocation(&mut app).expect("recent intent");
             assert_eq!(recent.address.resource, "video-player.history.local");
@@ -4779,12 +4784,12 @@ mod tests {
                 LibraryTab::Queue,
                 "a11y did not bypass host routing"
             );
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut app,
-                "video-player.library.close",
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("video-player.library.close"),
                 &mut doc,
-                &path,
+                &path
             ));
             let close = Widget::take_control_invocation(&mut app).expect("close intent");
             assert_eq!(close.address.resource, "video-player.application");
@@ -4913,22 +4918,22 @@ mod tests {
             // action rather than privately changing the current tab.
             app.perform_resource_operation(PlayerOperation::RevealLibrary);
             let path = root();
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut app,
-                "video-player.library",
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("video-player.library"),
                 &mut doc,
-                &path,
+                &path
             ));
             let hide = Widget::take_control_invocation(&mut app).expect("a11y hide intent");
             assert_eq!(hide.address.action, "hide-library");
             app.perform_resource_operation(PlayerOperation::HideLibrary);
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut app,
-                "video-player.library",
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("video-player.library"),
                 &mut doc,
-                &path,
+                &path
             ));
             let queue = Widget::take_control_invocation(&mut app).expect("a11y reopen intent");
             assert_eq!(queue.address.resource, "video-player.queue.local");

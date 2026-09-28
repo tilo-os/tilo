@@ -24,6 +24,7 @@ use crate::color_compat::ColorCompat;
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::widget::ActionTarget;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
@@ -1371,49 +1372,49 @@ impl Widget for ColorPicker {
         )
     }
 
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &crate::a11y::Action,
-        state: &mut AppModel,
-        root: &ModelPath,
-    ) -> bool {
-        use crate::a11y::Action;
-        if let Some(index) = target.strip_prefix(TARGET_SWATCH) {
-            return matches!(action, Action::Activate)
-                && index
-                    .parse::<usize>()
-                    .is_ok_and(|index| self.choose_swatch(index));
-        }
-        match (target, action) {
-            (TARGET_CANCEL, Action::Activate) if self.confirm_title.is_some() => {
-                self.cancel();
-                true
-            }
-            (TARGET_DONE, Action::Activate) if self.confirm_title.is_some() => {
-                self.confirm();
-                true
-            }
-            (TARGET_VALUE, _) => self.perform_action(action, state, root),
-            _ => false,
-        }
-    }
-
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
-        _root: &ModelPath,
+        target: ActionTarget<'_>,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
-        let crate::a11y::Action::SetValue(value) = action else {
-            return false;
-        };
-        let Some(color) = parse_hex(value) else {
-            return false;
-        };
-        self.set_rgb(color.r(), color.g(), color.b());
-        self.sync_input();
-        true
+        match target {
+            ActionTarget::Widget | ActionTarget::Key(_) => {
+                let crate::a11y::Action::SetValue(value) = action else {
+                    return false;
+                };
+                let Some(color) = parse_hex(value) else {
+                    return false;
+                };
+                self.set_rgb(color.r(), color.g(), color.b());
+                self.sync_input();
+                true
+            }
+            ActionTarget::Semantic(target) => {
+                use crate::a11y::Action;
+                if let Some(index) = target.strip_prefix(TARGET_SWATCH) {
+                    return matches!(action, Action::Activate)
+                        && index
+                            .parse::<usize>()
+                            .is_ok_and(|index| self.choose_swatch(index));
+                }
+                match (target, action) {
+                    (TARGET_CANCEL, Action::Activate) if self.confirm_title.is_some() => {
+                        self.cancel();
+                        true
+                    }
+                    (TARGET_DONE, Action::Activate) if self.confirm_title.is_some() => {
+                        self.confirm();
+                        true
+                    }
+                    (TARGET_VALUE, _) => {
+                        self.perform_action(action, ActionTarget::Widget, state, root)
+                    }
+                    _ => false,
+                }
+            }
+        }
     }
 }
 
@@ -1428,6 +1429,7 @@ fn parse_hex(s: &str) -> Option<Color> {
 mod tests {
     use super::*;
     use crate::theme::Theme;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
 
     /// Force a deterministic layout without spinning up a real taffy
@@ -1777,8 +1779,9 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("#36A2EB".into()),
+                ActionTarget::Widget,
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(picker.hex_string(), "#36A2EB");
             assert!(
@@ -1790,8 +1793,9 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("blue".into()),
+                ActionTarget::Widget,
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(picker.hex_string(), "#36A2EB");
         }
@@ -1901,20 +1905,20 @@ mod tests {
 
             let mut doc = AutoCommit::new();
             let target = format!("{TARGET_SWATCH}2");
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut p,
-                &target,
                 &Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(p.hex_string(), "#10B981");
-            assert!(!Widget::perform_semantic_action(
+            assert!(!Widget::perform_action(
                 &mut p,
-                &format!("{TARGET_SWATCH}9"),
                 &Action::Activate,
+                ActionTarget::Semantic(&format!("{TARGET_SWATCH}9")),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
         }
 
@@ -2015,23 +2019,23 @@ mod tests {
                 .collect();
             assert_eq!(buttons, ["Cancel", "Done"]);
             let mut doc = AutoCommit::new();
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut p,
-                TARGET_DONE,
                 &Action::Activate,
+                ActionTarget::Semantic(TARGET_DONE),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(matches!(
                 p.take_outcome(),
                 Some(ColorPickerOutcome::Confirmed(_))
             ));
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut p,
-                TARGET_VALUE,
                 &Action::SetValue("#ABCDEF".into()),
+                ActionTarget::Semantic(TARGET_VALUE),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(p.hex_string(), "#ABCDEF");
         }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::ActionTarget;
 use automerge::ROOT;
 
 #[test]
@@ -30,11 +31,11 @@ fn slash_menu_and_tooltips_are_semantic_and_viewport_bounded() {
             .unwrap()
             .to_owned();
         let mut doc = AutoCommit::new();
-        assert!(editor.perform_semantic_action(
-            &heading,
+        assert!(editor.perform_action(
             &crate::a11y::Action::Activate,
+            ActionTarget::Semantic(&heading),
             &mut doc,
-            &ROOT,
+            &ROOT
         ));
         assert!(matches!(editor.blocks[0].kind, BlockKind::Heading(1)));
         assert!(!editor.slash_menu_visible());

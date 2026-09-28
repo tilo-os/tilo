@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Widget};
 use automerge::transaction::Transactable;
@@ -349,6 +350,7 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
             assert_eq!(button.test_id(), Some("standalone-search-open"));
             assert!(button.perform_action(
                 &crate::a11y::Action::Activate,
+                ActionTarget::Widget,
                 &mut app.state.doc,
                 &app.state.root
             ));

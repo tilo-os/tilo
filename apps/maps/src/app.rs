@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -5671,13 +5672,16 @@ impl Widget for MapsApp {
             .map(|target| target.rect)
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, _) = ui::doc::document(state, path);
         if self.offline_panel.is_open() {
             // Text input needs the framework's exact-rectangle pointer

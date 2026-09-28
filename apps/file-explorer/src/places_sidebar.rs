@@ -15,6 +15,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -800,9 +801,13 @@ impl Widget for PlacesSidebar {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         match action {
             ui::a11y::Action::Activate => self.activate_keyboard_place(),
             ui::a11y::Action::ShowContextMenu => {
@@ -1037,6 +1042,7 @@ mod tests {
     use crate::favorites;
     use automerge::AutoCommit;
     use std::path::Path;
+    use ui::widget::ActionTarget;
 
     fn lay_out(sb: &mut PlacesSidebar) -> (TaffyTree<()>, NodeId) {
         let mut tree = TaffyTree::<()>::new();
@@ -1492,7 +1498,12 @@ mod tests {
             assert_eq!(node.children[1].set_size, Some(sidebar.place_count()));
 
             let mut doc = AutoCommit::new();
-            assert!(sidebar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+            assert!(sidebar.perform_action(
+                &Action::Activate,
+                ActionTarget::Widget,
+                &mut doc,
+                &automerge::ROOT
+            ));
             assert!(matches!(
                 sink.borrow().last(),
                 Some(FileCommand::Navigate(path)) if path.ends_with("Documents")

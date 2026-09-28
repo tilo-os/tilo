@@ -3,6 +3,7 @@
     reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
 )]
 use super::*;
+use ui::widget::ActionTarget;
 
 // ==========================================================================
 // Accessibility
@@ -1761,7 +1762,7 @@ impl VideoEditorApp {
         let mut path = vec![pane.key()];
         path.extend(rest);
         let root = automerge::ROOT;
-        self.perform_action_at(&Action::Activate, &path, state, &root)
+        self.perform_action(&Action::Activate, ActionTarget::Key(&path), state, &root)
     }
 
     /// The hover label for whatever icon-only control sits under `p`, or

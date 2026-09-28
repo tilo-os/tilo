@@ -22,6 +22,7 @@
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::ActionTarget;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::binding::{BoxedBinding, Pulled};
@@ -891,10 +892,14 @@ impl Widget for NumberInput {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         if !self.effectively_enabled() {
             return false;
         }
@@ -930,6 +935,7 @@ impl Widget for NumberInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::{AutoCommit, ReadDoc, Value, transaction::Transactable};
     use winit::event::{KeyEvent, Modifiers};
     use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
@@ -1419,8 +1425,9 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::Increment,
+                ActionTarget::Widget,
                 &mut document,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(state.get(), 25.0);
             assert_eq!(first.take_changed(), Some(25.0));
@@ -1456,6 +1463,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut n,
                 &Action::Increment,
+                ActionTarget::Widget,
                 &mut doc,
                 &root
             ));
@@ -1463,6 +1471,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut n,
                 &Action::SetValue("100".into()),
+                ActionTarget::Widget,
                 &mut doc,
                 &root
             ));
@@ -1491,6 +1500,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut number,
                 &crate::a11y::Action::SetValue("42".into()),
+                ActionTarget::Widget,
                 &mut doc,
                 &automerge::ROOT
             ));

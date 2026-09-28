@@ -10,6 +10,7 @@
 //! is also recorded on [`Link::last_activated`] so a parent can confirm the
 //! link fired.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -329,10 +330,14 @@ impl Widget for Link {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
-        _root: &ModelPath,
+        _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         if !self.enabled {
             return false;
         }
@@ -364,6 +369,7 @@ impl Widget for Link {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
     use winit::event::{DeviceId, ElementState, MouseButton};
 
@@ -449,7 +455,12 @@ mod tests {
             let mut link = Link::new("https://w3.org");
             let mut doc = AutoCommit::new();
             let handled = crate::host::scoped(&services, || {
-                link.perform_action(&crate::a11y::Action::Activate, &mut doc, &automerge::ROOT)
+                link.perform_action(
+                    &crate::a11y::Action::Activate,
+                    ActionTarget::Widget,
+                    &mut doc,
+                    &automerge::ROOT,
+                )
             });
             assert!(handled, "Activate is handled");
             work.run_pending();

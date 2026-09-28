@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -5109,14 +5110,17 @@ impl Widget for PasswordsSurface {
         clippy::too_many_lines,
         reason = "one match arm per semantic action target"
     )]
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         match (target, action) {
             ("passwords.navigation.toggle", Action::Activate) => self.drawer.toggle(),
             ("passwords.add", Action::Activate) => self.begin_add(),
@@ -5429,6 +5433,7 @@ fn demo_items() -> Vec<SecretItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::widget::ActionTarget;
 
     /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
     const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
@@ -5744,18 +5749,18 @@ mod tests {
         {
             let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
             let mut doc = AutoCommit::new();
-            assert!(app.perform_semantic_action(
-                "passwords.add",
+            assert!(app.perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("passwords.add"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(app.mode, ShowcaseMode::Editor);
-            assert!(app.perform_semantic_action(
-                "passwords.field.name",
+            assert!(app.perform_action(
                 &ui::a11y::Action::SetValue("New name".into()),
+                ActionTarget::Semantic("passwords.field.name"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(app.draft_title, "New name");
 
@@ -5766,11 +5771,11 @@ mod tests {
                 ("passwords.kind:other", SecretItemKind::Other),
                 ("passwords.kind:login", SecretItemKind::Login),
             ] {
-                assert!(app.perform_semantic_action(
-                    target,
+                assert!(app.perform_action(
                     &ui::a11y::Action::Activate,
+                    ActionTarget::Semantic(target),
                     &mut doc,
-                    &automerge::ROOT,
+                    &automerge::ROOT
                 ));
                 assert_eq!(app.draft_kind, expected);
             }
@@ -5797,19 +5802,19 @@ mod tests {
                     .unwrap();
                 assert!(password.state.protected);
                 assert_eq!(password.value, None);
-                assert!(app.perform_semantic_action(
-                    "passwords.backup.password",
+                assert!(app.perform_action(
                     &Action::SetValue("Owned fixture password 52!".into()),
+                    ActionTarget::Semantic("passwords.backup.password"),
                     &mut doc,
-                    &automerge::ROOT,
+                    &automerge::ROOT
                 ));
                 assert_eq!(app.backup_password.value(), "Owned fixture password 52!");
                 if !restoring {
-                    assert!(app.perform_semantic_action(
-                        "passwords.backup.confirmation",
+                    assert!(app.perform_action(
                         &Action::SetValue("Owned fixture password 52!".into()),
+                        ActionTarget::Semantic("passwords.backup.confirmation"),
                         &mut doc,
-                        &automerge::ROOT,
+                        &automerge::ROOT
                     ));
                     assert!(app.backup_form_error(true).is_none());
                 }
@@ -5823,11 +5828,11 @@ mod tests {
                 );
             }
             app.transfer_dialog = None;
-            assert!(!app.perform_semantic_action(
-                "passwords.backup.password",
+            assert!(!app.perform_action(
                 &Action::SetValue("outside dialog".into()),
+                ActionTarget::Semantic("passwords.backup.password"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
         }
     }
@@ -5967,11 +5972,11 @@ mod tests {
             app.begin_edit();
             let mut doc = AutoCommit::new();
 
-            assert!(app.perform_semantic_action(
-                "passwords.delete",
+            assert!(app.perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("passwords.delete"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(matches!(
                 app.transfer_dialog,
@@ -5999,11 +6004,11 @@ mod tests {
             );
             assert_eq!(app.model.as_ref().unwrap().items().len(), 1);
 
-            assert!(app.perform_semantic_action(
-                "passwords.delete.confirm",
+            assert!(app.perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("passwords.delete.confirm"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(app.model.as_ref().unwrap().items().is_empty());
             let _ = std::fs::remove_dir_all(root);

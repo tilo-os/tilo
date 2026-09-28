@@ -251,6 +251,7 @@ pub trait AppWidget: Widget {
 mod component_adapter {
     use super::{AppCommand, AppHostIntent, AppWidget, IconDescriptor, Widget};
     use crate::application::AppComponent;
+    use crate::widget::ActionTarget;
     use crate::widget::{
         ActionDirectoryResourcePage, Affine, AppKind, AudiencePresentationProvider,
         AudiencePresentationWidgetExt, AutoCommit, CaptureMode, CompleteContentProvider,
@@ -1062,6 +1063,7 @@ mod component_adapter {
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
+            target: ActionTarget<'_>,
             state: &mut crate::widget::AppModel,
             path: &crate::widget::ModelPath,
         ) -> bool {
@@ -1072,43 +1074,7 @@ mod component_adapter {
                     let Some(root) = self.component.root.as_deref_mut() else {
                         return false;
                     };
-                    root.perform_action(action, document, record_root)
-                })
-                .unwrap_or(false)
-        }
-        fn perform_action_at(
-            &mut self,
-            action: &crate::a11y::Action,
-            key_path: &[u64],
-            state: &mut crate::widget::AppModel,
-            path: &crate::widget::ModelPath,
-        ) -> bool {
-            let (state, _) = crate::doc::document(state, path);
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
-                    };
-                    root.perform_action_at(action, key_path, document, record_root)
-                })
-                .unwrap_or(false)
-        }
-        fn perform_semantic_action(
-            &mut self,
-            target: &str,
-            action: &crate::a11y::Action,
-            state: &mut crate::widget::AppModel,
-            path: &crate::widget::ModelPath,
-        ) -> bool {
-            let (state, _) = crate::doc::document(state, path);
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
-                    };
-                    root.perform_semantic_action(target, action, document, record_root)
+                    root.perform_action(action, target, document, record_root)
                 })
                 .unwrap_or(false)
         }

@@ -7,6 +7,7 @@
 //! and Activity paths used everywhere else.
 
 use std::collections::HashMap;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable as _;
@@ -693,13 +694,16 @@ impl Widget for CollaborationLaunchpad {
         true
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, path) = ui::doc::document(state, path);
         if target == EMPTY_WORKSPACE_OPEN_APP && matches!(action, Action::Activate) {
             let _ = state.put(path, EMPTY_WORKSPACE_OPEN_APP, true);
@@ -722,6 +726,7 @@ impl Widget for CollaborationLaunchpad {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::widget::ActionTarget;
 
     /// A host rail as wide as the shell's on a laptop display.
     fn test_rail(_height: f64) -> f64 {
@@ -880,11 +885,11 @@ mod tests {
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
 
-            assert!(launchpad.perform_semantic_action(
-                EMPTY_WORKSPACE_ACTIVITY,
+            assert!(launchpad.perform_action(
                 &Action::Activate,
+                ActionTarget::Semantic(EMPTY_WORKSPACE_ACTIVITY),
                 &mut doc,
-                &root,
+                &root
             ));
             assert!(matches!(
                 doc.get(&root, EMPTY_WORKSPACE_ACTIVITY),

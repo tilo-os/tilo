@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::ActionTarget;
 
 #[test]
 fn document_accessibility_exposes_role_focus_tables_and_images() {
@@ -225,9 +226,9 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         );
         assert_control(&editor, &format!("notes.image-edit:{id}"));
         editor.begin_action_intercept();
-        assert!(editor.perform_semantic_action(
-            &format!("notes.image-edit:{id}"),
+        assert!(editor.perform_action(
             &crate::a11y::Action::Activate,
+            ActionTarget::Semantic(&format!("notes.image-edit:{id}")),
             &mut doc,
             &automerge::ROOT
         ));
@@ -257,9 +258,9 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         );
         editor.blocks[0].line.set_text(source);
         editor.begin_action_intercept();
-        assert!(editor.perform_semantic_action(
-            &format!("notes.image-done:{id}"),
+        assert!(editor.perform_action(
             &crate::a11y::Action::Activate,
+            ActionTarget::Semantic(&format!("notes.image-done:{id}")),
             &mut doc,
             &automerge::ROOT
         ));
@@ -267,9 +268,9 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         layout_image_editor(&mut editor, 640.0, &mut renderer);
         assert_eq!(editor.blocks[0].line.get_rect().height(), 0.0);
         assert_eq!(editor.blocks[0].text(), source);
-        assert!(!editor.perform_semantic_action(
-            &format!("notes.image-source:{id}"),
+        assert!(!editor.perform_action(
             &crate::a11y::Action::SetValue("hidden overwrite".into()),
+            ActionTarget::Semantic(&format!("notes.image-source:{id}")),
             &mut doc,
             &automerge::ROOT
         ));
@@ -428,12 +429,12 @@ fn block_reorder_emits_stable_id_moves_through_semantic_controls() {
             Some(&*down_target)
         );
 
-        assert!(Widget::perform_semantic_action(
+        assert!(Widget::perform_action(
             &mut editor,
-            &down_target,
             &crate::a11y::Action::Activate,
+            ActionTarget::Semantic(&down_target),
             &mut AutoCommit::new(),
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(editor.blocks()[1].id, first_id);
         let reordered = Widget::accessibility(&editor).expect("reordered document semantics");
@@ -455,12 +456,12 @@ fn block_reorder_emits_stable_id_moves_through_semantic_controls() {
             }]
         );
         assert!(
-            !Widget::perform_semantic_action(
+            !Widget::perform_action(
                 &mut editor,
-                "notes.block-move:missing:down",
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic("notes.block-move:missing:down"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ),
             "a stale stable id must refuse instead of moving another block"
         );

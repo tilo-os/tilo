@@ -6,6 +6,7 @@
 
 use automerge::{AutoCommit, ObjId};
 use ui::theme::Theme;
+use ui::widget::ActionTarget;
 use uuid::Uuid;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -152,7 +153,7 @@ impl CommentOverlay {
             return false;
         };
         target == format!("books.comments.input:{}", editor.id())
-            && editor.perform_action(action, state, root)
+            && editor.perform_action(action, ActionTarget::Widget, state, root)
     }
 }
 

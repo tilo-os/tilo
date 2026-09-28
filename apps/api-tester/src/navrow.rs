@@ -15,6 +15,7 @@
 //! while becoming fully navigable.
 
 use std::collections::HashMap;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -401,40 +402,38 @@ impl Widget for NavRow {
     /// The row publishes its id as its semantic action target, so assistive
     /// technology and agents reach the same activation and adjustment a
     /// pointer or keyboard does.
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &Action,
-        state: &mut AppModel,
-        path: &ModelPath,
-    ) -> bool {
-        target == self.id && self.perform_action(action, state, path)
-    }
-
     fn perform_action(
         &mut self,
         action: &Action,
-        _state: &mut AppModel,
-        _path: &ModelPath,
+        target: ActionTarget<'_>,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
-        if let Some(adjust) = &mut self.on_adjust {
-            match action {
-                Action::Increment => {
-                    adjust(24.0);
-                    return true;
+        match target {
+            ActionTarget::Widget | ActionTarget::Key(_) => {
+                if let Some(adjust) = &mut self.on_adjust {
+                    match action {
+                        Action::Increment => {
+                            adjust(24.0);
+                            return true;
+                        }
+                        Action::Decrement => {
+                            adjust(-24.0);
+                            return true;
+                        }
+                        _ => {}
+                    }
                 }
-                Action::Decrement => {
-                    adjust(-24.0);
-                    return true;
+                if matches!(action, Action::Activate) {
+                    self.activate();
+                    true
+                } else {
+                    false
                 }
-                _ => {}
             }
-        }
-        if matches!(action, Action::Activate) {
-            self.activate();
-            true
-        } else {
-            false
+            ActionTarget::Semantic(target) => {
+                target == self.id && self.perform_action(action, ActionTarget::Widget, state, path)
+            }
         }
     }
 }

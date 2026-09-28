@@ -91,6 +91,7 @@ impl ImeSurroundingText {
 mod tests {
     use super::ImeSurroundingText;
     use crate::Widget;
+    use crate::widget::ActionTarget;
     use crate::widget::TextInput;
 
     #[test]
@@ -102,8 +103,9 @@ mod tests {
                 anchor: 6,
                 focus: 11
             },
+            ActionTarget::Widget,
             &mut automerge::AutoCommit::new(),
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(
             ImeSurroundingText::from_widget(&field),

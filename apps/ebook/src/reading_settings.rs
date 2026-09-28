@@ -5,6 +5,7 @@
 //! responsible for persisting those effects in the books document.
 
 use automerge::{AutoCommit, ObjId};
+use ui::widget::ActionTarget;
 use vello::kurbo::{Affine, Point, Rect};
 
 use ui::paint::PaintCtx;
@@ -194,9 +195,9 @@ impl ReadingSettings {
         state: &mut AutoCommit,
         root: &ObjId,
     ) -> Option<ReadingSettingsAction> {
-        let (field, value) = self
-            .numbers
-            .perform_semantic_action(target, action, state, root)?;
+        let (field, value) =
+            self.numbers
+                .perform_action(action, ActionTarget::Semantic(target), state, root)?;
         let value = value?;
         match field {
             NumberField::FontScale => {

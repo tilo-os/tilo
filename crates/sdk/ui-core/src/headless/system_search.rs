@@ -13,6 +13,7 @@ use crate::search::system::{
     self, Provider, Query, ResourceKind, SearchBudget, SearchCursor, SearchPage, SearchRow,
     SearchScope,
 };
+use crate::widget::ActionTarget;
 use tilo_actions::ActionAddress;
 
 const UNAVAILABLE_DOMAINS: &str = "Files and host apps are unavailable in this browser.";
@@ -945,9 +946,9 @@ impl FrameHarness {
             return true;
         }
         self.system_search.overlay.as_mut().is_some_and(|overlay| {
-            overlay.palette.perform_semantic_action(
-                target,
+            overlay.palette.perform_action(
                 action,
+                ActionTarget::Semantic(target),
                 &mut self.state.doc,
                 &self.state.root,
             )

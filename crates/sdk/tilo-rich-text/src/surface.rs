@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use qdoc::snapshot::BlockView;
@@ -640,9 +641,13 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Widget = target else {
+            return self.inner_mut().perform_action(action, target, state, path);
+        };
         let (state, _) = ui::doc::document(state, path);
         match action {
             ui::a11y::Action::Focus => {
@@ -656,7 +661,9 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
                 self.set_text(state, text);
                 true
             }
-            _ => self.editor.perform_action(action, state, path),
+            _ => self
+                .editor
+                .perform_action(action, ActionTarget::Widget, state, path),
         }
     }
 }

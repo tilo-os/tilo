@@ -5,6 +5,7 @@
 //! focus treatment, and accessibility semantics.
 
 use std::collections::HashMap;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -153,9 +154,13 @@ impl Widget for Switch {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         if matches!(
             action,
             ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
@@ -227,6 +232,7 @@ mod tests {
     use super::*;
     use crate::action::{self, SettingFlag};
     use automerge::AutoCommit;
+    use ui::widget::ActionTarget;
 
     fn switch() -> Switch {
         Switch::new(
@@ -262,8 +268,9 @@ mod tests {
 
             assert!(switch.perform_action(
                 &ui::a11y::Action::ToggleCheck,
+                ActionTarget::Widget,
                 &mut state,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(
                 action::drain(&bus),

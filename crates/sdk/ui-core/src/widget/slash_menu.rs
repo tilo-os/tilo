@@ -32,6 +32,7 @@
 //! pinned 360 px width, which is wider than most paragraph blocks.
 //! A purpose-built widget is ~150 LOC and avoids the impedance match.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
@@ -728,13 +729,16 @@ impl Widget for SlashMenu {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let Some(row_index) = target
             .strip_prefix("row:")
             .and_then(|value| value.parse::<usize>().ok())
@@ -759,6 +763,7 @@ impl Widget for SlashMenu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
     use winit::event::{ElementState, KeyEvent};
     use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
@@ -1002,12 +1007,12 @@ mod tests {
                 .expect("Heading 2 item");
             let target = heading.action_target.clone().expect("stable menu target");
 
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut menu,
-                &target,
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(menu.take_selected_kind(), Some(BlockKind::Heading(2)));
             assert!(!menu.is_visible());

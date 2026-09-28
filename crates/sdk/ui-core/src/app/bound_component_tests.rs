@@ -2,6 +2,7 @@ use super::*;
 use crate::application::{
     AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
+use crate::widget::ActionTarget;
 use crate::widget::{AppKind, AppWidget, Column, IconDescriptor, TileHost};
 use crate::widget::{AppModel, ModelPath};
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
@@ -483,10 +484,14 @@ impl Widget for Probe {
     }
     fn perform_action(
         &mut self,
-        _: &crate::a11y::Action,
+        _action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         doc: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         let (doc, _) = crate::doc::document(doc, path);
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),

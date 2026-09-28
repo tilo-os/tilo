@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -6320,13 +6321,16 @@ impl Widget for SheetsApp {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, _) = ui::doc::document(state, path);
         let activates = matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus);
         if activates {
@@ -7878,6 +7882,7 @@ mod r2_annotation_cards;
 mod tests {
     use super::*;
     use crate::grid::GridCmd;
+    use ui::widget::ActionTarget;
 
     /// Serializes tests that round-trip through the process-global system
     /// clipboard, so a parallel test's copy can't land between another's
@@ -10250,26 +10255,26 @@ mod tests {
 
             let (mut app, mut doc) = seeded_app();
             let root = automerge::ROOT;
-            assert!(app.perform_semantic_action(
-                "sheets.toolbar.formula-view",
+            assert!(app.perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("sheets.toolbar.formula-view"),
                 &mut doc,
-                &root,
+                &root
             ));
             assert!(app.grid.formula_view());
-            assert!(app.perform_semantic_action(
-                "sheets.name-box",
+            assert!(app.perform_action(
                 &ui::a11y::Action::Focus,
+                ActionTarget::Semantic("sheets.name-box"),
                 &mut doc,
-                &root,
+                &root
             ));
             assert!(app.name_box_edit.is_some());
             let target = format!("sheets.tab:{}", app.sheet_identity(1));
-            assert!(app.perform_semantic_action(
-                &target,
+            assert!(app.perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut doc,
-                &root,
+                &root
             ));
             assert_eq!(app.active_sheet, 1);
         }

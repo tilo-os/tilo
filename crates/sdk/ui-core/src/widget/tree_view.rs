@@ -7,6 +7,7 @@
 //! caller persists a choice into its own (e.g. CRDT-backed) storage.
 
 use crate::time::{Duration, Instant};
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
@@ -3622,14 +3623,17 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             .then_some(winit::window::CursorIcon::Pointer)
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, path) = crate::doc::document(state, path);
 
         self.paint_dirty = true;
@@ -4091,6 +4095,7 @@ fn paint_row_icon(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -6266,12 +6271,12 @@ mod tests {
         {
             let (mut view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
             let mut doc = AutoCommit::new();
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut view,
-                "node:5",
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic("node:5"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(*activated.borrow(), [5]);
             assert_eq!(view.selected(), Some(5));

@@ -1836,6 +1836,7 @@ mod tests {
     use crate::doc::{ChatDoc, NewMessage};
     use crate::model;
     use tilo_automerge::ApplyIncoming;
+    use ui::widget::ActionTarget;
 
     fn service_streams(app: &mut ChatApp, channel: &str, count: usize) {
         app.native_voice
@@ -1902,12 +1903,12 @@ mod tests {
             items,
             app.rect,
         ));
-        assert!(ui::Widget::perform_semantic_action(
+        assert!(ui::Widget::perform_action(
             app,
-            &format!("context-menu:item:{index}"),
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic(&format!("context-menu:item:{index}")),
             doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(app.menu.is_none(), "selection closes the modal menu");
     }
@@ -2248,23 +2249,23 @@ mod tests {
             .find_map(|(_, hit, ..)| matches!(hit, Hit::Send).then(|| hit.semantic_id()))
             .expect("the painted Send button has a semantic target");
 
-        assert!(!ui::Widget::perform_semantic_action(
+        assert!(!ui::Widget::perform_action(
             &mut app,
-            &target,
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic(&target),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         let before = ChatDoc::top_level_count(&doc, "c_general");
         ChatDoc::set_draft(&mut doc, "c_general", "accepted semantic send");
         app.reload(&doc);
         render_frame(&mut app, 1280.0, 720.0);
-        assert!(ui::Widget::perform_semantic_action(
+        assert!(ui::Widget::perform_action(
             &mut app,
-            &target,
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic(&target),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(ChatDoc::top_level_count(&doc, "c_general"), before + 1);
         assert_eq!(ChatDoc::draft_text(&doc, "c_general"), "");
@@ -3672,34 +3673,34 @@ mod tests {
             assert_eq!(composer.role, ui::a11y::Role::MultilineTextInput);
             assert_eq!(composer.value.as_deref(), Some(""));
 
-            assert!(ui::Widget::perform_semantic_action(
+            assert!(ui::Widget::perform_action(
                 &mut app,
-                &target,
                 &ui::a11y::Action::Focus,
+                ActionTarget::Semantic(&target),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
-            assert!(ui::Widget::perform_semantic_action(
+            assert!(ui::Widget::perform_action(
                 &mut app,
-                &target,
                 &ui::a11y::Action::SetValue("🦀 Accessible draft".into()),
+                ActionTarget::Semantic(&target),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(
                 ChatDoc::draft_text(&doc, &app.active_channel),
                 "🦀 Accessible draft",
                 "semantic editing updates the same unsent collaborative draft"
             );
-            assert!(ui::Widget::perform_semantic_action(
+            assert!(ui::Widget::perform_action(
                 &mut app,
-                &target,
                 &ui::a11y::Action::SetSelection {
                     anchor: 0,
                     focus: 1,
                 },
+                ActionTarget::Semantic(&target),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             let (anchor, caret) = app.composer_main.selection();
             assert_eq!(
@@ -3830,8 +3831,9 @@ mod tests {
                 anchor: 4,
                 focus: 2,
             },
+            ActionTarget::Widget,
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
 
         let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
@@ -3921,12 +3923,12 @@ mod tests {
             assert_eq!(reaction_node.role, ui::a11y::Role::ToggleButton);
             assert_eq!(reaction_node.state.checked, Some(checked));
 
-            assert!(ui::Widget::perform_semantic_action(
+            assert!(ui::Widget::perform_action(
                 &mut app,
-                &target,
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             let (_, _, _, _, after) = app
                 .semantic_hits()

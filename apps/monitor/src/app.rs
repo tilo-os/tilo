@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ui::search::{CatalogSearchProvider, SearchCatalog, SearchProvider, SearchResult};
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -5683,19 +5684,26 @@ impl Widget for MonitorApp {
         clippy::too_many_lines,
         reason = "semantic targets intentionally live beside their direct state mutations, preserving a complete auditable mapping for every custom-painted control"
     )]
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, path) = ui::doc::document(state, path);
 
         let activated = matches!(action, Action::Activate | Action::ToggleCheck);
         match target {
-            "monitor.search" => return self.search_input.perform_action(action, state, path),
+            "monitor.search" => {
+                return self
+                    .search_input
+                    .perform_action(action, ActionTarget::Widget, state, path);
+            }
             "monitor.tab.processes" if activated => self.tab = Tab::Processes,
             "monitor.tab.resources" if activated => self.tab = Tab::Resources,
             "monitor.detail-back" if activated => self.proc_push.show_master(),
@@ -6339,6 +6347,7 @@ impl MonitorApp {
 mod tests {
     use super::*;
     use ui::text_render::TextRenderer;
+    use ui::widget::ActionTarget;
 
     fn app() -> MonitorApp {
         MonitorApp::new()
@@ -8632,15 +8641,15 @@ mod tests {
             let mut a = app();
             let process = a.model.processes[0].clone();
             let mut doc = AutoCommit::new();
-            assert!(!Widget::perform_semantic_action(
+            assert!(!Widget::perform_action(
                 &mut a,
-                &format!(
+                &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&format!(
                     "{}:kill",
                     monitor_process_target(process.pid, process.started_at.saturating_add(1))
-                ),
-                &ui::a11y::Action::Activate,
+                )),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(a.take_control_invocation().is_none());
         }
@@ -8730,33 +8739,33 @@ mod tests {
 
             // Device preferences: cadence, sampler state, kernel visibility, and
             // local kill confirmation. These must remain first-window-only.
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut first,
-                "monitor.interval:3000",
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("monitor.interval:3000"),
                 &mut doc,
-                &root,
+                &root
             ));
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut first,
-                "monitor.auto-refresh",
                 &ui::a11y::Action::ToggleCheck,
+                ActionTarget::Semantic("monitor.auto-refresh"),
                 &mut doc,
-                &root,
+                &root
             ));
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut first,
-                "monitor.kernel-threads",
                 &ui::a11y::Action::ToggleCheck,
+                ActionTarget::Semantic("monitor.kernel-threads"),
                 &mut doc,
-                &root,
+                &root
             ));
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut first,
-                "monitor.confirm-kills",
                 &ui::a11y::Action::ToggleCheck,
+                ActionTarget::Semantic("monitor.confirm-kills"),
                 &mut doc,
-                &root,
+                &root
             ));
             // Presentation state: filter, sort, tree, and selection.
             first.search_input.set_text("shell");
@@ -8809,12 +8818,12 @@ mod tests {
             draw_at(&mut a, 1_280.0, 720.0);
             let mut doc = AutoCommit::new();
 
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut a,
-                "monitor.summary.2",
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("monitor.summary.2"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(a.tab, Tab::Resources);
 
@@ -8828,15 +8837,15 @@ mod tests {
                 .find(|process| process.pid == pid)
                 .expect("twisty process exists")
                 .started_at;
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut a,
-                &format!(
+                &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&format!(
                     "monitor.tree-toggle:{}",
                     process_resource_id(pid, started_at)
-                ),
-                &ui::a11y::Action::Activate,
+                )),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(a.expanded.contains(&pid));
 
@@ -8847,15 +8856,15 @@ mod tests {
                 .iter()
                 .position(|item| item.label() == Some("Copy PID"))
                 .expect("copy item");
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut a,
-                &format!(
+                &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&format!(
                     "monitor.context:{}:{copy_item}",
                     process_resource_id(pid, started_at)
-                ),
-                &ui::a11y::Action::Activate,
+                )),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(
                 a.take_control_invocation()
@@ -8872,12 +8881,15 @@ mod tests {
             let pid = a.selected_pid.expect("sample selects a process");
             let started_at = a.selected_process().unwrap().started_at;
             let mut doc = AutoCommit::new();
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut a,
-                &format!("{}:kill", monitor_process_target(pid, started_at)),
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&format!(
+                    "{}:kill",
+                    monitor_process_target(pid, started_at)
+                )),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(
                 a.take_control_invocation()
@@ -8886,12 +8898,12 @@ mod tests {
             );
             assert!(a.model.processes.iter().any(|process| process.pid == pid));
 
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut a,
-                "monitor.confirm-kills",
                 &ui::a11y::Action::ToggleCheck,
+                ActionTarget::Semantic("monitor.confirm-kills"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(!a.prefs.confirm_kill, "semantic preference toggle persists");
         }
@@ -8909,12 +8921,12 @@ mod tests {
                 target == "monitor.process-source.retry"
                     && node.name.as_deref() == Some("Retry loading the process list")
             }));
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut a,
-                "monitor.process-source.retry",
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("monitor.process-source.retry"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(
                 a.take_control_invocation()

@@ -7,6 +7,7 @@
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
+use ui::widget::ActionTarget;
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -144,11 +145,17 @@ impl NoteEditor {
     pub(crate) fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AutoCommit,
         root: &ObjId,
     ) -> bool {
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         self.sync(state, root);
-        self.host.widget_mut().perform_action(action, state, root)
+        self.host
+            .widget_mut()
+            .perform_action(action, ActionTarget::Widget, state, root)
     }
 }
 
@@ -279,18 +286,24 @@ impl NumberControls {
             .collect()
     }
 
-    pub(crate) fn perform_semantic_action(
+    pub(crate) fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AutoCommit,
         root: &ObjId,
     ) -> Option<(NumberField, Option<f64>)> {
+        let ActionTarget::Semantic(target) = target else {
+            return None;
+        };
         let control = self
             .controls
             .iter_mut()
             .find(|control| control.active && control.field.semantic_target() == target)?;
-        if !control.input.perform_action(action, state, root) {
+        if !control
+            .input
+            .perform_action(action, ActionTarget::Widget, state, root)
+        {
             return None;
         }
         Some((control.field.clone(), control.input.take_changed()))
@@ -467,18 +480,21 @@ impl NoteComposer {
         ]
     }
 
-    pub(crate) fn perform_semantic_action(
+    pub(crate) fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AutoCommit,
         root: &ObjId,
     ) -> Option<NoteSemanticOutcome> {
+        let ActionTarget::Semantic(target) = target else {
+            return None;
+        };
         let editor = self.editor.as_mut()?;
         let id = editor.id();
         if target == format!("books.note.input:{id}") {
             return editor
-                .perform_action(action, state, root)
+                .perform_action(action, ActionTarget::Widget, state, root)
                 .then_some(NoteSemanticOutcome::Focused);
         }
         if !matches!(action, ui::a11y::Action::Activate) {
@@ -950,18 +966,21 @@ impl SchemeColorSheet {
     /// Route a semantic action published by the picker. `None` when the
     /// target is not the sheet's; otherwise whether the action closed the
     /// sheet with a confirmed edit.
-    pub(crate) fn perform_semantic_action(
+    pub(crate) fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AutoCommit,
         root: &ObjId,
     ) -> Option<ColorSheetResponse> {
+        let ActionTarget::Semantic(target) = target else {
+            return None;
+        };
         let (_, picker) = self.open.as_mut()?;
         if !target.starts_with("color_picker") {
             return None;
         }
-        if !picker.perform_semantic_action(target, action, state, root) {
+        if !picker.perform_action(action, ActionTarget::Semantic(target), state, root) {
             return None;
         }
         Some(ColorSheetResponse::from_edit(self.resolve()))

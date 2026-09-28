@@ -10,6 +10,7 @@ use crate::{
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use std::{cell::Cell, rc::Rc};
+use ui::widget::ActionTarget;
 use ui::widget::scrollbar::{ScrollMetrics, Scrollbar};
 use ui::widget::{AppModel, ModelPath};
 use ui::{
@@ -2875,17 +2876,20 @@ impl Widget for ImageEditorApp {
         bindings
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, path) = ui::doc::document(state, path);
         if target.starts_with("crop.")
             && let Some(editor) = self.crop_editor.as_mut()
-            && editor.perform_semantic_action(target, action, state, path)
+            && editor.perform_action(action, ActionTarget::Semantic(target), state, path)
         {
             self.commit_crop_editor(state);
             return true;
@@ -3082,6 +3086,7 @@ mod portal_tests {
     use super::*;
     use image::{Rgba, RgbaImage};
     use ui::headless::Framed;
+    use ui::widget::ActionTarget;
 
     /// Responsive layout: the toolbar compacts before collisions, and every published
     /// target (empty-state open, phone toolbar, More menu, inspector, graph ports) is
@@ -3114,11 +3119,11 @@ mod portal_tests {
                 && child.role == Role::Button
         }));
         let mut state = AutoCommit::new();
-        assert!(app.perform_semantic_action(
-            "image-editor.empty.open",
+        assert!(app.perform_action(
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic("image-editor.empty.open"),
             &mut state,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(app.picker.is_some());
     }
@@ -3459,11 +3464,11 @@ mod portal_tests {
         ProjectDoc::write(&mut document, &app.project);
         app.editor.select_only("exposure");
 
-        assert!(app.perform_semantic_action(
-            "image-editor.adjust.remove",
+        assert!(app.perform_action(
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic("image-editor.adjust.remove"),
             &mut document,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(
             app.project.graph.evaluation_order().unwrap(),
@@ -3488,11 +3493,11 @@ mod portal_tests {
         ));
         ProjectDoc::write(&mut document, &app.project);
         app.editor.select_only("contrast");
-        assert!(app.perform_semantic_action(
-            "image-editor.adjust.slider",
+        assert!(app.perform_action(
             &ui::a11y::Action::SetValue("75%".into()),
+            ActionTarget::Semantic("image-editor.adjust.slider"),
             &mut document,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(matches!(
             app.project.operations.get("contrast"),

@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Mutex, PoisonError};
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -3445,14 +3446,17 @@ impl Widget for RemoteApp {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action as A11yAction;
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, _) = ui::doc::document(state, path);
         if self.pending_confirmation.is_some() {
             let routed = match (target, action) {
@@ -6730,6 +6734,7 @@ fn next_field(cur: Option<Field>, kind: ConnectionKind) -> Field {
 mod tests {
     use super::*;
     use ui::headless::Framed;
+    use ui::widget::ActionTarget;
 
     fn doc() -> AutoCommit {
         AutoCommit::new()
@@ -7045,11 +7050,11 @@ mod tests {
             }
 
             let before = app.workspace.get(id).expect("connection").favorite;
-            assert!(app.perform_semantic_action(
-                &format!("remote.connection:{id}:favorite"),
+            assert!(app.perform_action(
                 &ui::a11y::Action::ToggleCheck,
+                ActionTarget::Semantic(&format!("remote.connection:{id}:favorite")),
                 &mut doc(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(app.workspace.get(id).expect("connection").favorite, !before);
         }
@@ -7058,17 +7063,17 @@ mod tests {
         {
             let mut app = RemoteApp::new();
             app.apply(Action::NewConnection, &mut doc());
-            assert!(app.perform_semantic_action(
-                "remote.field:host",
+            assert!(app.perform_action(
                 &ui::a11y::Action::SetValue("build.internal".into()),
+                ActionTarget::Semantic("remote.field:host"),
                 &mut doc(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
-            assert!(app.perform_semantic_action(
-                "remote.field:port",
+            assert!(app.perform_action(
                 &ui::a11y::Action::SetValue("22ssh".into()),
+                ActionTarget::Semantic("remote.field:port"),
                 &mut doc(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(app.draft.host, "build.internal");
             assert_eq!(app.draft.port, "22");
@@ -7094,11 +7099,11 @@ mod tests {
         {
             let mut app = RemoteApp::new();
             app.apply(Action::NewConnection, &mut doc());
-            assert!(app.perform_semantic_action(
-                "remote.form.save",
+            assert!(app.perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("remote.form.save"),
                 &mut doc(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(app.form_validation.submitted);
             assert_eq!(app.focus, Some(Field::Name));

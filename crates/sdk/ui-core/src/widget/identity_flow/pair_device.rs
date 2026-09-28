@@ -991,6 +991,7 @@ impl Widget for PairDeviceScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
 
     #[test]
@@ -1098,6 +1099,7 @@ mod tests {
             Widget::perform_action(
                 &mut s.cells[1],
                 &crate::a11y::Action::SetValue("2468".into()),
+                ActionTarget::Widget,
                 &mut doc,
                 &automerge::ROOT,
             );
@@ -1116,6 +1118,7 @@ mod tests {
                     anchor: 0,
                     focus: 1,
                 },
+                ActionTarget::Widget,
                 &mut doc,
                 &automerge::ROOT,
             );

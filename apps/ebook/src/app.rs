@@ -28,6 +28,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -5595,13 +5596,16 @@ impl Widget for BooksApp {
         clippy::too_many_lines,
         reason = "one routing table keeps every synthetic Books control on its existing interaction path"
     )]
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &A11yAction,
+        target: ActionTarget<'_>,
         doc: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (doc, path) = ui::doc::document(doc, path);
         if target == "books.reader.progress" {
             self.semantic_focus = Some(target.to_string());
@@ -5688,9 +5692,9 @@ impl Widget for BooksApp {
             self.dirty = true;
             return true;
         }
-        if let Some(outcome) = self
-            .note_composer
-            .perform_semantic_action(target, action, doc, path)
+        if let Some(outcome) =
+            self.note_composer
+                .perform_action(action, ActionTarget::Semantic(target), doc, path)
         {
             match outcome {
                 NoteSemanticOutcome::Save => {
@@ -5703,9 +5707,9 @@ impl Widget for BooksApp {
             self.dirty = true;
             return true;
         }
-        if let Some(response) = self
-            .color_picker
-            .perform_semantic_action(target, action, doc, path)
+        if let Some(response) =
+            self.color_picker
+                .perform_action(action, ActionTarget::Semantic(target), doc, path)
         {
             if let ColorSheetResponse::Confirmed(edit) = response {
                 self.commit_picker(doc, edit);
@@ -5714,9 +5718,9 @@ impl Widget for BooksApp {
             self.dirty = true;
             return true;
         }
-        if let Some((field, value)) = self
-            .number_controls
-            .perform_semantic_action(target, action, doc, path)
+        if let Some((field, value)) =
+            self.number_controls
+                .perform_action(action, ActionTarget::Semantic(target), doc, path)
         {
             if let Some(value) = value {
                 match field {
@@ -5748,10 +5752,11 @@ impl Widget for BooksApp {
             expected == target
         });
         if rename_matches {
-            let handled = self
-                .renaming
-                .as_mut()
-                .is_some_and(|rename| rename.field.perform_action(action, doc, path));
+            let handled = self.renaming.as_mut().is_some_and(|rename| {
+                rename
+                    .field
+                    .perform_action(action, ActionTarget::Widget, doc, path)
+            });
             if handled {
                 self.poll_rename_outcome(doc);
                 self.refresh_from_doc(doc);
@@ -6581,10 +6586,10 @@ impl BooksApp {
         if matches!(key, Key::Named(NamedKey::Enter | NamedKey::Space))
             && let Some(target) = self.semantic_focus.clone()
         {
-            return Widget::perform_semantic_action(
+            return Widget::perform_action(
                 self,
-                &target,
                 &A11yAction::Activate,
+                ActionTarget::Semantic(&target),
                 doc,
                 &automerge::ROOT,
             );

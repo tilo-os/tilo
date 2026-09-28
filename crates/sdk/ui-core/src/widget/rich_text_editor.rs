@@ -29,6 +29,7 @@
 //! [`TextInput`]: crate::widget::TextInput
 
 use crate::time::{Duration, Instant};
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -1192,10 +1193,14 @@ impl Widget for RichTextEditor {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         let (state, _) = crate::doc::document(state, path);
 
         match action {
@@ -1233,6 +1238,7 @@ impl Widget for RichTextEditor {
 mod tests {
     use super::*;
     use crate::State;
+    use crate::widget::ActionTarget;
     use vello::kurbo::Affine;
     use winit::event::Modifiers;
     use winit::keyboard::{ModifiersState, SmolStr};
@@ -1899,15 +1905,17 @@ mod tests {
                     anchor: 1,
                     focus: 2,
                 },
+                ActionTarget::Widget,
                 &mut state.doc,
-                &state.root,
+                &state.root
             ));
             assert_eq!(ed.selection(), 1..1 + "👩‍👩‍👧‍👦".len());
             assert!(Widget::perform_action(
                 &mut ed,
                 &Action::SetValue("replacement".into()),
+                ActionTarget::Widget,
                 &mut state.doc,
-                &state.root,
+                &state.root
             ));
             assert_eq!(ed.text(), "replacement");
             assert_eq!(

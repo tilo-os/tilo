@@ -4,6 +4,7 @@
 //! immediate or background operation closure. The host supplies the widget
 //! forwarding and invocation lifecycle; scaffolds do not need to copy that
 //! infrastructure into every new project.
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -517,31 +518,11 @@ impl Widget for ResourceActionHost {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        self.root.perform_action(action, state, path)
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
-        key_path: &[u64],
-        state: &mut AppModel,
-        path: &ModelPath,
-    ) -> bool {
-        self.root.perform_action_at(action, key_path, state, path)
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &crate::a11y::Action,
-        state: &mut AppModel,
-        path: &ModelPath,
-    ) -> bool {
-        self.root
-            .perform_semantic_action(target, action, state, path)
+        self.root.perform_action(action, target, state, path)
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {

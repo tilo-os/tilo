@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc;
 use std::thread;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use ui::automerge::{AutoCommit, ObjId};
@@ -4110,13 +4111,16 @@ impl Widget for DisksApp {
         Some(root)
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &A11yAction,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, _) = ui::doc::document(state, path);
         if let A11yAction::SetValue(value) = action
             && target == "disks.modal.confirm-input"
@@ -4588,6 +4592,7 @@ fn parse_pending(s: &str) -> Option<Pending> {
 mod tests {
     use super::*;
     use ui::headless::Framed;
+    use ui::widget::ActionTarget;
 
     fn seeded_app() -> (DisksApp, AutoCommit) {
         let mut app = DisksApp::new();
@@ -4788,12 +4793,12 @@ mod tests {
             assert!(target_exists(&node, "disks.rescan"));
             assert!(target_exists(&node, "disks.drive:nvme0n1"));
             assert!(target_exists(&node, "disks.action:format"));
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 app,
-                "disks.tab:smart",
                 &A11yAction::Activate,
+                ActionTarget::Semantic("disks.tab:smart"),
                 doc,
-                &ui::automerge::ROOT,
+                &ui::automerge::ROOT
             ));
             assert_eq!(app.tab, Tab::Smart);
         }

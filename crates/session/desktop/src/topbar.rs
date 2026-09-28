@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use ui::clock::{Duration, Instant};
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
@@ -5242,13 +5243,16 @@ impl Widget for TopBarChrome {
         true
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         if !matches!(
             action,
             ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
@@ -5447,6 +5451,7 @@ mod tests {
     use tilo_desktop_model::{
         DesktopTree, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
     };
+    use ui::widget::ActionTarget;
 
     #[test]
     fn compact_workspace_identity_outranks_redundant_position() {
@@ -6130,11 +6135,11 @@ mod tests {
         );
 
         let mut doc = AutoCommit::new();
-        assert!(bar.perform_semantic_action(
-            TopBarChrome::CONTROL_CENTER_CALENDAR,
+        assert!(bar.perform_action(
             &ui::a11y::Action::ToggleCheck,
+            ActionTarget::Semantic(TopBarChrome::CONTROL_CENTER_CALENDAR),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(bar.center_widget, CenterWidget::Calendar);
     }

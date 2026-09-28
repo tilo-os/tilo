@@ -15,6 +15,7 @@ use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId, transaction::Transactable};
@@ -4906,13 +4907,16 @@ impl Widget for NotesApp {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         if target == "notes.drawer"
             && self.built_narrow
             && matches!(
@@ -5533,9 +5537,9 @@ impl NotesApp {
                 {
                     return;
                 }
-                self.main.editor_mut().perform_semantic_action(
-                    &format!("notes.editor:{command}"),
+                self.main.editor_mut().perform_action(
                     &ui::a11y::Action::Activate,
+                    ActionTarget::Semantic(&format!("notes.editor:{command}")),
                     state,
                     &automerge::ROOT,
                 );
@@ -5653,6 +5657,7 @@ impl NotesApp {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use ui::widget::ActionTarget;
 
     fn settle_markdown_io(app: &mut NotesApp, doc: &mut AutoCommit) {
         tilo_test_env::wait_until("Markdown background I/O", || {
@@ -6274,10 +6279,12 @@ mod tests {
             let tmp = TempDir::new().unwrap();
             let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
             let mut doc = AutoCommit::new();
-            assert!(
-                app.main
-                    .perform_action(&ui::a11y::Action::Activate, &mut doc, &ObjId::Root,)
-            );
+            assert!(app.main.perform_action(
+                &ui::a11y::Action::Activate,
+                ActionTarget::Widget,
+                &mut doc,
+                &ObjId::Root
+            ));
 
             app.sync(&mut doc, &ObjId::Root);
             assert_eq!(app.workspace.pages().len(), 1);

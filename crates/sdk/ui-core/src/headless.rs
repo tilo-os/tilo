@@ -26,6 +26,7 @@
 //! second loads the store and dumps the document as JSON. Diffing the two
 //! dumps is the persistence proof for the app's document.
 
+use crate::widget::ActionTarget;
 mod document_history;
 
 use std::collections::{HashMap, HashSet};
@@ -1006,7 +1007,12 @@ impl FrameHarness {
         };
         let activated = self
             .dispatch_node(focused, |widget, doc, root| {
-                widget.perform_action(&crate::a11y::Action::Activate, doc, root)
+                widget.perform_action(
+                    &crate::a11y::Action::Activate,
+                    ActionTarget::Widget,
+                    doc,
+                    root,
+                )
             })
             .unwrap_or(false);
         if activated {
@@ -3650,9 +3656,9 @@ impl FrameHarness {
         let handled = self
             .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
-                    widget.perform_semantic_action(target, action, doc, root)
+                    widget.perform_action(action, ActionTarget::Semantic(target), doc, root)
                 } else {
-                    widget.perform_action_at(action, &key_path, doc, root)
+                    widget.perform_action(action, ActionTarget::Key(&key_path), doc, root)
                 }
             })
             .map_err(|error| format!("component dispatch refused: {error:?}"))?;
@@ -3880,9 +3886,9 @@ impl FrameHarness {
             let handled = self
                 .dispatch_node(node, |widget, doc, root| {
                     if let Some(target) = semantic_target {
-                        widget.perform_semantic_action(target, action, doc, root)
+                        widget.perform_action(action, ActionTarget::Semantic(target), doc, root)
                     } else {
-                        widget.perform_action(action, doc, root)
+                        widget.perform_action(action, ActionTarget::Widget, doc, root)
                     }
                 })
                 .map_err(|error| format!("History input refused: {error:?}"))?;
@@ -3911,9 +3917,9 @@ impl FrameHarness {
         let handled = self
             .dispatch_semantic_node(node, action, |widget, doc, root| {
                 if let Some(target) = semantic_target {
-                    widget.perform_semantic_action(target, action, doc, root)
+                    widget.perform_action(action, ActionTarget::Semantic(target), doc, root)
                 } else {
-                    widget.perform_action(action, doc, root)
+                    widget.perform_action(action, ActionTarget::Widget, doc, root)
                 }
             })
             .map_err(|error| format!("component dispatch refused: {error:?}"))?;
@@ -5037,7 +5043,12 @@ impl FrameHarness {
         self.discard_layout_tree();
         self.focused = None;
         let handled = self.action_palette.as_deref_mut().is_some_and(|palette| {
-            palette.perform_semantic_action(target, action, &mut self.state.doc, &self.state.root)
+            palette.perform_action(
+                action,
+                ActionTarget::Semantic(target),
+                &mut self.state.doc,
+                &self.state.root,
+            )
         });
         self.finish_action_palette_input();
         self.relayout();
@@ -7628,6 +7639,7 @@ fn write_headless_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::transaction::Transactable;
 
     #[test]
@@ -8537,9 +8549,13 @@ mod tests {
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
+            target: ActionTarget<'_>,
             _state: &mut crate::widget::AppModel,
             _path: &crate::widget::ModelPath,
         ) -> bool {
+            if matches!(target, ActionTarget::Semantic(_)) {
+                return false;
+            }
             if matches!(action, crate::a11y::Action::Activate) {
                 self.activations
                     .set(self.activations.get().saturating_add(1));
@@ -9675,10 +9691,14 @@ mod tests {
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
+            target: ActionTarget<'_>,
             doc: &mut crate::widget::AppModel,
             path: &crate::widget::ModelPath,
         ) -> bool {
             use automerge::ReadDoc;
+            if matches!(target, ActionTarget::Semantic(_)) {
+                return false;
+            }
             let (doc, _) = crate::doc::document(doc, path);
 
             if self.ready && matches!(action, crate::a11y::Action::Activate) {
@@ -10365,6 +10385,7 @@ mod tests {
 mod a11y_driver_tests {
     use super::*;
     use crate::a11y::{AccessNode, AccessState, Action, Role};
+    use crate::widget::ActionTarget;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -10442,13 +10463,16 @@ mod a11y_driver_tests {
                     .with_keyed_action_routes("test-strip"),
             )
         }
-        fn perform_action_at(
+        fn perform_action(
             &mut self,
             action: &Action,
-            key_path: &[u64],
-            _s: &mut crate::widget::AppModel,
-            _p: &crate::widget::ModelPath,
+            target: ActionTarget<'_>,
+            _state: &mut crate::widget::AppModel,
+            _path: &crate::widget::ModelPath,
         ) -> bool {
+            let ActionTarget::Key(key_path) = target else {
+                return false;
+            };
             let Some(&key) = key_path.first() else {
                 return false;
             };
@@ -10884,6 +10908,7 @@ mod dispatched_action_driver_tests {
     use super::*;
     use crate::a11y::{AccessNode, AccessState, Role};
     use crate::state::State;
+    use crate::widget::ActionTarget;
     use serde::{Deserialize, Serialize};
     use tilo_actions::{ActionError, Doc, ExecutionLocus};
 
@@ -11033,13 +11058,16 @@ mod dispatched_action_driver_tests {
             *handled = self.claims;
         }
 
-        fn perform_action_at(
+        fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
-            _key_path: &[u64],
+            target: ActionTarget<'_>,
             doc: &mut crate::widget::AppModel,
             path: &crate::widget::ModelPath,
         ) -> bool {
+            let ActionTarget::Key(_) = target else {
+                return false;
+            };
             let (doc, _) = crate::doc::document(doc, path);
             if !matches!(action, crate::a11y::Action::Activate) {
                 return false;

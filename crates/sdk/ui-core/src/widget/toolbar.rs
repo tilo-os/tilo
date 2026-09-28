@@ -1,5 +1,6 @@
 //! A measured command strip with a shared `ContextMenu` for overflow.
 //! The extent cache is the sole source for intrinsic sizing, fitting and placement.
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -938,13 +939,16 @@ impl Widget for Toolbar {
         self.focus_target(target);
         true
     }
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let target = if target == "toolbar.overflow" && self.has_overflow() {
             Target::Overflow
         } else if let Some(index) = target
@@ -1324,6 +1328,7 @@ mod tests {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1482,9 +1487,9 @@ mod lifecycle_tests {
                                 key(&mut tb, NamedKey::Enter);
                             }
                             _ => {
-                                assert!(tb.perform_semantic_action(
-                                    &format!("toolbar.item.{index}"),
+                                assert!(tb.perform_action(
                                     &Action::Activate,
+                                    ActionTarget::Semantic(&format!("toolbar.item.{index}")),
                                     &mut AutoCommit::new(),
                                     &automerge::ROOT
                                 ));
@@ -1513,9 +1518,9 @@ mod lifecycle_tests {
                                 key(&mut tb, NamedKey::Enter);
                             }
                             _ => {
-                                assert!(tb.perform_semantic_action(
-                                    &format!("toolbar.item.{index}"),
+                                assert!(tb.perform_action(
                                     &Action::Activate,
+                                    ActionTarget::Semantic(&format!("toolbar.item.{index}")),
                                     &mut AutoCommit::new(),
                                     &automerge::ROOT
                                 ));
@@ -1825,9 +1830,9 @@ mod lifecycle_tests {
                     &theme,
                     &presence,
                 );
-                assert!(host.children_mut()[0].perform_semantic_action(
-                    "toolbar.overflow",
+                assert!(host.children_mut()[0].perform_action(
                     &Action::Activate,
+                    ActionTarget::Semantic("toolbar.overflow"),
                     &mut AutoCommit::new(),
                     &automerge::ROOT
                 ));

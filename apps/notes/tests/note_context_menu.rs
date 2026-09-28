@@ -2,6 +2,7 @@ use notes::NotesApp;
 use tempfile::TempDir;
 use ui::headless::{FrameOptions, Framed};
 use ui::theme::Theme;
+use ui::widget::ActionTarget;
 use ui::widget::Widget;
 use vello::kurbo::Point;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
@@ -252,17 +253,17 @@ fn table_context_commands_edit_only_the_current_table() {
             let mut app = settle_layout(app, state, 1200, 800);
             let id = app.main_panel_mut().editor().blocks()[0].id.clone();
             let (notes, state) = Framed::split(&mut app);
-            assert!(notes.main_panel_mut().editor_mut().perform_semantic_action(
-                &format!("notes.table-cell:{id}:2:0"),
+            assert!(notes.main_panel_mut().editor_mut().perform_action(
                 &ui::a11y::Action::Focus,
+                ActionTarget::Semantic(&format!("notes.table-cell:{id}:2:0")),
                 &mut state.doc,
-                &state.root,
+                &state.root
             ));
-            assert!(notes.main_panel_mut().editor_mut().perform_semantic_action(
-                "notes.editor:select-all",
+            assert!(notes.main_panel_mut().editor_mut().perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("notes.editor:select-all"),
                 &mut state.doc,
-                &state.root,
+                &state.root
             ));
             let rect = editor_rect(&*app).unwrap();
             dispatch(
@@ -330,11 +331,11 @@ fn table_context_commands_edit_only_the_current_table() {
             );
             let id = app.main_panel_mut().editor().blocks()[0].id.clone();
             let (notes, state) = Framed::split(&mut app);
-            assert!(notes.main_panel_mut().editor_mut().perform_semantic_action(
-                &format!("notes.table-cell:{id}:1:0"),
+            assert!(notes.main_panel_mut().editor_mut().perform_action(
                 &ui::a11y::Action::Focus,
+                ActionTarget::Semantic(&format!("notes.table-cell:{id}:1:0")),
                 &mut state.doc,
-                &state.root,
+                &state.root
             ));
             let rect = editor_rect(&*app).unwrap();
             dispatch(

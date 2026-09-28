@@ -11,6 +11,7 @@
 //! same visible rows.
 
 use crate::time::Instant;
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -2296,94 +2297,92 @@ impl<Row: 'static> Widget for DataTable<Row> {
     /// Rows carry no explicit key, so the path element is the row's display
     /// index (its ordinal among the table's synthetic children), which is the
     /// same index `on_row_click` / `on_activate` report.
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        key_path: &[u64],
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
-        // Empty path: the table itself, not a row — nothing table-specific to do.
-        let Some(&row_key) = key_path.first() else {
-            return self.perform_action(action, state, path);
-        };
-        // A read-only table's rows aren't operable.
-        if !self.selectable {
-            return false;
-        }
-        let Ok(row) = usize::try_from(row_key) else {
-            return false;
-        };
-        // An id an AT held across a change can name a row that no longer
-        // exists. Drop it — acting on whatever now sits at that index would
-        // operate on the wrong record.
-        if row >= self.display_len() {
-            return false;
-        }
-        match action {
-            // The host moves keyboard focus to the table; we move our own
-            // cursor to the requested row, which is the half only we can do.
-            Action::Focus => {
-                self.select_only_index(row);
-                self.viewport.scroll_to_index(row, ScrollAlignment::Nearest);
-                self.refresh_view_anchor();
-                true
-            }
-            Action::Activate | Action::ToggleCheck => {
-                self.select_only_index(row);
-                if let Some(cb) = &mut self.on_activate {
-                    cb(row);
+        match target {
+            ActionTarget::Widget => false,
+            ActionTarget::Key(key_path) => {
+                use crate::a11y::Action;
+                // Empty path: the table itself, not a row — nothing table-specific to do.
+                let Some(&row_key) = key_path.first() else {
+                    return self.perform_action(action, ActionTarget::Widget, state, path);
+                };
+                // A read-only table's rows aren't operable.
+                if !self.selectable {
+                    return false;
                 }
-                self.refresh_view_anchor();
-                true
+                let Ok(row) = usize::try_from(row_key) else {
+                    return false;
+                };
+                // An id an AT held across a change can name a row that no longer
+                // exists. Drop it — acting on whatever now sits at that index would
+                // operate on the wrong record.
+                if row >= self.display_len() {
+                    return false;
+                }
+                match action {
+                    // The host moves keyboard focus to the table; we move our own
+                    // cursor to the requested row, which is the half only we can do.
+                    Action::Focus => {
+                        self.select_only_index(row);
+                        self.viewport.scroll_to_index(row, ScrollAlignment::Nearest);
+                        self.refresh_view_anchor();
+                        true
+                    }
+                    Action::Activate | Action::ToggleCheck => {
+                        self.select_only_index(row);
+                        if let Some(cb) = &mut self.on_activate {
+                            cb(row);
+                        }
+                        self.refresh_view_anchor();
+                        true
+                    }
+                    Action::ScrollIntoView => {
+                        self.viewport.scroll_to_index(row, ScrollAlignment::Nearest);
+                        self.refresh_view_anchor();
+                        true
+                    }
+                    _ => false,
+                }
             }
-            Action::ScrollIntoView => {
-                self.viewport.scroll_to_index(row, ScrollAlignment::Nearest);
-                self.refresh_view_anchor();
-                true
-            }
-            _ => false,
-        }
-    }
+            ActionTarget::Semantic(target) => {
+                use crate::a11y::Action;
 
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) -> bool {
-        use crate::a11y::Action;
-
-        let Some(index) = self.semantic_row_index(target) else {
-            return false;
-        };
-        let handled = match action {
-            Action::Focus if self.selectable => {
-                self.select_only_index(index);
-                self.viewport
-                    .scroll_to_index(index, ScrollAlignment::Nearest);
-                true
+                let Some(index) = self.semantic_row_index(target) else {
+                    return false;
+                };
+                let handled = match action {
+                    Action::Focus if self.selectable => {
+                        self.select_only_index(index);
+                        self.viewport
+                            .scroll_to_index(index, ScrollAlignment::Nearest);
+                        true
+                    }
+                    Action::Activate if self.selectable || self.on_activate.is_some() => {
+                        if self.selectable {
+                            self.select_only_index(index);
+                        }
+                        if let Some(callback) = &mut self.on_activate {
+                            callback(index);
+                        }
+                        true
+                    }
+                    Action::ScrollIntoView => {
+                        self.viewport
+                            .scroll_to_index(index, ScrollAlignment::Nearest);
+                        true
+                    }
+                    _ => false,
+                };
+                self.refresh_view_anchor();
+                handled
             }
-            Action::Activate if self.selectable || self.on_activate.is_some() => {
-                if self.selectable {
-                    self.select_only_index(index);
-                }
-                if let Some(callback) = &mut self.on_activate {
-                    callback(index);
-                }
-                true
-            }
-            Action::ScrollIntoView => {
-                self.viewport
-                    .scroll_to_index(index, ScrollAlignment::Nearest);
-                true
-            }
-            _ => false,
-        };
-        self.refresh_view_anchor();
-        handled
+        }
     }
 }
 
@@ -2629,6 +2628,7 @@ mod tier_tests {
 mod tests {
     use super::*;
     use crate::time::Duration;
+    use crate::widget::ActionTarget;
     use crate::widget::Button;
     use automerge::AutoCommit;
     use std::cell::{Cell, RefCell};
@@ -2983,12 +2983,12 @@ mod tests {
                 row_queries.get()
             );
 
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut table,
-                "row:99999999:0",
                 &crate::a11y::Action::Focus,
+                ActionTarget::Semantic("row:99999999:0"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(table.model_selection().primary(), Some(&99_999_999));
             table.model_selection_mut().select_all();
@@ -3468,20 +3468,20 @@ mod tests {
                 semantics.children[1].action_target.as_deref(),
                 Some("row:98:0")
             );
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut table,
-                "row:98:0",
                 &crate::a11y::Action::Focus,
+                ActionTarget::Semantic("row:98:0"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(table.selection().primary(), Some(1));
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut table,
-                "row:98:0",
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic("row:98:0"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(&*activated.borrow(), &[1]);
 
@@ -3532,10 +3532,10 @@ mod tests {
 
             let mut doc = automerge::AutoCommit::new();
             let root = automerge::ROOT;
-            let handled = Widget::perform_action_at(
+            let handled = Widget::perform_action(
                 &mut t,
                 &crate::a11y::Action::Activate,
-                &[7],
+                ActionTarget::Key(&[7]),
                 &mut doc,
                 &root,
             );

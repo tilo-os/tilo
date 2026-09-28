@@ -676,6 +676,7 @@ fn validate_receipt(doc: &AutoCommit) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::actions::{InlineMark, InlineMarkSpan, NotesAction};
+    use ui::widget::ActionTarget;
 
     fn notebook_with(blocks: &[ui::widget::BlockContent]) -> (AutoCommit, PageId) {
         let mut doc = AutoCommit::new();
@@ -842,9 +843,9 @@ mod tests {
             panel.body_editor_mut().sync(&mut state.doc, &ROOT);
             let id = panel.editor().blocks()[0].id.clone();
             let initial_heads = state.doc.get_heads();
-            assert!(panel.editor_mut().perform_semantic_action(
-                &format!("notes.image-edit:{id}"),
+            assert!(panel.editor_mut().perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&format!("notes.image-edit:{id}")),
                 &mut state.doc,
                 &ROOT
             ));
@@ -854,9 +855,9 @@ mod tests {
                 initial_heads,
                 "a view mode writes nothing"
             );
-            assert!(panel.editor_mut().perform_semantic_action(
-                &format!("notes.image-source:{id}"),
+            assert!(panel.editor_mut().perform_action(
                 &ui::a11y::Action::SetValue(edited.into()),
+                ActionTarget::Semantic(&format!("notes.image-source:{id}")),
                 &mut state.doc,
                 &ROOT
             ));
@@ -865,9 +866,9 @@ mod tests {
                 .expect("a source edit is a Notes action");
             state.record_committed_action(before, None, None);
             let edited_heads = state.doc.get_heads();
-            assert!(panel.editor_mut().perform_semantic_action(
-                &format!("notes.image-done:{id}"),
+            assert!(panel.editor_mut().perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&format!("notes.image-done:{id}")),
                 &mut state.doc,
                 &ROOT
             ));

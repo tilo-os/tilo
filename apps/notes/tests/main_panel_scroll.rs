@@ -17,6 +17,7 @@
 
 use std::fmt::Write as _;
 use ui::headless::{FrameOptions, Framed};
+use ui::widget::ActionTarget;
 
 use notes::NotesApp;
 use tempfile::TempDir;
@@ -213,9 +214,9 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
 
         let root = Framed::harness(&app).state().root.clone();
         let (notes, state) = Framed::split(&mut app);
-        assert!(notes.main_panel_mut().perform_semantic_action(
-            "notes.scroll-position",
+        assert!(notes.main_panel_mut().perform_action(
             &Action::SetValue("100".into()),
+            ActionTarget::Semantic("notes.scroll-position"),
             &mut state.doc,
             &root
         ));
@@ -251,16 +252,16 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
             "track click pages upward"
         );
         let (notes, state) = Framed::split(&mut app);
-        assert!(!notes.main_panel_mut().perform_semantic_action(
-            "notes.scroll-position",
+        assert!(!notes.main_panel_mut().perform_action(
             &Action::SetValue("NaN".into()),
+            ActionTarget::Semantic("notes.scroll-position"),
             &mut state.doc,
             &root
         ));
         let (notes, state) = Framed::split(&mut app);
-        assert!(notes.main_panel_mut().perform_semantic_action(
-            "notes.scroll-position",
+        assert!(notes.main_panel_mut().perform_action(
             &Action::Focus,
+            ActionTarget::Semantic("notes.scroll-position"),
             &mut state.doc,
             &root
         ));

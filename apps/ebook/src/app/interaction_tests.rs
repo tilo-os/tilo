@@ -7,6 +7,7 @@ use crate::content::load_sample_library;
 use crate::model::AnnoKind;
 use serial_test::serial;
 use ui::presence::PresenceCtx;
+use ui::widget::ActionTarget;
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, KeyEvent};
 
@@ -90,12 +91,12 @@ fn library_controls_and_actions_are_discoverable_and_accessible() {
         assert_eq!(hide.role, Role::Switch);
         assert_eq!(hide.state.checked, Some(false));
 
-        assert!(Widget::perform_semantic_action(
+        assert!(Widget::perform_action(
             &mut app,
-            "books.library.hide-read",
             &A11yAction::ToggleCheck,
+            ActionTarget::Semantic("books.library.hide-read"),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(BooksDoc::read_library_prefs(&doc).hide_read);
     }
@@ -194,12 +195,12 @@ fn reader_controls_are_accessible_and_live() {
         assert_eq!(bookmark.role, Role::ToggleButton);
         assert_eq!(bookmark.state.checked, Some(false));
 
-        assert!(Widget::perform_semantic_action(
+        assert!(Widget::perform_action(
             &mut app,
-            "books.reader.bookmark",
             &A11yAction::Activate,
+            ActionTarget::Semantic("books.reader.bookmark"),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(
             BooksDoc::list_annotations(&doc)
@@ -238,12 +239,12 @@ fn reader_controls_are_accessible_and_live() {
                 .as_deref()
                 .is_some_and(|value| value.ends_with('%'))
         );
-        assert!(Widget::perform_semantic_action(
+        assert!(Widget::perform_action(
             &mut app,
-            "books.reader.progress",
             &A11yAction::SetValue("75%".into()),
+            ActionTarget::Semantic("books.reader.progress"),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(app.chapter, 3);
         assert!((BooksDoc::read_progress(&doc, &id).fraction - 0.75).abs() < 0.01);
@@ -267,12 +268,12 @@ fn reader_controls_are_accessible_and_live() {
         assert_eq!(size.role, Role::SpinButton);
 
         let before = BooksDoc::read_settings(&doc).font_scale;
-        assert!(Widget::perform_semantic_action(
+        assert!(Widget::perform_action(
             &mut app,
-            "books.number.text-size",
             &A11yAction::Increment,
+            ActionTarget::Semantic("books.number.text-size"),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(BooksDoc::read_settings(&doc).font_scale > before);
     }
@@ -1341,15 +1342,20 @@ fn colour_picker_edits_or_leaves_a_scheme() {
             .and_then(|node| node.action_target.clone())
             .expect("each swatch carries its own action");
         let root = automerge::ROOT;
-        assert!(app.perform_semantic_action(&red, &A11yAction::Activate, &mut doc, &root));
+        assert!(app.perform_action(
+            &A11yAction::Activate,
+            ActionTarget::Semantic(&red),
+            &mut doc,
+            &root
+        ));
         assert_eq!(
             page_of(&doc, "scheme_x"),
             before,
             "a swatch pick is pending"
         );
-        assert!(app.perform_semantic_action(
-            "color_picker.done",
+        assert!(app.perform_action(
             &A11yAction::Activate,
+            ActionTarget::Semantic("color_picker.done"),
             &mut doc,
             &root
         ));

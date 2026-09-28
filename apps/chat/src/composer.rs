@@ -10,6 +10,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use ui::widget::ActionTarget;
 
 use automerge::AutoCommit;
 use tilo_rich_text::{
@@ -247,11 +248,21 @@ impl<S: RichTextSource + 'static> Composer<S> {
     pub fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         doc: &mut AutoCommit,
         path: &automerge::ObjId,
     ) -> bool {
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         self.host.sync(doc, path);
-        let done = Widget::perform_action(self.host.widget_mut(), action, doc, path);
+        let done = Widget::perform_action(
+            self.host.widget_mut(),
+            action,
+            ActionTarget::Widget,
+            doc,
+            path,
+        );
         self.host.sync(doc, path);
         done
     }

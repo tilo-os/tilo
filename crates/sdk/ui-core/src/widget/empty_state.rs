@@ -18,6 +18,7 @@
 //! CRDT-native input model used by [`super::ContextMenu`] /
 //! [`super::TriStateControl`].
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
@@ -708,29 +709,28 @@ impl Widget for EmptyState {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        let (state, path) = crate::doc::document(state, path);
-        if self.is_enabled()
-            && self.action_label.is_some()
-            && matches!(action, crate::a11y::Action::Activate)
-        {
-            self.fire_action(state, path);
-            true
-        } else {
-            false
+        match target {
+            ActionTarget::Widget | ActionTarget::Key(_) => {
+                let (state, path) = crate::doc::document(state, path);
+                if self.is_enabled()
+                    && self.action_label.is_some()
+                    && matches!(action, crate::a11y::Action::Activate)
+                {
+                    self.fire_action(state, path);
+                    true
+                } else {
+                    false
+                }
+            }
+            ActionTarget::Semantic(target) => {
+                self.action_id.as_deref() == Some(target)
+                    && self.perform_action(action, ActionTarget::Widget, state, path)
+            }
         }
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &crate::a11y::Action,
-        state: &mut AppModel,
-        path: &ModelPath,
-    ) -> bool {
-        self.action_id.as_deref() == Some(target) && self.perform_action(action, state, path)
     }
 
     fn name(&self) -> &'static str {
@@ -844,6 +844,7 @@ impl Widget for EmptyState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use vello_encoding::DrawTag;
 
     fn lay_out(w: &mut dyn Widget, vw: f32, vh: f32) {
@@ -1181,8 +1182,9 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut es,
                 &crate::a11y::Action::Activate,
+                ActionTarget::Widget,
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(es.take_action(), "Enter/Space/AT Activate reaches the CTA");
         }
@@ -1224,7 +1226,12 @@ mod tests {
             ));
 
             let _ = doc.put(&root, key, false);
-            assert!(es.perform_action(&crate::a11y::Action::Activate, &mut doc, &root));
+            assert!(es.perform_action(
+                &crate::a11y::Action::Activate,
+                ActionTarget::Widget,
+                &mut doc,
+                &root
+            ));
             assert!(matches!(
                 doc.get(&root, key),
                 Ok(Some((Value::Scalar(value), _))) if value.as_ref().as_bool() == Some(true)
@@ -1435,7 +1442,12 @@ mod tests {
             let _ = doc.put(&root, "empty.review", false);
             let child = scroll.children_mut().remove(0);
             child.set_focus(true);
-            assert!(child.perform_action(&crate::a11y::Action::Activate, &mut doc, &root));
+            assert!(child.perform_action(
+                &crate::a11y::Action::Activate,
+                ActionTarget::Widget,
+                &mut doc,
+                &root
+            ));
             assert!(matches!(
                 doc.get(&root, "empty.review"),
                 Ok(Some((Value::Scalar(value), _))) if value.as_ref().as_bool() == Some(true)

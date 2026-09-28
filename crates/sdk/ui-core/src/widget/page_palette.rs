@@ -8,6 +8,7 @@
 //! result list, sized to look like a fullscreen-ish dialog when
 //! anchored at a generous offset from the window's top-center.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
@@ -738,13 +739,16 @@ impl Widget for PageJumpPalette {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         if !self.visible_flag {
             return false;
         }

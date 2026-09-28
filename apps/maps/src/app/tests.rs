@@ -1,5 +1,6 @@
 use super::*;
 use tilo_automerge::ApplyIncoming;
+use ui::widget::ActionTarget;
 
 /// Resource operations: location reports the real portal result, place-open and
 /// search are window-local brokered operations, eager/lazy resources share ids.
@@ -630,12 +631,12 @@ fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
         );
         let mut doc = AutoCommit::new();
         assert!(
-            !Widget::perform_semantic_action(
+            !Widget::perform_action(
                 &mut a,
-                "maps.offline.download",
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("maps.offline.download"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ),
             "no actionable Download target while saving areas is refused"
         );
@@ -2759,12 +2760,12 @@ fn live_navigation_surface_keeps_identity_modality_and_motion_rules() {
         }));
 
         let mut doc = AutoCommit::new();
-        assert!(Widget::perform_semantic_action(
+        assert!(Widget::perform_action(
             &mut a,
-            "maps.navigation.end",
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic("maps.navigation.end"),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(a.model.route.is_none());
     }
@@ -3116,12 +3117,12 @@ fn semantic_controls_are_stable_modal_and_operable() {
             node.children.len(),
             "no duplicate semantic ids"
         );
-        assert!(Widget::perform_semantic_action(
+        assert!(Widget::perform_action(
             &mut a,
-            "maps.control:traffic",
             &ui::a11y::Action::ToggleCheck,
+            ActionTarget::Semantic("maps.control:traffic"),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(a.map_controls.traffic_enabled());
     }
@@ -3158,12 +3159,12 @@ fn semantic_controls_are_stable_modal_and_operable() {
         );
 
         let mut doc = AutoCommit::new();
-        assert!(Widget::perform_semantic_action(
+        assert!(Widget::perform_action(
             &mut a,
-            "maps.offline.close",
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic("maps.offline.close"),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(!a.offline_panel.is_open());
     }

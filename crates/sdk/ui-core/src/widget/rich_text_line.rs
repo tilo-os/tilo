@@ -10,6 +10,7 @@
 //! * A [`MarkSpan`] list (inline bold/italic/code/link) with rendering and
 //!   Ctrl-B/I/E toggling built on the inner `TextInput`'s selection range.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
@@ -1240,11 +1241,16 @@ impl Widget for RichTextLine {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         let (state, path) = crate::doc::document(state, path);
-        let handled = Widget::perform_action(&mut self.inner, action, state, path);
+        let handled =
+            Widget::perform_action(&mut self.inner, action, ActionTarget::Widget, state, path);
         if handled && matches!(action, crate::a11y::Action::SetValue(_)) {
             self.marks.clear();
             self.pending_marks.clear();
@@ -1540,6 +1546,7 @@ pub fn link_at_byte(marks_list: &[MarkSpan], byte: usize) -> Option<PageId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use crate::widget::marks::Mark;
     use winit::event::{KeyEvent, Modifiers};
     use winit::keyboard::{
@@ -2078,6 +2085,7 @@ mod tests {
                     anchor: 0,
                     focus: 4
                 },
+                ActionTarget::Widget,
                 &mut doc,
                 &automerge::ROOT
             ));
@@ -2093,6 +2101,7 @@ mod tests {
                     anchor: 4,
                     focus: 4
                 },
+                ActionTarget::Widget,
                 &mut doc,
                 &automerge::ROOT
             ));

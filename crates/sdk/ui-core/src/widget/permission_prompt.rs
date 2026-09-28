@@ -10,6 +10,7 @@
 //! one-shot output; the parent drains it each frame and applies the
 //! resulting `Capability` grant.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -632,15 +633,41 @@ impl Widget for PermissionPrompt {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
-        if matches!(action, crate::a11y::Action::Activate)
-            && let Some(choice) = self.focused_choice
-        {
-            self.choose(choice)
-        } else {
-            false
+        match target {
+            ActionTarget::Widget => {
+                if matches!(action, crate::a11y::Action::Activate)
+                    && let Some(choice) = self.focused_choice
+                {
+                    self.choose(choice)
+                } else {
+                    false
+                }
+            }
+            ActionTarget::Key(key_path) => {
+                let [key] = key_path else {
+                    return false;
+                };
+                let Some(choice) = Self::choice_from_key(*key) else {
+                    return false;
+                };
+                match action {
+                    crate::a11y::Action::Focus => {
+                        self.has_keyboard_focus = true;
+                        self.focused_choice = Some(choice);
+                        self.choice_enabled(choice)
+                    }
+                    crate::a11y::Action::Activate => {
+                        self.focused_choice = Some(choice);
+                        self.choose(choice)
+                    }
+                    _ => false,
+                }
+            }
+            ActionTarget::Semantic(_) => false,
         }
     }
 
@@ -672,33 +699,6 @@ impl Widget for PermissionPrompt {
         self.focused_choice = Some(choice);
         true
     }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
-        key_path: &[u64],
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) -> bool {
-        let [key] = key_path else {
-            return false;
-        };
-        let Some(choice) = Self::choice_from_key(*key) else {
-            return false;
-        };
-        match action {
-            crate::a11y::Action::Focus => {
-                self.has_keyboard_focus = true;
-                self.focused_choice = Some(choice);
-                self.choice_enabled(choice)
-            }
-            crate::a11y::Action::Activate => {
-                self.focused_choice = Some(choice);
-                self.choose(choice)
-            }
-            _ => false,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -706,6 +706,7 @@ mod tests {
     //! `apply_layout_helper` populates the hit-test rects from a synthetic
     //! `self.rect` so tests don't depend on a GPU/text-renderer.
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
     use winit::event::{DeviceId, ElementState, MouseButton};
 
@@ -759,29 +760,30 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut p,
                 &crate::a11y::Action::Activate,
+                ActionTarget::Widget,
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
 
             p.pending_choice = None;
-            assert!(Widget::perform_action_at(
+            assert!(Widget::perform_action(
                 &mut p,
                 &crate::a11y::Action::Activate,
-                &[SESSION_KEY],
+                ActionTarget::Key(&[SESSION_KEY]),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(p.pending_choice, Some(PromptChoice::Session));
 
             p.pending_choice = None;
             assert!(
-                !Widget::perform_action_at(
+                !Widget::perform_action(
                     &mut p,
                     &crate::a11y::Action::Activate,
-                    &[ALWAYS_KEY],
+                    ActionTarget::Key(&[ALWAYS_KEY]),
                     &mut doc,
-                    &automerge::ROOT,
+                    &automerge::ROOT
                 ),
                 "a disabled persistent grant cannot be activated through AT"
             );

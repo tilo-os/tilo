@@ -2,6 +2,7 @@
 use automerge::ROOT;
 use std::collections::HashMap;
 use tilo_ui::bound_dispatch::{BoundDispatchError, BoundNodeMap, invoke_bound_node};
+use tilo_ui::widget::ActionTarget;
 use tilo_ui::widget::{AppModel, ModelPath};
 use tilo_ui::widget::{Button, Widget};
 
@@ -239,7 +240,12 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
                         if widget.name() == "Leaf" {
                             widget.set_focus(true);
                             widget.ime_cursor_rect();
-                            widget.perform_action(&tilo_ui::a11y::Action::Focus, doc, root);
+                            widget.perform_action(
+                                &tilo_ui::a11y::Action::Focus,
+                                ActionTarget::Widget,
+                                doc,
+                                root,
+                            );
                         }
                     },
                 )
@@ -417,7 +423,12 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
                     &ROOT,
                     |widget, doc, path| {
                         if widget.name() == "Leaf" {
-                            widget.perform_action(&tilo_ui::a11y::Action::Focus, doc, path);
+                            widget.perform_action(
+                                &tilo_ui::a11y::Action::Focus,
+                                ActionTarget::Widget,
+                                doc,
+                                path,
+                            );
                         }
                     },
                 )
@@ -593,26 +604,27 @@ impl Widget for Leaf {
     }
     fn perform_action(
         &mut self,
-        _: &tilo_ui::a11y::Action,
-        doc: &mut AppModel,
-        path: &ModelPath,
-    ) -> bool {
-        let (doc, _) = tilo_ui::doc::document(doc, path);
-        self.edit(doc, "action");
-        true
-    }
-    fn perform_action_at(
-        &mut self,
         action: &tilo_ui::a11y::Action,
-        path: &[u64],
+        target: ActionTarget<'_>,
         doc: &mut AppModel,
         doc_path: &ModelPath,
     ) -> bool {
-        let (doc, _) = tilo_ui::doc::document(doc, doc_path);
-        assert_eq!(path, &[42]);
-        assert_eq!(action, &tilo_ui::a11y::Action::Focus);
-        self.edit(doc, "synthetic-action");
-        true
+        match target {
+            ActionTarget::Widget => {
+                let path = doc_path;
+                let (doc, _) = tilo_ui::doc::document(doc, path);
+                self.edit(doc, "action");
+                true
+            }
+            ActionTarget::Key(path) => {
+                let (doc, _) = tilo_ui::doc::document(doc, doc_path);
+                assert_eq!(path, &[42]);
+                assert_eq!(action, &tilo_ui::a11y::Action::Focus);
+                self.edit(doc, "synthetic-action");
+                true
+            }
+            ActionTarget::Semantic(_) => false,
+        }
     }
     fn resource(&self, doc: &AutoCommit, _: &str) -> Option<tilo_actions::Resource> {
         assert_eq!(
@@ -1021,7 +1033,12 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
                         doc,
                         &ROOT,
                         |widget, doc, root| {
-                            widget.perform_action(&tilo_ui::a11y::Action::Focus, doc, root)
+                            widget.perform_action(
+                                &tilo_ui::a11y::Action::Focus,
+                                ActionTarget::Widget,
+                                doc,
+                                root,
+                            )
                         },
                     )
                     .unwrap();

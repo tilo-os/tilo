@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 use tilo_actions::EncodedAction;
 use tilo_clock::unix_now_i64;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -3398,16 +3399,19 @@ impl Widget for CameraApp {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &A11yAction,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, path) = ui::doc::document(state, path);
         if let Some(editor) = self.document_crop_editor.as_mut()
-            && editor.perform_semantic_action(target, action, state, path)
+            && editor.perform_action(action, ActionTarget::Semantic(target), state, path)
         {
             return true;
         }
@@ -6640,6 +6644,7 @@ impl CameraApp {
 mod tests {
     use super::*;
     use ui::headless::{Framed, viewport};
+    use ui::widget::ActionTarget;
 
     fn sample_app() -> (CameraApp, AutoCommit, ObjId) {
         let mut app = CameraApp::sample();
@@ -7163,11 +7168,11 @@ mod tests {
             let (app, doc, root) = sample_app();
             let mut app = render_at(app, doc, 900.0, 700.0);
             let (camera, state) = Framed::split(&mut app);
-            assert!(camera.perform_semantic_action(
-                "camera.open-photos",
+            assert!(camera.perform_action(
                 &A11yAction::Activate,
+                ActionTarget::Semantic("camera.open-photos"),
                 &mut state.doc,
-                &root,
+                &root
             ));
             let invocation = Widget::take_control_invocation(&mut *app)
                 .expect("Photos browse emits a typed external invocation");
@@ -7185,11 +7190,11 @@ mod tests {
             let mut app = render_at(app, doc, 900.0, 700.0);
             let before = app.captures[0].id.clone();
             let (camera, state) = Framed::split(&mut app);
-            assert!(camera.perform_semantic_action(
-                "camera.shutter",
+            assert!(camera.perform_action(
                 &A11yAction::Activate,
+                ActionTarget::Semantic("camera.shutter"),
                 &mut state.doc,
-                &root,
+                &root
             ));
             assert_eq!(app.captures.len(), 1);
             assert_ne!(app.captures[0].id, before);
@@ -7223,11 +7228,11 @@ mod tests {
                 assert!(bounds.x1 - bounds.x0 >= 44.0 && bounds.y1 - bounds.y0 >= 44.0);
             }
             let (camera, state) = Framed::split(&mut app);
-            assert!(camera.perform_semantic_action(
-                "camera.retry-camera",
+            assert!(camera.perform_action(
                 &A11yAction::Activate,
+                ActionTarget::Semantic("camera.retry-camera"),
                 &mut state.doc,
-                &root,
+                &root
             ));
             // Device discovery is deliberately real. The test host may expose a
             // `/dev/video*` node (for example, a CI virtual camera), so assert

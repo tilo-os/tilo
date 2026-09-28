@@ -16,6 +16,7 @@
 )]
 
 use crate::time::{Duration, Instant};
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
@@ -1328,13 +1329,16 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         if target == "floating-window.close"
             && matches!(action, crate::a11y::Action::Activate)
             && self.closable
@@ -1410,6 +1414,7 @@ mod tests {
         reason = "tests place retained animation clocks at exact elapsed phases"
     )]
     use super::*;
+    use crate::widget::ActionTarget;
     use vello_encoding::DrawTag;
 
     #[test]
@@ -1929,12 +1934,12 @@ mod tests {
             assert_eq!(node.children[0].name.as_deref(), Some("Close Compose"));
 
             let mut state = AutoCommit::new();
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut w,
-                "floating-window.close",
                 &Action::Activate,
+                ActionTarget::Semantic("floating-window.close"),
                 &mut state,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(!w.is_open());
             assert!(Widget::accessibility(&w).is_none());

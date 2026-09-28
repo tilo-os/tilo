@@ -4,6 +4,7 @@
 //! root path directly — there is no message layer.
 
 use crate::search::ListIndex;
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashSet;
@@ -2481,53 +2482,49 @@ impl Widget for CommandPalette {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) -> bool {
-        match action {
-            crate::a11y::Action::Focus | crate::a11y::Action::Activate => {
-                self.is_focused = true;
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
-        let (state, path) = crate::doc::document(state, path);
-
-        if target == "command-palette:query" {
-            return match action {
-                Action::Focus | Action::Activate => {
+        match target {
+            ActionTarget::Widget | ActionTarget::Key(_) => match action {
+                crate::a11y::Action::Focus | crate::a11y::Action::Activate => {
                     self.is_focused = true;
                     true
                 }
                 _ => false,
-            };
-        }
-        let Some(visible_index) = self.visible_entry_for_target(target) else {
-            return false;
-        };
-        match action {
-            Action::Focus => {
-                self.set_cursor(visible_index);
-                self.is_focused = true;
-                true
+            },
+            ActionTarget::Semantic(target) => {
+                use crate::a11y::Action;
+                let (state, path) = crate::doc::document(state, path);
+
+                if target == "command-palette:query" {
+                    return match action {
+                        Action::Focus | Action::Activate => {
+                            self.is_focused = true;
+                            true
+                        }
+                        _ => false,
+                    };
+                }
+                let Some(visible_index) = self.visible_entry_for_target(target) else {
+                    return false;
+                };
+                match action {
+                    Action::Focus => {
+                        self.set_cursor(visible_index);
+                        self.is_focused = true;
+                        true
+                    }
+                    Action::Activate => {
+                        self.set_cursor(visible_index);
+                        self.is_focused = true;
+                        self.activate_selected(state, path);
+                        true
+                    }
+                    _ => false,
+                }
             }
-            Action::Activate => {
-                self.set_cursor(visible_index);
-                self.is_focused = true;
-                self.activate_selected(state, path);
-                true
-            }
-            _ => false,
         }
     }
 }
@@ -2568,6 +2565,7 @@ impl CommandPalette {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use taffy::TaffyTree;
     use winit::event::Modifiers;
     use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
@@ -2886,20 +2884,20 @@ mod tests {
                 .expect("result has a stable semantic target");
             let mut doc = AutoCommit::new();
 
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut p,
-                &target,
                 &crate::a11y::Action::Focus,
+                ActionTarget::Semantic(&target),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(p.selected_id(), Some("bravo"));
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut p,
-                &target,
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(
                 p.take_outcome(),

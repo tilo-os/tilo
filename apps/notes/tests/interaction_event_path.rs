@@ -22,6 +22,7 @@
 
 use std::collections::HashMap;
 use ui::headless::{FrameOptions, Framed};
+use ui::widget::ActionTarget;
 
 use notes::NotesApp;
 use notes::sidebar::OutEvent;
@@ -267,11 +268,11 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
         assert_ne!(before[0], before[1]);
         let mut state = automerge::AutoCommit::new();
         let first = editor.blocks()[0].id.clone();
-        assert!(editor.perform_semantic_action(
-            &format!("notes.block-move:{first}:down"),
+        assert!(editor.perform_action(
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic(&format!("notes.block-move:{first}:down")),
             &mut state,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         relayout_block_editor(&mut editor);
         assert_eq!(editor.blocks()[0].text(), "other()");
@@ -284,11 +285,11 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
         relayout_block_editor(&mut editor);
         assert_eq!(targets(&editor), vec![before[1].clone()]);
         assert!(
-            !editor.perform_semantic_action(
-                &before[0],
+            !editor.perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&before[0]),
                 &mut state,
-                &automerge::ROOT,
+                &automerge::ROOT
             ),
             "a removed fence must never copy another fence at its old position"
         );

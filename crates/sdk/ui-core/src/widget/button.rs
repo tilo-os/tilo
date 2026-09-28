@@ -7,6 +7,7 @@ use crate::theme::Theme;
 use crate::tokens::TypeScale;
 use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::ActionEmitter;
+use crate::widget::ActionTarget;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
@@ -1680,10 +1681,14 @@ impl Widget for Button {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         let (state, root) = crate::doc::document(state, root);
         if !self.effectively_enabled() {
             return false;
@@ -1816,6 +1821,7 @@ impl Button {
 mod tests {
     use super::*;
     use crate::ColorCompat;
+    use crate::widget::ActionTarget;
     use crate::widget::Widget;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -3365,8 +3371,9 @@ mod tests {
 
             assert!(button.perform_action(
                 &crate::a11y::Action::Activate,
+                ActionTarget::Widget,
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
 
             let (value, _) = doc.get(&automerge::ROOT, "command").unwrap().unwrap();

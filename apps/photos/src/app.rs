@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::time::{Duration, Instant};
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -15996,13 +15997,16 @@ impl Widget for PhotosApp {
         Some(self.accessibility_tree())
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &AccessAction,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, _) = ui::doc::document(state, path);
         self.reconcile_content(state);
         self.perform_toolbar_semantic_action(target, action, state)
@@ -16672,6 +16676,7 @@ mod history_reconcile_tests {
     use super::*;
     use automerge::ROOT;
     use tilo_automerge::ApplyIncoming;
+    use ui::widget::ActionTarget;
     fn restore(doc: &mut AutoCommit, selected: &[automerge::ChangeHash]) {
         let heads = doc.get_heads();
         let plan = ui::history_mode::restore::prepare_content_restore(
@@ -16908,7 +16913,12 @@ mod history_reconcile_tests {
             assert!(app.metadata_editor);
             assert_eq!(app.metadata_tags_input.value(), "unsaved draft");
             restore(&mut doc, &selected);
-            app.perform_semantic_action("nonexistent", &AccessAction::Activate, &mut doc, &ROOT);
+            app.perform_action(
+                &AccessAction::Activate,
+                ActionTarget::Semantic("nonexistent"),
+                &mut doc,
+                &ROOT,
+            );
             assert!(
                 !app.metadata_editor,
                 "stale draft must detach before any new input"
@@ -16938,7 +16948,12 @@ mod history_reconcile_tests {
             app.metadata_tags_input.set_text("unsaved batch draft");
             library.photos[1].tags = vec!["remote edit".into()];
             PhotosDoc::set_library(&mut doc, &library);
-            app.perform_semantic_action("nonexistent", &AccessAction::Activate, &mut doc, &ROOT);
+            app.perform_action(
+                &AccessAction::Activate,
+                ActionTarget::Semantic("nonexistent"),
+                &mut doc,
+                &ROOT,
+            );
             assert!(
                 !app.metadata_editor,
                 "a changed non-first batch target invalidates the draft before input"
@@ -17234,7 +17249,12 @@ mod history_reconcile_tests {
     }
 
     fn activate_album_control(app: &mut PhotosApp, doc: &mut AutoCommit, target: &str) {
-        assert!(app.perform_semantic_action(target, &AccessAction::Activate, doc, &ROOT));
+        assert!(app.perform_action(
+            &AccessAction::Activate,
+            ActionTarget::Semantic(target),
+            doc,
+            &ROOT
+        ));
         app.sync(doc, &ROOT);
     }
 

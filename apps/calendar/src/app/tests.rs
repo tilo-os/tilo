@@ -3,6 +3,7 @@ use automerge::ROOT;
 use serial_test::serial;
 use tilo_actions::Action as _;
 use ui::headless::Framed;
+use ui::widget::ActionTarget;
 
 #[test]
 fn task_completion_toggles_by_checkbox_and_label_and_paints_both_states() {
@@ -2761,11 +2762,11 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
             &theme,
             &PresenceCtx::empty(),
         );
-        assert!(app.perform_semantic_action(
-            &target,
+        assert!(app.perform_action(
             &A11yAction::ToggleCheck,
+            ActionTarget::Semantic(&target),
             &mut state,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(
             app.last_local_resource_operation(),
@@ -2834,11 +2835,11 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
                 && node.action_target.as_deref() == Some("calendar.new-event")
         }));
         let before = app.model.events.len();
-        assert!(app.perform_semantic_action(
-            "calendar.new-event",
+        assert!(app.perform_action(
             &A11yAction::Activate,
+            ActionTarget::Semantic("calendar.new-event"),
             &mut state,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(app.model.events.len(), before + 1);
     }

@@ -5,6 +5,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use tilo_automerge::ApplyIncoming;
 use ui::State;
+use ui::widget::ActionTarget;
 use ui::widget::Widget as _;
 use vello::kurbo::Rect;
 use vte::Perform;
@@ -1757,14 +1758,16 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         let transcript = widget.accessibility().expect("terminal transcript");
         assert!(transcript.state.context_menu);
         assert!(
-            widget.perform_semantic_action(
-                transcript
-                    .action_target
-                    .as_deref()
-                    .expect("transcript target"),
+            widget.perform_action(
                 &Action::ShowContextMenu,
+                ActionTarget::Semantic(
+                    transcript
+                        .action_target
+                        .as_deref()
+                        .expect("transcript target")
+                ),
                 &mut doc,
-                &ROOT,
+                &ROOT
             )
         );
         let semantics = widget.accessibility().expect("terminal with menu");
@@ -1783,11 +1786,11 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             .iter()
             .find(|item| item.name.as_deref() == Some(find_label.as_str()))
             .expect("Find entry");
-        assert!(widget.perform_semantic_action(
-            find.action_target.as_deref().expect("Find target"),
+        assert!(widget.perform_action(
             &Action::Activate,
+            ActionTarget::Semantic(find.action_target.as_deref().expect("Find target")),
             &mut doc,
-            &ROOT,
+            &ROOT
         ));
         assert!(widget.find_test_state().0);
         let semantics = widget.accessibility().expect("terminal with Find");
@@ -1797,11 +1800,11 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             .flat_map(|child| &child.children)
             .find(|child| child.role == Role::TextInput)
             .expect("discoverable query");
-        assert!(widget.perform_semantic_action(
-            query.action_target.as_deref().expect("query target"),
+        assert!(widget.perform_action(
             &Action::SetValue("private search".into()),
+            ActionTarget::Semantic(query.action_target.as_deref().expect("query target")),
             &mut doc,
-            &ROOT,
+            &ROOT
         ));
         assert!(
             drain_writes(&writes).is_empty(),
@@ -1813,11 +1816,11 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             "Find remains private local view state"
         );
         assert!(
-            !widget.perform_semantic_action(
-                transcript.action_target.as_deref().unwrap(),
+            !widget.perform_action(
                 &Action::SetValue("unreviewed command".into()),
+                ActionTarget::Semantic(transcript.action_target.as_deref().unwrap()),
                 &mut doc,
-                &ROOT,
+                &ROOT
             ),
             "transcript actions still cannot execute arbitrary text"
         );
@@ -1878,29 +1881,29 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         // blind terminal keystroke. The target includes the shared pane id so
         // embedded terminals do not collide.
         let next = widget.find_test_target("next");
-        assert!(ui::widget::Widget::perform_semantic_action(
+        assert!(ui::widget::Widget::perform_action(
             &mut widget,
-            &next,
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic(&next),
             &mut doc,
-            &ROOT,
+            &ROOT
         ));
         let query = widget.find_test_target("query");
-        assert!(ui::widget::Widget::perform_semantic_action(
+        assert!(ui::widget::Widget::perform_action(
             &mut widget,
-            &query,
             &ui::a11y::Action::SetValue("build step 042".into()),
+            ActionTarget::Semantic(&query),
             &mut doc,
-            &ROOT,
+            &ROOT
         ));
         assert_eq!(widget.find_test_state().1, vec![42]);
         let close = widget.find_test_target("close");
-        assert!(ui::widget::Widget::perform_semantic_action(
+        assert!(ui::widget::Widget::perform_action(
             &mut widget,
-            &close,
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic(&close),
             &mut doc,
-            &ROOT,
+            &ROOT
         ));
         assert!(!widget.find_test_state().0);
     }
@@ -2255,9 +2258,9 @@ fn menu_and_paste_actions_recheck_live_permissions() {
             .iter()
             .find(|node| node.name.as_deref() == Some("Clear screen"))
             .unwrap();
-        widget.perform_semantic_action(
-            clear.action_target.as_deref().unwrap(),
+        widget.perform_action(
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic(clear.action_target.as_deref().unwrap()),
             &mut AutoCommit::new(),
             &ROOT,
         );
@@ -2505,11 +2508,11 @@ fn menu_and_paste_actions_recheck_live_permissions() {
             .unwrap();
         assert!(paste.state.disabled);
         assert!(!paste.state.focusable);
-        assert!(!widget.perform_semantic_action(
-            paste.action_target.as_deref().unwrap(),
+        assert!(!widget.perform_action(
             &Action::Activate,
+            ActionTarget::Semantic(paste.action_target.as_deref().unwrap()),
             &mut doc,
-            &ROOT,
+            &ROOT
         ));
         assert!(widget.context_menu_is_open());
 
@@ -2557,7 +2560,12 @@ fn menu_and_paste_actions_recheck_live_permissions() {
             .find(|node| node.name.as_deref() == Some("Paste"))
             .and_then(|node| node.action_target)
             .unwrap();
-        assert!(widget.perform_semantic_action(&paste_target, &Action::Activate, &mut doc, &ROOT,));
+        assert!(widget.perform_action(
+            &Action::Activate,
+            ActionTarget::Semantic(&paste_target),
+            &mut doc,
+            &ROOT
+        ));
         let intent = widget
             .take_control_invocation()
             .expect("menu paste queues its captured canonical intent");
@@ -3154,8 +3162,9 @@ fn ime_and_accessibility_expose_terminal_semantics() {
         assert!(!Widget::perform_action(
             &mut w,
             &Action::SetValue("printf semantic".to_string()),
+            ActionTarget::Widget,
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(
             drain_writes(&writes).is_empty(),
@@ -3178,8 +3187,9 @@ fn ime_and_accessibility_expose_terminal_semantics() {
                 anchor: 1,
                 focus: 3,
             },
+            ActionTarget::Widget,
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(
             w.selection(),
@@ -3203,8 +3213,9 @@ fn ime_and_accessibility_expose_terminal_semantics() {
                 anchor: 1,
                 focus: 6,
             },
+            ActionTarget::Widget,
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(
             w.selection(),

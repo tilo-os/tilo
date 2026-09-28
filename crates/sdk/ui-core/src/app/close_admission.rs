@@ -2,6 +2,7 @@
 //! OS event loop; Windows and macOS use this same admission boundary.
 use super::{App, BrokerReply, ResourceInvocation};
 use crate::close_admission::{Choice, Command, OPERATION};
+use crate::widget::ActionTarget;
 use crate::widget::Widget;
 
 // Compile the actual native Quit routing state in portable host tests. The
@@ -375,7 +376,12 @@ impl App {
                 Key::Named(NamedKey::Enter | NamedKey::Space) => {
                     if let Some(node) = self.focused_node {
                         let _ = self.dispatch_node(node, |widget, doc, path| {
-                            widget.perform_action(&crate::a11y::Action::Activate, doc, path)
+                            widget.perform_action(
+                                &crate::a11y::Action::Activate,
+                                ActionTarget::Widget,
+                                doc,
+                                path,
+                            )
                         });
                         handled = true;
                     }

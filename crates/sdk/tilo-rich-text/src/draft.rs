@@ -135,6 +135,7 @@ mod tests {
     use super::*;
     use crate::{FieldOutcome, RichTextSurface, SubmitKey};
     use ui::kurbo::Rect;
+    use ui::widget::ActionTarget;
     use ui::widget::marks::{Mark, MarkSpan};
     use ui::widget::{BlockKind, Embedded, Widget};
     use ui::winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, RawKeyEvent, WindowEvent};
@@ -244,14 +245,16 @@ mod tests {
         let surface = field.host.widget_mut();
         assert!(surface.perform_action(
             &ui::a11y::Action::SetValue("first\nsecond".into()),
+            ActionTarget::Widget,
             &mut field.doc,
-            &ROOT,
+            &ROOT
         ));
         assert_eq!(field.host.widget().source().plain_text(), "first\nsecond");
         assert!(field.host.widget_mut().perform_action(
             &ui::a11y::Action::SetValue("one".into()),
+            ActionTarget::Widget,
             &mut field.doc,
-            &ROOT,
+            &ROOT
         ));
         assert_eq!(field.host.widget().source().plain_text(), "one");
     }

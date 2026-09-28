@@ -20,6 +20,7 @@
 )]
 
 use tilo_automerge::ApplyIncoming;
+use ui::widget::ActionTarget;
 
 use automerge::AutoCommit;
 use containers::app::ContainersApp;
@@ -543,11 +544,11 @@ fn create_form_input_order_validation_and_command() {
         );
 
         let (app, doc) = d.parts();
-        assert!(app.perform_semantic_action(
-            "containers.create.field:image",
+        assert!(app.perform_action(
             &ui::a11y::Action::SetValue("alpine:3.20".into()),
+            ActionTarget::Semantic("containers.create.field:image"),
             doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(
             ViewDoc::create_field(d.doc(), CreateField::Image),
@@ -715,11 +716,11 @@ fn keyboard_pointer_and_semantic_navigation() {
                 && node.bounds.is_some()
         }));
         let (app, doc) = d.parts();
-        assert!(app.perform_semantic_action(
-            &target,
+        assert!(app.perform_action(
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic(&target),
             doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(
             ViewDoc::selected(d.doc()).as_deref(),

@@ -1058,6 +1058,7 @@ impl Widget for AppShell {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use crate::widget::{Text, TextInput};
     use automerge::AutoCommit;
     use vello::kurbo::Affine;
@@ -1443,8 +1444,9 @@ mod tests {
             assert_eq!(back.name.as_deref(), Some("Go back"));
             assert!(shell.back.perform_action(
                 &crate::a11y::Action::Activate,
+                ActionTarget::Widget,
                 &mut document,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             dispatch_view_actions(&mut shell, &mut document);
             assert!(shell.take_structure_dirty());

@@ -1,6 +1,7 @@
 //! Rename, structural moves, context menu, row and heading actions, and the
 //! drag feedback built on them.
 
+use crate::widget::ActionTarget;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -83,7 +84,13 @@ fn typed(text: &str) -> WindowEvent {
 
 fn semantic(view: &mut TreeView<()>, target: &str, action: &Action) -> bool {
     let mut doc = AutoCommit::new();
-    Widget::perform_semantic_action(view, target, action, &mut doc, &automerge::ROOT)
+    Widget::perform_action(
+        view,
+        action,
+        ActionTarget::Semantic(target),
+        &mut doc,
+        &automerge::ROOT,
+    )
 }
 
 /// Visible `(id, depth)` pairs.

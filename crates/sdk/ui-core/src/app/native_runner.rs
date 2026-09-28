@@ -7,6 +7,7 @@
 //! its responsibility-specific implementation units.
 
 use super::*;
+use crate::widget::ActionTarget;
 
 #[cfg(not(target_os = "android"))]
 type PrimaryA11yAdapter = accesskit_winit::Adapter;
@@ -2400,7 +2401,7 @@ impl AppHandler {
                 for _ in 0..times {
                     any |= app
                         .dispatch_node(fid, |widget, doc, root| {
-                            widget.perform_action(&act, doc, root)
+                            widget.perform_action(&act, ActionTarget::Widget, doc, root)
                         })
                         .unwrap_or(false);
                 }

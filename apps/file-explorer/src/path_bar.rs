@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -282,13 +283,21 @@ impl Widget for PathBar {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        if self.editing {
-            return self.field.perform_action(action, state, path);
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
         }
-        let handled = self.crumbs.perform_action(action, state, path);
+        if self.editing {
+            return self
+                .field
+                .perform_action(action, ActionTarget::Widget, state, path);
+        }
+        let handled = self
+            .crumbs
+            .perform_action(action, ActionTarget::Widget, state, path);
         if self.crumbs.take_edit_requested() {
             self.begin_edit();
         }
@@ -410,6 +419,7 @@ mod tests {
     use super::*;
     use crate::command::new_sink;
     use automerge::AutoCommit;
+    use ui::widget::ActionTarget;
 
     /// Editing keeps completion and submission on one location, accepted locations preserve roots, and breadcrumb mode enters named text input.
     #[allow(
@@ -441,6 +451,7 @@ mod tests {
                 let mut doc = AutoCommit::new();
                 assert!(bar.perform_action(
                     &Action::SetValue(input.into()),
+                    ActionTarget::Widget,
                     &mut doc,
                     &automerge::ROOT
                 ));
@@ -534,7 +545,12 @@ mod tests {
             assert!(trail.state.focused && trail.state.focusable);
 
             let mut doc = AutoCommit::new();
-            assert!(bar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+            assert!(bar.perform_action(
+                &Action::Activate,
+                ActionTarget::Widget,
+                &mut doc,
+                &automerge::ROOT
+            ));
             assert!(bar.is_editing());
             let input = bar.accessibility().expect("editable path semantics");
             assert_eq!(input.role, Role::TextInput);

@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -1377,13 +1378,16 @@ impl Widget for DiffMergeApp {
         true
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, _) = ui::doc::document(state, path);
         self.merge.reconcile_content(state);
         if !matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus) {
@@ -1607,6 +1611,7 @@ impl DiffMergeApp {
 mod tests {
     use super::*;
     use ui::headless::Framed;
+    use ui::widget::ActionTarget;
 
     fn app_with_state() -> (DiffMergeApp, ui::State) {
         let mut app = DiffMergeApp::new();
@@ -2343,12 +2348,12 @@ mod tests {
         assert_eq!(selected_compact_source(app), "Show Ours source");
 
         let theirs_key = ui::a11y::hash_key(&"diffmerge.source.theirs");
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             &mut app.merge,
             &ui::a11y::Action::Activate,
-            &[theirs_key],
+            ActionTarget::Key(&[theirs_key]),
             &mut state.doc,
-            &state.root,
+            &state.root
         ));
         assert_eq!(selected_compact_source(app), "Show Theirs source");
     }
@@ -2376,12 +2381,12 @@ mod tests {
             &[0, sample_index]
         ));
         assert_eq!(app.toolbar_focus, Some(Action::LoadSample));
-        assert!(Widget::perform_semantic_action(
+        assert!(Widget::perform_action(
             &mut *app,
-            "diffmerge.toolbar.show-diff",
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic("diffmerge.toolbar.show-diff"),
             &mut state.doc,
-            &state.root,
+            &state.root
         ));
         assert_eq!(app.mode, Mode::Diff);
     }
@@ -2470,12 +2475,12 @@ mod tests {
                 .count(),
             2
         );
-        assert!(Widget::perform_semantic_action(
+        assert!(Widget::perform_action(
             &mut *app,
-            "diffmerge.diff-source:right",
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic("diffmerge.diff-source:right"),
             &mut state.doc,
-            &state.root,
+            &state.root
         ));
         assert!(app.diff.compact_showing_right());
     }
@@ -2554,12 +2559,12 @@ mod tests {
             .find_map(|child| child.action_target.clone())
             .expect("one drawn resolution action is accessible");
         let before = crate::doc::MergeDoc::merged_text(&state.doc);
-        assert!(Widget::perform_semantic_action(
+        assert!(Widget::perform_action(
             &mut *app,
-            &target,
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic(&target),
             &mut state.doc,
-            &state.root,
+            &state.root
         ));
         assert_ne!(crate::doc::MergeDoc::merged_text(&state.doc), before);
     }
@@ -2679,6 +2684,7 @@ mod tests {
 mod history_input_tests {
     use super::*;
     use crate::doc::MergeDoc;
+    use ui::widget::ActionTarget;
     #[test]
     fn restored_output_invalidates_queued_hunks_even_with_same_label_and_choices() {
         let mut app = DiffMergeApp::new_demo();
@@ -2705,9 +2711,9 @@ mod history_input_tests {
             MergeDoc::merged_text(&doc),
             "Restored output without matching original inputs\n"
         );
-        assert!(!app.perform_semantic_action(
-            &format!("diffmerge.merge.resolve:{hunk}:ours"),
+        assert!(!app.perform_action(
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic(&format!("diffmerge.merge.resolve:{hunk}:ours")),
             &mut doc,
             &automerge::ROOT
         ));

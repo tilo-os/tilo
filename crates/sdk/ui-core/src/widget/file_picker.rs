@@ -17,6 +17,7 @@
 //! every path mutation against them so the user can't `..` out of the
 //! sandbox boundary.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::fs;
@@ -1338,52 +1339,51 @@ impl Widget for FilePicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
-        matches!(action, crate::a11y::Action::Activate) && self.activate_focus()
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
-        key_path: &[u64],
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) -> bool {
-        use crate::a11y::{Action, hash_key};
-        let Some((&control_key, rest)) = key_path.split_first() else {
-            return false;
-        };
-        let Some(control) = PickerFocus::from_id(control_key) else {
-            return false;
-        };
-        if control == PickerFocus::List {
-            if let [entry_key] = rest {
-                let Some(index) = self
-                    .entries
-                    .iter()
-                    .position(|entry| hash_key(&entry.path) == *entry_key)
-                else {
+        match target {
+            ActionTarget::Widget => {
+                matches!(action, crate::a11y::Action::Activate) && self.activate_focus()
+            }
+            ActionTarget::Key(key_path) => {
+                use crate::a11y::{Action, hash_key};
+                let Some((&control_key, rest)) = key_path.split_first() else {
                     return false;
                 };
-                self.selection.select_only(index);
-            } else if !rest.is_empty() {
-                return false;
+                let Some(control) = PickerFocus::from_id(control_key) else {
+                    return false;
+                };
+                if control == PickerFocus::List {
+                    if let [entry_key] = rest {
+                        let Some(index) = self
+                            .entries
+                            .iter()
+                            .position(|entry| hash_key(&entry.path) == *entry_key)
+                        else {
+                            return false;
+                        };
+                        self.selection.select_only(index);
+                    } else if !rest.is_empty() {
+                        return false;
+                    }
+                } else if !rest.is_empty() {
+                    return false;
+                }
+                match action {
+                    Action::Focus => {
+                        self.focus_control(control);
+                        true
+                    }
+                    Action::Activate => {
+                        self.focus_control(control);
+                        self.activate_focus()
+                    }
+                    _ => false,
+                }
             }
-        } else if !rest.is_empty() {
-            return false;
-        }
-        match action {
-            Action::Focus => {
-                self.focus_control(control);
-                true
-            }
-            Action::Activate => {
-                self.focus_control(control);
-                self.activate_focus()
-            }
-            _ => false,
+            ActionTarget::Semantic(_) => false,
         }
     }
 

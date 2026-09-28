@@ -13,6 +13,7 @@
 use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime};
+use ui::widget::ActionTarget;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
@@ -2645,11 +2646,11 @@ impl FrameBuilder {
 
         let handled = unsafe {
             if let Some(target) = semantic_target.as_deref() {
-                (*widget).perform_semantic_action(target, action, state, root_obj)
+                (*widget).perform_action(action, ActionTarget::Semantic(target), state, root_obj)
             } else if synthetic {
-                (*widget).perform_action_at(action, &key_path, state, root_obj)
+                (*widget).perform_action(action, ActionTarget::Key(&key_path), state, root_obj)
             } else {
-                (*widget).perform_action(action, state, root_obj)
+                (*widget).perform_action(action, ActionTarget::Widget, state, root_obj)
             }
         };
         if handled {
@@ -2818,8 +2819,14 @@ impl FrameBuilder {
             // SAFETY: `node_map` is rebuilt from widgets owned by `host`; the
             // pointer remains valid until the next structural rebuild. This is
             // the same focused-node dispatch invariant used by `ui::App`.
-            let activated =
-                unsafe { (*widget).perform_action(&ui::a11y::Action::Activate, state, root_obj) };
+            let activated = unsafe {
+                (*widget).perform_action(
+                    &ui::a11y::Action::Activate,
+                    ActionTarget::Widget,
+                    state,
+                    root_obj,
+                )
+            };
             if activated {
                 handled = true;
             }

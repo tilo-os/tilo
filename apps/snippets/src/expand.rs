@@ -8,6 +8,7 @@
 //! per-peer flow, not part of the shared library).
 
 use std::collections::HashMap;
+use ui::widget::ActionTarget;
 
 use automerge::{AutoCommit, ObjId};
 use ui::paint::PaintCtx;
@@ -546,13 +547,16 @@ impl ExpandModal {
         )
     }
 
-    pub fn perform_semantic_action(
+    pub fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> Option<ExpandOutcome> {
+        let ActionTarget::Semantic(target) = target else {
+            return None;
+        };
         if matches!(action, ui::a11y::Action::Activate) {
             match target {
                 "snippets.expand.copy" => {
@@ -572,7 +576,9 @@ impl ExpandModal {
             return Some(ExpandOutcome::Stay);
         }
         let field = self.fields.get_mut(index)?;
-        let accepted = field.input.perform_action(action, state, path);
+        let accepted = field
+            .input
+            .perform_action(action, ActionTarget::Widget, state, path);
         field.input.take_dirty();
         accepted.then_some(ExpandOutcome::Stay)
     }

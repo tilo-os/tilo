@@ -11,6 +11,7 @@
 //! The outcome of the most recent edit is polled once via [`take_outcome`]
 //! (rising-edge, like [`TextInput::take_dirty`]).
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
@@ -427,38 +428,37 @@ impl Widget for EditableLabel {
         Some(node)
     }
 
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &crate::a11y::Action,
-        state: &mut AppModel,
-        path: &ModelPath,
-    ) -> bool {
-        self.semantic_target.as_deref() == Some(target) && self.perform_action(action, state, path)
-    }
-
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
-        let (state, path) = crate::doc::document(state, path);
+        match target {
+            ActionTarget::Widget | ActionTarget::Key(_) => {
+                use crate::a11y::Action;
+                let (state, path) = crate::doc::document(state, path);
 
-        if matches!(action, Action::Focus | Action::Activate) {
-            if !self.editing {
-                self.begin_edit();
+                if matches!(action, Action::Focus | Action::Activate) {
+                    if !self.editing {
+                        self.begin_edit();
+                    }
+                    return true;
+                }
+                if !self.editing {
+                    match action {
+                        Action::SetValue(_) | Action::SetSelection { .. } => self.begin_edit(),
+                        _ => return false,
+                    }
+                }
+                Widget::perform_action(&mut self.input, action, ActionTarget::Widget, state, path)
             }
-            return true;
-        }
-        if !self.editing {
-            match action {
-                Action::SetValue(_) | Action::SetSelection { .. } => self.begin_edit(),
-                _ => return false,
+            ActionTarget::Semantic(target) => {
+                self.semantic_target.as_deref() == Some(target)
+                    && self.perform_action(action, ActionTarget::Widget, state, path)
             }
         }
-        Widget::perform_action(&mut self.input, action, state, path)
     }
 }
 

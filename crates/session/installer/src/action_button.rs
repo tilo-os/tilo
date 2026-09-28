@@ -18,6 +18,7 @@
 //! Every colour is read from the [`Theme`]; nothing is hard-coded.
 
 use std::collections::HashMap;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
@@ -129,6 +130,7 @@ impl ActionButton {
 )]
 mod tests {
     use automerge::{ROOT, ReadDoc};
+    use ui::widget::ActionTarget;
     use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
 
     use super::*;
@@ -201,7 +203,12 @@ mod tests {
             assert!(node.state.focused);
 
             let mut doc = AutoCommit::new();
-            assert!(button.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
+            assert!(button.perform_action(
+                &ui::a11y::Action::Activate,
+                ActionTarget::Widget,
+                &mut doc,
+                &ROOT
+            ));
             assert_eq!(
                 doc.get(&ROOT, "installer.reboot")
                     .unwrap()
@@ -474,9 +481,13 @@ impl Widget for ActionButton {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         root: &ModelPath,
     ) -> bool {
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         let (state, root) = ui::doc::document(state, root);
         let accepted = matches!(action, ui::a11y::Action::Activate)
             || (self.checked.is_some() && matches!(action, ui::a11y::Action::ToggleCheck));

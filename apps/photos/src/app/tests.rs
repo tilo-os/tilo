@@ -4,6 +4,7 @@ use crate::model::{Album, LibraryPhoto};
 use crate::shots_pattern;
 use automerge::ROOT;
 use tilo_actions::{Action, ResourceProvider};
+use ui::widget::ActionTarget;
 
 fn has_resource_id(resource: &tilo_actions::Resource, id: &str) -> bool {
     resource.id.0 == id
@@ -1673,12 +1674,12 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         app.original_identity = Some(decode_key(&image));
         app.refresh(&doc);
         app.sync(&mut doc, &ROOT);
-        assert!(Widget::perform_semantic_action(
+        assert!(Widget::perform_action(
             &mut app,
-            "photos:toolbar:photos-rotate-right",
             &AccessAction::Activate,
+            ActionTarget::Semantic("photos:toolbar:photos-rotate-right"),
             &mut doc,
-            &ROOT,
+            &ROOT
         ));
         assert_eq!(PhotosDoc::edits(&doc).rotate_quarters, 1);
         assert!(

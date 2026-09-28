@@ -1009,6 +1009,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::{ROOT, transaction::Transactable};
 
     #[test]
@@ -1575,7 +1576,12 @@ mod tests {
             );
             let handled = moved
                 .dispatch_node(toolbar, |widget, document, path| {
-                    widget.perform_action(&crate::a11y::Action::Activate, document, path)
+                    widget.perform_action(
+                        &crate::a11y::Action::Activate,
+                        ActionTarget::Widget,
+                        document,
+                        path,
+                    )
                 })
                 .unwrap();
             assert!(handled);

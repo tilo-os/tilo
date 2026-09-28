@@ -4,6 +4,7 @@
 //! Automerge document on every change (see [`crate::doc`]).
 
 use std::collections::HashMap;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -1734,14 +1735,17 @@ impl Widget for CalculatorApp {
         clippy::too_many_lines,
         reason = "all custom-painted Calculator controls deliberately share one semantic activation router, preventing assistive technology from taking a different mutation path"
     )]
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, _) = ui::doc::document(state, path);
         // Assistive actions bypass `handle_event`; they may change anything.
         self.dirty = true;
@@ -2180,6 +2184,7 @@ impl CalculatorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::widget::ActionTarget;
 
     fn keyboard(key: WKey) -> WindowEvent {
         let text = if let WKey::Character(text) = &key {
@@ -2666,21 +2671,21 @@ mod tests {
 
             let mut doc = AutoCommit::new();
             assert!(
-                app.perform_semantic_action(
-                    "calculator.mode:1",
+                app.perform_action(
                     &Action::Activate,
+                    ActionTarget::Semantic("calculator.mode:1"),
                     &mut doc,
-                    &automerge::ROOT,
+                    &automerge::ROOT
                 ),
                 "topbar: mode activate handled"
             );
             assert_eq!(app.model.mode, Mode::Graph2d, "topbar: mode switched");
             assert!(
-                app.perform_semantic_action(
-                    "calculator.angle:degrees",
+                app.perform_action(
                     &Action::ToggleCheck,
+                    ActionTarget::Semantic("calculator.angle:degrees"),
                     &mut doc,
-                    &automerge::ROOT,
+                    &automerge::ROOT
                 ),
                 "topbar: angle toggle handled"
             );
@@ -2716,21 +2721,21 @@ mod tests {
                 .expect("digit key is actionable");
             let mut doc = AutoCommit::new();
             assert!(
-                app.perform_semantic_action(
-                    seven.action_target.as_deref().unwrap_or_default(),
+                app.perform_action(
                     &Action::Activate,
+                    ActionTarget::Semantic(seven.action_target.as_deref().unwrap_or_default()),
                     &mut doc,
-                    &automerge::ROOT,
+                    &automerge::ROOT
                 ),
                 "keypad: key 7 handled"
             );
             assert_eq!(app.model.expr, "7", "keypad: key 7 appended");
             assert!(
-                app.perform_semantic_action(
-                    expression.action_target.as_deref().unwrap_or_default(),
+                app.perform_action(
                     &Action::SetValue("sqrt(9)".into()),
+                    ActionTarget::Semantic(expression.action_target.as_deref().unwrap_or_default()),
                     &mut doc,
-                    &automerge::ROOT,
+                    &automerge::ROOT
                 ),
                 "keypad: expression SetValue handled"
             );
@@ -2752,11 +2757,11 @@ mod tests {
                 .find(|node| node.role == ui::a11y::Role::TextInput)
                 .expect("formula editor is a text input");
             assert!(
-                app.perform_semantic_action(
-                    formula.action_target.as_deref().unwrap_or_default(),
+                app.perform_action(
                     &Action::SetValue("2*x".into()),
+                    ActionTarget::Semantic(formula.action_target.as_deref().unwrap_or_default()),
                     &mut doc,
-                    &automerge::ROOT,
+                    &automerge::ROOT
                 ),
                 "graph: formula SetValue handled"
             );

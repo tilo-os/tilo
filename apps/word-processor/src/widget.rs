@@ -4,6 +4,7 @@
 //! inline **bold**/*italic*/underline, a selection highlight, and a caret. Maps
 //! pointer + keyboard onto the editing model (selection, formatting, save).
 
+use ui::widget::ActionTarget;
 mod native_file_choice;
 mod resource_file_jobs;
 
@@ -11200,13 +11201,16 @@ impl Widget for WordProcessorWidget {
         clippy::too_many_lines,
         reason = "one flat dispatch table from every accessibility action target to the matching editor command"
     )]
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        key_path: &[u64],
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Key(key_path) = target else {
+            return false;
+        };
         let (state, path) = ui::doc::document(state, path);
         if let Some(offer) = &mut self.file_choice {
             offer.accessible_action(action, key_path);

@@ -368,6 +368,7 @@ impl FileChoice {
 mod tests {
     use super::*;
     use crate::widget::{ReadDoc, Widget};
+    use ui::widget::ActionTarget;
     fn markdown(bytes: &[u8]) -> AutoCommit {
         let mut document = AutoCommit::new();
         let containers = qdoc::model::init(&mut document, &automerge::ROOT);
@@ -450,9 +451,9 @@ mod tests {
             )
             .unwrap();
         let key = ui::a11y::hash_key(&"file-choice:1");
-        assert!(widget.perform_action_at(
+        assert!(widget.perform_action(
             &ui::a11y::Action::Activate,
-            &[key],
+            ActionTarget::Key(&[key]),
             &mut document,
             &automerge::ROOT
         ));

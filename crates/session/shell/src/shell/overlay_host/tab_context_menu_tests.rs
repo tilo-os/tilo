@@ -14,6 +14,7 @@ use crate::shell::state::{
 use std::collections::HashMap as StdHashMap;
 use taffy::{NodeId, TaffyTree};
 use ui::a11y::{AccessNode, Role};
+use ui::widget::ActionTarget;
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
@@ -600,11 +601,11 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
             .filter_map(|c| c.name.clone())
             .collect();
         assert_eq!(labels, ["Close Tab"]);
-        assert!(!h.host.perform_semantic_action(
-            "tabmenu:split-right",
+        assert!(!h.host.perform_action(
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic("tabmenu:split-right"),
             &mut h.doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(
             h.host.tab_context_menu_is_open(),
@@ -832,9 +833,9 @@ fn tab_context_menu_actions_edit_the_tree_the_same_way_from_every_route() {
     fn the_semantic_route_performs_the_same_action_as_the_pointer() {
         let mut h = harness(2);
         h.right_click_pill(1);
-        let performed = h.host.perform_semantic_action(
-            "tabmenu:new-group",
+        let performed = h.host.perform_action(
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic("tabmenu:new-group"),
             &mut h.doc,
             &automerge::ROOT,
         );
@@ -846,11 +847,11 @@ fn tab_context_menu_actions_edit_the_tree_the_same_way_from_every_route() {
 
         // A target that is not on the menu — or a menu that is not open —
         // refuses rather than acting on a stale tab.
-        assert!(!h.host.perform_semantic_action(
-            "tabmenu:close",
+        assert!(!h.host.perform_action(
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic("tabmenu:close"),
             &mut h.doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
     }
 

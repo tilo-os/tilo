@@ -4,6 +4,7 @@
 //! editor remains the single place that turns that choice into a document action.
 
 use std::collections::HashMap;
+use ui::widget::ActionTarget;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
@@ -141,7 +142,7 @@ impl CompactSwatchPalette {
             return Some((kind, PaletteChoice::Clear));
         }
         let picker = self.picker.as_mut()?;
-        if Widget::perform_semantic_action(picker, target, action, state, root)
+        if Widget::perform_action(picker, action, ActionTarget::Semantic(target), state, root)
             && let Some(index) = picker.take_choice()
             && let Some(rgb) = picker.color_at(index)
         {
@@ -177,7 +178,13 @@ impl CompactSwatchPalette {
         let Some(picker) = self.picker.as_mut() else {
             return false;
         };
-        if Widget::perform_semantic_action(picker, target, &ui::a11y::Action::Focus, state, root) {
+        if Widget::perform_action(
+            picker,
+            &ui::a11y::Action::Focus,
+            ActionTarget::Semantic(target),
+            state,
+            root,
+        ) {
             self.clear_focused = false;
             return true;
         }

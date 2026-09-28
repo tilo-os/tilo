@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::ops::{Deref, DerefMut};
 use std::time::Instant;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -299,10 +300,15 @@ impl Widget for QueryEditorChild {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        self.editor.perform_action(action, state, path)
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
+        self.editor
+            .perform_action(action, ActionTarget::Widget, state, path)
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -526,9 +532,13 @@ impl Widget for QueryDivider {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         self.pending = match action {
             ui::a11y::Action::Increment => Some(QueryResizeCommand::Adjust(24.0)),
             ui::a11y::Action::Decrement => Some(QueryResizeCommand::Adjust(-24.0)),
@@ -635,41 +645,39 @@ impl Widget for QueryResizeMenu {
         Some(node)
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        key_path: &[u64],
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
-        if matches!(action, ui::a11y::Action::Activate)
-            && let Some(index) = key_path.first().and_then(|key| usize::try_from(*key).ok())
-            && index < 3
-        {
-            self.menu.click_item(index);
-            return true;
+        match target {
+            ActionTarget::Widget => false,
+            ActionTarget::Key(key_path) => {
+                if matches!(action, ui::a11y::Action::Activate)
+                    && let Some(index) = key_path.first().and_then(|key| usize::try_from(*key).ok())
+                    && index < 3
+                {
+                    self.menu.click_item(index);
+                    return true;
+                }
+                false
+            }
+            ActionTarget::Semantic(target) => {
+                if !matches!(action, ui::a11y::Action::Activate) {
+                    return false;
+                }
+                let index = match target {
+                    "db.increase-query-height" => 0,
+                    "db.decrease-query-height" => 1,
+                    "db.reset-query-height" => 2,
+                    _ => return false,
+                };
+                self.menu.click_item(index);
+                true
+            }
         }
-        false
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &ui::a11y::Action,
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) -> bool {
-        if !matches!(action, ui::a11y::Action::Activate) {
-            return false;
-        }
-        let index = match target {
-            "db.increase-query-height" => 0,
-            "db.decrease-query-height" => 1,
-            "db.reset-query-height" => 2,
-            _ => return false,
-        };
-        self.menu.click_item(index);
-        true
     }
 
     fn test_rects(&self) -> Vec<(String, Rect)> {
@@ -2550,73 +2558,75 @@ impl Widget for DbClientApp {
         Some(self.full_accessibility())
     }
 
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &ui::a11y::Action,
-        state: &mut AppModel,
-        path: &ModelPath,
-    ) -> bool {
-        use ui::a11y::Action;
-        let (state, _path) = ui::doc::document(state, path);
-
-        if self.modal.is_open() {
-            if !target.starts_with("db.modal.") {
-                return false;
-            }
-            if let Some(profile) = self.modal.perform_semantic_action(target, action) {
-                self.save_connection(profile, state);
-            }
-            self.dirty = true;
-            return true;
-        }
-        if target.starts_with("db.connection") {
-            let handled = self.perform_navigator_semantic_action(target, action, state);
-            self.dirty |= handled;
-            return handled;
-        }
-        match target {
-            "db.new-connection" if matches!(action, Action::Activate | Action::Focus) => {
-                self.modal.open_new();
-            }
-            "db.sidebar.toggle" if matches!(action, Action::Activate | Action::ToggleCheck) => {
-                self.flap.toggle(self.split_layout());
-            }
-            "db.query.run" if matches!(action, Action::Activate) => self.run_current_query(),
-            "db.query.snippets" if matches!(action, Action::Activate) => {
-                self.snippets_open = !self.snippets_open;
-            }
-            "db.editor.sql" if let Action::SetValue(value) = action => {
-                EditorDoc::set_sql(state, value);
-                self.editor.pull(state);
-            }
-            "db.editor.sql" if matches!(action, Action::Focus | Action::Activate) => {
-                self.editor.set_focused(true);
-            }
-            "db.tab:query" if matches!(action, Action::Activate) => {
-                self.select_accessible_tab(MainTab::Query);
-            }
-            "db.tab:data" if matches!(action, Action::Activate) => {
-                self.select_accessible_tab(MainTab::Data);
-            }
-            "db.tab:structure" if matches!(action, Action::Activate) => {
-                self.select_accessible_tab(MainTab::Structure);
-            }
-            _ => return false,
-        }
-        self.dirty = true;
-        true
-    }
-
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        let (state, path) = ui::doc::document(state, path);
-        let _ = (action, state, path);
-        false
+        match target {
+            ActionTarget::Widget | ActionTarget::Key(_) => {
+                let (state, path) = ui::doc::document(state, path);
+                let _ = (action, state, path);
+                false
+            }
+            ActionTarget::Semantic(target) => {
+                use ui::a11y::Action;
+                let (state, _path) = ui::doc::document(state, path);
+
+                if self.modal.is_open() {
+                    if !target.starts_with("db.modal.") {
+                        return false;
+                    }
+                    if let Some(profile) = self.modal.perform_semantic_action(target, action) {
+                        self.save_connection(profile, state);
+                    }
+                    self.dirty = true;
+                    return true;
+                }
+                if target.starts_with("db.connection") {
+                    let handled = self.perform_navigator_semantic_action(target, action, state);
+                    self.dirty |= handled;
+                    return handled;
+                }
+                match target {
+                    "db.new-connection" if matches!(action, Action::Activate | Action::Focus) => {
+                        self.modal.open_new();
+                    }
+                    "db.sidebar.toggle"
+                        if matches!(action, Action::Activate | Action::ToggleCheck) =>
+                    {
+                        self.flap.toggle(self.split_layout());
+                    }
+                    "db.query.run" if matches!(action, Action::Activate) => {
+                        self.run_current_query()
+                    }
+                    "db.query.snippets" if matches!(action, Action::Activate) => {
+                        self.snippets_open = !self.snippets_open;
+                    }
+                    "db.editor.sql" if let Action::SetValue(value) = action => {
+                        EditorDoc::set_sql(state, value);
+                        self.editor.pull(state);
+                    }
+                    "db.editor.sql" if matches!(action, Action::Focus | Action::Activate) => {
+                        self.editor.set_focused(true);
+                    }
+                    "db.tab:query" if matches!(action, Action::Activate) => {
+                        self.select_accessible_tab(MainTab::Query);
+                    }
+                    "db.tab:data" if matches!(action, Action::Activate) => {
+                        self.select_accessible_tab(MainTab::Data);
+                    }
+                    "db.tab:structure" if matches!(action, Action::Activate) => {
+                        self.select_accessible_tab(MainTab::Structure);
+                    }
+                    _ => return false,
+                }
+                self.dirty = true;
+                true
+            }
+        }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -4332,6 +4342,7 @@ mod responsive_tests {
 mod honesty_tests {
     use super::*;
     use automerge::ROOT;
+    use ui::widget::ActionTarget;
 
     /// The live app starts empty with a semantic new-connection action opening the existing modal; only the demo seeds the sample.
     #[test]
@@ -4382,10 +4393,12 @@ mod honesty_tests {
             let mut doc = AutoCommit::new();
 
             assert!(!app.modal.is_open());
-            assert!(
-                app.empty_state
-                    .perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT)
-            );
+            assert!(app.empty_state.perform_action(
+                &ui::a11y::Action::Activate,
+                ActionTarget::Widget,
+                &mut doc,
+                &ROOT
+            ));
             assert!(
                 !app.modal.is_open(),
                 "the child publishes its action before the parent sync drains it"
@@ -4418,6 +4431,7 @@ mod honesty_tests {
 #[cfg(test)]
 mod behavior_tests {
     use super::*;
+    use ui::widget::ActionTarget;
 
     use automerge::ROOT;
     use tilo_actions::Action;
@@ -4651,7 +4665,12 @@ mod behavior_tests {
                 .into_iter()
                 .find(|child| child.test_id() == Some("db.query-divider"))
                 .unwrap();
-            assert!(divider.perform_action(&ui::a11y::Action::Increment, &mut doc, &ROOT));
+            assert!(divider.perform_action(
+                &ui::a11y::Action::Increment,
+                ActionTarget::Widget,
+                &mut doc,
+                &ROOT
+            ));
             app.sync(&mut doc, &ROOT);
             lay_out(&mut app, 1200.0, 800.0);
             assert_eq!(app.query_layout.divider.y0, automatic.y0 + 48.0);
@@ -4721,14 +4740,24 @@ mod behavior_tests {
                 .into_iter()
                 .find(|child| child.test_id() == Some("db.query-divider"))
                 .unwrap();
-            assert!(divider.perform_action(&ui::a11y::Action::ShowContextMenu, &mut doc, &ROOT,));
+            assert!(divider.perform_action(
+                &ui::a11y::Action::ShowContextMenu,
+                ActionTarget::Widget,
+                &mut doc,
+                &ROOT
+            ));
             app.sync(&mut doc, &ROOT);
             let menu = app
                 .children_mut()
                 .into_iter()
                 .find(|child| child.test_id() == Some("db.query-resize-menu"))
                 .expect("semantic context action opens the retained resize menu");
-            assert!(menu.perform_action_at(&ui::a11y::Action::Activate, &[2], &mut doc, &ROOT,));
+            assert!(menu.perform_action(
+                &ui::a11y::Action::Activate,
+                ActionTarget::Key(&[2]),
+                &mut doc,
+                &ROOT
+            ));
             app.sync(&mut doc, &ROOT);
             lay_out(&mut app, 1200.0, 800.0);
             assert_eq!(app.query_layout.divider, automatic);
@@ -5095,11 +5124,11 @@ mod behavior_tests {
             use ui::a11y::Action as A11yAction;
 
             let (mut app, mut doc) = synced();
-            assert!(app.perform_semantic_action(
-                "db.new-connection",
+            assert!(app.perform_action(
                 &A11yAction::Activate,
+                ActionTarget::Semantic("db.new-connection"),
                 &mut doc,
-                &ROOT,
+                &ROOT
             ));
             let dialog = app.accessibility().expect("open modal is accessible");
             assert_eq!(dialog.role, Role::Dialog);
@@ -5230,19 +5259,19 @@ mod behavior_tests {
                     .iter()
                     .any(|node| node.name.as_deref() == Some("Database workspace"))
             );
-            assert!(app.perform_semantic_action(
-                "db.editor.sql",
+            assert!(app.perform_action(
                 &A11yAction::SetValue("SELECT 42".into()),
+                ActionTarget::Semantic("db.editor.sql"),
                 &mut doc,
-                &ROOT,
+                &ROOT
             ));
             assert_eq!(crate::doc::EditorDoc::read_sql(&doc), "SELECT 42");
             assert!(app.is_focused(), "startup typing focus reaches the editor");
-            assert!(app.perform_semantic_action(
-                "db.tab:data",
+            assert!(app.perform_action(
                 &A11yAction::Activate,
+                ActionTarget::Semantic("db.tab:data"),
                 &mut doc,
-                &ROOT,
+                &ROOT
             ));
             assert_eq!(app.session.tab, MainTab::Data);
         }
@@ -5365,18 +5394,23 @@ mod behavior_tests {
                 ),
                 ("db.modal.save", A11yAction::Activate),
             ] {
-                assert!(app.perform_semantic_action(target, &action, &mut doc, &ROOT));
+                assert!(app.perform_action(
+                    &action,
+                    ActionTarget::Semantic(target),
+                    &mut doc,
+                    &ROOT
+                ));
             }
             app.sync(&mut doc, &ROOT);
             app.session.block_until_idle();
             assert!(app.session.connected);
             assert_eq!(ConnectionsDoc::read(&doc).len(), 1);
             let connection_id = app.session.active_connection_id().unwrap().to_string();
-            assert!(app.perform_semantic_action(
-                "db.editor.sql",
+            assert!(app.perform_action(
                 &A11yAction::SetValue("SELECT value FROM proof".into()),
+                ActionTarget::Semantic("db.editor.sql"),
                 &mut doc,
-                &ROOT,
+                &ROOT
             ));
             let saved = doc.save();
             drop(app);

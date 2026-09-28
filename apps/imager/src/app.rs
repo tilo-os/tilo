@@ -29,6 +29,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -5150,14 +5151,17 @@ impl Widget for ImagerApp {
         clippy::too_many_lines,
         reason = "this is the single assistive-action router for canvas hits, editable profile fields, and peer-local destructive confirmation"
     )]
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action as AccessAction;
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, _) = ui::doc::document(state, path);
 
         if self.export_dialog.is_open() {
@@ -5609,6 +5613,7 @@ impl ImagerApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::widget::ActionTarget;
 
     fn seeded_app() -> (ImagerApp, AutoCommit) {
         // Tests drive the wizard against the demo document (sample drives + a
@@ -5972,9 +5977,9 @@ mod tests {
             assert!(
                 accessible_named(&tree, &format!("Download {}", board.display_name())).is_some()
             );
-            assert!(app.perform_semantic_action(
-                &target,
+            assert!(app.perform_action(
                 &AccessAction::Activate,
+                ActionTarget::Semantic(&target),
                 &mut doc,
                 &automerge::ROOT
             ));
@@ -6035,11 +6040,11 @@ mod tests {
                 );
             }
 
-            assert!(app.perform_semantic_action(
-                "imager:profile:hostname",
+            assert!(app.perform_action(
                 &AccessAction::SetValue("accessible-host".into()),
+                ActionTarget::Semantic("imager:profile:hostname"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(ImagerDoc::profile(&doc).hostname, "accessible-host");
 
@@ -6048,11 +6053,11 @@ mod tests {
                 ("imager:profile:timezone", "Europe/Berlin", "Europe/Berlin"),
                 ("imager:profile:keyboard", "German (QWERTZ)", "de"),
             ] {
-                assert!(app.perform_semantic_action(
-                    target,
+                assert!(app.perform_action(
                     &AccessAction::SetValue(chosen.into()),
+                    ActionTarget::Semantic(target),
                     &mut doc,
-                    &automerge::ROOT,
+                    &automerge::ROOT
                 ));
                 let profile = ImagerDoc::profile(&doc);
                 let actual = match target {
@@ -6063,22 +6068,22 @@ mod tests {
                 assert_eq!(actual, expected);
             }
             let timezone_before = ImagerDoc::profile(&doc).timezone;
-            assert!(app.perform_semantic_action(
-                "imager:profile:timezone",
+            assert!(app.perform_action(
                 &AccessAction::SetValue("Europe/Not_A_Real_Zone".into()),
+                ActionTarget::Semantic("imager:profile:timezone"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(ImagerDoc::profile(&doc).timezone, timezone_before);
             assert!(app.status.contains("Choose a listed Time zone"));
 
             app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
             app.scroll_y = 0.0;
-            assert!(app.perform_semantic_action(
-                "imager:profile:keyboard",
+            assert!(app.perform_action(
                 &AccessAction::Focus,
+                ActionTarget::Semantic("imager:profile:keyboard"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(app.scroll_y > 0.0, "assistive focus scrolls into view");
 
@@ -6090,11 +6095,11 @@ mod tests {
                 .clone();
             assert_eq!(confirm.role, ui::a11y::Role::TextInput);
             assert!(confirm.state.required);
-            assert!(app.perform_semantic_action(
-                "imager:hit:confirm-field",
+            assert!(app.perform_action(
                 &AccessAction::SetValue(target_name),
+                ActionTarget::Semantic("imager:hit:confirm-field"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(app.confirm_matches());
             assert!(app.confirm_input.is_focused());

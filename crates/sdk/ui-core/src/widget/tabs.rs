@@ -8,6 +8,7 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
 use crate::tokens::colors::Colors;
+use crate::widget::ActionTarget;
 use crate::widget::AppKind;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
@@ -2570,13 +2571,16 @@ impl Widget for TabBar {
         Some(node)
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
         }
@@ -3423,6 +3427,7 @@ fn draw_app_icon(
 mod tests {
     use super::*;
     use crate::presence::user_color;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
 
     fn bar() -> TabBar {
@@ -6082,18 +6087,18 @@ mod tests {
         {
             let mut b = bar();
             let mut doc = AutoCommit::new();
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut b,
-                "tab-new",
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic("tab-new"),
                 &mut doc,
                 &automerge::ROOT
             ));
             assert!(b.take_new_tab().is_some());
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut b,
-                "tab-close:2",
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic("tab-close:2"),
                 &mut doc,
                 &automerge::ROOT
             ));
@@ -6137,21 +6142,21 @@ mod tests {
         // Case `synthetic_tab_activation_selects_by_stable_tab_id`.
         {
             let mut b = bar();
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut b,
-                "tab:3",
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic("tab:3"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(b.active_id(), 3);
             assert_eq!(b.take_activation(), Some(3));
-            assert!(!Widget::perform_semantic_action(
+            assert!(!Widget::perform_action(
                 &mut b,
-                "tab:999",
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic("tab:999"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
         }
 

@@ -17,6 +17,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Instant;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -5108,13 +5109,16 @@ impl Widget for BackupsApp {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &A11yAction,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, path) = ui::doc::document(state, path);
         if !matches!(action, A11yAction::Activate | A11yAction::ToggleCheck) {
             return false;
@@ -5326,6 +5330,7 @@ impl BackupsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::widget::ActionTarget;
 
     /// The live app fabricates nothing, the demo seeds an indexed sample catalog,
     /// and repository state (unreadable, first run, configured but empty) decides
@@ -5965,11 +5970,11 @@ mod tests {
         let mut f = Frame::demo();
         let tree = f.app.accessibility().expect("backups exports a window");
         assert_eq!(tree.role, Role::Window);
-        assert!(f.app.perform_semantic_action(
-            "backups.hit:Tab(Destinations)",
+        assert!(f.app.perform_action(
             &A11yAction::Activate,
+            ActionTarget::Semantic("backups.hit:Tab(Destinations)"),
             &mut f.state.doc,
-            &f.state.root,
+            &f.state.root
         ));
         assert_eq!(f.view(), View::Destinations);
     }

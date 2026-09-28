@@ -13,6 +13,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -7257,14 +7258,17 @@ impl Widget for VideoEditorApp {
         clippy::indexing_slicing,
         reason = "a decoded accessibility action has its fixed argument shape validated before its command-specific fields are read"
     )]
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        key_path: &[u64],
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::{Action, hash_key};
+        let ActionTarget::Key(key_path) = target else {
+            return false;
+        };
         let (state, _) = ui::doc::document(state, path);
         // An assistive-technology command is one gesture, like a key press.
         let _gesture = self.actions.gesture();

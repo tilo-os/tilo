@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Instant;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -2880,14 +2881,17 @@ impl Widget for GitClientApp {
             .map(|(_, rect, _)| *rect)
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, path) = ui::doc::document(state, path);
 
         let field = match target {
@@ -2906,7 +2910,7 @@ impl Widget for GitClientApp {
                 Field::Commit => &mut self.commit_input,
                 Field::Branch => &mut self.branch_input,
             };
-            return input.perform_action(action, state, path);
+            return input.perform_action(action, ActionTarget::Widget, state, path);
         }
         if !matches!(action, Action::Activate | Action::ToggleCheck) {
             return false;
@@ -3589,6 +3593,7 @@ impl GitClientApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::widget::ActionTarget;
 
     /// Build an app over the bundled sample, laid out at `w` x 800 with the
     /// flap settled to its mode default so geometry is deterministic.
@@ -3856,12 +3861,12 @@ mod tests {
         app.open_input.set_text(directory.path().to_str().unwrap());
         app.open_button_rect = Rect::new(20.0, 20.0, 180.0, 60.0);
         let mut doc = automerge::AutoCommit::new();
-        assert!(Widget::perform_semantic_action(
+        assert!(Widget::perform_action(
             &mut app,
-            "git.open-repository",
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic("git.open-repository"),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(!app.test_awaiting_repo());
         assert_eq!(app.test_last_error(), None);
@@ -3875,12 +3880,12 @@ mod tests {
             ("git.commit-message", "Keep Unicode: Grün 🌍"),
             ("git.new-branch-name", "feature/grün"),
         ] {
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut app,
-                target,
                 &ui::a11y::Action::SetValue(text.into()),
+                ActionTarget::Semantic(target),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
         }
         assert_eq!(app.open_input.value(), r"C:\Work\Grün 🌍");
@@ -3923,22 +3928,22 @@ mod tests {
 
         let mut doc = automerge::AutoCommit::new();
         let before = app.settings.diff_layout;
-        assert!(Widget::perform_semantic_action(
+        assert!(Widget::perform_action(
             &mut app,
-            "git.diff-layout",
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic("git.diff-layout"),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_ne!(app.settings.diff_layout, before);
         assert!(app.last_dispatched().is_some());
 
-        assert!(Widget::perform_semantic_action(
+        assert!(Widget::perform_action(
             &mut app,
-            "git.commit-message",
             &ui::a11y::Action::Focus,
+            ActionTarget::Semantic("git.commit-message"),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(app.focus, Some(Field::Commit));
     }

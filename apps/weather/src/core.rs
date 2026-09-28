@@ -20,6 +20,7 @@
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use ui::widget::ActionTarget;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
@@ -1866,7 +1867,9 @@ impl Core {
             self.begin_search();
         }
         let before = self.search.text().to_string();
-        let handled = self.search.perform_action_at(action, key_path, state, path);
+        let handled = self
+            .search
+            .perform_action(action, ActionTarget::Key(key_path), state, path);
         self.finish_search_edit(&before, handled).unwrap_or(false)
     }
 
@@ -4706,11 +4709,11 @@ mod helper_tests {
             let mut pane = crate::panes::OverviewPane::new(core.clone());
             let mut state = AutoCommit::new();
             let search = pane.accessibility().unwrap().children.remove(0);
-            assert!(pane.perform_semantic_action(
-                search.action_target.as_deref().unwrap(),
+            assert!(pane.perform_action(
                 &Action::SetValue("city".into()),
+                ActionTarget::Semantic(search.action_target.as_deref().unwrap()),
                 &mut state,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(core.borrow().search_query, "city");
             assert!(core.borrow().pending_query_at.is_some());
@@ -4719,11 +4722,11 @@ mod helper_tests {
             let search = pane.accessibility().unwrap().children.remove(0);
             let row = &search.children[1];
             assert_eq!(row.name.as_deref(), Some(result_label(&chosen).as_str()));
-            assert!(pane.perform_semantic_action(
-                row.action_target.as_deref().unwrap(),
+            assert!(pane.perform_action(
                 &Action::Activate,
+                ActionTarget::Semantic(row.action_target.as_deref().unwrap()),
                 &mut state,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             let mut core = core.borrow_mut();
             assert_eq!(core.model.selected_location().unwrap().id, chosen.id);

@@ -73,6 +73,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 use ui::doc::{read_bool, read_str};
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 #[cfg(test)]
@@ -2638,13 +2639,16 @@ impl Widget for OskWidget {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &AccessibilityAction,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         if !self.visible {
             return false;
         }
@@ -2808,6 +2812,7 @@ mod tests {
     use crate::presentation::MAX_KEYBOARD_CONTENT_WIDTH;
     use std::cell::RefCell;
     use std::rc::Rc;
+    use ui::widget::ActionTarget;
 
     fn lay_out(osk: &mut OskWidget, w: f32, h: f32) {
         let theme = Theme::dark();
@@ -3122,11 +3127,11 @@ mod tests {
                         ui::widget::ControlBindingKind::SemanticAction(_)
                     )
             }));
-            assert!(osk.perform_semantic_action(
-                target,
+            assert!(osk.perform_action(
                 &AccessibilityAction::Activate,
+                ActionTarget::Semantic(target),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(osk.pending_text(), "q");
         }
@@ -4149,7 +4154,12 @@ mod tests {
     }
 
     fn semantic(osk: &mut OskWidget, target: &str, action: &AccessibilityAction) -> bool {
-        osk.perform_semantic_action(target, action, &mut AutoCommit::new(), &automerge::ROOT)
+        osk.perform_action(
+            action,
+            ActionTarget::Semantic(target),
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        )
     }
 
     fn activate(osk: &mut OskWidget, target: &str) -> bool {

@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{AlignItems, Dimension, NodeId, Size, Style, TaffyTree};
@@ -1302,51 +1303,49 @@ impl Widget for SidebarWheelDisc {
         (rect.area() > 0.0).then_some(rect)
     }
 
+    /// Key-path route for hosts that address nodes by ordinal; the same
+    /// nodes, the same effect as [`Widget::perform_semantic_action`].
     /// The production route: the a11y dispatcher hands a node's
     /// `action_target` here. `wheel:workspace:N` turns the wheel to that
     /// sector exactly as a click does; `wheel:add` creates a workspace.
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, ui::a11y::Action::Activate) {
-            return false;
+        match target {
+            ActionTarget::Widget => false,
+            ActionTarget::Key(key_path) => {
+                if !matches!(action, ui::a11y::Action::Activate) {
+                    return false;
+                }
+                let Some(&key) = key_path.first() else {
+                    return false;
+                };
+                let Ok(idx) = usize::try_from(key) else {
+                    return false;
+                };
+                self.activate_node(idx)
+            }
+            ActionTarget::Semantic(target) => {
+                if !matches!(action, ui::a11y::Action::Activate) {
+                    return false;
+                }
+                let idx = if target == Self::ADD_ACTION_TARGET {
+                    self.spokes.len()
+                } else if let Some(n) = target
+                    .strip_prefix("wheel:workspace:")
+                    .and_then(|n| n.parse::<usize>().ok())
+                {
+                    n
+                } else {
+                    return false;
+                };
+                self.activate_node(idx)
+            }
         }
-        let idx = if target == Self::ADD_ACTION_TARGET {
-            self.spokes.len()
-        } else if let Some(n) = target
-            .strip_prefix("wheel:workspace:")
-            .and_then(|n| n.parse::<usize>().ok())
-        {
-            n
-        } else {
-            return false;
-        };
-        self.activate_node(idx)
-    }
-
-    /// Key-path route for hosts that address nodes by ordinal; the same
-    /// nodes, the same effect as [`Widget::perform_semantic_action`].
-    fn perform_action_at(
-        &mut self,
-        action: &ui::a11y::Action,
-        key_path: &[u64],
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) -> bool {
-        if !matches!(action, ui::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(&key) = key_path.first() else {
-            return false;
-        };
-        let Ok(idx) = usize::try_from(key) else {
-            return false;
-        };
-        self.activate_node(idx)
     }
 
     /// Opt into downcasting so the screenshot harness can reach
@@ -2307,6 +2306,7 @@ mod tests {
     use super::*;
     use automerge::AutoCommit;
     use std::cell::Cell;
+    use ui::widget::ActionTarget;
     use winit::dpi::PhysicalPosition;
     use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
@@ -4241,21 +4241,31 @@ mod tests {
         assert_eq!(d.synthetic_accessibility_rect(&[3]), Some(d.plus_rect));
         let mut doc = automerge::AutoCommit::new();
         let path = automerge::ROOT.clone();
-        assert!(d.perform_semantic_action("wheel:workspace:2", &Action::Activate, &mut doc, &path));
+        assert!(d.perform_action(
+            &Action::Activate,
+            ActionTarget::Semantic("wheel:workspace:2"),
+            &mut doc,
+            &path
+        ));
         assert_eq!(
             d.selected_idx(),
             2,
             "activating the third sector chooses it"
         );
         assert!(
-            !d.perform_semantic_action("wheel:workspace:9", &Action::Activate, &mut doc, &path),
+            !d.perform_action(
+                &Action::Activate,
+                ActionTarget::Semantic("wheel:workspace:9"),
+                &mut doc,
+                &path
+            ),
             "a stale address is refused, never guessed"
         );
         assert!(
-            !d.perform_action_at(&Action::Activate, &[9], &mut doc, &path),
+            !d.perform_action(&Action::Activate, ActionTarget::Key(&[9]), &mut doc, &path),
             "a stale key is refused, never guessed"
         );
-        assert!(d.perform_action_at(&Action::Activate, &[1], &mut doc, &path));
+        assert!(d.perform_action(&Action::Activate, ActionTarget::Key(&[1]), &mut doc, &path));
         assert_eq!(
             d.selected_idx(),
             1,

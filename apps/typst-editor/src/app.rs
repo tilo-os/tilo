@@ -35,6 +35,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable;
@@ -2233,13 +2234,16 @@ impl Widget for TypstApp {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         doc: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (doc, _) = ui::doc::document(doc, path);
         if let Some((operation, _, _)) = TOOLBAR_ACTIONS.iter().find(|(_, id, _)| *id == target) {
             return match action {
@@ -2735,6 +2739,7 @@ impl TypstApp {
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
+    use ui::widget::ActionTarget;
     use winit::dpi::PhysicalPosition;
     use winit::event::{DeviceId, ElementState, Modifiers, MouseButton};
 
@@ -2986,11 +2991,11 @@ mod tests {
             use ui::widget::Widget as _;
 
             let (mut app, mut doc) = fresh();
-            assert!(app.perform_semantic_action(
-                "typst.source",
+            assert!(app.perform_action(
                 &ui::a11y::Action::SetValue("= Accessible edit".into()),
+                ActionTarget::Semantic("typst.source"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(app.read_source(&doc), "= Accessible edit");
             assert!(app.needs_commit());
@@ -3604,9 +3609,9 @@ mod tests {
             }
             app.compact = true;
             assert!(matches!(app.compact_view, CompactPane::Editor));
-            assert!(app.perform_semantic_action(
-                "typst.show-preview",
+            assert!(app.perform_action(
                 &ui::a11y::Action::Focus,
+                ActionTarget::Semantic("typst.show-preview"),
                 &mut doc,
                 &ROOT
             ));
@@ -3614,9 +3619,9 @@ mod tests {
                 matches!(app.compact_view, CompactPane::Editor),
                 "focusing a control must not activate it"
             );
-            assert!(app.perform_semantic_action(
-                "typst.show-preview",
+            assert!(app.perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("typst.show-preview"),
                 &mut doc,
                 &ROOT
             ));

@@ -13,6 +13,7 @@
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -17575,13 +17576,16 @@ impl Widget for ShellOverlayHost {
     /// The semantic route into an open layer: an assistive technology, a
     /// script or the bench activates a published target (`tabmenu:<slug>`)
     /// and gets the same operation a click or Enter on that row performs.
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }

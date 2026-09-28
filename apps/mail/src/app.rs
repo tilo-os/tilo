@@ -29,6 +29,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -5307,13 +5308,16 @@ impl Widget for MailApp {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, _) = ui::doc::document(state, path);
         if let Some(raw) = target.strip_prefix("mail.context:") {
             let Some((message_raw, index_raw)) = raw.rsplit_once(':') else {
@@ -6284,6 +6288,7 @@ impl MailApp {
 mod tests {
     use super::*;
     use automerge::ReadDoc;
+    use ui::widget::ActionTarget;
     use winit::event::{DeviceId, Modifiers};
 
     fn synth_device() -> DeviceId {
@@ -6658,11 +6663,11 @@ mod tests {
                 .and_then(|row| row.action_target.clone())
                 .expect("visible message row has a stable activation target");
 
-            assert!(app.perform_semantic_action(
-                &message_target,
+            assert!(app.perform_action(
                 &Action::Activate,
+                ActionTarget::Semantic(&message_target),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(
                 app.nav_pane(),
@@ -6700,11 +6705,11 @@ mod tests {
                     })
                 })
                 .expect("visible Archive folder has a stable activation target");
-            assert!(app.perform_semantic_action(
-                &archive_target,
+            assert!(app.perform_action(
                 &Action::Activate,
+                ActionTarget::Semantic(&archive_target),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(
                 app.shared.borrow().folder,
@@ -6746,11 +6751,11 @@ mod tests {
                     })
                 })
                 .expect("hydrated attachment is a named screen-reader button");
-            assert!(app.perform_semantic_action(
-                &target,
+            assert!(app.perform_action(
                 &Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(app.attachment_save_rx.is_some());
             assert!(app.pending_attachment_save.is_some());
@@ -6778,9 +6783,9 @@ mod tests {
                 })
                 .and_then(|button| button.action_target.clone())
                 .expect("reader star control");
-            assert!(app.perform_semantic_action(
-                &star_target,
+            assert!(app.perform_action(
                 &Action::Activate,
+                ActionTarget::Semantic(&star_target),
                 &mut doc,
                 &automerge::ROOT
             ));
@@ -6799,9 +6804,9 @@ mod tests {
             app.shared.borrow_mut().select_message(&mut doc, other);
             app.process_intents();
             assert!(
-                !app.perform_semantic_action(
-                    &star_target,
+                !app.perform_action(
                     &Action::Activate,
+                    ActionTarget::Semantic(&star_target),
                     &mut doc,
                     &automerge::ROOT
                 ),
@@ -6818,9 +6823,9 @@ mod tests {
                 node.role == A11yRole::MultilineTextInput
                     && node.name.as_deref() == Some("Message body")
             }));
-            assert!(app.perform_semantic_action(
-                "mail.compose:discard",
+            assert!(app.perform_action(
                 &Action::Activate,
+                ActionTarget::Semantic("mail.compose:discard"),
                 &mut doc,
                 &automerge::ROOT
             ));
@@ -6837,9 +6842,9 @@ mod tests {
                     && node.name.as_deref() == Some("Email address")
                     && node.action_target.as_deref() == Some("mail.setup:field:1")
             }));
-            assert!(app.perform_semantic_action(
-                "mail.setup:cancel",
+            assert!(app.perform_action(
                 &Action::Activate,
+                ActionTarget::Semantic("mail.setup:cancel"),
                 &mut doc,
                 &automerge::ROOT
             ));
@@ -6864,17 +6869,17 @@ mod tests {
                 .find(|item| item.name.as_deref() == Some("Archive"))
                 .expect("Archive is described to assistive technology");
             let target = archive.action_target.clone().expect("routable menu item");
-            assert!(app.perform_semantic_action(
-                &target,
+            assert!(app.perform_action(
                 &ui::a11y::Action::Focus,
+                ActionTarget::Semantic(&target),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
-            assert!(app.perform_semantic_action(
-                &target,
+            assert!(app.perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(app.context_menu.is_none());
             assert_eq!(
@@ -7521,11 +7526,11 @@ mod tests {
                     .iter()
                     .any(|node| node.action_target.as_deref() == Some("mail.bulk-purge:confirm"))
             );
-            assert!(app.perform_semantic_action(
-                "mail.bulk-purge:confirm",
+            assert!(app.perform_action(
                 &Action::Activate,
+                ActionTarget::Semantic("mail.bulk-purge:confirm"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(
                 ids.iter()
@@ -8061,8 +8066,9 @@ mod tests {
             assert!(
                 app.first_run.perform_action(
                     &ui::a11y::Action::Activate,
+                    ActionTarget::Widget,
                     &mut doc,
-                    &automerge::ROOT,
+                    &automerge::ROOT
                 ),
                 "assistive activation reaches Add account"
             );

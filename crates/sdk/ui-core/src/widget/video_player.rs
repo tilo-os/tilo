@@ -11,6 +11,7 @@
 //! builds the feed methods report that nothing was decoded.
 
 use crate::time::{Duration, Instant};
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
 
@@ -2641,13 +2642,16 @@ impl Widget for VideoPlayer {
         }
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         self.activate_semantic_target(target, action)
     }
 
@@ -3268,6 +3272,7 @@ mod tests {
     use crate::presence::PresenceCtx;
     use crate::text_render::TextRenderer;
     use crate::theme::Theme;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
@@ -4053,20 +4058,20 @@ mod tests {
             assert!(node.children.iter().all(|child| child.bounds.is_some()));
             assert!(node.children.iter().any(|child| child.role == Role::Slider));
 
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut vp,
-                "transport.play-pause",
                 &Action::Activate,
+                ActionTarget::Semantic("transport.play-pause"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(vp.is_playing());
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut vp,
-                "audio.volume",
                 &Action::SetValue("25%".into()),
+                ActionTarget::Semantic("audio.volume"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!((vp.volume() - 0.25).abs() < 1e-6);
         }

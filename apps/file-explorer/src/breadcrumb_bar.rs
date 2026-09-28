@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -602,9 +603,13 @@ impl Widget for BreadcrumbBar {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         matches!(action, ui::a11y::Action::Activate) && self.activate_keyboard_segment()
     }
 }
@@ -613,6 +618,7 @@ impl Widget for BreadcrumbBar {
 mod tests {
     use super::*;
     use crate::command::new_sink;
+    use ui::widget::ActionTarget;
 
     fn lay(bar: &mut BreadcrumbBar, width: f64) {
         bar.rect = Rect::new(0.0, 0.0, width, f64::from(BAR_HEIGHT));
@@ -743,14 +749,24 @@ mod tests {
             assert!(node.children[2].state.selected);
 
             let mut doc = automerge::AutoCommit::new();
-            assert!(bar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+            assert!(bar.perform_action(
+                &Action::Activate,
+                ActionTarget::Widget,
+                &mut doc,
+                &automerge::ROOT
+            ));
             assert!(matches!(
                 sink.borrow().last(),
                 Some(FileCommand::Navigate(path)) if path == Path::new("/home/u/Documents")
             ));
 
             bar.keyboard_index = Some(2);
-            assert!(bar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+            assert!(bar.perform_action(
+                &Action::Activate,
+                ActionTarget::Widget,
+                &mut doc,
+                &automerge::ROOT
+            ));
             assert!(
                 bar.take_edit_requested(),
                 "current crumb enters path editing"

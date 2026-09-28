@@ -16,6 +16,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Instant;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -5188,13 +5189,16 @@ impl Widget for FeedsApp {
         clippy::too_many_lines,
         reason = "one routing table keeps every synthetic Feeds node on the same existing interaction and action paths"
     )]
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &A11yAction,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, _) = ui::doc::document(state, path);
         if matches!(action, A11yAction::Focus | A11yAction::ScrollIntoView) {
             return true;
@@ -5636,6 +5640,7 @@ impl FeedsApp {
 mod tests {
     use super::*;
     use ui::headless::Framed;
+    use ui::widget::ActionTarget;
     use uuid::Uuid;
 
     /// Tests that exercise refresh/render over real subscriptions use the
@@ -6301,18 +6306,18 @@ mod tests {
             let tree = a.accessibility().expect("feeds exports a semantic window");
             assert_eq!(tree.role, Role::Window);
             assert!(tree.children.iter().any(|node| node.role == Role::Toolbar));
-            assert!(a.perform_semantic_action(
-                &format!("feeds.star:{id}"),
+            assert!(a.perform_action(
                 &A11yAction::ToggleCheck,
+                ActionTarget::Semantic(&format!("feeds.star:{id}")),
                 &mut st.doc,
-                &st.root,
+                &st.root
             ));
             assert_ne!(a.store.article(id).expect("sample article").starred, before);
-            assert!(a.perform_semantic_action(
-                &format!("feeds.article:{id}"),
+            assert!(a.perform_action(
                 &A11yAction::Activate,
+                ActionTarget::Semantic(&format!("feeds.article:{id}")),
                 &mut st.doc,
-                &st.root,
+                &st.root
             ));
             assert_eq!(a.selected_article(), Some(id));
         }
@@ -6431,13 +6436,14 @@ mod tests {
                     );
                     assert!(field.perform_action(
                         &A11yAction::SetValue(url.into()),
+                        ActionTarget::Widget,
                         &mut doc,
                         &automerge::ROOT
                     ));
                 }
-                assert!(dialog.perform_semantic_action(
-                    "modal.primary",
+                assert!(dialog.perform_action(
                     &A11yAction::Activate,
+                    ActionTarget::Semantic("modal.primary"),
                     &mut doc,
                     &automerge::ROOT
                 ));
@@ -6574,11 +6580,11 @@ mod tests {
             a.select_featured();
             headless_frame(&mut mounted);
             let (a, st) = Framed::split(&mut mounted);
-            assert!(a.perform_semantic_action(
-                &format!("feeds.reader-tag:{key}"),
+            assert!(a.perform_action(
                 &A11yAction::Activate,
+                ActionTarget::Semantic(&format!("feeds.reader-tag:{key}")),
                 &mut st.doc,
-                &st.root,
+                &st.root
             ));
             assert_eq!(a.active_filter(), Filter::Tag(key));
         }

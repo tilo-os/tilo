@@ -1,3 +1,4 @@
+use ui::widget::ActionTarget;
 #[test]
 fn seeding_and_scenarios_start_only_where_asked() {
     // Case `every_named_scenario_parses_and_none_is_missing`:
@@ -763,7 +764,12 @@ fn reader_reaches_every_inspector_control_it_can_adjust() {
         let path = vec![Pane::Inspector.key(), NumField::Opacity.a11y_key()];
         let root = automerge::ROOT;
         assert!(
-            app.perform_action_at(&ui::a11y::Action::Decrement, &path, &mut doc, &root),
+            app.perform_action(
+                &ui::a11y::Action::Decrement,
+                ActionTarget::Key(&path),
+                &mut doc,
+                &root
+            ),
             "the opacity slider answers a reader's decrement",
         );
         let after = VideoDoc::load_project(&doc)
@@ -6407,46 +6413,46 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
         );
 
         let activate = ui::a11y::Action::Activate;
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &activate,
-            &[
+            ActionTarget::Key(&[
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
                 ui::a11y::hash_key(&TOPBAR_BIN_KEY),
-            ],
+            ]),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(app.bin_flap.is_open(app.bin_layout()));
         assert!(
-            !app.perform_action_at(
+            !app.perform_action(
                 &activate,
-                &[
+                ActionTarget::Key(&[
                     ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
                     ui::a11y::hash_key(&TOPBAR_INSPECTOR_KEY),
-                ],
+                ]),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ),
             "the open bin scrim makes other topbar actions unavailable"
         );
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &activate,
-            &[
+            ActionTarget::Key(&[
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
                 ui::a11y::hash_key(&TOPBAR_BIN_KEY),
-            ],
+            ]),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(!app.bin_flap.is_open(app.bin_layout()));
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &activate,
-            &[
+            ActionTarget::Key(&[
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
                 ui::a11y::hash_key(&TOPBAR_INSPECTOR_KEY),
-            ],
+            ]),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(app.inspector_flap.is_open(app.inspector_split()));
     }
@@ -8119,7 +8125,12 @@ fn key_and_mask_controls_appear_write_and_keyframe() {
         ];
         let root = automerge::ROOT;
         assert!(
-            app.perform_action_at(&ui::a11y::Action::Increment, &path, &mut doc, &root),
+            app.perform_action(
+                &ui::a11y::Action::Increment,
+                ActionTarget::Key(&path),
+                &mut doc,
+                &root
+            ),
             "the mask's rotation answers a reader's increment",
         );
         let after = VideoDoc::load_project(&doc)
@@ -8962,9 +8973,9 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
             ui::a11y::hash_key(&m.id),
         ];
         assert!(
-            app.perform_action_at(
+            app.perform_action(
                 &ui::a11y::Action::Activate,
-                &path,
+                ActionTarget::Key(&path),
                 &mut doc,
                 &automerge::ROOT
             ),
@@ -8998,11 +9009,11 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
 
         // Setting the note's text writes it through the same commit the
         // inline editor ends at.
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &ui::a11y::Action::SetValue("mind the skyline".into()),
-            &verb(0),
+            ActionTarget::Key(&verb(0)),
             &mut doc,
-            &root,
+            &root
         ));
         assert_eq!(
             VideoDoc::load_project(&doc)
@@ -9013,11 +9024,11 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
         );
 
         // And renaming.
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &ui::a11y::Action::SetValue("act three".into()),
-            &verb(1),
+            ActionTarget::Key(&verb(1)),
             &mut doc,
-            &root,
+            &root
         ));
         assert_eq!(
             VideoDoc::load_project(&doc)
@@ -9028,17 +9039,22 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
         // An empty name is refused at the commit, so the verb reports the
         // refusal rather than claiming a write it did not make.
         assert!(
-            !app.perform_action_at(
+            !app.perform_action(
                 &ui::a11y::Action::SetValue("   ".into()),
-                &verb(1),
+                ActionTarget::Key(&verb(1)),
                 &mut doc,
-                &root,
+                &root
             ),
             "a nameless marker is a dot nobody can find, and the verb says so",
         );
 
         // Activating the delete control removes it, exactly as the X does.
-        assert!(app.perform_action_at(&ui::a11y::Action::Activate, &verb(2), &mut doc, &root));
+        assert!(app.perform_action(
+            &ui::a11y::Action::Activate,
+            ActionTarget::Key(&verb(2)),
+            &mut doc,
+            &root
+        ));
         assert!(
             VideoDoc::load_project(&doc).marker(m.id).is_none(),
             "the marker is gone from the document",
@@ -9076,11 +9092,11 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
         );
 
         app.playhead = 0.0;
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &ui::a11y::Action::Activate,
-            &held,
+            ActionTarget::Key(&held),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(
             (app.playhead - 12.0).abs() < 1e-6,
@@ -9584,14 +9600,14 @@ fn two_x_text_keeps_canvas_bands_and_inspector_usable() {
             app.a11y_project().state.focusable,
             "the compact film icon opens the project menu"
         );
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &ui::a11y::Action::Activate,
-            &[
+            ActionTarget::Key(&[
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
                 ui::a11y::hash_key(&TOPBAR_EXPORT_KEY),
-            ],
+            ]),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(
             app.presentation.export_open,

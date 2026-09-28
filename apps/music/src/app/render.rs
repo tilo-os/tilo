@@ -12,6 +12,7 @@ use super::{
     TextWeight, Theme, View, Widget, art, elide, icon, is_live_album_id, is_live_id,
     is_live_playlist_id, lyrics, rrect,
 };
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use ui::paint::PaintCtx;
@@ -1694,13 +1695,16 @@ impl Widget for MusicApp {
         clippy::too_many_lines,
         reason = "all synthetic Music targets are validated and routed together so no assistive action bypasses the normal reducer"
     )]
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, _) = ui::doc::document(state, path);
         if target == "music.search" {
             match action {

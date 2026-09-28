@@ -14,6 +14,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -166,13 +167,16 @@ impl Widget for OverviewPane {
         Some(self.core.borrow().overview_accessibility(self.rect))
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &Action,
-        key_path: &[u64],
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Key(key_path) = target else {
+            return false;
+        };
         let (state, path) = ui::doc::document(state, path);
         let search_key = ui::a11y::hash_key(&"weather.city_search");
         if let Some(index) = key_path.iter().position(|key| *key == search_key) {
@@ -264,13 +268,16 @@ impl Widget for DetailPane {
         Some(self.core.borrow().detail_accessibility(self.rect))
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &Action,
-        key_path: &[u64],
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Key(key_path) = target else {
+            return false;
+        };
         if !matches!(action, Action::Activate) {
             return false;
         }

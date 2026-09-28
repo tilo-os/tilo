@@ -15,6 +15,7 @@
 //! render/selection caches, never the canonical value (which lives in the
 //! host's CRDT), matching the toolkit's CRDT-native pattern.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::style_helpers::{length, percent};
@@ -338,13 +339,16 @@ impl Widget for TriStateControl {
         self.seg_rects.get(*segment).copied()
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let Some(index) = target
             .strip_prefix("segment:")
             .and_then(|value| value.parse::<usize>().ok())
@@ -732,13 +736,16 @@ impl Widget for ColorSwatchPicker {
         self.swatch_rects.get(*swatch).copied()
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let Some(index) = target
             .strip_prefix("swatch:")
             .and_then(|value| value.parse::<usize>().ok())
@@ -763,6 +770,7 @@ impl Widget for ColorSwatchPicker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
 
     fn lay_out(w: &mut dyn Widget) {
@@ -924,23 +932,23 @@ mod tests {
         // Case `synthetic_segment_and_swatch_actions_use_the_pointer_choice_paths`.
         {
             let mut tri = TriStateControl::allow_inherit_deny().with_selected(2);
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut tri,
-                "segment:0",
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic("segment:0"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(tri.selected(), 0);
             assert_eq!(tri.take_choice(), Some(0));
 
             let mut picker = ColorSwatchPicker::new();
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut picker,
-                "swatch:5",
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic("swatch:5"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(picker.take_choice(), Some(5));
             assert!(
@@ -979,12 +987,12 @@ mod tests {
             assert!(tree.children[2].state.selected);
             assert!(tree.children[2].state.focusable);
             assert_eq!(tree.children[2].bounds, Some(picker.swatch_rects[2].into()));
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut picker,
-                "swatch:1",
                 &crate::a11y::Action::Focus,
+                ActionTarget::Semantic("swatch:1"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(
                 Widget::accessibility(&picker)

@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::ActionTarget;
 
 #[test]
 fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
@@ -757,8 +758,9 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         assert!(Widget::perform_action(
             &mut first,
             &crate::a11y::Action::SetValue("Lin".into()),
+            ActionTarget::Widget,
             &mut document,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(state.get(), "Lin", "user edits publish typed state");
 
@@ -785,8 +787,9 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         assert!(Widget::perform_action(
             &mut input,
             &crate::a11y::Action::SetValue("after".into()),
+            ActionTarget::Widget,
             &mut document,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(state.get(), "after");
         assert_eq!(&*changes.borrow(), &["after"]);
@@ -1941,8 +1944,9 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
                 anchor: 1,
                 focus: 2,
             },
+            ActionTarget::Widget,
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(
             ti.selection_range_public(),
@@ -1953,8 +1957,9 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
         assert!(Widget::perform_action(
             &mut ti,
             &Action::SetValue("new value".into()),
+            ActionTarget::Widget,
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(ti.value(), "new value");
         assert_eq!(doc.text(&obj).unwrap(), "new value");
@@ -1984,8 +1989,9 @@ fn path_bound_text_materialises_only_on_first_edit() {
         assert!(Widget::perform_action(
             &mut input,
             &Action::SetValue("Project Atlas".into()),
+            ActionTarget::Widget,
             &mut document,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
 
         let Some((Value::Object(ObjType::Text), object)) =
@@ -2009,8 +2015,9 @@ fn path_bound_text_materialises_only_on_first_edit() {
                 anchor: 0,
                 focus: 0,
             },
+            ActionTarget::Widget,
             &mut document,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(
             document.get(&automerge::ROOT, "title").unwrap().is_none(),
@@ -2238,6 +2245,7 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         assert!(Widget::perform_action(
             &mut input,
             &crate::a11y::Action::SetValue("Project Atlas".into()),
+            ActionTarget::Widget,
             &mut doc,
             &automerge::ROOT
         ));
@@ -3434,8 +3442,9 @@ fn clearing_without_direct_binding_is_a_noop_for_path_and_local_users() {
     assert!(Widget::perform_action(
         &mut local_input,
         &crate::a11y::Action::SetValue("updated".into()),
+        ActionTarget::Widget,
         &mut doc,
-        &automerge::ROOT,
+        &automerge::ROOT
     ));
     assert_eq!(state.get(), "updated");
 }

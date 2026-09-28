@@ -2,6 +2,7 @@ use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::ActionTarget;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::binding::{BoxedBinding, Pulled};
@@ -636,10 +637,14 @@ impl Widget for Slider {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         const STEP: f64 = 0.05;
         if !self.effectively_enabled() {
             return false;
@@ -767,6 +772,7 @@ impl Widget for Slider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::{AutoCommit, ReadDoc};
 
     /// Build a slider with a known rect so we don't need a full taffy pass.
@@ -957,8 +963,9 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::Increment,
+                ActionTarget::Widget,
                 &mut document,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(state.get(), 0.55);
             assert_eq!(&*changes.borrow(), &[0.55]);
@@ -1030,6 +1037,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::Increment,
+                ActionTarget::Widget,
                 &mut doc,
                 &root
             ));
@@ -1037,6 +1045,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::Decrement,
+                ActionTarget::Widget,
                 &mut doc,
                 &root
             ));
@@ -1046,6 +1055,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::SetValue("80%".into()),
+                ActionTarget::Widget,
                 &mut doc,
                 &root
             ));
@@ -1055,6 +1065,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::SetValue("0.2".into()),
+                ActionTarget::Widget,
                 &mut doc,
                 &root
             ));
@@ -1071,6 +1082,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut s,
                 &Action::Increment,
+                ActionTarget::Widget,
                 &mut doc,
                 &root
             ));
@@ -1099,6 +1111,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut slider,
                 &crate::a11y::Action::SetValue("80%".into()),
+                ActionTarget::Widget,
                 &mut doc,
                 &automerge::ROOT
             ));

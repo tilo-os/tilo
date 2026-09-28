@@ -16,6 +16,7 @@
 //! the reader.
 
 use crate::time::SystemTime;
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 
@@ -3085,14 +3086,17 @@ impl Widget for ActivityTimeline {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let row = if let Some(key) = target.strip_prefix("timeline-group:") {
             self.rows
                 .iter()
@@ -3686,6 +3690,7 @@ impl ActivityTimeline {
 mod tests {
     use super::*;
     use crate::time::Duration;
+    use crate::widget::ActionTarget;
     use crate::widget::history::HistoryAuthor;
     use automerge::AutoCommit;
     use collab_types::ArtifactKind;
@@ -3964,12 +3969,12 @@ mod tests {
             assert!(row.bounds.is_some(), "custom-painted row has AT bounds");
             assert!(row.state.focusable);
             let target = row.action_target.clone().expect("stable entry target");
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut timeline,
-                &target,
                 &Action::Focus,
+                ActionTarget::Semantic(&target),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(
                 timeline.focused_entry().map(|entry| entry.id),
@@ -3977,12 +3982,12 @@ mod tests {
                     1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
                 ]))
             );
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut timeline,
-                &target,
                 &Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(timeline.selection(), Some((0, 0)));
             assert_eq!(

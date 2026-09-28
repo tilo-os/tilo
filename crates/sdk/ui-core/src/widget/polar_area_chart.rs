@@ -5,6 +5,7 @@
     reason = "bounded polar geometry uses floating point"
 )]
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
@@ -584,13 +585,16 @@ impl Widget for PolarAreaChart {
             .collect();
         Some(root)
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        keys: &[u64],
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Key(keys) = target else {
+            return false;
+        };
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
         }

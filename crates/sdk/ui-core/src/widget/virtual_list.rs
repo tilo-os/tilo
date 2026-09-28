@@ -5,6 +5,7 @@
 //! instances survive reorder while their key remains visible.
 
 use crate::time::Instant;
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -1541,15 +1542,17 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
-
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let Some(key) = self.key_for_semantic_target(target) else {
             return false;
         };
@@ -1599,6 +1602,7 @@ fn first_descendant_accessible_name(widget: &dyn Widget) -> Option<String> {
 mod tests {
     use super::*;
     use crate::time::Duration;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -1995,20 +1999,20 @@ mod tests {
                 semantics.children[1].action_target.as_deref(),
                 Some("key:20")
             );
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut list,
-                "key:20",
                 &crate::a11y::Action::Focus,
+                ActionTarget::Semantic("key:20"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(list.focused_key, Some(20));
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut list,
-                "key:20",
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic("key:20"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(list.selection().is_selected(&20));
             assert_eq!(&*activated.borrow(), &[20]);
@@ -2140,12 +2144,12 @@ mod tests {
             );
             let semantics = Widget::accessibility(&list).unwrap();
             assert!(semantics.children[0].state.busy);
-            assert!(!Widget::perform_semantic_action(
+            assert!(!Widget::perform_action(
                 &mut list,
-                "key:0",
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic("key:0"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(Widget::needs_animation_frame(&list));
 
@@ -2167,12 +2171,12 @@ mod tests {
             assert!(!semantics.children[0].state.busy);
             assert!(!semantics.children[0].state.invalid);
             assert!(builds.borrow().iter().any(|label| label == "ready 0"));
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut list,
-                "key:0",
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic("key:0"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
 
             states.borrow_mut().insert(1, 2);

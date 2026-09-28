@@ -5,6 +5,7 @@
 //! State lives entirely on the widget (no CRDT round-trip) because the
 //! segmented control's selection is ephemeral UI sugar — callers persist
 //! the choice via the `on_change` callback into their own CRDT slot.
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::cell::Cell;
@@ -1033,13 +1034,16 @@ impl Widget for ToggleGroup {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let prefix = self.segment_prefix();
         let Some(index) = target
             .strip_prefix(&prefix)
@@ -1063,6 +1067,7 @@ impl Widget for ToggleGroup {
 mod tests {
     use super::*;
     use crate::presence::PresenceCtx;
+    use crate::widget::ActionTarget;
     use crate::widget::Widget;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1573,12 +1578,12 @@ mod tests {
             let mut group = ToggleGroup::new(vec![Segment::new("Light"), Segment::new("Dark")], 0)
                 .on_change(move |index| captured.borrow_mut().push(index));
 
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut group,
-                "segment:1",
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic("segment:1"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(group.selected(), 1);
             assert_eq!(&*changed.borrow(), &[1]);
@@ -1604,12 +1609,12 @@ mod tests {
             );
             assert_eq!(spec.params()[0].name, "index");
 
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut group,
-                "appearance:segment:1",
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic("appearance:segment:1"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(
                 group.selected(),

@@ -11,6 +11,7 @@
 //! [`DatePicker::from_state`], or be observed with `on_change` for an
 //! app-owned durable mutation.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use chrono::{Datelike, Local, NaiveDate};
 use std::collections::HashMap;
@@ -507,10 +508,14 @@ impl Widget for DatePicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
-        _root: &ModelPath,
+        _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         match action {
             Action::SetValue(value) => {
                 let Ok(date) = NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d") else {
@@ -726,6 +731,7 @@ fn month_name_en(m: u32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -981,8 +987,9 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("2026-11-23".into()),
+                ActionTarget::Widget,
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(state.with(|date| *date), expected);
             assert_eq!(*captured.borrow(), Some(expected));
@@ -990,8 +997,9 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("2026-02-30".into()),
+                ActionTarget::Widget,
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(state.with(|date| *date), expected);
         }

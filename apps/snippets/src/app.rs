@@ -17,6 +17,7 @@
 //! open expand-modal are view state and stay local to each peer.
 
 use std::collections::HashMap;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -1412,16 +1413,21 @@ impl ui::widget::Widget for SnippetsApp {
             .collect()
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, path) = ui::doc::document(state, path);
         if let Some(mut modal) = self.expand.take() {
-            let Some(outcome) = modal.perform_semantic_action(target, action, state, path) else {
+            let Some(outcome) =
+                modal.perform_action(action, ActionTarget::Semantic(target), state, path)
+            else {
                 self.expand = Some(modal);
                 return false;
             };
@@ -1435,7 +1441,13 @@ impl ui::widget::Widget for SnippetsApp {
                 self.body_editor.set_focused(true);
                 return true;
             }
-            let accepted = Widget::perform_action(&mut self.body_editor, action, state, path);
+            let accepted = Widget::perform_action(
+                &mut self.body_editor,
+                action,
+                ActionTarget::Widget,
+                state,
+                path,
+            );
             self.flush_body_edit(state);
             return accepted;
         }
@@ -2989,6 +3001,7 @@ impl Radii for Theme {
 mod tests {
     use super::*;
     use crate::actions::SNIPPETS_ACTION_TYPE;
+    use ui::widget::ActionTarget;
     use ui::widget::Widget;
 
     /// Live apps start and stay empty; the demo and an empty doc's sync seed.
@@ -3139,10 +3152,10 @@ mod tests {
             app.record(Rect::new(0.0, 0.0, 100.0, 40.0), Action::NewSnippet);
             let target = Action::NewSnippet.semantic_id();
             let before = doc.get_heads();
-            Widget::perform_semantic_action(
+            Widget::perform_action(
                 &mut app,
-                &target,
                 &ui::a11y::Action::Focus,
+                ActionTarget::Semantic(&target),
                 &mut doc,
                 &automerge::ROOT,
             );
@@ -3151,12 +3164,12 @@ mod tests {
                 before,
                 "focusing a button must not author a snippet"
             );
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut app,
-                &target,
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(SnippetsDoc::list(&doc).len(), 1);
         }
@@ -3183,12 +3196,12 @@ mod tests {
             app.sync(&mut doc, &root);
             let id = app.open_id_for_test().unwrap();
             let body = "fn main() {\n    println!(\"Grün ${name}\");\n}\n";
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut app,
-                "snippets.body",
                 &ui::a11y::Action::SetValue(body.into()),
+                ActionTarget::Semantic("snippets.body"),
                 &mut doc,
-                &root,
+                &root
             ));
             assert_eq!(SnippetsDoc::get(&doc, id).unwrap().body, body);
 
@@ -3235,16 +3248,16 @@ mod tests {
             app.sync(&mut doc, &automerge::ROOT);
             app.new_snippet_for_test(&mut doc);
             let id = app.open_id_for_test().unwrap();
-            app.perform_semantic_action(
-                "snippets.body",
+            app.perform_action(
                 &ui::a11y::Action::SetValue("Hello ${name}".into()),
+                ActionTarget::Semantic("snippets.body"),
                 &mut doc,
                 &automerge::ROOT,
             );
             app.start_expand(id);
-            assert!(app.perform_semantic_action(
-                "snippets.expand.field.name",
+            assert!(app.perform_action(
                 &ui::a11y::Action::SetValue("Grün".into()),
+                ActionTarget::Semantic("snippets.expand.field.name"),
                 &mut doc,
                 &automerge::ROOT
             ));
@@ -3253,15 +3266,15 @@ mod tests {
                 "Hello Grün"
             );
             assert_eq!(SnippetsDoc::get(&doc, id).unwrap().body, "Hello ${name}");
-            assert!(!app.perform_semantic_action(
-                "snippets.body",
+            assert!(!app.perform_action(
                 &ui::a11y::Action::SetValue("hidden edit".into()),
+                ActionTarget::Semantic("snippets.body"),
                 &mut doc,
                 &automerge::ROOT
             ));
-            assert!(app.perform_semantic_action(
-                "snippets.expand.cancel",
+            assert!(app.perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("snippets.expand.cancel"),
                 &mut doc,
                 &automerge::ROOT
             ));
@@ -3278,9 +3291,9 @@ mod tests {
             ui::undo::take_committed_action(&mut app);
             app.sync(&mut state.doc, &state.root);
             app.layout_at_width_for_test(1280.0).unwrap();
-            assert!(app.perform_semantic_action(
-                "snippets.body",
+            assert!(app.perform_action(
                 &ui::a11y::Action::Focus,
+                ActionTarget::Semantic("snippets.body"),
                 &mut state.doc,
                 &state.root
             ));
@@ -3365,9 +3378,9 @@ mod tests {
             app.sync(&mut doc, &automerge::ROOT);
             app.new_snippet_for_test(&mut doc);
             let first = app.open_id_for_test().unwrap();
-            app.perform_semantic_action(
-                "snippets.body",
+            app.perform_action(
                 &ui::a11y::Action::SetValue("first\n".into()),
+                ActionTarget::Semantic("snippets.body"),
                 &mut doc,
                 &automerge::ROOT,
             );

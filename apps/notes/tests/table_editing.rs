@@ -4,6 +4,7 @@ use ui::a11y::{AccessNode, Action};
 use ui::headless::Framed;
 use ui::presence::PresenceCtx;
 use ui::theme::Theme;
+use ui::widget::ActionTarget;
 use ui::widget::Widget;
 use ui::widget::block_editor::{Block, BlockEditor};
 use vello::Scene;
@@ -56,7 +57,12 @@ impl Fixture {
     )]
     fn action(&mut self, target: &str, action: Action) -> bool {
         let (editor, state) = Framed::split(&mut self.editor);
-        editor.perform_semantic_action(target, &action, &mut state.doc, &state.root)
+        editor.perform_action(
+            &action,
+            ActionTarget::Semantic(target),
+            &mut state.doc,
+            &state.root,
+        )
     }
 
     fn value(&self, block: usize, row: usize, column: usize) -> String {
@@ -191,9 +197,9 @@ impl Bound {
         reason = "test helper owns each semantic action for immediate dispatch"
     )]
     fn action(&mut self, state: &mut ui::State, target: &str, action: Action) -> bool {
-        let done = self.panel.editor_mut().perform_semantic_action(
-            target,
+        let done = self.panel.editor_mut().perform_action(
             &action,
+            ActionTarget::Semantic(target),
             &mut state.doc,
             &automerge::ROOT,
         );

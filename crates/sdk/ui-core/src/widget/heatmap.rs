@@ -5,6 +5,7 @@
     reason = "heatmap layout and colour interpolation are bounded numeric operations"
 )]
 
+use crate::widget::ActionTarget;
 use std::collections::HashMap;
 
 use crate::widget::{AppModel, ModelPath};
@@ -555,13 +556,16 @@ impl Widget for Heatmap {
                 .with_children(children),
         )
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        key_path: &[u64],
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Key(key_path) = target else {
+            return false;
+        };
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
         }

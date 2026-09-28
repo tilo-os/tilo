@@ -720,6 +720,7 @@ mod tests {
     use taffy::prelude::TaffyMaxContent;
     use ui::Widget;
     use ui::text_render::TextRenderer;
+    use ui::widget::ActionTarget;
     use vello::kurbo::{Point, Rect};
     use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
     use winit::keyboard::{Key, NamedKey};
@@ -1064,10 +1065,10 @@ mod tests {
             let key = tree.key(page).unwrap();
             tree.open_context_menu(Some(key), Point::ZERO);
             let target = format!("menu:context-menu:item:{}", menu_row::RENAME);
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 tree.tree_mut(),
-                &target,
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut AutoCommit::new(),
                 &ObjId::Root
             ));
@@ -1099,10 +1100,10 @@ mod tests {
                 })
                 .and_then(|item| item.action_target.clone())
                 .unwrap();
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 tree.tree_mut(),
-                &copy,
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&copy),
                 &mut AutoCommit::new(),
                 &ObjId::Root
             ));
@@ -1175,18 +1176,18 @@ mod tests {
             let target = menu.children.last().unwrap().action_target.clone().unwrap();
             let mut doc = AutoCommit::new();
             let before = doc.get_heads();
-            assert!(!Widget::perform_semantic_action(
+            assert!(!Widget::perform_action(
                 tree.tree_mut(),
-                &target,
                 &ui::a11y::Action::Increment,
+                ActionTarget::Semantic(&target),
                 &mut doc,
                 &ObjId::Root
             ));
             assert!(tree.take_events().is_empty());
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 tree.tree_mut(),
-                &target,
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut doc,
                 &ObjId::Root
             ));
@@ -1197,10 +1198,10 @@ mod tests {
                 "sidebar activation only queues; app owns document admission"
             );
             assert!(
-                !Widget::perform_semantic_action(
+                !Widget::perform_action(
                     tree.tree_mut(),
-                    &target,
                     &ui::a11y::Action::Activate,
+                    ActionTarget::Semantic(&target),
                     &mut doc,
                     &ObjId::Root
                 ),

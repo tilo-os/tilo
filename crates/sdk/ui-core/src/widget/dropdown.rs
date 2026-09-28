@@ -20,6 +20,7 @@
 //! container routes all events to it exclusively — how the out-of-layout
 //! list becomes hit-testable and click-outside dismissal works.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
@@ -1128,10 +1129,14 @@ impl Widget for Dropdown {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         if !self.effectively_enabled() {
             return false;
         }
@@ -1176,6 +1181,7 @@ impl Widget for Dropdown {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, transaction::Transactable};
     use winit::event::Modifiers;
     use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
@@ -1815,8 +1821,9 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &crate::a11y::Action::SetValue(String::from("Europe/Amsterdam")),
+                ActionTarget::Widget,
                 &mut document,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(state.get(), "Europe/Amsterdam");
             assert_eq!(&*changes.borrow(), &["Europe/Amsterdam"]);
@@ -1848,22 +1855,25 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &Action::Expand,
+                ActionTarget::Widget,
                 &mut document,
-                &root,
+                &root
             ));
             assert!(dropdown.is_open());
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &Action::Collapse,
+                ActionTarget::Widget,
                 &mut document,
-                &root,
+                &root
             ));
             assert!(!dropdown.is_open());
             assert!(!Widget::perform_action(
                 &mut dropdown,
                 &Action::SetValue(String::from("not an option")),
+                ActionTarget::Widget,
                 &mut document,
-                &root,
+                &root
             ));
             assert_eq!(dropdown.selected(), "UTC");
             assert_eq!(
@@ -1968,6 +1978,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &crate::a11y::Action::SetValue("Asia/Tokyo".into()),
+                ActionTarget::Widget,
                 &mut doc,
                 &automerge::ROOT
             ));

@@ -15,6 +15,7 @@
 //! No further wiring: the host publishes the status and drains the request by
 //! sweeping its `node_map`, so the control works at any depth.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -363,9 +364,13 @@ impl Widget for UndoButton {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         match action {
             crate::a11y::Action::Activate => self.activate(),
             _ => false,
@@ -429,6 +434,7 @@ impl crate::undo::UndoControl for UndoButton {
 mod tests {
     use super::*;
     use crate::a11y::Action;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
     use automerge::ROOT;
 
@@ -611,13 +617,13 @@ mod tests {
             let mut b = button_at(UndoRequest::Redo, Rect::new(0.0, 0.0, 32.0, 32.0));
 
             assert!(
-                !b.perform_action_at(&Action::Activate, &[], &mut doc, &ROOT),
+                !b.perform_action(&Action::Activate, ActionTarget::Key(&[]), &mut doc, &ROOT),
                 "an unavailable verb declines the action"
             );
             assert_eq!(crate::undo::take_undo_request(&mut b), None);
 
             crate::undo::set_undo_status(&mut b, &mut || status(false, true));
-            assert!(b.perform_action_at(&Action::Activate, &[], &mut doc, &ROOT));
+            assert!(b.perform_action(&Action::Activate, ActionTarget::Key(&[]), &mut doc, &ROOT));
             assert_eq!(
                 crate::undo::take_undo_request(&mut b),
                 Some(UndoRequest::Redo)

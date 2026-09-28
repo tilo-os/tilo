@@ -20,6 +20,7 @@
 //! The editable path bar in the file manager is the canonical consumer, but
 //! the widget knows nothing about paths.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
@@ -912,72 +913,78 @@ impl Widget for Autocomplete {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
-        let (state, path) = crate::doc::document(state, path);
-        match action {
-            Action::Focus | Action::Expand => {
-                self.begin_edit();
-                true
-            }
-            Action::Collapse => {
-                self.cancel();
-                true
-            }
-            _ => {
-                let handled = Widget::perform_action(&mut self.input, action, state, path);
-                if handled && matches!(action, Action::SetValue(_)) {
-                    self.input.set_focus(true);
-                    self.outcome = AutocompleteOutcome::None;
-                    self.recompute();
-                    self.open = true;
-                    self.highlight = None;
+        match target {
+            ActionTarget::Widget => {
+                use crate::a11y::Action;
+                let (state, path) = crate::doc::document(state, path);
+                match action {
+                    Action::Focus | Action::Expand => {
+                        self.begin_edit();
+                        true
+                    }
+                    Action::Collapse => {
+                        self.cancel();
+                        true
+                    }
+                    _ => {
+                        let handled = Widget::perform_action(
+                            &mut self.input,
+                            action,
+                            ActionTarget::Widget,
+                            state,
+                            path,
+                        );
+                        if handled && matches!(action, Action::SetValue(_)) {
+                            self.input.set_focus(true);
+                            self.outcome = AutocompleteOutcome::None;
+                            self.recompute();
+                            self.open = true;
+                            self.highlight = None;
+                        }
+                        handled
+                    }
                 }
-                handled
             }
+            ActionTarget::Key(key_path) => {
+                use crate::a11y::{Action, hash_key};
+                let own_key = hash_key(&self.test_id().unwrap_or("autocomplete"));
+                if key_path.is_empty() || key_path == [own_key] {
+                    return self.perform_action(action, ActionTarget::Widget, state, path);
+                }
+                if !self.open || !matches!(action, Action::Activate) {
+                    return false;
+                }
+                let Some(value) = self
+                    .suggestions
+                    .iter()
+                    .take(self.max_visible)
+                    .find(|suggestion| {
+                        key_path.last()
+                            == Some(&hash_key(&(
+                                "autocomplete-suggestion",
+                                suggestion.value.as_str(),
+                            )))
+                    })
+                    .map(|suggestion| suggestion.value.clone())
+                else {
+                    return false;
+                };
+                self.accept(value);
+                true
+            }
+            ActionTarget::Semantic(_) => false,
         }
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
-        key_path: &[u64],
-        state: &mut AppModel,
-        path: &ModelPath,
-    ) -> bool {
-        use crate::a11y::{Action, hash_key};
-        let own_key = hash_key(&self.test_id().unwrap_or("autocomplete"));
-        if key_path.is_empty() || key_path == [own_key] {
-            return self.perform_action(action, state, path);
-        }
-        if !self.open || !matches!(action, Action::Activate) {
-            return false;
-        }
-        let Some(value) = self
-            .suggestions
-            .iter()
-            .take(self.max_visible)
-            .find(|suggestion| {
-                key_path.last()
-                    == Some(&hash_key(&(
-                        "autocomplete-suggestion",
-                        suggestion.value.as_str(),
-                    )))
-            })
-            .map(|suggestion| suggestion.value.clone())
-        else {
-            return false;
-        };
-        self.accept(value);
-        true
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
     use winit::event::Modifiers;
 
@@ -989,6 +996,7 @@ mod tests {
             let mut state = AutoCommit::new();
             assert!(ac.perform_action(
                 &Action::SetValue("al".into()),
+                ActionTarget::Widget,
                 &mut state,
                 &automerge::ROOT
             ));
@@ -996,14 +1004,24 @@ mod tests {
             let node = ac.accessibility().unwrap();
             assert_eq!(node.children[1].name.as_deref(), Some("album"));
             let key = hash_key(&("autocomplete-suggestion", "album"));
-            assert!(ac.perform_action_at(&Action::Activate, &[key], &mut state, &automerge::ROOT));
+            assert!(ac.perform_action(
+                &Action::Activate,
+                ActionTarget::Key(&[key]),
+                &mut state,
+                &automerge::ROOT
+            ));
             assert_eq!(ac.text(), "album");
             assert_eq!(
                 ac.take_outcome(),
                 AutocompleteOutcome::Accepted("album".into())
             );
             assert!(!ac.is_open());
-            assert!(!ac.perform_action_at(&Action::Activate, &[key], &mut state, &automerge::ROOT));
+            assert!(!ac.perform_action(
+                &Action::Activate,
+                ActionTarget::Key(&[key]),
+                &mut state,
+                &automerge::ROOT
+            ));
         }
 
         fn typing_recomputes_and_opens_the_dropdown() {

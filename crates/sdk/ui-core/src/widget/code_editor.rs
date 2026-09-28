@@ -16,6 +16,7 @@
 //! editor.set_text("fn main() {\n    println!(\"hi\");\n}\n");
 //! ```
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::ops::Range;
 
@@ -547,10 +548,15 @@ impl Widget for CodeEditor {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        self.inner.perform_action(action, state, path)
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
+        self.inner
+            .perform_action(action, ActionTarget::Widget, state, path)
     }
 
     fn wants_pointer_capture(&self) -> bool {

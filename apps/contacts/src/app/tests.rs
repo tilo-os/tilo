@@ -4,6 +4,7 @@ use automerge::ReadDoc;
 use taffy::{AvailableSpace, Dimension, Size, Style};
 use tilo_automerge::ApplyIncoming;
 use ui::headless::Framed;
+use ui::widget::ActionTarget;
 use vello::kurbo::Point;
 
 /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
@@ -3010,18 +3011,18 @@ fn first_run_is_empty_and_actionable() {
             .expect("the first-run action is exposed");
         assert_eq!(action.role, ui::a11y::Role::Button);
 
-        assert!(app.perform_semantic_action(
-            "contacts.empty.new",
+        assert!(app.perform_action(
             &ui::a11y::Action::Focus,
+            ActionTarget::Semantic("contacts.empty.new"),
             &mut doc,
-            &ROOT,
+            &ROOT
         ));
         assert!(app.empty_action_focused);
-        assert!(app.perform_semantic_action(
-            "contacts.empty.new",
+        assert!(app.perform_action(
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic("contacts.empty.new"),
             &mut doc,
-            &ROOT,
+            &ROOT
         ));
         assert_eq!(app.mode, Mode::Edit);
         assert!(app.form.as_ref().is_some_and(|form| form.is_new));
@@ -3917,11 +3918,11 @@ fn modals_and_editors_expose_semantic_action_routes() {
         assert_eq!(h.app.export_dialog.selection().len(), h.app.store.len());
 
         let (app, doc) = h.parts();
-        assert!(app.perform_semantic_action(
-            "contacts.export.select-none",
+        assert!(app.perform_action(
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic("contacts.export.select-none"),
             doc,
-            &ROOT,
+            &ROOT
         ));
         assert!(h.app.export_dialog.selection().is_empty());
         let id = h
@@ -3932,7 +3933,12 @@ fn modals_and_editors_expose_semantic_action_routes() {
             .0;
         let target = format!("contacts.export.row:{id}");
         let (app, doc) = h.parts();
-        assert!(app.perform_semantic_action(&target, &ui::a11y::Action::ToggleCheck, doc, &ROOT,));
+        assert!(app.perform_action(
+            &ui::a11y::Action::ToggleCheck,
+            ActionTarget::Semantic(&target),
+            doc,
+            &ROOT
+        ));
         assert!(h.app.export_dialog.selection().contains(&id));
 
         h.app.store.contacts = (0..1_000)
@@ -3989,11 +3995,11 @@ fn modals_and_editors_expose_semantic_action_routes() {
         assert!(h.press_named(NamedKey::Tab));
         assert_eq!(h.app.unsaved_focus, UnsavedFocus::Discard);
         let (app, doc) = h.parts();
-        assert!(app.perform_semantic_action(
-            "contacts.unsaved.discard",
+        assert!(app.perform_action(
             &ui::a11y::Action::Activate,
+            ActionTarget::Semantic("contacts.unsaved.discard"),
             doc,
-            &ROOT,
+            &ROOT
         ));
         assert!(h.app.pending_switch.is_none());
         assert_eq!(h.app.selected, Some(other));
@@ -4198,7 +4204,12 @@ fn rerender_at(app: &mut Framed<ContactsApp>, w: u32, h: u32) {
 
 fn perform(app: &mut Framed<ContactsApp>, target: &str, action: &ui::a11y::Action) -> bool {
     let (app, state) = Framed::split(app);
-    app.perform_semantic_action(target, action, &mut state.doc, &ROOT)
+    app.perform_action(
+        action,
+        ActionTarget::Semantic(target),
+        &mut state.doc,
+        &ROOT,
+    )
 }
 
 fn sync_doc(app: &mut Framed<ContactsApp>) {

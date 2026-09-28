@@ -12,6 +12,7 @@
 //! [`SearchResultsView::set_rect`] for a free-floating overlay — and it lays
 //! its own headers and rows top-down from the current groups.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
@@ -749,13 +750,16 @@ impl Widget for SearchResultsView {
         self.rect
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &crate::a11y::Action,
-        _: &mut AppModel,
-        _: &ModelPath,
+        target: ActionTarget<'_>,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         if !matches!(
             action,
             crate::a11y::Action::Focus | crate::a11y::Action::Activate

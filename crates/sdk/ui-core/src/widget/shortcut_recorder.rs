@@ -4,6 +4,7 @@
 //! Enter/Space, then type the replacement chord. Escape cancels. A reset
 //! affordance is present only while the value differs from its default.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
@@ -335,9 +336,13 @@ impl Widget for ShortcutRecorder {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
-        _root: &ModelPath,
+        _path: &ModelPath,
     ) -> bool {
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         if matches!(action, crate::a11y::Action::Activate) {
             self.capturing = true;
             true

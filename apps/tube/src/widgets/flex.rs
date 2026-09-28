@@ -17,6 +17,7 @@
 //! the live `Theme`, so theming stays OS-controlled.
 
 use std::collections::HashMap;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::style_helpers::{fr, length, minmax, percent, repeat};
@@ -828,9 +829,13 @@ impl Widget for Flex {
     fn perform_action(
         &mut self,
         action_kind: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         match action_kind {
             ui::a11y::Action::Focus if self.is_actionable() => {
                 self.set_focus(true);
@@ -938,6 +943,7 @@ impl Widget for Flex {
 mod accessibility_tests {
     use super::*;
     use automerge::AutoCommit;
+    use ui::widget::ActionTarget;
 
     #[test]
     fn clickable_surface_is_a_named_keyboard_focusable_button() {
@@ -954,8 +960,9 @@ mod accessibility_tests {
         assert!(Widget::perform_action(
             &mut control,
             &ui::a11y::Action::Activate,
+            ActionTarget::Widget,
             &mut AutoCommit::new(),
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(
             crate::action::drain(&bus),

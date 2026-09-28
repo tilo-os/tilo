@@ -1409,7 +1409,7 @@ pub trait Widget {
         path: &ModelPath,
     ) -> bool {
         let _ = key_path;
-        self.perform_action(action, state, path)
+        self.perform_action(action, ActionTarget::Widget, state, path)
     }
 
     /// Handle an action addressed to a synthetic accessibility child created
@@ -1450,7 +1450,7 @@ pub trait Widget {
         if key_path.is_empty() {
             return false;
         }
-        self.perform_action_at(action, &key_path, state, path)
+        self.perform_action(action, ActionTarget::Key(&key_path), state, path)
     }
 
     /// A disabled (`false`) widget is excluded from focus traversal, must

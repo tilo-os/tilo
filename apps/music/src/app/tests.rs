@@ -1,5 +1,6 @@
 use super::*;
 use std::io::Cursor;
+use ui::widget::ActionTarget;
 use ui::widget::Continuable as _;
 
 fn app_with_doc() -> (MusicApp, AutoCommit) {
@@ -898,11 +899,11 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
                 .iter()
                 .any(|node| node.action_target.as_deref() == Some("music.toggle-play"))
         );
-        assert!(app.perform_semantic_action(
-            "music.toggle-play",
+        assert!(app.perform_action(
             &A11yAction::Activate,
+            ActionTarget::Semantic("music.toggle-play"),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(
             app.pb.playing,
@@ -948,11 +949,11 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
             .find(|node| node.action_target.as_deref() == Some("music.empty-search"))
             .expect("empty-state Search button has an accessible action");
         assert_eq!(search.name.as_deref(), Some("Search for music"));
-        assert!(app.perform_semantic_action(
-            "music.empty-search",
+        assert!(app.perform_action(
             &A11yAction::Activate,
+            ActionTarget::Semantic("music.empty-search"),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(app.view, View::Search);
     }
@@ -983,11 +984,11 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
             .find_map(|node| node.action_target.as_deref())
             .expect("track row has a semantic play action")
             .to_string();
-        assert!(app.perform_semantic_action(
-            &play,
+        assert!(app.perform_action(
             &A11yAction::Activate,
+            ActionTarget::Semantic(&play),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(
             app.pb.current.is_some(),
@@ -1027,11 +1028,11 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
             })
             .and_then(|node| node.action_target.clone())
             .expect("move down action");
-        assert!(app.perform_semantic_action(
-            &move_down,
+        assert!(app.perform_action(
             &A11yAction::Activate,
+            ActionTarget::Semantic(&move_down),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(app.lib.playlist(&playlist.id).unwrap().track_ids[1], first);
     }
@@ -1042,21 +1043,21 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
         use ui::widget::Widget as _;
 
         let (mut app, mut doc) = app_with_doc();
-        assert!(app.perform_semantic_action(
-            "music.search",
+        assert!(app.perform_action(
             &A11yAction::SetValue("Aurora".into()),
+            ActionTarget::Semantic("music.search"),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(app.view, View::Search);
         assert_eq!(app.search_input.value(), "Aurora");
         assert!(app.search_edit_at.is_some());
 
-        assert!(app.perform_semantic_action(
-            "music.nav.albums",
+        assert!(app.perform_action(
             &A11yAction::Activate,
+            ActionTarget::Semantic("music.nav.albums"),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert_eq!(app.view, View::Albums);
     }
@@ -1271,11 +1272,11 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
             .find_map(|node| node.action_target.as_deref())
             .expect("failed track has an assistive Retry action")
             .to_string();
-        assert!(app.perform_semantic_action(
-            &retry,
+        assert!(app.perform_action(
             &A11yAction::Activate,
+            ActionTarget::Semantic(&retry),
             &mut doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         ));
         assert!(!app.offline_errors.contains_key("tk_g3"));
     }

@@ -5,6 +5,7 @@
     reason = "bounded floating-point chart geometry"
 )]
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -578,13 +579,16 @@ impl Widget for RangeChart {
             .collect();
         Some(root)
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        keys: &[u64],
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Key(keys) = target else {
+            return false;
+        };
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
         }

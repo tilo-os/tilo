@@ -9,6 +9,7 @@
 //! CRDT so collaboration and undo come for free.
 
 use std::collections::{HashMap, HashSet};
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -5571,15 +5572,18 @@ impl Widget for PdfApp {
         clippy::too_many_lines,
         reason = "one target router mirrors the single synthetic accessibility tree"
     )]
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
         use crate::actions::PdfOperation;
         use ui::a11y::Action as A11yAction;
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, path) = ui::doc::document(state, path);
         if self.awaiting_markup_record {
             return false;
@@ -5588,9 +5592,9 @@ impl Widget for PdfApp {
             let Some(menu) = self.context_menu.as_mut() else {
                 return false;
             };
-            let handled = menu
-                .widget
-                .perform_semantic_action(target, action, state, path);
+            let handled =
+                menu.widget
+                    .perform_action(action, ActionTarget::Semantic(target), state, path);
             let selected = menu.widget.take_selection().map(|_| menu.target.clone());
             let still_open = menu.widget.is_open();
             if let Some(target) = selected {
@@ -6113,6 +6117,7 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use ui::headless::{Framed, viewport};
+    use ui::widget::ActionTarget;
 
     /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
     const HANG_BOUND: Duration = Duration::from_secs(30);
@@ -6435,11 +6440,11 @@ mod tests {
                     semantics.contains("Opening PDF") && !semantics.contains("pdf.page:"),
                     "a document awaiting its record offers no page to act on"
                 );
-                assert!(!app.perform_semantic_action(
-                    "pdf.tool:2",
+                assert!(!app.perform_action(
                     &ui::a11y::Action::Activate,
+                    ActionTarget::Semantic("pdf.tool:2"),
                     &mut st.doc,
-                    &st.root,
+                    &st.root
                 ));
                 assert_eq!(st.doc.get_heads(), original);
             }
@@ -6448,11 +6453,11 @@ mod tests {
             record_frame(&mut app, &mut st, &mut set, &mut room);
             assert!(!app.awaiting_markup_record);
             assert!(!Widget::resources(&app, &st.doc).is_empty());
-            assert!(app.perform_semantic_action(
-                "pdf.tool:2",
+            assert!(app.perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("pdf.tool:2"),
                 &mut st.doc,
-                &st.root,
+                &st.root
             ));
         }
 
@@ -6708,11 +6713,11 @@ mod tests {
                 == Some("pdf.zoom-in")));
 
             let sidebar_before = app.show_sidebar;
-            assert!(app.perform_semantic_action(
-                "pdf.toggle-sidebar",
+            assert!(app.perform_action(
                 &Action::Activate,
+                ActionTarget::Semantic("pdf.toggle-sidebar"),
                 &mut state.doc,
-                &state.root,
+                &state.root
             ));
             assert_ne!(app.show_sidebar, sidebar_before);
         }
@@ -6726,19 +6731,19 @@ mod tests {
             app.reorder_pages(0, 2);
             assert_eq!(app.resource_page_ids[2], target_id);
 
-            assert!(app.perform_semantic_action(
-                &format!("pdf.page:{target_id}"),
+            assert!(app.perform_action(
                 &Action::Activate,
+                ActionTarget::Semantic(&format!("pdf.page:{target_id}")),
                 &mut state.doc,
-                &state.root,
+                &state.root
             ));
             assert_eq!(app.current_page, 3, "the addressed page, not ordinal 1");
             assert!(
-                !app.perform_semantic_action(
-                    "pdf.page:deleted-page",
+                !app.perform_action(
                     &Action::Activate,
+                    ActionTarget::Semantic("pdf.page:deleted-page"),
                     &mut state.doc,
-                    &state.root,
+                    &state.root
                 ),
                 "unknown targets fail closed"
             );

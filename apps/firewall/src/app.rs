@@ -13,6 +13,7 @@
 //! edits so two instances pointed at one collab socket edit the same ruleset.
 
 use std::collections::HashMap;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -1917,13 +1918,16 @@ impl Widget for FirewallApp {
         None
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &A11yAction,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, _) = ui::doc::document(state, path);
         if target == "firewall.retry" && matches!(action, A11yAction::Activate) {
             self.retry_connect(state);
@@ -4086,6 +4090,7 @@ fn target_color(theme: &Theme, target: Target) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::widget::ActionTarget;
 
     fn app_with_rect() -> FirewallApp {
         // Sample-populated build: these tests exercise rule/zone behaviour
@@ -4216,11 +4221,11 @@ mod tests {
             }));
 
             let mut doc = AutoCommit::new();
-            assert!(app.perform_semantic_action(
-                "firewall.zone:home",
+            assert!(app.perform_action(
                 &A11yAction::Activate,
+                ActionTarget::Semantic("firewall.zone:home"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(app.selected_zone, ZoneKind::Home);
         }
@@ -4260,22 +4265,22 @@ mod tests {
 
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
-            assert!(app.perform_semantic_action(
-                &target,
+            assert!(app.perform_action(
                 &A11yAction::Activate,
+                ActionTarget::Semantic(&target),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(app.selected_rule, Some(id));
             let was_enabled = app
                 .selected_zone_ref()
                 .and_then(|zone| zone.rules.iter().find(|rule| rule.id == id))
                 .is_some_and(|rule| rule.enabled);
-            assert!(app.perform_semantic_action(
-                &toggle_target,
+            assert!(app.perform_action(
                 &A11yAction::ToggleCheck,
+                ActionTarget::Semantic(&toggle_target),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_ne!(
                 app.selected_zone_ref()
@@ -4284,11 +4289,11 @@ mod tests {
                 was_enabled
             );
             let before = app.selected_zone_ref().map_or(0, |zone| zone.rules.len());
-            assert!(app.perform_semantic_action(
-                &delete_target,
+            assert!(app.perform_action(
                 &A11yAction::Activate,
+                ActionTarget::Semantic(&delete_target),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(app.pending_delete, Some(id));
             assert_eq!(
@@ -4594,11 +4599,11 @@ mod tests {
                 let ssh_was_enabled = app
                     .selected_zone_ref()
                     .is_some_and(|zone| zone.has_service("ssh"));
-                assert!(app.perform_semantic_action(
-                    "firewall.service.toggle:public:ssh",
+                assert!(app.perform_action(
                     &A11yAction::ToggleCheck,
+                    ActionTarget::Semantic("firewall.service.toggle:public:ssh"),
                     &mut doc,
-                    &automerge::ROOT,
+                    &automerge::ROOT
                 ));
                 assert_ne!(
                     app.selected_zone_ref()

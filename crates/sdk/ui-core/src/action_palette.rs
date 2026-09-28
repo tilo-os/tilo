@@ -28,6 +28,7 @@
 //! [`take_navigation`](ActionPalette::take_navigation) (content).
 
 use crate::bound_dispatch::{DeferredIntent, PreparedActionIntent};
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 
 use std::collections::{HashMap, VecDeque};
@@ -2048,12 +2049,13 @@ impl ActionPalette {
         let handled = if results_owner {
             target.is_some_and(|target| {
                 self.results
-                    .perform_semantic_action(target, action, doc, root)
+                    .perform_action(action, ActionTarget::Semantic(target), doc, root)
             })
         } else if matches!(action, crate::a11y::Action::Focus) {
             true
         } else {
-            self.field.perform_action(action, doc, root)
+            self.field
+                .perform_action(action, ActionTarget::Widget, doc, root)
         };
         if let Some(query) = self.field.take_dirty() {
             if self.arg.is_none() && self.confirm.is_none() {
@@ -2158,6 +2160,7 @@ impl ActionPalette {
             {
                 self.controls.children_mut()[focused - 1].perform_action(
                     &crate::a11y::Action::Activate,
+                    ActionTarget::Widget,
                     doc,
                     path,
                 );
@@ -2623,13 +2626,16 @@ impl Widget for ActionPalette {
                 .with_children(children),
         )
     }
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         doc: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         if !self.is_presented() {
             return false;
         }
@@ -2637,7 +2643,9 @@ impl Widget for ActionPalette {
             if matches!(action, crate::a11y::Action::Focus) {
                 self.focus_part(0);
             }
-            return self.field.perform_action(action, doc, path);
+            return self
+                .field
+                .perform_action(action, ActionTarget::Widget, doc, path);
         }
         if self.confirm.is_none() && !self.history_review_required {
             return false;
@@ -2647,7 +2655,12 @@ impl Widget for ActionPalette {
                 if matches!(action, crate::a11y::Action::Focus) {
                     self.focus_part(index + 1);
                 }
-                let handled = self.controls.children_mut()[index].perform_action(action, doc, path);
+                let handled = self.controls.children_mut()[index].perform_action(
+                    action,
+                    ActionTarget::Widget,
+                    doc,
+                    path,
+                );
                 let (doc, path) = crate::doc::document(doc, path);
                 self.drain_command(doc, path);
                 return handled;

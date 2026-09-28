@@ -994,6 +994,7 @@ mod interaction_tests {
     use crate::net::Request;
     use tilo_automerge::ApplyIncoming;
     use ui::headless::Framed;
+    use ui::widget::ActionTarget;
     use ui::widget::ContentLayout;
     use ui::widget::ShellMode;
     use vello::kurbo::Point as KPoint;
@@ -1357,11 +1358,11 @@ mod interaction_tests {
                 .as_deref()
                 .unwrap();
             let (app, state) = h.parts();
-            assert!(app.nav.children_mut()[0].perform_semantic_action(
-                target,
+            assert!(app.nav.children_mut()[0].perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(target),
                 &mut state.doc,
-                &state.root,
+                &state.root
             ));
             assert!(app.update(&mut state.doc, &state.root));
             let persisted = WeatherDoc::read_model(&state.doc);

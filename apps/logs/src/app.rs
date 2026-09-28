@@ -35,6 +35,7 @@
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -2760,15 +2761,20 @@ impl Widget for LogsApp {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.search_input.cursor_shape(point)
     }
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &AccessAction,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         if target == "logs.search" {
-            return self.search_input.perform_action(action, state, path);
+            return self
+                .search_input
+                .perform_action(action, ActionTarget::Widget, state, path);
         }
         let activate = matches!(action, AccessAction::Activate | AccessAction::ToggleCheck);
         if target == "logs.actions" && activate {
@@ -3346,6 +3352,7 @@ mod tests {
     use super::*;
     use crate::journal::sample_entries;
     use automerge::{ROOT, ReadDoc};
+    use ui::widget::ActionTarget;
 
     fn synced_app() -> (LogsApp, AutoCommit) {
         let mut app = LogsApp::new(sample_entries(), false);
@@ -3690,22 +3697,22 @@ mod tests {
                 .expect("entry list is exposed");
             assert!(list.children.iter().all(|node| node.state.focusable));
             assert!(
-                !Widget::perform_semantic_action(
+                !Widget::perform_action(
                     &mut app,
-                    "logs.unknown",
                     &AccessAction::Focus,
+                    ActionTarget::Semantic("logs.unknown"),
                     &mut doc,
-                    &ROOT,
+                    &ROOT
                 ),
                 "unknown targets must not claim an accessibility action"
             );
             assert!(
-                !Widget::perform_semantic_action(
+                !Widget::perform_action(
                     &mut app,
-                    "logs.live-tail",
                     &AccessAction::Activate,
+                    ActionTarget::Semantic("logs.live-tail"),
                     &mut doc,
-                    &ROOT,
+                    &ROOT
                 ),
                 "unavailable local journal access must reject live-tail activation"
             );

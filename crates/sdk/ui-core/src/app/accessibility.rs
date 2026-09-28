@@ -1054,9 +1054,9 @@ impl App {
             self.layout.node_map.clear();
             self.focused_node = None;
             let handled = self.actions.action_palette.as_mut().is_some_and(|palette| {
-                palette.perform_semantic_action(
-                    target,
+                palette.perform_action(
                     action,
+                    crate::widget::ActionTarget::Semantic(target),
                     &mut self.state.doc,
                     &self.state.root,
                 )
@@ -1082,11 +1082,21 @@ impl App {
         let handled = self
             .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
-                    widget.perform_semantic_action(target, action, doc, root)
+                    widget.perform_action(
+                        action,
+                        crate::widget::ActionTarget::Semantic(target),
+                        doc,
+                        root,
+                    )
                 } else if synthetic {
-                    widget.perform_action_at(action, &key_path, doc, root)
+                    widget.perform_action(
+                        action,
+                        crate::widget::ActionTarget::Key(&key_path),
+                        doc,
+                        root,
+                    )
                 } else {
-                    widget.perform_action(action, doc, root)
+                    widget.perform_action(action, crate::widget::ActionTarget::Widget, doc, root)
                 }
             })
             .ok()?;
@@ -1387,9 +1397,9 @@ impl App {
                         self.layout.node_map.clear();
                         self.focused_node = None;
                         let handled = self.actions.action_palette.as_mut().is_some_and(|palette| {
-                            palette.perform_semantic_action(
-                                &semantic_target,
+                            palette.perform_action(
                                 &verb,
+                                crate::widget::ActionTarget::Semantic(&semantic_target),
                                 &mut self.state.doc,
                                 &self.state.root,
                             )
@@ -1422,9 +1432,19 @@ impl App {
                     let handled = self
                         .dispatch_node(taffy_id, |widget, doc, root| {
                             if let Some(key_path) = keyed_path {
-                                widget.perform_action_at(&verb, &key_path, doc, root)
+                                widget.perform_action(
+                                    &verb,
+                                    crate::widget::ActionTarget::Key(&key_path),
+                                    doc,
+                                    root,
+                                )
                             } else {
-                                widget.perform_semantic_action(&semantic_target, &verb, doc, root)
+                                widget.perform_action(
+                                    &verb,
+                                    crate::widget::ActionTarget::Semantic(&semantic_target),
+                                    doc,
+                                    root,
+                                )
                             }
                         })
                         .map_err(|error| format!("component dispatch refused: {error:?}"))?;

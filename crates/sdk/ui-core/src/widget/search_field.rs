@@ -12,6 +12,7 @@
 //! and opens its own `CommandPalette`. Search UI and ranking thus live in
 //! one shared toolkit widget, not in every app's bespoke search bar.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
@@ -538,14 +539,18 @@ impl Widget for SearchField {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         let (state, path) = crate::doc::document(state, path);
         if self.opens_palette {
             return matches!(action, crate::a11y::Action::Activate) && self.request_palette();
         }
-        Widget::perform_action(&mut self.input, action, state, path)
+        Widget::perform_action(&mut self.input, action, ActionTarget::Widget, state, path)
     }
 }
 
@@ -557,6 +562,7 @@ pub(crate) fn observed_language(field: &SearchField) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
 
     #[test]
@@ -879,8 +885,9 @@ immaterial"
             assert!(Widget::perform_action(
                 &mut sf,
                 &crate::a11y::Action::Activate,
+                ActionTarget::Widget,
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(sf.take_palette_request());
             assert!(!sf.take_palette_request(), "semantic request drains once");

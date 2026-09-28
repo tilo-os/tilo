@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 use ui::{
     presence::PresenceCtx,
@@ -685,13 +686,16 @@ impl Widget for BrowserTabStrip {
         }
         self.inner.handle_event(event, ctx);
     }
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         a: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         s: &mut AppModel,
         p: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         if matches!(a, ui::a11y::Action::Activate) {
             if target == "tab-overflow-before" && self.has_hidden_before() {
                 self.overflow_step(false);
@@ -709,7 +713,8 @@ impl Widget for BrowserTabStrip {
                 return true;
             }
         }
-        self.inner.perform_semantic_action(target, a, s, p)
+        self.inner
+            .perform_action(a, ActionTarget::Semantic(target), s, p)
     }
     fn take_structure_dirty(&mut self) -> bool {
         BrowserTabStrip::take_structure_dirty(self)

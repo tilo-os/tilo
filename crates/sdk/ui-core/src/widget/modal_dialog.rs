@@ -5,6 +5,7 @@
 //! and do not flow through Automerge, mirroring how `permission_prompt`
 //! exposes its result via `pending_choice`.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
@@ -851,13 +852,16 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         Some(node)
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &crate::a11y::Action,
-        _: &mut AppModel,
-        _: &ModelPath,
+        target: ActionTarget<'_>,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         if !self.open || !matches!(action, crate::a11y::Action::Activate) {
             return false;
         }
@@ -896,6 +900,7 @@ mod tests {
     //! surface is exercised end-to-end without depending on another
     //! widget's behaviour.
     use super::*;
+    use crate::widget::ActionTarget;
     use crate::widget::Text;
     use std::cell::Cell;
     use std::rc::Rc;
@@ -1129,26 +1134,26 @@ mod tests {
                 .clone()
                 .unwrap();
             let mut doc = AutoCommit::new();
-            assert!(dialog.perform_semantic_action(
-                &target,
+            assert!(dialog.perform_action(
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut doc,
                 &automerge::ROOT
             ));
             assert_eq!(fired.get(), 1);
             dialog.set_open(false);
             assert!(dialog.accessibility().unwrap().children.is_empty());
-            assert!(!dialog.perform_semantic_action(
-                &target,
+            assert!(!dialog.perform_action(
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut doc,
                 &automerge::ROOT
             ));
             dialog.set_open(true);
             dialog.primary_action = None; // Unavailable footer action is absent in all input paths.
-            assert!(!dialog.perform_semantic_action(
-                &target,
+            assert!(!dialog.perform_action(
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut doc,
                 &automerge::ROOT
             ));
@@ -1156,9 +1161,9 @@ mod tests {
             let mut replacement = ModalDialog::new("Review", TestContent)
                 .open(true)
                 .primary_action("Restore", move || callback.set(callback.get() + 1));
-            assert!(!replacement.perform_semantic_action(
-                &target,
+            assert!(!replacement.perform_action(
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic(&target),
                 &mut doc,
                 &automerge::ROOT
             ));
@@ -1166,9 +1171,9 @@ mod tests {
                 .action_target
                 .clone()
                 .unwrap();
-            assert!(replacement.perform_semantic_action(
-                &fresh,
+            assert!(replacement.perform_action(
                 &crate::a11y::Action::Activate,
+                ActionTarget::Semantic(&fresh),
                 &mut doc,
                 &automerge::ROOT
             ));
@@ -1192,17 +1197,17 @@ mod tests {
                 "the painted primary action must be accessible"
             );
             let mut doc = AutoCommit::new();
-            assert!(dialog.perform_semantic_action(
-                "modal.primary",
+            assert!(dialog.perform_action(
                 &Action::Activate,
+                ActionTarget::Semantic("modal.primary"),
                 &mut doc,
                 &automerge::ROOT
             ));
             assert_eq!(clicked.get(), 1);
             dialog.set_open(false);
-            assert!(!dialog.perform_semantic_action(
-                "modal.primary",
+            assert!(!dialog.perform_action(
                 &Action::Activate,
+                ActionTarget::Semantic("modal.primary"),
                 &mut doc,
                 &automerge::ROOT
             ));

@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ReadDoc};
@@ -6172,13 +6173,16 @@ impl Widget for SlidesApp {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         let (state, _) = ui::doc::document(state, path);
         self.reconcile_canonical(state);
         if !matches!(action, ui::a11y::Action::Activate) {
@@ -8024,6 +8028,7 @@ mod r2_inspector_scroll;
 mod tests {
     use super::*;
     use crate::model::{Deck, ElementKind, Layout, PaletteKind, Slide};
+    use ui::widget::ActionTarget;
 
     fn wait_for_document_job(app: &mut SlidesApp, doc: &mut AutoCommit) {
         for _ in 0..100 {
@@ -10650,12 +10655,12 @@ mod tests {
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
             let target_id = app.deck.slides[3].id.clone();
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut app,
-                &format!("slides.slide:{target_id}"),
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&format!("slides.slide:{target_id}")),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(
                 app.slide().map(|slide| slide.id.as_str()),
@@ -10666,12 +10671,12 @@ mod tests {
             let tree = app.accessibility().expect("modal help semantics");
             assert_eq!(tree.role, ui::a11y::Role::Dialog);
             assert!(tree.state.modal);
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut app,
-                "slides.help.close",
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("slides.help.close"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(!app.help_overlay.is_visible());
         }

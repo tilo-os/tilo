@@ -16,6 +16,7 @@ use ui::paint::PaintCtx;
 use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, PickRequest};
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Button, ButtonStyle, ModalAction, ModalFrame, ModalHit, ModalLayout, ModalSpec, Widget,
@@ -2795,13 +2796,16 @@ impl Widget for WindowsApp {
                 .with_children(children),
         )
     }
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &AccessibilityAction,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         if !matches!(
             action,
             AccessibilityAction::Activate
@@ -3141,6 +3145,7 @@ mod tests {
     use super::*;
     use std::io::Read;
     use std::sync::{Arc, Mutex};
+    use ui::widget::ActionTarget;
 
     type RecordedInstall = Arc<Mutex<Option<(Vec<u8>, String)>>>;
     type RecordedDocument = Arc<Mutex<Option<(String, Vec<u8>)>>>;
@@ -3657,18 +3662,18 @@ mod tests {
                 .expect("catalogue list");
             assert_eq!(list.children.len(), 2);
             assert_eq!(list.children[1].name.as_deref(), Some("Cyberpunk 2077"));
-            assert!(app.perform_semantic_action(
-                "windows.select:cyberpunk-2077",
+            assert!(app.perform_action(
                 &AccessibilityAction::Activate,
+                ActionTarget::Semantic("windows.select:cyberpunk-2077"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_eq!(app.selected, 1);
-            assert!(!app.perform_semantic_action(
-                "windows.select:stale-id",
+            assert!(!app.perform_action(
                 &AccessibilityAction::Activate,
+                ActionTarget::Semantic("windows.select:stale-id"),
                 &mut AutoCommit::new(),
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
         }
         // Case `failed_setup_exposes_disabled_launch_and_recovery_to_assistive_technology`.

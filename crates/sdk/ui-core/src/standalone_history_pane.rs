@@ -367,6 +367,7 @@ impl Widget for StandaloneHistoryPane {
 mod tests {
     use super::*;
     use crate::a11y::{Action, Role};
+    use crate::widget::ActionTarget;
     use crate::widget::history::HistoryAuthor;
     use automerge::AutoCommit;
     use automerge::transaction::Transactable;
@@ -404,9 +405,9 @@ mod tests {
             doc.put(automerge::ROOT, "draft", "typing")
                 .expect("pending edit");
             let pending = doc.pending_ops();
-            assert!(pane.timeline.perform_semantic_action(
-                target,
+            assert!(pane.timeline.perform_action(
                 &Action::Activate,
+                ActionTarget::Semantic(target),
                 &mut doc,
                 &automerge::ROOT
             ));

@@ -1,5 +1,6 @@
 //! Shared direct-manipulation crop editor for scanner, Photos, and image tools.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -421,13 +422,16 @@ impl Widget for ImageCropEditor {
         )
     }
 
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &Action,
+        target: ActionTarget<'_>,
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         match action {
             Action::Increment => self.adjust_boundary(target, 0.01),
             Action::Decrement => self.adjust_boundary(target, -0.01),
@@ -477,6 +481,7 @@ impl Widget for ImageCropEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::AutoCommit;
 
     #[test]
@@ -509,18 +514,18 @@ mod tests {
             assert_eq!(semantics.children.len(), 4);
             let mut document = AutoCommit::new();
             let root = automerge::ROOT;
-            assert!(editor.perform_semantic_action(
-                "crop.left",
+            assert!(editor.perform_action(
                 &Action::SetValue("40%".into()),
+                ActionTarget::Semantic("crop.left"),
                 &mut document,
-                &root,
+                &root
             ));
             assert_eq!(state.get().left, 0.4);
-            assert!(editor.perform_semantic_action(
-                "crop.right",
+            assert!(editor.perform_action(
                 &Action::Decrement,
+                ActionTarget::Semantic("crop.right"),
                 &mut document,
-                &root,
+                &root
             ));
             assert!(state.get().right < 1.0);
         }

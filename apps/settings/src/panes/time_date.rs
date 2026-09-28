@@ -32,6 +32,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use ui::doc::read_str_or_text;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
@@ -586,9 +587,13 @@ impl Widget for TimeZoneMap {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         root: &ModelPath,
     ) -> bool {
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         let (state, root) = ui::doc::document(state, root);
         match action {
             ui::a11y::Action::Activate => {
@@ -1028,6 +1033,7 @@ mod tests {
     use taffy::prelude::TaffyMaxContent;
     use taffy::{NodeId, TaffyTree};
     use ui::Theme;
+    use ui::widget::ActionTarget;
 
     #[derive(Default)]
     struct RecordingNtp {
@@ -1130,8 +1136,9 @@ mod tests {
             let root = automerge::ROOT;
             assert!(map.perform_action(
                 &ui::a11y::Action::SetValue("Europe/Berlin".to_string()),
+                ActionTarget::Widget,
                 &mut doc,
-                &root,
+                &root
             ));
             assert_eq!(
                 read_str_or_text(&doc, &root, draft_key(TIMEZONE_KEY)).as_deref(),
@@ -1142,8 +1149,9 @@ mod tests {
             assert!(!map.needs_commit());
             assert!(!map.perform_action(
                 &ui::a11y::Action::SetValue("Mars/Olympus_Mons".to_string()),
+                ActionTarget::Widget,
                 &mut doc,
-                &root,
+                &root
             ));
         }
 

@@ -5,6 +5,7 @@
 //! No demotion once a block is a heading. Promotion only fires on an
 //! *empty* paragraph, matching the slash-menu convention.
 
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -8117,90 +8118,349 @@ impl Widget for BlockEditor {
     /// Assistive technology sets the whole text (one paragraph, line breaks
     /// kept) or selects by grapheme offsets into the text, paragraphs joined
     /// by a line break.
+    #[expect(
+        clippy::too_many_lines,
+        clippy::indexing_slicing,
+        reason = "one semantic dispatcher keeps every resource action on the same validated target path"
+    )]
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
-        _path: &ModelPath,
+        target: ActionTarget<'_>,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
-        if self.read_only {
-            return false;
-        }
-        match action {
-            Action::SetValue(value) => {
-                let cleaned: String = value
-                    .replace("\r\n", "\n")
-                    .replace('\r', "\n")
-                    .chars()
-                    .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
-                    .collect();
-                let id = self
-                    .blocks
-                    .first()
-                    .map(|block| block.id.clone())
-                    .unwrap_or_default();
-                let mut block = Block::paragraph(&cleaned);
-                if !id.is_empty() {
-                    block.id = id;
+        match target {
+            ActionTarget::Widget | ActionTarget::Key(_) => {
+                use crate::a11y::Action;
+                if self.read_only {
+                    return false;
                 }
-                self.edit_scope = EditScope::Anywhere;
-                self.blocks = vec![block];
-                self.document_selection = None;
-                self.structure_dirty = true;
-                self.focus_block(0, CursorPlacement::End);
-                self.dirty = true;
-                true
-            }
-            Action::SetSelection { anchor, focus } => {
-                let text = self
-                    .blocks
-                    .iter()
-                    .map(Block::text)
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let byte_at = |index: usize| {
-                    crate::text_break::grapheme_indices(&text)
-                        .nth(index)
-                        .map_or(text.len(), |(byte, _)| byte)
-                };
-                let position = |byte: usize| {
-                    let mut offset = 0usize;
-                    for (index, block) in self.blocks.iter().enumerate() {
-                        let len = block.text().len();
-                        if byte <= offset.saturating_add(len) {
-                            return DocumentPosition {
-                                block: index,
-                                byte: byte.saturating_sub(offset),
-                            };
+                match action {
+                    Action::SetValue(value) => {
+                        let cleaned: String = value
+                            .replace("\r\n", "\n")
+                            .replace('\r', "\n")
+                            .chars()
+                            .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
+                            .collect();
+                        let id = self
+                            .blocks
+                            .first()
+                            .map(|block| block.id.clone())
+                            .unwrap_or_default();
+                        let mut block = Block::paragraph(&cleaned);
+                        if !id.is_empty() {
+                            block.id = id;
                         }
-                        offset = offset.saturating_add(len).saturating_add(1);
+                        self.edit_scope = EditScope::Anywhere;
+                        self.blocks = vec![block];
+                        self.document_selection = None;
+                        self.structure_dirty = true;
+                        self.focus_block(0, CursorPlacement::End);
+                        self.dirty = true;
+                        true
                     }
-                    DocumentPosition {
-                        block: self.blocks.len().saturating_sub(1),
-                        byte: self.blocks.last().map_or(0, |block| block.text().len()),
+                    Action::SetSelection { anchor, focus } => {
+                        let text = self
+                            .blocks
+                            .iter()
+                            .map(Block::text)
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let byte_at = |index: usize| {
+                            crate::text_break::grapheme_indices(&text)
+                                .nth(index)
+                                .map_or(text.len(), |(byte, _)| byte)
+                        };
+                        let position = |byte: usize| {
+                            let mut offset = 0usize;
+                            for (index, block) in self.blocks.iter().enumerate() {
+                                let len = block.text().len();
+                                if byte <= offset.saturating_add(len) {
+                                    return DocumentPosition {
+                                        block: index,
+                                        byte: byte.saturating_sub(offset),
+                                    };
+                                }
+                                offset = offset.saturating_add(len).saturating_add(1);
+                            }
+                            DocumentPosition {
+                                block: self.blocks.len().saturating_sub(1),
+                                byte: self.blocks.last().map_or(0, |block| block.text().len()),
+                            }
+                        };
+                        let (anchor, focus) =
+                            (position(byte_at(*anchor)), position(byte_at(*focus)));
+                        self.focus_block(focus.block, CursorPlacement::Byte(focus.byte));
+                        if anchor.block == focus.block {
+                            self.document_selection = None;
+                            if let Some(block) = self.blocks.get_mut(focus.block) {
+                                block
+                                    .line
+                                    .inner_mut()
+                                    .set_selection(anchor.byte, focus.byte);
+                            }
+                        } else {
+                            self.document_selection = Some(DocumentSelection {
+                                anchor,
+                                cursor: focus,
+                            });
+                        }
+                        self.dirty = true;
+                        true
                     }
-                };
-                let (anchor, focus) = (position(byte_at(*anchor)), position(byte_at(*focus)));
-                self.focus_block(focus.block, CursorPlacement::Byte(focus.byte));
-                if anchor.block == focus.block {
-                    self.document_selection = None;
-                    if let Some(block) = self.blocks.get_mut(focus.block) {
-                        block
-                            .line
-                            .inner_mut()
-                            .set_selection(anchor.byte, focus.byte);
-                    }
-                } else {
-                    self.document_selection = Some(DocumentSelection {
-                        anchor,
-                        cursor: focus,
-                    });
+                    _ => false,
                 }
-                self.dirty = true;
-                true
             }
-            _ => false,
+            ActionTarget::Semantic(target) => {
+                self.edit_scope = EditScope::Anywhere;
+                if matches!(action, crate::a11y::Action::Activate) {
+                    match target {
+                        "notes.find:previous" if self.find_visible => {
+                            self.step_find(true);
+                            return true;
+                        }
+                        "notes.find:next" if self.find_visible => {
+                            self.step_find(false);
+                            return true;
+                        }
+                        "notes.find:close" if self.find_visible => {
+                            self.close_find();
+                            return true;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(id) = target.strip_prefix("notes.block-type:")
+                    && matches!(action, crate::a11y::Action::Activate)
+                    && let Some(index) = self.blocks.iter().position(|block| block.id == id)
+                {
+                    return self.open_block_type_menu(index);
+                }
+                if let Some(target) = target.strip_prefix("notes.slash-menu:") {
+                    let handled = self.slash_menu.perform_action(
+                        action,
+                        ActionTarget::Semantic(target),
+                        state,
+                        path,
+                    );
+                    if let Some(new_kind) = self.slash_menu.take_selected_kind() {
+                        self.commit_slash_selection(new_kind);
+                    }
+                    if !self.slash_menu.is_visible() {
+                        self.slash_open_at = None;
+                        self.slash_anchor_caret = None;
+                    }
+                    if handled {
+                        self.dirty = true;
+                    }
+                    return handled;
+                }
+                if let Some(id) = target.strip_prefix("notes.block-text:") {
+                    let Some(index) = self.blocks.iter().position(|block| {
+                        block.id == id
+                            && block.kind.is_editable()
+                            && block.line.get_rect().height() > 0.0
+                    }) else {
+                        return false;
+                    };
+                    if matches!(action, crate::a11y::Action::SetValue(value) if value == self.blocks[index].text())
+                    {
+                        return true;
+                    }
+                    if matches!(
+                        action,
+                        crate::a11y::Action::Focus | crate::a11y::Action::Activate
+                    ) {
+                        let cursor = self.blocks[index].line.cursor_pos();
+                        self.focus_block(index, CursorPlacement::Byte(cursor));
+                        return true;
+                    }
+                    if !matches!(
+                        action,
+                        crate::a11y::Action::SetValue(_) | crate::a11y::Action::SetSelection { .. }
+                    ) {
+                        return false;
+                    }
+                    if matches!(action, crate::a11y::Action::SetSelection { .. }) {
+                        let cursor = self.blocks[index].line.cursor_pos();
+                        self.focus_block(index, CursorPlacement::Byte(cursor));
+                    }
+                    self.begin_action_intercept();
+                    let handled = self.blocks[index].line.perform_action(
+                        action,
+                        ActionTarget::Widget,
+                        state,
+                        path,
+                    );
+                    if handled {
+                        self.dirty = true;
+                        if matches!(action, crate::a11y::Action::SetValue(_)) {
+                            self.edit_pending = true;
+                            self.commit_pending = true;
+                        }
+                    }
+                    let ops = self.take_intercepted_ops();
+                    self.pending_semantic_ops.extend(ops);
+                    return handled;
+                }
+                if let Some(id) = target.strip_prefix("notes.image-source:") {
+                    if !self
+                        .image_attachments
+                        .get(id)
+                        .is_some_and(|image| image.editing)
+                    {
+                        return false;
+                    }
+                    let Some(index) = self.blocks.iter().position(|block| block.id == id) else {
+                        return false;
+                    };
+                    if let crate::a11y::Action::SetValue(value) = action {
+                        if self.blocks[index].text() == value {
+                            return true;
+                        }
+                        self.begin_action_intercept();
+                        self.blocks[index].line.set_text(value);
+                        self.edit_pending = true;
+                        self.commit_pending = true;
+                        self.structure_dirty = true;
+                        self.dirty = true;
+                        let ops = self.take_intercepted_ops();
+                        self.pending_semantic_ops.extend(ops);
+                        return true;
+                    }
+                    if matches!(
+                        action,
+                        crate::a11y::Action::Focus | crate::a11y::Action::Activate
+                    ) {
+                        self.focus_block(index, CursorPlacement::Start);
+                        return true;
+                    }
+                    return false;
+                }
+                for (prefix, command) in [
+                    ("notes.table-add-row:", "table-add-row"),
+                    ("notes.table-add-column:", "table-add-column"),
+                ] {
+                    if let Some(id) = target.strip_prefix(prefix)
+                        && matches!(action, crate::a11y::Action::Activate)
+                        && let Some(index) = self.blocks.iter().position(|block| block.id == id)
+                    {
+                        let (row, column) = self
+                            .table_editors
+                            .get(id)
+                            .and_then(super::table::Table::projected_focus)
+                            .unwrap_or((0, 0));
+                        self.begin_action_intercept();
+                        let changed = self.edit_table_structure(index, row, column, command);
+                        let ops = self.take_intercepted_ops();
+                        self.pending_semantic_ops.extend(ops);
+                        return changed;
+                    }
+                }
+                if let Some(target) = target.strip_prefix("notes.table-cell:") {
+                    let mut parts = target.rsplitn(3, ':');
+                    if let (Some(column), Some(row), Some(id)) =
+                        (parts.next(), parts.next(), parts.next())
+                        && let (Ok(row), Ok(column)) =
+                            (row.parse::<usize>(), column.parse::<usize>())
+                        && let Some(index) = self.blocks.iter().position(|block| block.id == id)
+                    {
+                        match action {
+                            crate::a11y::Action::SetValue(value) => {
+                                self.begin_action_intercept();
+                                let changed = self.apply_table_cell_edit(index, row, column, value);
+                                let ops = self.take_intercepted_ops();
+                                self.pending_semantic_ops.extend(ops);
+                                return changed;
+                            }
+                            crate::a11y::Action::Focus | crate::a11y::Action::Activate
+                                if self.table_editors.get_mut(id).is_some_and(|table| {
+                                    table.focus_projected_cell(row, column)
+                                }) =>
+                            {
+                                for (other, table) in &mut self.table_editors {
+                                    if other != id {
+                                        table.blur_projection();
+                                    }
+                                }
+                                self.clear_cross_block_selection();
+                                for block in &mut self.blocks {
+                                    block.line.set_focus(false);
+                                }
+                                self.focused = Some(index);
+                                self.is_focused = true;
+                                self.dirty = true;
+                                return true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    return false;
+                }
+                if let Some(id) = target.strip_prefix("notes.table-mode:")
+                    && matches!(action, crate::a11y::Action::Activate)
+                    && let Some(index) = self.blocks.iter().position(|block| block.id == id)
+                {
+                    return self.toggle_table_mode(index, true);
+                }
+                if !matches!(action, crate::a11y::Action::Activate) {
+                    return false;
+                }
+                if let Some((id, direction)) = target
+                    .strip_prefix("notes.block-indent:")
+                    .and_then(|rest| rest.rsplit_once(':'))
+                {
+                    let delta = match direction {
+                        "in" => 1,
+                        "out" => -1,
+                        _ => return false,
+                    };
+                    let Some(index) = self.blocks.iter().position(|block| block.id == id) else {
+                        return false;
+                    };
+                    self.begin_action_intercept();
+                    let changed = self.try_indent(index, delta);
+                    let ops = self.take_intercepted_ops();
+                    self.pending_semantic_ops.extend(ops);
+                    return changed;
+                }
+                if let Some(command) = target.strip_prefix("notes.editor:") {
+                    return self.edit_from_semantics(command);
+                }
+                if let Some(id) = target.strip_prefix("notes.image-edit:") {
+                    return self.set_image_source_mode(id, true);
+                }
+                if let Some(id) = target.strip_prefix("notes.image-done:") {
+                    return self.set_image_source_mode(id, false);
+                }
+                if let Some(id) = target
+                    .strip_prefix("notes.transclusion:")
+                    .and_then(|id| id.parse::<PageId>().ok())
+                {
+                    self.pending_transclusion_opens.push(id);
+                    self.dirty = true;
+                    return true;
+                }
+                if let Some(id) = target
+                    .strip_prefix("notes.page-link:")
+                    .and_then(|id| id.parse::<PageId>().ok())
+                {
+                    self.pending_transclusion_opens.push(id);
+                    self.dirty = true;
+                    return true;
+                }
+                if let Some(url) = target.strip_prefix("notes.external-link:") {
+                    self.pending_external_link_opens.push(url.to_string());
+                    self.dirty = true;
+                    return true;
+                }
+                if let Some((start, end)) = self.resolve_code_copy_target(target) {
+                    return self.copy_code_run(start, end);
+                }
+                self.move_block_from_semantics(target)
+            }
         }
     }
 
@@ -8609,255 +8869,6 @@ impl Widget for BlockEditor {
                 })
                 .with_children(children),
         )
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        clippy::indexing_slicing,
-        reason = "one semantic dispatcher keeps every resource action on the same validated target path"
-    )]
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &crate::a11y::Action,
-        state: &mut AppModel,
-        path: &ModelPath,
-    ) -> bool {
-        self.edit_scope = EditScope::Anywhere;
-        if matches!(action, crate::a11y::Action::Activate) {
-            match target {
-                "notes.find:previous" if self.find_visible => {
-                    self.step_find(true);
-                    return true;
-                }
-                "notes.find:next" if self.find_visible => {
-                    self.step_find(false);
-                    return true;
-                }
-                "notes.find:close" if self.find_visible => {
-                    self.close_find();
-                    return true;
-                }
-                _ => {}
-            }
-        }
-        if let Some(id) = target.strip_prefix("notes.block-type:")
-            && matches!(action, crate::a11y::Action::Activate)
-            && let Some(index) = self.blocks.iter().position(|block| block.id == id)
-        {
-            return self.open_block_type_menu(index);
-        }
-        if let Some(target) = target.strip_prefix("notes.slash-menu:") {
-            let handled = self
-                .slash_menu
-                .perform_semantic_action(target, action, state, path);
-            if let Some(new_kind) = self.slash_menu.take_selected_kind() {
-                self.commit_slash_selection(new_kind);
-            }
-            if !self.slash_menu.is_visible() {
-                self.slash_open_at = None;
-                self.slash_anchor_caret = None;
-            }
-            if handled {
-                self.dirty = true;
-            }
-            return handled;
-        }
-        if let Some(id) = target.strip_prefix("notes.block-text:") {
-            let Some(index) = self.blocks.iter().position(|block| {
-                block.id == id && block.kind.is_editable() && block.line.get_rect().height() > 0.0
-            }) else {
-                return false;
-            };
-            if matches!(action, crate::a11y::Action::SetValue(value) if value == self.blocks[index].text())
-            {
-                return true;
-            }
-            if matches!(
-                action,
-                crate::a11y::Action::Focus | crate::a11y::Action::Activate
-            ) {
-                let cursor = self.blocks[index].line.cursor_pos();
-                self.focus_block(index, CursorPlacement::Byte(cursor));
-                return true;
-            }
-            if !matches!(
-                action,
-                crate::a11y::Action::SetValue(_) | crate::a11y::Action::SetSelection { .. }
-            ) {
-                return false;
-            }
-            if matches!(action, crate::a11y::Action::SetSelection { .. }) {
-                let cursor = self.blocks[index].line.cursor_pos();
-                self.focus_block(index, CursorPlacement::Byte(cursor));
-            }
-            self.begin_action_intercept();
-            let handled = self.blocks[index].line.perform_action(action, state, path);
-            if handled {
-                self.dirty = true;
-                if matches!(action, crate::a11y::Action::SetValue(_)) {
-                    self.edit_pending = true;
-                    self.commit_pending = true;
-                }
-            }
-            let ops = self.take_intercepted_ops();
-            self.pending_semantic_ops.extend(ops);
-            return handled;
-        }
-        if let Some(id) = target.strip_prefix("notes.image-source:") {
-            if !self
-                .image_attachments
-                .get(id)
-                .is_some_and(|image| image.editing)
-            {
-                return false;
-            }
-            let Some(index) = self.blocks.iter().position(|block| block.id == id) else {
-                return false;
-            };
-            if let crate::a11y::Action::SetValue(value) = action {
-                if self.blocks[index].text() == value {
-                    return true;
-                }
-                self.begin_action_intercept();
-                self.blocks[index].line.set_text(value);
-                self.edit_pending = true;
-                self.commit_pending = true;
-                self.structure_dirty = true;
-                self.dirty = true;
-                let ops = self.take_intercepted_ops();
-                self.pending_semantic_ops.extend(ops);
-                return true;
-            }
-            if matches!(
-                action,
-                crate::a11y::Action::Focus | crate::a11y::Action::Activate
-            ) {
-                self.focus_block(index, CursorPlacement::Start);
-                return true;
-            }
-            return false;
-        }
-        for (prefix, command) in [
-            ("notes.table-add-row:", "table-add-row"),
-            ("notes.table-add-column:", "table-add-column"),
-        ] {
-            if let Some(id) = target.strip_prefix(prefix)
-                && matches!(action, crate::a11y::Action::Activate)
-                && let Some(index) = self.blocks.iter().position(|block| block.id == id)
-            {
-                let (row, column) = self
-                    .table_editors
-                    .get(id)
-                    .and_then(super::table::Table::projected_focus)
-                    .unwrap_or((0, 0));
-                self.begin_action_intercept();
-                let changed = self.edit_table_structure(index, row, column, command);
-                let ops = self.take_intercepted_ops();
-                self.pending_semantic_ops.extend(ops);
-                return changed;
-            }
-        }
-        if let Some(target) = target.strip_prefix("notes.table-cell:") {
-            let mut parts = target.rsplitn(3, ':');
-            if let (Some(column), Some(row), Some(id)) = (parts.next(), parts.next(), parts.next())
-                && let (Ok(row), Ok(column)) = (row.parse::<usize>(), column.parse::<usize>())
-                && let Some(index) = self.blocks.iter().position(|block| block.id == id)
-            {
-                match action {
-                    crate::a11y::Action::SetValue(value) => {
-                        self.begin_action_intercept();
-                        let changed = self.apply_table_cell_edit(index, row, column, value);
-                        let ops = self.take_intercepted_ops();
-                        self.pending_semantic_ops.extend(ops);
-                        return changed;
-                    }
-                    crate::a11y::Action::Focus | crate::a11y::Action::Activate
-                        if self
-                            .table_editors
-                            .get_mut(id)
-                            .is_some_and(|table| table.focus_projected_cell(row, column)) =>
-                    {
-                        for (other, table) in &mut self.table_editors {
-                            if other != id {
-                                table.blur_projection();
-                            }
-                        }
-                        self.clear_cross_block_selection();
-                        for block in &mut self.blocks {
-                            block.line.set_focus(false);
-                        }
-                        self.focused = Some(index);
-                        self.is_focused = true;
-                        self.dirty = true;
-                        return true;
-                    }
-                    _ => {}
-                }
-            }
-            return false;
-        }
-        if let Some(id) = target.strip_prefix("notes.table-mode:")
-            && matches!(action, crate::a11y::Action::Activate)
-            && let Some(index) = self.blocks.iter().position(|block| block.id == id)
-        {
-            return self.toggle_table_mode(index, true);
-        }
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        if let Some((id, direction)) = target
-            .strip_prefix("notes.block-indent:")
-            .and_then(|rest| rest.rsplit_once(':'))
-        {
-            let delta = match direction {
-                "in" => 1,
-                "out" => -1,
-                _ => return false,
-            };
-            let Some(index) = self.blocks.iter().position(|block| block.id == id) else {
-                return false;
-            };
-            self.begin_action_intercept();
-            let changed = self.try_indent(index, delta);
-            let ops = self.take_intercepted_ops();
-            self.pending_semantic_ops.extend(ops);
-            return changed;
-        }
-        if let Some(command) = target.strip_prefix("notes.editor:") {
-            return self.edit_from_semantics(command);
-        }
-        if let Some(id) = target.strip_prefix("notes.image-edit:") {
-            return self.set_image_source_mode(id, true);
-        }
-        if let Some(id) = target.strip_prefix("notes.image-done:") {
-            return self.set_image_source_mode(id, false);
-        }
-        if let Some(id) = target
-            .strip_prefix("notes.transclusion:")
-            .and_then(|id| id.parse::<PageId>().ok())
-        {
-            self.pending_transclusion_opens.push(id);
-            self.dirty = true;
-            return true;
-        }
-        if let Some(id) = target
-            .strip_prefix("notes.page-link:")
-            .and_then(|id| id.parse::<PageId>().ok())
-        {
-            self.pending_transclusion_opens.push(id);
-            self.dirty = true;
-            return true;
-        }
-        if let Some(url) = target.strip_prefix("notes.external-link:") {
-            self.pending_external_link_opens.push(url.to_string());
-            self.dirty = true;
-            return true;
-        }
-        if let Some((start, end)) = self.resolve_code_copy_target(target) {
-            return self.copy_code_run(start, end);
-        }
-        self.move_block_from_semantics(target)
     }
 
     fn needs_redraw(&self) -> bool {

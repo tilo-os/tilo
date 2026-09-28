@@ -69,6 +69,7 @@
 //!   ui::widget::Decorator for ..`) rather than importing it; the prelude
 //!   deliberately does not export it.
 
+use crate::widget::ActionTarget;
 use std::collections::{HashMap, HashSet};
 
 use super::{AppModel, ModelPath, capability};
@@ -462,7 +463,8 @@ pub trait Decorator {
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        self.inner_mut().perform_action(action, state, path)
+        self.inner_mut()
+            .perform_action(action, ActionTarget::Widget, state, path)
     }
 
     fn perform_action_at(
@@ -473,7 +475,7 @@ pub trait Decorator {
         path: &ModelPath,
     ) -> bool {
         self.inner_mut()
-            .perform_action_at(action, key_path, state, path)
+            .perform_action(action, ActionTarget::Key(key_path), state, path)
     }
 
     fn perform_semantic_action(
@@ -484,7 +486,7 @@ pub trait Decorator {
         path: &ModelPath,
     ) -> bool {
         self.inner_mut()
-            .perform_semantic_action(target, action, state, path)
+            .perform_action(action, ActionTarget::Semantic(target), state, path)
     }
 
     fn is_enabled(&self) -> bool {
@@ -1240,30 +1242,11 @@ impl<T: Decorator> Widget for T {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        Decorator::perform_action(self, action, state, path)
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
-        key_path: &[u64],
-        state: &mut AppModel,
-        path: &ModelPath,
-    ) -> bool {
-        Decorator::perform_action_at(self, action, key_path, state, path)
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &crate::a11y::Action,
-        state: &mut AppModel,
-        path: &ModelPath,
-    ) -> bool {
-        Decorator::perform_semantic_action(self, target, action, state, path)
+        Decorator::perform_action(self, action, target, state, path)
     }
 
     fn is_enabled(&self) -> bool {

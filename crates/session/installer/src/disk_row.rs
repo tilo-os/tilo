@@ -10,6 +10,7 @@
 //! (rising-edge), exactly like `ui::Button`'s `on_click_path`.
 
 use std::collections::HashMap;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
@@ -320,9 +321,13 @@ impl Widget for DiskRow {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         root: &ModelPath,
     ) -> bool {
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         let (state, root) = ui::doc::document(state, root);
         if self.disabled()
             || !matches!(
@@ -361,6 +366,7 @@ impl Widget for DiskRow {
 #[cfg(test)]
 mod tests {
     use automerge::{ROOT, ReadDoc};
+    use ui::widget::ActionTarget;
     use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
 
     use super::*;
@@ -453,7 +459,12 @@ mod tests {
             let mut row = DiskRow::new(disk(), "select", false);
             let mut doc = AutoCommit::new();
 
-            assert!(row.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
+            assert!(row.perform_action(
+                &ui::a11y::Action::Activate,
+                ActionTarget::Widget,
+                &mut doc,
+                &ROOT
+            ));
             assert_eq!(
                 doc.get(&ROOT, "select")
                     .unwrap()
@@ -520,7 +531,12 @@ mod tests {
             assert!(description.contains("could not verify which physical disk"));
 
             let mut doc = AutoCommit::new();
-            assert!(!row.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
+            assert!(!row.perform_action(
+                &ui::a11y::Action::Activate,
+                ActionTarget::Widget,
+                &mut doc,
+                &ROOT
+            ));
             assert!(doc.get(&ROOT, "select").unwrap().is_none());
         }
         // Phase `staged_installer_disk_is_selectable_and_says_what_it_holds`.

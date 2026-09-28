@@ -30,6 +30,7 @@
 //! ```
 
 use std::collections::HashMap;
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::AutoCommit;
@@ -2142,95 +2143,99 @@ impl Widget for MainPanel {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) -> bool {
-        if self.page_id.is_none() && matches!(action, ui::a11y::Action::Activate) {
-            self.empty_action_requested = true;
-            self.empty_action_focused = true;
-            self.dirty = true;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        if target == "notes.scroll-position" {
-            if self.scroll_thumb().is_none() {
-                return false;
+        match target {
+            ActionTarget::Widget | ActionTarget::Key(_) => {
+                if self.page_id.is_none() && matches!(action, ui::a11y::Action::Activate) {
+                    self.empty_action_requested = true;
+                    self.empty_action_focused = true;
+                    self.dirty = true;
+                    true
+                } else {
+                    false
+                }
             }
-            let metrics = self.scroll_metrics();
-            let offset = match action {
-                ui::a11y::Action::Focus => return self.focus_scrollbar(),
-                ui::a11y::Action::Increment => {
-                    self.scroll_y + metrics.viewport * ui::widget::scrollbar::PAGE_FRACTION
-                }
-                ui::a11y::Action::Decrement => {
-                    self.scroll_y - metrics.viewport * ui::widget::scrollbar::PAGE_FRACTION
-                }
-                ui::a11y::Action::SetValue(value) => {
-                    let Ok(percent) = value.parse::<f64>() else {
-                        return false;
-                    };
-                    if !percent.is_finite() {
+            ActionTarget::Semantic(target) => {
+                if target == "notes.scroll-position" {
+                    if self.scroll_thumb().is_none() {
                         return false;
                     }
-                    percent.clamp(0.0, 100.0) / 100.0 * metrics.max_scroll()
+                    let metrics = self.scroll_metrics();
+                    let offset = match action {
+                        ui::a11y::Action::Focus => return self.focus_scrollbar(),
+                        ui::a11y::Action::Increment => {
+                            self.scroll_y + metrics.viewport * ui::widget::scrollbar::PAGE_FRACTION
+                        }
+                        ui::a11y::Action::Decrement => {
+                            self.scroll_y - metrics.viewport * ui::widget::scrollbar::PAGE_FRACTION
+                        }
+                        ui::a11y::Action::SetValue(value) => {
+                            let Ok(percent) = value.parse::<f64>() else {
+                                return false;
+                            };
+                            if !percent.is_finite() {
+                                return false;
+                            }
+                            percent.clamp(0.0, 100.0) / 100.0 * metrics.max_scroll()
+                        }
+                        _ => return false,
+                    };
+                    self.set_scroll_offset(offset);
+                    return true;
                 }
-                _ => return false,
-            };
-            self.set_scroll_offset(offset);
-            return true;
-        }
-        if target == "notes.first_note" && self.page_id.is_none() {
-            return self.perform_action(action, state, path);
-        }
-        if target == "notes.page-title" {
-            return Widget::perform_action(&mut self.title_label, action, state, path);
-        }
-        if let Some(page) = target
-            .strip_prefix("notes.backlink-chip:")
-            .and_then(|id| id.parse().ok())
-        {
-            if !self
-                .backlinks
-                .iter()
-                .any(|candidate| candidate.page == page)
-                || !matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus)
-            {
-                return false;
+                if target == "notes.first_note" && self.page_id.is_none() {
+                    return self.perform_action(action, ActionTarget::Widget, state, path);
+                }
+                if target == "notes.page-title" {
+                    return Widget::perform_action(
+                        &mut self.title_label,
+                        action,
+                        ActionTarget::Widget,
+                        state,
+                        path,
+                    );
+                }
+                if let Some(page) = target
+                    .strip_prefix("notes.backlink-chip:")
+                    .and_then(|id| id.parse().ok())
+                {
+                    if !self
+                        .backlinks
+                        .iter()
+                        .any(|candidate| candidate.page == page)
+                        || !matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus)
+                    {
+                        return false;
+                    }
+                    self.focused_backlink = Some(page);
+                    if matches!(action, ui::a11y::Action::Activate) {
+                        self.pending_backlink_open = Some(page);
+                    }
+                    self.dirty = true;
+                    return true;
+                }
+                let Some(tag) = target
+                    .strip_prefix("notes.tag-chip:")
+                    .and_then(|id| id.parse().ok())
+                else {
+                    return false;
+                };
+                if !self.tags.iter().any(|candidate| candidate.id == tag)
+                    || !matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus)
+                {
+                    return false;
+                }
+                self.focused_tag = Some(tag);
+                if matches!(action, ui::a11y::Action::Activate) {
+                    self.pending_tag_open = Some(tag);
+                }
+                self.dirty = true;
+                true
             }
-            self.focused_backlink = Some(page);
-            if matches!(action, ui::a11y::Action::Activate) {
-                self.pending_backlink_open = Some(page);
-            }
-            self.dirty = true;
-            return true;
         }
-        let Some(tag) = target
-            .strip_prefix("notes.tag-chip:")
-            .and_then(|id| id.parse().ok())
-        else {
-            return false;
-        };
-        if !self.tags.iter().any(|candidate| candidate.id == tag)
-            || !matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus)
-        {
-            return false;
-        }
-        self.focused_tag = Some(tag);
-        if matches!(action, ui::a11y::Action::Activate) {
-            self.pending_tag_open = Some(tag);
-        }
-        self.dirty = true;
-        true
     }
 
     fn needs_redraw(&self) -> bool {
@@ -2262,6 +2267,7 @@ impl Widget for MainPanel {
 mod tests {
     use super::*;
     use automerge::ObjId;
+    use ui::widget::ActionTarget;
     use ui::widget::BlockKind;
     use uuid::Uuid;
 
@@ -2301,11 +2307,11 @@ mod tests {
             assert_eq!(title.action_target.as_deref(), Some("notes.page-title"));
             let target = title.action_target.as_deref().unwrap();
             let mut doc = AutoCommit::new();
-            assert!(panel.perform_semantic_action(
-                target,
+            assert!(panel.perform_action(
                 &ui::a11y::Action::SetValue("Launch plan".into()),
+                ActionTarget::Semantic(target),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(
                 panel.take_title_rename().is_none(),
@@ -2326,7 +2332,12 @@ mod tests {
             assert!(node.state.focused);
 
             let mut doc = AutoCommit::new();
-            assert!(p.perform_action(&ui::a11y::Action::Activate, &mut doc, &ObjId::Root));
+            assert!(p.perform_action(
+                &ui::a11y::Action::Activate,
+                ActionTarget::Widget,
+                &mut doc,
+                &ObjId::Root
+            ));
             assert!(p.take_empty_action());
         }
 
@@ -2547,12 +2558,12 @@ mod tests {
             panel.tag_rects = vec![Rect::new(32.0, 90.0, 120.0, 112.0)];
             let mut doc = AutoCommit::new();
 
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut panel,
-                &format!("notes.tag-chip:{tag}"),
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&format!("notes.tag-chip:{tag}")),
                 &mut doc,
-                &ObjId::Root,
+                &ObjId::Root
             ));
             assert_eq!(panel.take_tag_open(), Some(tag));
         }
@@ -2576,12 +2587,12 @@ mod tests {
                 "incoming-link metadata must clear the first block"
             );
             let mut doc = AutoCommit::new();
-            assert!(Widget::perform_semantic_action(
+            assert!(Widget::perform_action(
                 &mut panel,
-                &format!("notes.backlink-chip:{source}"),
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&format!("notes.backlink-chip:{source}")),
                 &mut doc,
-                &ObjId::Root,
+                &ObjId::Root
             ));
             assert_eq!(panel.take_backlink_open(), Some(source));
         }

@@ -3,6 +3,7 @@ use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::text_render::TextStyle;
 use crate::theme::Theme;
+use crate::widget::ActionTarget;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::binding::{BoxedBinding, Pulled};
@@ -604,10 +605,14 @@ impl Widget for Checkbox {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         if !self.effectively_enabled() {
             return false;
         }
@@ -717,6 +722,7 @@ impl Widget for Checkbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use crate::widget::Widget;
     use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
 
@@ -928,6 +934,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut c,
                 &Action::ToggleCheck,
+                ActionTarget::Widget,
                 &mut doc,
                 &root
             ));
@@ -936,6 +943,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut c,
                 &Action::Activate,
+                ActionTarget::Widget,
                 &mut doc,
                 &root
             ));
@@ -950,6 +958,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut c,
                 &Action::ToggleCheck,
+                ActionTarget::Widget,
                 &mut doc,
                 &root
             ));
@@ -1037,6 +1046,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut checkbox,
                 &crate::a11y::Action::Activate,
+                ActionTarget::Widget,
                 &mut doc,
                 &automerge::ROOT
             ));
@@ -1051,6 +1061,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut checkbox,
                 &crate::a11y::Action::Activate,
+                ActionTarget::Widget,
                 &mut doc,
                 &automerge::ROOT
             ));
@@ -1119,8 +1130,9 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::ToggleCheck,
+                ActionTarget::Widget,
                 &mut document,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert!(!state.get(), "user activation publishes typed state");
             assert_eq!(&*changes.borrow(), &[false]);

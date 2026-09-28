@@ -38,6 +38,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
+use ui::widget::ActionTarget;
 use ui::widget::{AppModel, ModelPath};
 
 mod file_workflow;
@@ -225,9 +226,12 @@ impl Widget for BottomPanelToggle {
                     ..
                 }
             )
-            && self
-                .button
-                .perform_action(&ui::a11y::Action::Activate, ctx.state, ctx.path)
+            && self.button.perform_action(
+                &ui::a11y::Action::Activate,
+                ActionTarget::Widget,
+                ctx.state,
+                ctx.path,
+            )
         {
             *ctx.handled = true;
             return;
@@ -298,10 +302,15 @@ impl Widget for BottomPanelToggle {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        self.button.perform_action(action, state, path)
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
+        self.button
+            .perform_action(action, ActionTarget::Widget, state, path)
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

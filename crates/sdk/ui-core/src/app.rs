@@ -1,3 +1,4 @@
+use crate::widget::ActionTarget;
 use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, MouseButton, WindowEvent},
@@ -1099,7 +1100,12 @@ impl App {
         };
         let activated = self
             .dispatch_node(focused, |widget, doc, root| {
-                widget.perform_action(&crate::a11y::Action::Activate, doc, root)
+                widget.perform_action(
+                    &crate::a11y::Action::Activate,
+                    ActionTarget::Widget,
+                    doc,
+                    root,
+                )
             })
             .unwrap_or(false);
         if activated {
@@ -2782,6 +2788,7 @@ mod render_retry_tests {
 #[cfg(test)]
 mod legacy_owner_routing_tests {
     use super::*;
+    use crate::widget::ActionTarget;
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     use std::{collections::HashMap, rc::Rc};
 
@@ -2830,41 +2837,40 @@ mod legacy_owner_routing_tests {
                     .with_action_target("tilo.key-action:owner:7"),
             ]))
         }
-        fn perform_semantic_action(
+        fn perform_action(
             &mut self,
-            target: &str,
             action: &crate::a11y::Action,
+            target: ActionTarget<'_>,
             doc: &mut crate::widget::AppModel,
             path: &crate::widget::ModelPath,
         ) -> bool {
-            let (doc, _) = crate::doc::document(doc, path);
-            if target != "owner:named" {
-                return false;
-            }
-            match action {
-                crate::a11y::Action::Activate => {
-                    doc.put(ROOT, "selected", format!("{} named", self.label))
+            match target {
+                ActionTarget::Widget => false,
+                ActionTarget::Key(keys) => {
+                    let (doc, _) = crate::doc::document(doc, path);
+                    if keys != [7] || !matches!(action, crate::a11y::Action::Activate) {
+                        return false;
+                    }
+                    doc.put(ROOT, "selected", format!("{} keyed", self.label))
                         .unwrap();
                     true
                 }
-                crate::a11y::Action::Focus => true,
-                _ => false,
+                ActionTarget::Semantic(target) => {
+                    let (doc, _) = crate::doc::document(doc, path);
+                    if target != "owner:named" {
+                        return false;
+                    }
+                    match action {
+                        crate::a11y::Action::Activate => {
+                            doc.put(ROOT, "selected", format!("{} named", self.label))
+                                .unwrap();
+                            true
+                        }
+                        crate::a11y::Action::Focus => true,
+                        _ => false,
+                    }
+                }
             }
-        }
-        fn perform_action_at(
-            &mut self,
-            action: &crate::a11y::Action,
-            keys: &[u64],
-            doc: &mut crate::widget::AppModel,
-            path: &crate::widget::ModelPath,
-        ) -> bool {
-            let (doc, _) = crate::doc::document(doc, path);
-            if keys != [7] || !matches!(action, crate::a11y::Action::Activate) {
-                return false;
-            }
-            doc.put(ROOT, "selected", format!("{} keyed", self.label))
-                .unwrap();
-            true
         }
         fn take_component_close_reports(
             &mut self,

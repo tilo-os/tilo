@@ -10,6 +10,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::ActionTarget;
 use ui::widget::{
     AppKind, AppWidget, ContextMenu, Continuable, FloatingSurfaceProvider, FullscreenProvider,
     IconDescriptor, MenuItem, TabDescriptor, TaffyTreeExt, Widget, WindowCloseAdmission,
@@ -1264,17 +1265,23 @@ impl Widget for BrowserTabs {
             taffy: ctx.taffy,
         });
     }
-    fn perform_semantic_action(
+    fn perform_action(
         &mut self,
-        target: &str,
         action: &ui::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        let ActionTarget::Semantic(target) = target else {
+            return false;
+        };
         if let Some(recovery) = self.recovery.as_mut() {
-            return recovery
-                .panel
-                .perform_semantic_action(target, action, state, path);
+            return recovery.panel.perform_action(
+                action,
+                ActionTarget::Semantic(target),
+                state,
+                path,
+            );
         }
         if matches!(action, ui::a11y::Action::Activate)
             && let Some(index) = target
@@ -1286,22 +1293,20 @@ impl Widget for BrowserTabs {
             self.dirty = true;
             return true;
         }
-        if self
-            .exit_panel
-            .as_mut()
-            .is_some_and(|panel| panel.perform_semantic_action(target, action, state, path))
-        {
+        if self.exit_panel.as_mut().is_some_and(|panel| {
+            panel.perform_action(action, ActionTarget::Semantic(target), state, path)
+        }) {
             return true;
         }
         if self
             .bar
-            .perform_semantic_action(target, action, state, path)
+            .perform_action(action, ActionTarget::Semantic(target), state, path)
         {
             self.activate(self.bar.active_id());
             return true;
         }
         self.active_mut()
-            .perform_semantic_action(target, action, state, path)
+            .perform_action(action, ActionTarget::Semantic(target), state, path)
     }
     fn draw_overlay(
         &mut self,
@@ -1643,6 +1648,7 @@ mod tests {
     use std::sync::Arc;
     use ui::webview::test_engine::TestEngine;
     use ui::webview::{FrameSlot, SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent};
+    use ui::widget::ActionTarget;
     #[derive(Default)]
     struct FullscreenEngine {
         events: std::sync::Mutex<Vec<WebViewEvent>>,
@@ -2110,6 +2116,7 @@ mod tests {
                             assert!(unsafe {
                                 (&mut *nodes[&focus.unwrap()]).perform_action(
                                     &ui::a11y::Action::Activate,
+                                    ActionTarget::Widget,
                                     &mut doc,
                                     &automerge::ROOT,
                                 )
@@ -2562,7 +2569,12 @@ mod tests {
             .find(|widget| unsafe { (&***widget).test_id() == Some(id) })
             .expect("exit choice button");
         assert!(unsafe {
-            (&mut *button).perform_action(&ui::a11y::Action::Activate, doc, &automerge::ROOT)
+            (&mut *button).perform_action(
+                &ui::a11y::Action::Activate,
+                ActionTarget::Widget,
+                doc,
+                &automerge::ROOT,
+            )
         });
         let invocation = tabs
             .take_control_invocation()
@@ -2594,17 +2606,17 @@ mod tests {
         {
             let mut tabs = workspace();
             let mut doc = AutoCommit::new();
-            assert!(tabs.bar.perform_semantic_action(
-                "tab-new",
+            assert!(tabs.bar.perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("tab-new"),
                 &mut doc,
                 &automerge::ROOT
             ));
             tabs.sync(&mut doc, &automerge::ROOT);
             assert_eq!(tabs.tabs.len(), 2);
-            assert!(tabs.bar.perform_semantic_action(
-                "tab-close:2",
+            assert!(tabs.bar.perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("tab-close:2"),
                 &mut doc,
                 &automerge::ROOT
             ));
@@ -2641,9 +2653,9 @@ mod tests {
                 .and_then(|node| node.action_target.clone())
                 .expect("mute action route");
             let mut doc = AutoCommit::new();
-            assert!(tabs.perform_semantic_action(
-                &mute_target,
+            assert!(tabs.perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic(&mute_target),
                 &mut doc,
                 &automerge::ROOT
             ));
@@ -2809,11 +2821,11 @@ mod tests {
             );
             let before = tabs.bar.active_id();
             let mut doc = AutoCommit::new();
-            assert!(tabs.bar.perform_semantic_action(
-                "tab-overflow-before",
+            assert!(tabs.bar.perform_action(
                 &ui::a11y::Action::Activate,
+                ActionTarget::Semantic("tab-overflow-before"),
                 &mut doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             ));
             assert_ne!(tabs.bar.active_id(), before);
             tabs.bar.set_active(before);

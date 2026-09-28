@@ -6,6 +6,7 @@
 //! below the caret.
 
 use crate::time::{Duration, Instant};
+use crate::widget::ActionTarget;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashSet;
 use std::ops::Range;
@@ -4468,10 +4469,14 @@ impl Widget for TextInput {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        target: ActionTarget<'_>,
         state: &mut AppModel,
         root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        if matches!(target, ActionTarget::Semantic(_)) {
+            return false;
+        }
         let (state, root) = crate::doc::document(state, root);
 
         if self.effectively_disabled() {
