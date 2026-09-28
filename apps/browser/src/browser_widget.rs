@@ -35,7 +35,8 @@ use ui::tilo_actions::{
 use ui::tokens::TextRole;
 use ui::webview::test_engine::TestEngine;
 use ui::webview::{
-    MediaElementInfo, NavigationDirection, SharedEngine, WebViewCommand, WebViewEvent,
+    MediaElementInfo, NavigationDirection, PageFailure, PageKey, PageReply, PageRequest,
+    SharedEngine, WebViewCommand, WebViewEvent,
 };
 use ui::widget::toast::{ToastCard, ToastKind, paint_card};
 use ui::widget::{
@@ -77,6 +78,33 @@ const NAVIGATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4
 /// Media discovery is asynchronous.  Keep a resource invocation pending only
 /// until the engine gives its positive/negative answer, never indefinitely.
 const PIP_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// A page action on a loading page waits this long for it to settle, then
+/// acts on the page as it stands.
+const PAGE_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+/// The engine's answer to one page request never stays pending longer.
+const PAGE_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+/// A page action that started a navigation waits this long for it to load.
+const PAGE_NAVIGATION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A page action admitted through the resource surface.
+struct PageOperation {
+    invocation: ui::tilo_actions::InvocationId,
+    request_id: u32,
+    phase: PagePhase,
+    deadline: std::time::Instant,
+}
+
+enum PagePhase {
+    /// The page is loading; the request goes to the engine once it settles.
+    Queued {
+        request: PageRequest,
+        until: std::time::Instant,
+    },
+    /// Sent to the engine, which answers once.
+    Sent,
+    /// The action started a navigation; it completes when that settles.
+    Navigating { reply: PageReply },
+}
 /// One shared desktop measure keeps the Library title, section switcher, and
 /// rows visually related instead of leaving the actions in a disconnected
 /// expanse of empty canvas. Compact chrome deliberately remains fluid.
@@ -272,6 +300,84 @@ enum BrowserOperation {
     RetryDownload { id: String },
     OpenDownload { id: String },
     RevealDownload { id: String },
+    Page(PageRequest),
+}
+
+fn page_operation_payload(request: &PageRequest) -> serde_json::Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("operation".into(), "page".into());
+    payload.insert("action".into(), request.action().into());
+    if let Some(element) = request.element() {
+        payload.insert("element".into(), element.into());
+    }
+    let argument = match request {
+        PageRequest::Fill { text, .. } => Some(("text", text.as_str().into())),
+        PageRequest::Select { values, .. } => Some(("values", values.clone().into())),
+        PageRequest::Press { key, .. } => Some(("key", key.chord().into())),
+        PageRequest::Outline | PageRequest::Click { .. } | PageRequest::Submit { .. } => None,
+    };
+    if let Some((name, value)) = argument {
+        payload.insert(name.into(), value);
+    }
+    payload.into()
+}
+
+fn decode_page_operation(value: &serde_json::Value) -> Result<PageRequest, String> {
+    let element = || required_string(value, "element");
+    let request = match value.get("action").and_then(serde_json::Value::as_str) {
+        Some("outline") => PageRequest::Outline,
+        Some("click") => PageRequest::Click {
+            element: element()?,
+        },
+        Some("fill") => PageRequest::Fill {
+            element: element()?,
+            text: value
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("page fill is missing `text`")?
+                .to_string(),
+        },
+        Some("select") => PageRequest::Select {
+            element: element()?,
+            values: value
+                .get("values")
+                .and_then(serde_json::Value::as_array)
+                .ok_or("page select is missing `values`")?
+                .iter()
+                .map(|value| value.as_str().map(str::to_string))
+                .collect::<Option<_>>()
+                .ok_or("page select `values` must be strings")?,
+        },
+        Some("press") => PageRequest::Press {
+            element: value
+                .get("element")
+                .and_then(serde_json::Value::as_str)
+                .filter(|element| !element.is_empty())
+                .map(str::to_string),
+            key: required_string(value, "key").and_then(|chord| {
+                PageKey::parse(&chord).ok_or_else(|| {
+                    format!(
+                        "`{chord}` is not a key such as Enter, Tab, Escape, ArrowDown or Control+a"
+                    )
+                })
+            })?,
+        },
+        Some("submit") => PageRequest::Submit {
+            element: element()?,
+        },
+        _ => return Err("unknown page action".into()),
+    };
+    if let Some(element) = request.element()
+        && !ui::webview::page::is_element_ref(element)
+    {
+        return Err(format!(
+            "`{element}` is not an element ref; read the page and use a ref such as d1e5"
+        ));
+    }
+    if !request.valid() {
+        return Err("page request exceeds its limits".into());
+    }
+    Ok(request)
 }
 
 fn browser_operation_payload(operation: &BrowserOperation) -> serde_json::Value {
@@ -325,6 +431,7 @@ fn browser_operation_payload(operation: &BrowserOperation) -> serde_json::Value 
         BrowserOperation::RevealDownload { id } => {
             serde_json::json!({ "operation": "reveal-download", "id": id })
         }
+        BrowserOperation::Page(request) => page_operation_payload(request),
     }
 }
 
@@ -386,6 +493,7 @@ fn decode_browser_operation(payload: &[u8]) -> Result<BrowserOperation, String> 
         Some("reveal-download") => {
             required_string(&value, "id").map(|id| BrowserOperation::RevealDownload { id })
         }
+        Some("page") => decode_page_operation(&value).map(BrowserOperation::Page),
         _ => Err("unknown browser operation".to_string()),
     }
 }
@@ -432,6 +540,54 @@ fn local_background_contract(tags: &[&str]) -> ActionContract {
         execution: ui::tilo_actions::ExecutionMode::Background { cancellable: false },
         ..local_effect_contract(tags)
     }
+}
+
+/// Page content belongs to this profile's signed-in sessions, so reading it
+/// takes the same authority as operating it, and neither is offered to a
+/// person picking from the palette: people use the page itself.
+fn page_contract(read: bool) -> ActionContract {
+    ActionContract {
+        permission: ui::tilo_actions::PermissionRequirement::Write,
+        risk: if read {
+            ui::tilo_actions::RiskLevel::None
+        } else {
+            ui::tilo_actions::RiskLevel::Low
+        },
+        retry: if read {
+            RetryPolicy::Idempotent
+        } else {
+            RetryPolicy::AtMostOnce
+        },
+        execution: ui::tilo_actions::ExecutionMode::Background { cancellable: false },
+        result: ResultSpec::Json {
+            schema: serde_json::json!({
+                "type": "object",
+                "required": ["url", "title", "message", "navigated"],
+                "properties": {
+                    "url": { "type": "string" },
+                    "title": { "type": "string" },
+                    "message": { "type": "string" },
+                    "navigated": { "type": "boolean" },
+                    "outline": { "type": "string" },
+                },
+            }),
+        },
+        tags: vec![
+            "device-local".into(),
+            "page-content".into(),
+            "sensitive-data".into(),
+            ui::tilo_actions::PROGRAMMATIC_TAG.into(),
+        ],
+        ..ActionContract::default()
+    }
+}
+
+fn element_param() -> ActionParam {
+    ActionParam::required_owned(
+        "element",
+        ParamType::Text,
+        "Element ref from browser.page/read, such as d1e5",
+    )
 }
 
 fn local_output(message: impl Into<String>) -> ui::tilo_actions::ActionOutput {
@@ -605,6 +761,9 @@ pub struct BrowserWidget {
     resource_pip_request: Option<u64>,
     resource_pip_result: Option<ui::tilo_actions::InvocationUpdate>,
     resource_pip_deadline: Option<std::time::Instant>,
+    page_operation: Option<PageOperation>,
+    page_operation_result: Option<ui::tilo_actions::InvocationUpdate>,
+    page_request_seq: u32,
     pending_pip: Option<ui::floating_surface::FloatingSurfaceRequest>,
     pending_pip_region_update: Option<Rect>,
     published_pip_region: Option<Rect>,
@@ -1000,6 +1159,9 @@ impl BrowserWidget {
             resource_pip_request: None,
             resource_pip_result: None,
             resource_pip_deadline: None,
+            page_operation: None,
+            page_operation_result: None,
+            page_request_seq: 0,
             pending_pip: None,
             pending_pip_region_update: None,
             published_pip_region: None,
@@ -1377,8 +1539,299 @@ impl BrowserWidget {
                     .thread_name("browser-reveal-download")
                     .send();
             }
+            BrowserOperation::Page(_) => {
+                return Err("page actions report their result; start them as an invocation".into());
+            }
         }
         Ok(())
+    }
+
+    fn page_loading(&self) -> bool {
+        self.progress < 1.0 && !self.loading_stopped
+    }
+
+    /// Read and operate the page's content without its pixels: an outline
+    /// whose interactive elements carry refs, and actions on those refs.
+    fn page_content_actions(&self) -> Vec<ActionSpec> {
+        fn page_action(
+            id: &str,
+            label: &str,
+            placeholder: &str,
+            params: Vec<ActionParam>,
+            build: impl Fn(&ActionArgs) -> PageRequest + Send + Sync + 'static,
+        ) -> ActionSpec {
+            ActionSpec::typed_operation(
+                id,
+                label,
+                placeholder,
+                if id == "read" {
+                    OperationKind::View
+                } else {
+                    OperationKind::Effect
+                },
+                BROWSER_OPERATION_TYPE,
+                params,
+                move |args: &ActionArgs| {
+                    encode_browser_operation(&BrowserOperation::Page(build(args)))
+                },
+            )
+            .with_contract(page_contract(id == "read"))
+        }
+        let element = |args: &ActionArgs| args.text("element").unwrap_or_default().to_string();
+        let specs = vec![
+            page_action("read", "Read page content", "", Vec::new(), |_| {
+                PageRequest::Outline
+            }),
+            page_action(
+                "click",
+                "Click page element",
+                "d1e5",
+                vec![element_param()],
+                move |args| PageRequest::Click {
+                    element: element(args),
+                },
+            ),
+            page_action(
+                "fill",
+                "Fill page field",
+                "text",
+                vec![
+                    element_param(),
+                    ActionParam::required_owned(
+                        "text",
+                        ParamType::Text,
+                        "Text that replaces the field's contents",
+                    ),
+                ],
+                move |args| PageRequest::Fill {
+                    element: element(args),
+                    text: args.text("text").unwrap_or_default().to_string(),
+                },
+            ),
+            page_action(
+                "select",
+                "Choose page options",
+                "option",
+                vec![
+                    element_param(),
+                    ActionParam::required_owned(
+                        "values",
+                        ParamType::Array,
+                        "Option values or visible labels to choose",
+                    )
+                    .with_schema(serde_json::json!({
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "minItems": 1,
+                        "maxItems": ui::webview::page::MAX_SELECT_VALUES,
+                    })),
+                ],
+                move |args| PageRequest::Select {
+                    element: element(args),
+                    values: args
+                        .array("values")
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|value| value.as_str().map(str::to_string))
+                        .collect(),
+                },
+            ),
+            page_action(
+                "press",
+                "Press key on page",
+                "Enter",
+                vec![
+                    ActionParam::required_owned(
+                        "key",
+                        ParamType::Text,
+                        "Key or chord such as Enter, Tab, Escape, ArrowDown or Control+a",
+                    ),
+                    ActionParam::optional_owned(
+                        "element",
+                        ParamType::Text,
+                        "Element ref to focus first; otherwise the focused element",
+                    ),
+                ],
+                |args| PageRequest::Press {
+                    element: args
+                        .text("element")
+                        .filter(|element| !element.is_empty())
+                        .map(str::to_string),
+                    key: {
+                        let chord = args.text("key").unwrap_or_default();
+                        PageKey::parse(chord).unwrap_or_else(|| PageKey {
+                            key: chord.to_string(),
+                            modifiers: ui::webview::KeyModifiers::default(),
+                        })
+                    },
+                },
+            ),
+            page_action(
+                "submit",
+                "Submit page form",
+                "d1e5",
+                vec![element_param()],
+                move |args| PageRequest::Submit {
+                    element: element(args),
+                },
+            ),
+        ];
+        if is_supported_web_url(&self.current_uri) {
+            specs
+        } else {
+            specs
+                .into_iter()
+                .map(|spec| spec.unavailable("no_web_page", "Open a web page first"))
+                .collect()
+        }
+    }
+
+    fn start_page_operation(
+        &mut self,
+        invocation: ui::tilo_actions::InvocationId,
+        request: PageRequest,
+    ) -> Result<(), String> {
+        if self.page_operation.is_some() || self.page_operation_result.is_some() {
+            return Err("another page action is already running in this tab".into());
+        }
+        self.page_request_seq = self.page_request_seq % i32::MAX.unsigned_abs() + 1;
+        let now = std::time::Instant::now();
+        self.page_operation = Some(PageOperation {
+            invocation,
+            request_id: self.page_request_seq,
+            phase: PagePhase::Queued {
+                request,
+                until: now + PAGE_LOAD_WAIT,
+            },
+            deadline: now + PAGE_OPERATION_TIMEOUT,
+        });
+        self.drive_page_operation();
+        Ok(())
+    }
+
+    /// Send a request once its page has settled, and bound every phase.
+    fn drive_page_operation(&mut self) {
+        let now = std::time::Instant::now();
+        let loading = self.page_loading();
+        let Some(operation) = self.page_operation.as_mut() else {
+            return;
+        };
+        if let PagePhase::Queued { until, .. } = &operation.phase
+            && (!loading || now >= *until)
+            && let PagePhase::Queued { request, .. } =
+                std::mem::replace(&mut operation.phase, PagePhase::Sent)
+        {
+            self.engine.send(WebViewCommand::Page {
+                request_id: operation.request_id,
+                request,
+            });
+            return;
+        }
+        if now < operation.deadline {
+            return;
+        }
+        let Some(operation) = self.page_operation.take() else {
+            return;
+        };
+        self.page_operation_result = Some(match operation.phase {
+            PagePhase::Navigating { reply } => self.page_success(
+                operation.invocation,
+                &reply,
+                Some("the page it opened is still loading"),
+            ),
+            PagePhase::Queued { .. } | PagePhase::Sent => {
+                ui::tilo_actions::InvocationUpdate::Failed {
+                    invocation: operation.invocation,
+                    error: ui::tilo_actions::ActionFailure {
+                        code: "browser.page.timeout".into(),
+                        message: "The page did not answer in time.".into(),
+                        details: Some(serde_json::json!({
+                            "timeout_seconds": PAGE_OPERATION_TIMEOUT.as_secs(),
+                        })),
+                        retryable: true,
+                    },
+                }
+            }
+        });
+    }
+
+    fn accept_page_result(&mut self, request_id: u32, result: Result<PageReply, PageFailure>) {
+        let Some(operation) = self.page_operation.take_if(|operation| {
+            operation.request_id == request_id && matches!(operation.phase, PagePhase::Sent)
+        }) else {
+            return;
+        };
+        self.page_operation_result = Some(match result {
+            Ok(reply) if reply.loading => {
+                self.page_operation = Some(PageOperation {
+                    phase: PagePhase::Navigating { reply },
+                    deadline: std::time::Instant::now() + PAGE_NAVIGATION_WAIT,
+                    ..operation
+                });
+                return;
+            }
+            Ok(reply) => self.page_success(operation.invocation, &reply, None),
+            Err(failure) => ui::tilo_actions::InvocationUpdate::Failed {
+                invocation: operation.invocation,
+                error: ui::tilo_actions::ActionFailure {
+                    retryable: matches!(failure.code.as_str(), "busy" | "timeout"),
+                    code: format!("browser.page.{}", failure.code),
+                    message: failure.message,
+                    details: None,
+                },
+            },
+        });
+    }
+
+    /// A page action that started a navigation completes once it settles, so
+    /// the caller's next read sees the page the action opened.
+    fn page_navigation_settled(&mut self, error: Option<&str>) {
+        let Some(operation) = self
+            .page_operation
+            .take_if(|operation| matches!(operation.phase, PagePhase::Navigating { .. }))
+        else {
+            return;
+        };
+        let PagePhase::Navigating { reply } = operation.phase else {
+            return;
+        };
+        let note = error.map(|error| format!("the page it opened failed to load: {error}"));
+        self.page_operation_result =
+            Some(self.page_success(operation.invocation, &reply, note.as_deref()));
+    }
+
+    fn page_success(
+        &self,
+        invocation: ui::tilo_actions::InvocationId,
+        reply: &PageReply,
+        note: Option<&str>,
+    ) -> ui::tilo_actions::InvocationUpdate {
+        // After a navigation the tab's committed address is newer than the
+        // engine's answer, which was taken as the navigation began.
+        let url = if reply.loading && !self.current_uri.is_empty() {
+            self.current_uri.clone()
+        } else {
+            reply.url.clone()
+        };
+        let message = note.map_or_else(
+            || reply.message.clone(),
+            |note| format!("{}; {note}", reply.message),
+        );
+        let mut value = serde_json::Map::new();
+        value.insert("url".into(), url.into());
+        value.insert("title".into(), self.title.as_str().into());
+        value.insert("message".into(), message.into());
+        value.insert("navigated".into(), reply.navigated.into());
+        if let Some(outline) = &reply.outline {
+            value.insert("outline".into(), outline.as_str().into());
+        }
+        ui::tilo_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: ui::tilo_actions::ActionOutput {
+                value: Some(value.into()),
+                resources: Vec::new(),
+            },
+        }
     }
 
     fn completed_download_path(&self, id: &str) -> Result<std::path::PathBuf, String> {
@@ -3412,6 +3865,7 @@ impl BrowserWidget {
                                 },
                             });
                     }
+                    self.page_navigation_settled(None);
                 }
                 WebViewEvent::LoadFailed { uri, error } => {
                     self.address_navigation_value = None;
@@ -3420,6 +3874,7 @@ impl BrowserWidget {
                     self.title = format!("Failed to load {uri}");
                     self.load_error = Some(error.chars().take(240).collect());
                     self.structure_dirty = true;
+                    self.page_navigation_settled(Some(&error));
                     if let Some(invocation) = self.resource_navigation_invocation.take() {
                         self.resource_navigation_deadline = None;
                         self.resource_navigation_result =
@@ -3447,6 +3902,9 @@ impl BrowserWidget {
                 } => self.accept_media_element(request_id, element),
                 WebViewEvent::MediaElementUnavailable { request_id } => {
                     self.reject_media_element(request_id);
+                }
+                WebViewEvent::PageResult { request_id, result } => {
+                    self.accept_page_result(request_id, result);
                 }
                 event @ (WebViewEvent::DownloadRequested { .. }
                 | WebViewEvent::DownloadProgress { .. }
@@ -4347,6 +4805,7 @@ impl Widget for BrowserWidget {
                     "media",
                 ])));
         }
+        page.actions.extend(self.page_content_actions());
 
         let mut session = Resource::new(
             "browser.session",
@@ -4875,6 +5334,10 @@ impl Widget for BrowserWidget {
             return Ok(None);
         }
         let operation = decode_browser_operation(payload)?;
+        if let BrowserOperation::Page(request) = operation {
+            self.start_page_operation(invocation, request)?;
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
         let is_navigation = matches!(
             &operation,
             BrowserOperation::Back
@@ -4959,6 +5422,14 @@ impl Widget for BrowserWidget {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Option<ui::tilo_actions::InvocationUpdate> {
+        self.drive_page_operation();
+        if self
+            .page_operation_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            return self.page_operation_result.take();
+        }
         if self
             .resource_navigation_result
             .as_ref()
@@ -5076,6 +5547,7 @@ impl Widget for BrowserWidget {
         }
         self.tick_back_hold(std::time::Instant::now());
         self.apply_engine_events();
+        self.drive_page_operation();
         self.structure_dirty |= self.capabilities.downloads_changed();
         let heads = state.get_heads();
         if self.projected_heads.as_ref() != Some(&heads) {
@@ -7106,6 +7578,292 @@ mod tests {
         let root = automerge::ROOT;
         widget.sync(&mut state, &root);
         (state, root)
+    }
+
+    /// Page actions, as an agent reaches them: published on `browser.page`,
+    /// admitted through the resource operation lane, answered by the engine
+    /// and reported through the invocation's terminal update.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn page_actions_read_and_operate_the_page_through_invocations() {
+        fn page_on(url: &str) -> (Arc<TestEngine>, BrowserWidget, AutoCommit, ObjId) {
+            let engine = TestEngine::new();
+            engine.send(WebViewCommand::Navigate(url.into()));
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            let (doc, root) = synced(&mut widget);
+            (engine, widget, doc, root)
+        }
+        fn page_action(widget: &BrowserWidget, doc: &AutoCommit, id: &str) -> ActionSpec {
+            Widget::resources(widget, doc)[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "browser.page")
+                .unwrap()
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap()
+                .clone()
+        }
+        fn start(
+            widget: &mut BrowserWidget,
+            doc: &AutoCommit,
+            root: &ObjId,
+            id: &str,
+            args: &serde_json::Value,
+        ) -> Result<ui::tilo_actions::InvocationId, String> {
+            let action = page_action(widget, doc, id);
+            let encoded = action
+                .build_json(args.as_object().ok_or("arguments are an object")?)
+                .map_err(|error| error.to_string())?;
+            let invocation = ui::tilo_actions::InvocationId::new();
+            match widget.start_resource_operation(
+                invocation,
+                action.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                doc,
+                root,
+            )? {
+                Some(ui::widget::ResourceOperationStart::Accepted) => Ok(invocation),
+                other => Err(format!("a page action must be accepted, got {other:?}")),
+            }
+        }
+        fn page_requests(engine: &TestEngine) -> Vec<PageRequest> {
+            engine
+                .commands()
+                .into_iter()
+                .filter_map(|command| match command {
+                    WebViewCommand::Page { request, .. } => Some(request),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        // Phase `page_actions_publish_programmatic_write_contracts`.
+        {
+            let (_, widget, doc, _) = page_on("https://shop.test/");
+            for id in ["read", "click", "fill", "select", "press", "submit"] {
+                let action = page_action(&widget, &doc, id);
+                assert!(action.contract.validate_declaration().is_empty(), "{id}");
+                assert!(action.contract.availability.is_available(), "{id}");
+                assert!(action.contract.is_programmatic(), "{id}");
+                assert_eq!(
+                    action.contract.permission,
+                    ui::tilo_actions::PermissionRequirement::Write,
+                    "reading a signed-in page takes the authority to operate it"
+                );
+                assert_eq!(
+                    action.contract.execution,
+                    ui::tilo_actions::ExecutionMode::Background { cancellable: false }
+                );
+            }
+            let (_, blank, doc, _) = page_on("about:blank");
+            assert!(
+                !page_action(&blank, &doc, "read")
+                    .contract
+                    .availability
+                    .is_available()
+            );
+        }
+
+        // Phase `read_returns_the_engine_outline_in_the_declared_shape`.
+        {
+            let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
+            let invocation =
+                start(&mut widget, &doc, &root, "read", &serde_json::json!({})).unwrap();
+            assert_eq!(page_requests(&engine), vec![PageRequest::Outline]);
+            widget.sync(&mut doc, &root);
+            let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+                widget.poll_resource_operation(invocation, false, &doc, &root)
+            else {
+                panic!("an answered read must succeed its invocation");
+            };
+            let read = page_action(&widget, &doc, "read");
+            assert!(read.contract.result.validate(&output).is_ok());
+            let value = output.value.unwrap();
+            assert_eq!(value["url"], "https://shop.test/");
+            assert_eq!(
+                value["outline"],
+                "- document \"https://shop.test/ — test page\""
+            );
+        }
+
+        // Phase `a_read_on_a_loading_page_waits_for_it_to_settle`.
+        {
+            let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
+            widget.set_loading_progress(0.4);
+            let invocation =
+                start(&mut widget, &doc, &root, "read", &serde_json::json!({})).unwrap();
+            widget.sync(&mut doc, &root);
+            assert!(
+                page_requests(&engine).is_empty(),
+                "read before the load settled"
+            );
+            assert!(
+                widget
+                    .poll_resource_operation(invocation, false, &doc, &root)
+                    .is_none()
+            );
+            engine.send(WebViewCommand::Reload);
+            widget.sync(&mut doc, &root);
+            assert_eq!(page_requests(&engine), vec![PageRequest::Outline]);
+            widget.sync(&mut doc, &root);
+            assert!(matches!(
+                widget.poll_resource_operation(invocation, false, &doc, &root),
+                Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+        }
+
+        // Phase `typed_arguments_reach_the_engine_and_bad_refs_never_do`.
+        {
+            let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
+            let fill = start(
+                &mut widget,
+                &doc,
+                &root,
+                "fill",
+                &serde_json::json!({"element": "d3e7", "text": ""}),
+            )
+            .unwrap();
+            widget.sync(&mut doc, &root);
+            assert!(
+                widget
+                    .poll_resource_operation(fill, false, &doc, &root)
+                    .is_some()
+            );
+            let select = start(
+                &mut widget,
+                &doc,
+                &root,
+                "select",
+                &serde_json::json!({"element": "d3e8", "values": ["NL", "Belgium"]}),
+            )
+            .unwrap();
+            widget.sync(&mut doc, &root);
+            assert!(
+                widget
+                    .poll_resource_operation(select, false, &doc, &root)
+                    .is_some()
+            );
+            let press = start(
+                &mut widget,
+                &doc,
+                &root,
+                "press",
+                &serde_json::json!({"key": "Shift+Tab"}),
+            )
+            .unwrap();
+            widget.sync(&mut doc, &root);
+            assert!(
+                widget
+                    .poll_resource_operation(press, false, &doc, &root)
+                    .is_some()
+            );
+            assert_eq!(
+                page_requests(&engine),
+                vec![
+                    PageRequest::Fill {
+                        element: "d3e7".into(),
+                        text: String::new(),
+                    },
+                    PageRequest::Select {
+                        element: "d3e8".into(),
+                        values: vec!["NL".into(), "Belgium".into()],
+                    },
+                    PageRequest::Press {
+                        element: None,
+                        key: PageKey::parse("Shift+Tab").unwrap(),
+                    },
+                ]
+            );
+            for (id, args) in [
+                ("click", serde_json::json!({"element": "#checkout"})),
+                ("submit", serde_json::json!({"element": ""})),
+                ("press", serde_json::json!({"key": "Hyper+x"})),
+            ] {
+                let refused = start(&mut widget, &doc, &root, id, &args).unwrap_err();
+                assert!(!refused.is_empty(), "{id}");
+            }
+            assert_eq!(
+                page_requests(&engine).len(),
+                3,
+                "refused requests reached the page"
+            );
+        }
+
+        // Phase `an_action_that_navigates_completes_on_the_page_it_opened`.
+        {
+            let (engine, mut widget, mut doc, root) = page_on("https://shop.test/cart");
+            engine.push_page_reply(Ok(PageReply {
+                url: "https://shop.test/cart".into(),
+                message: "Clicked button \"Checkout\"".into(),
+                outline: None,
+                navigated: true,
+                loading: true,
+            }));
+            let click = start(
+                &mut widget,
+                &doc,
+                &root,
+                "click",
+                &serde_json::json!({"element": "d1e4"}),
+            )
+            .unwrap();
+            widget.sync(&mut doc, &root);
+            assert!(
+                widget
+                    .poll_resource_operation(click, false, &doc, &root)
+                    .is_none(),
+                "a click that started a navigation waits for it"
+            );
+            assert!(
+                start(&mut widget, &doc, &root, "read", &serde_json::json!({})).is_err(),
+                "a second page action is refused while one runs"
+            );
+            engine.send(WebViewCommand::Navigate(
+                "https://shop.test/checkout".into(),
+            ));
+            widget.sync(&mut doc, &root);
+            let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+                widget.poll_resource_operation(click, false, &doc, &root)
+            else {
+                panic!("the settled navigation must complete the click");
+            };
+            let value = output.value.unwrap();
+            assert_eq!(value["url"], "https://shop.test/checkout");
+            assert_eq!(value["message"], "Clicked button \"Checkout\"");
+            assert_eq!(value["navigated"], true);
+        }
+
+        // Phase `engine_refusals_become_typed_invocation_failures`.
+        {
+            let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
+            engine.push_page_reply(Err(PageFailure::new(
+                "stale_element",
+                "d1e4 belongs to a page this tab has left; read the page again",
+            )));
+            let click = start(
+                &mut widget,
+                &doc,
+                &root,
+                "click",
+                &serde_json::json!({"element": "d1e4"}),
+            )
+            .unwrap();
+            widget.sync(&mut doc, &root);
+            let Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) =
+                widget.poll_resource_operation(click, false, &doc, &root)
+            else {
+                panic!("a refused click must fail its invocation");
+            };
+            assert_eq!(error.code, "browser.page.stale_element");
+            assert!(!error.retryable);
+            assert!(start(&mut widget, &doc, &root, "read", &serde_json::json!({})).is_ok());
+        }
     }
 
     fn history_save_fails(_: &History) -> std::io::Result<()> {

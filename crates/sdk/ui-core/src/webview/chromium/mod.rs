@@ -292,11 +292,18 @@ impl UnavailableEngine {
 
 impl WebViewEngine for UnavailableEngine {
     fn send(&self, command: WebViewCommand) {
-        if let WebViewCommand::Navigate(uri) = command {
-            self.shared.event(WebViewEvent::LoadFailed {
+        match command {
+            WebViewCommand::Navigate(uri) => self.shared.event(WebViewEvent::LoadFailed {
                 uri,
                 error: self.message.clone(),
-            });
+            }),
+            WebViewCommand::Page { request_id, .. } => {
+                self.shared.event(WebViewEvent::PageResult {
+                    request_id,
+                    result: Err(super::PageFailure::new("unavailable", self.message.clone())),
+                })
+            }
+            _ => {}
         }
     }
     fn frames(&self) -> FrameSlot {
@@ -812,6 +819,16 @@ impl WebViewEngine for ChromiumEngine {
             return;
         }
         if !command_within_limits(&command) {
+            if let WebViewCommand::Page { request_id, .. } = command {
+                self.shared.event(WebViewEvent::PageResult {
+                    request_id,
+                    result: Err(super::PageFailure::new(
+                        "invalid_request",
+                        "The page request is malformed or exceeds its limits.",
+                    )),
+                });
+                return;
+            }
             tracing::error!("Rejected oversized Chromium command");
             if let Some(uri) = navigation {
                 self.shared.event(WebViewEvent::LoadFailed {
@@ -821,6 +838,10 @@ impl WebViewEngine for ChromiumEngine {
             }
             return;
         }
+        let page_request = match &command {
+            WebViewCommand::Page { request_id, .. } => Some(*request_id),
+            _ => None,
+        };
         if let Some(mut command) = encode_command(command) {
             let Some(fields) = command.as_object_mut() else {
                 self.shared.fail("Invalid internal Chromium command".into());
@@ -828,6 +849,16 @@ impl WebViewEngine for ChromiumEngine {
             };
             fields.insert("tab".into(), json!(self.tab));
             if let Err(error) = self.tx.push(command) {
+                if let Some(request_id) = page_request {
+                    self.shared.event(WebViewEvent::PageResult {
+                        request_id,
+                        result: Err(super::PageFailure::new(
+                            "unavailable",
+                            format!("The page request was not queued: {error}"),
+                        )),
+                    });
+                    return;
+                }
                 // A prior helper error describes its previous URL. Each new
                 // rejected navigation still needs an error for the requested URL.
                 if navigation.is_none() && self.shared.failed.load(Ordering::Acquire) {
@@ -1197,6 +1228,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                 })
         }
         "history" => value["back"].is_boolean() && value["forward"].is_boolean(),
+        "page_result" => super::page::decode_result(value).is_some(),
         "error" => text("url") && text("message"),
         _ => true,
     };
@@ -1253,6 +1285,10 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
                 && i32::try_from(*id).is_ok()
         }
         WebViewCommand::RequestMediaElementById { element_id, .. } => element_id.len() <= 256,
+        WebViewCommand::Page {
+            request_id,
+            request,
+        } => *request_id > 0 && i32::try_from(*request_id).is_ok() && request.valid(),
         WebViewCommand::PermissionDecision { id, .. }
         | WebViewCommand::DownloadDecision { id, .. }
         | WebViewCommand::CancelNativeDownload { id }
@@ -1467,6 +1503,10 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             can_go_back: value["back"].as_bool()?,
             can_go_forward: value["forward"].as_bool()?,
         },
+        "page_result" => {
+            let (request_id, result) = super::page::decode_result(value)?;
+            WebViewEvent::PageResult { request_id, result }
+        }
         "error" => WebViewEvent::LoadFailed {
             uri: value["url"].as_str().unwrap_or_default().into(),
             error: value["message"].as_str()?.into(),
@@ -1575,6 +1615,10 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::SetNativeFilterRules { rules, enabled } => {
             json!({"op":"filter_rules","rules":&*rules,"enabled":enabled})
         }
+        WebViewCommand::Page {
+            request_id,
+            request,
+        } => super::page::encode_request(request_id, &request),
         WebViewCommand::StartDownload { .. }
         | WebViewCommand::SetDownloadDestination { .. }
         | WebViewCommand::CancelDownload { .. }
