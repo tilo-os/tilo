@@ -129,6 +129,11 @@ enum Cmd {
         /// Free-form note visible to the operator only.
         #[arg(long, default_value = "")]
         note: String,
+        /// Reverse-DNS namespace the publisher's package ids must lie in
+        /// (`com.example`, `io.github.<account>`); repeatable. Defaults to
+        /// `so.tilo`, Tilo's own.
+        #[arg(long = "namespace")]
+        namespaces: Vec<String>,
     },
     /// Remove an unreferenced publisher from the allowlist. Public entries,
     /// the current snapshot, and pending requests must be drained first.
@@ -314,7 +319,8 @@ async fn serve_cli() -> anyhow::Result<()> {
             pubkey,
             can_add_new,
             note,
-        } => cmd_add_publisher(&storage, &pubkey, can_add_new, note),
+            namespaces,
+        } => cmd_add_publisher(&storage, &pubkey, can_add_new, note, namespaces),
         Cmd::RemovePublisher { pubkey } => cmd_remove_publisher(&storage, &pubkey),
         Cmd::ListPublishers => cmd_list_publishers(&storage),
         Cmd::AuthorizeChannel {
@@ -1470,7 +1476,17 @@ fn cmd_add_publisher(
     pubkey: &str,
     can_add_new: bool,
     note: String,
+    mut namespaces: Vec<String>,
 ) -> anyhow::Result<()> {
+    if namespaces.is_empty() {
+        namespaces.push(registry_types::namespace::TILO_NAMESPACE.to_owned());
+    }
+    if let Some(bad) = namespaces
+        .iter()
+        .find(|namespace| !registry_types::namespace::valid_namespace(namespace))
+    {
+        anyhow::bail!("{bad:?} is not a reverse-DNS namespace such as com.example");
+    }
     let transaction = storage.lock_snapshot()?;
     refuse_active_promotion(storage)?;
     let mut allow: PublisherAllowlist = storage
@@ -1480,6 +1496,7 @@ fn cmd_add_publisher(
         pubkey_hex: pubkey.to_string(),
         can_add_new,
         note,
+        namespaces,
     };
     let bytes = row.pubkey_bytes()?;
     if bytes == [0; 32] || ed25519_dalek::VerifyingKey::from_bytes(&bytes).is_err() {
@@ -1769,6 +1786,7 @@ mod tests {
                         pubkey_hex: publisher_hex.clone(),
                         can_add_new: true,
                         note: "first party".into(),
+                        namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
                     }],
                 })
                 .unwrap();
@@ -1950,7 +1968,7 @@ mod tests {
             base_url: "http://127.0.0.1".into(),
         };
         storage.save_identity(&identity).unwrap();
-        cmd_add_publisher(&storage, &publisher_hex, true, String::new()).unwrap();
+        cmd_add_publisher(&storage, &publisher_hex, true, String::new(), Vec::new()).unwrap();
         let entry = publisher_entry(&publisher);
         storage.save_entry(&entry).unwrap();
 

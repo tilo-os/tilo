@@ -63,6 +63,7 @@ pub mod change;
 pub mod entry;
 pub mod handshake;
 pub mod moderation;
+pub mod namespace;
 pub mod snapshot;
 pub mod target;
 pub mod verify;
