@@ -54,6 +54,9 @@ pub struct ShimArgs {
     /// host the relay — an empty ruleset denies everything, so "no FS
     /// policy" must be said explicitly.
     pub no_landlock: bool,
+    /// Accept Landlock not, or only partially, enforced: a system-store app
+    /// on a provider-sandboxed machine ([`crate::provider_sandbox`]).
+    pub landlock_best_effort: bool,
     /// Connected broker descriptors intentionally handed to the app. Every
     /// other descriptor above stderr is closed before the entrypoint executes.
     pub keep_fds: Vec<i32>,
@@ -118,6 +121,7 @@ impl ShimArgs {
                 }
                 "--net-restricted" => parsed.net_restricted = true,
                 "--no-landlock" => parsed.no_landlock = true,
+                "--landlock-best-effort" => parsed.landlock_best_effort = true,
                 "--ro" | "--rw" | "--net-gate" | "--net-gate-port" | "--keep-fd" => {
                     let value = args
                         .get(i.saturating_add(1))
@@ -191,6 +195,16 @@ fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, LandlockBuil
             path.display()
         );
     })
+}
+
+/// Whether the launch may proceed with `outcome`. A ruleset that failed to
+/// build refuses even on a provider-sandboxed machine.
+fn landlock_accepted(outcome: LandlockOutcome, best_effort: bool) -> bool {
+    match outcome {
+        LandlockOutcome::FullyEnforced => true,
+        LandlockOutcome::NotEnforced | LandlockOutcome::PartiallyEnforced => best_effort,
+        LandlockOutcome::Errored => false,
+    }
 }
 
 pub fn apply(args: &ShimArgs) -> LandlockOutcome {
@@ -345,11 +359,17 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
         parsed.net_gate_port,
     );
 
-    if !parsed.no_landlock && outcome != LandlockOutcome::FullyEnforced {
+    if !parsed.no_landlock && !landlock_accepted(outcome, parsed.landlock_best_effort) {
         eprintln!(
             "tilo-sandbox-exec: refusing tapp launch because the complete Landlock v5 policy is not enforced"
         );
         std::process::exit(126);
+    }
+    if !parsed.no_landlock && outcome != LandlockOutcome::FullyEnforced {
+        eprintln!(
+            "tilo-sandbox-exec: provider-sandboxed machine: running a system app with {}",
+            outcome.describe()
+        );
     }
 
     if let Err(error) = close_ambient_fds(&parsed.keep_fds) {
@@ -604,5 +624,43 @@ mod tests {
                 .expect("parse");
             assert!(parsed.no_landlock);
         }
+    }
+}
+
+#[cfg(test)]
+mod provider_sandbox_tests {
+    use super::*;
+
+    #[test]
+    fn best_effort_accepts_a_missing_or_partial_landlock_but_never_an_error() {
+        use LandlockOutcome::{Errored, FullyEnforced, NotEnforced, PartiallyEnforced};
+        for (outcome, strict, best_effort) in [
+            (FullyEnforced, true, true),
+            (NotEnforced, false, true),
+            (PartiallyEnforced, false, true),
+            (Errored, false, false),
+        ] {
+            assert_eq!(
+                landlock_accepted(outcome, false),
+                strict,
+                "{outcome:?} strict"
+            );
+            assert_eq!(
+                landlock_accepted(outcome, true),
+                best_effort,
+                "{outcome:?} best effort"
+            );
+        }
+    }
+
+    #[test]
+    fn the_best_effort_flag_is_parsed() {
+        let parsed =
+            ShimArgs::parse(&["--landlock-best-effort".into(), "--".into(), "/app".into()])
+                .unwrap();
+        assert!(parsed.landlock_best_effort);
+        assert!(!parsed.no_landlock);
+        let parsed = ShimArgs::parse(&["--".into(), "/app".into()]).unwrap();
+        assert!(!parsed.landlock_best_effort);
     }
 }
