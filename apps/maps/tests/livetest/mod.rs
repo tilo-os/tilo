@@ -31,7 +31,6 @@
     reason = "pixel and timing arithmetic in a test harness"
 )]
 
-use std::collections::HashMap;
 use std::path::Path;
 use ui::time::Duration;
 

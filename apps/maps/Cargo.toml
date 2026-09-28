@@ -33,7 +33,7 @@ tracing.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-tilo-net = { path = "../../crates/platform/tilo-net", features = ["http", "blocking"] }
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["http"] }
 # The tile worker's job queue, awaited on the app runtime.
 tokio = { workspace = true, features = ["sync"] }
 # RFC-3339 timestamps for the transit depart/arrive time picker.
