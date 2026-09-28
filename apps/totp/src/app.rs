@@ -1732,6 +1732,7 @@ impl Widget for AuthenticatorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::headless::Framed;
 
     // The demo root is used so tests get a deterministic sample vault and
     // never read or write the real on-disk vault.
@@ -1799,8 +1800,8 @@ mod tests {
 
         // Case `accessibility_copy_uses_the_existing_list_event_path`.
         {
-            let (mut app, mut state) = app_with_state();
-            let _ = layout_at(&mut app, 640.0, 700.0);
+            let mut framed = framed(app_with_state(), 640, 700);
+            let (app, state) = Framed::split(&mut framed);
             let id = app.vault.ordered()[0].id;
             assert!(app.perform_semantic_action(
                 &format!("totp.copy:{id}"),
@@ -1840,8 +1841,7 @@ mod tests {
 
         // Case `enter_copies_the_selected_accounts_live_code`.
         {
-            let (mut app, mut state) = app_with_state();
-            let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
+            let mut app = framed(app_with_state(), 1000, 800);
             let id = app
                 .selected
                 .expect("the demo vault selects the first account");
@@ -1849,15 +1849,7 @@ mod tests {
 
             let before = totp::current_code(&acc);
             let mods = no_mods();
-            dispatch(
-                &mut app,
-                &named_press(NamedKey::Enter),
-                mods,
-                &mut state.doc,
-                &state.root,
-                node,
-                &taffy,
-            );
+            dispatch(&mut app, &named_press(NamedKey::Enter), mods);
             let after = totp::current_code(&acc);
 
             let copied = app.last_copied().expect("Enter copies the selected code");
@@ -1889,8 +1881,7 @@ mod tests {
     fn accessibility_names_accounts_and_protects_the_modal() {
         // Case `accessibility_tree_names_accounts_without_exposing_codes`.
         {
-            let (mut app, _state) = app_with_state();
-            let _ = layout_at(&mut app, 640.0, 700.0);
+            let app = framed(app_with_state(), 640, 700);
             let tree = app.accessibility().expect("root has semantic window");
             assert_eq!(tree.role, Role::Window);
             assert_eq!(tree.name.as_deref(), Some("Authenticator"));
@@ -1931,8 +1922,8 @@ mod tests {
 
         // Case `modal_accessibility_is_modal_protected_and_routes_text_actions`.
         {
-            let (mut app, mut state) = app_with_state();
-            let _ = layout_at(&mut app, 640.0, 700.0);
+            let mut framed = framed(app_with_state(), 640, 700);
+            let (app, state) = Framed::split(&mut framed);
             app.add_panel.open();
             app.add_panel.layout(app.rect);
             let tree = app.accessibility().expect("semantic root");
@@ -1974,8 +1965,8 @@ mod tests {
 
         // Case `modal_a11y_exposes_advanced_algorithm_and_digit_choices`.
         {
-            let (mut app, mut state) = app_with_state();
-            let _ = layout_at(&mut app, 640.0, 700.0);
+            let mut framed = framed(app_with_state(), 640, 700);
+            let (app, state) = Framed::split(&mut framed);
             app.add_panel.open();
             app.add_panel.layout(app.rect);
             assert!(app.perform_semantic_action(
@@ -2016,8 +2007,7 @@ mod tests {
     fn narrow_and_resized_layouts_keep_one_readable_column() {
         // Case `narrow_header_keeps_the_add_target_inside_the_window`.
         {
-            let (mut app, _state) = app_with_state();
-            let _ = layout_at(&mut app, 320.0, 640.0);
+            let app = framed(app_with_state(), 320, 640);
             assert!(app.add_btn_rect.width() <= COMPACT_ADD_BTN_W);
             assert!(app.add_btn_rect.x0 >= app.rect.x0);
             assert!(app.add_btn_rect.x1 <= app.rect.x1);
@@ -2028,7 +2018,7 @@ mod tests {
             let mut app = AuthenticatorApp::demo_missing_secret();
             let mut state = ui::State::new();
             app.sync(&mut state.doc, &state.root);
-            let _ = layout_at(&mut app, 390.0, 844.0);
+            let app = Framed::new(state, app, (390, 844), Theme::dark());
             assert!(
                 app.list.scroll_offset().abs() <= f64::EPSILON,
                 "shot roots never retain prior scrolling"
@@ -2052,8 +2042,7 @@ mod tests {
             // Guards the "responsive on first launch, frozen after resize" bug:
             // the same instance must re-derive its layout from the live window
             // width on every pass, wide → narrow → wide.
-            let (mut app, _state) = app_with_state();
-            layout_at(&mut app, 1280.0, 720.0);
+            let mut app = framed(app_with_state(), 1280, 720);
             let wide_list_w = app.list_rect.width();
             let wide_btn_x0 = app.add_btn_rect.x0;
             // A wide window bounds the list to the readable column, so identity
@@ -2063,7 +2052,7 @@ mod tests {
                 "wide window gives the readable-column list, got {wide_list_w}"
             );
 
-            layout_at(&mut app, 560.0, 720.0);
+            layout_at(&mut app, 560, 720);
             assert!(
                 app.list_rect.width() < wide_list_w,
                 "list reflows narrower on resize"
@@ -2078,7 +2067,7 @@ mod tests {
             );
 
             // Back to wide — it must recover, not stay stuck narrow.
-            layout_at(&mut app, 1280.0, 720.0);
+            layout_at(&mut app, 1280, 720);
             assert!(
                 (app.list_rect.width() - wide_list_w).abs() < 0.5,
                 "list widens back to the wide layout"
@@ -2087,8 +2076,7 @@ mod tests {
 
         // Case `header_search_and_list_share_one_centred_readable_column`.
         {
-            let (mut app, _state) = app_with_state();
-            layout_at(&mut app, 1920.0, 1080.0);
+            let mut app = framed(app_with_state(), 1920, 1080);
             let c = app.content_rect;
             assert!((c.width() - READABLE_CONTENT_W).abs() < 0.5);
             assert!(
@@ -2103,71 +2091,37 @@ mod tests {
             assert!(app.edit_btn_rect.x1 < app.add_btn_rect.x0);
 
             // Narrower than the cap: the column is the window.
-            layout_at(&mut app, 640.0, 800.0);
+            layout_at(&mut app, 640, 800);
             assert!((app.content_rect.width() - 640.0).abs() < 0.5);
             assert!((app.search_rect.x1 - (640.0 - OUTER_PAD)).abs() < 0.5);
         }
     }
 
-    /// Run the app's real layout passes at a concrete window size, the same
-    /// cycle `main.rs` drives for the live/offscreen frames. Returns the live
-    /// taffy tree + the app's root node so events can be routed exactly as
-    /// production does.
-    fn layout_at(app: &mut AuthenticatorApp, w: f32, h: f32) -> (TaffyTree<()>, NodeId) {
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(w),
-                        height: Dimension::length(h),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        taffy
-            .compute_layout(
-                root,
-                Size {
-                    width: taffy::AvailableSpace::Definite(w),
-                    height: taffy::AvailableSpace::Definite(h),
-                },
-            )
-            .unwrap();
-        app.apply_layout(&taffy, child, Point::ORIGIN);
-        (taffy, child)
+    /// Mount `app` over `state` in the shared frame harness and run its
+    /// first frame at `w`x`h`: the production sync, layout and draw passes.
+    fn framed(
+        (app, state): (AuthenticatorApp, ui::State),
+        w: u32,
+        h: u32,
+    ) -> Framed<AuthenticatorApp> {
+        Framed::new(state, app, (w, h), Theme::dark())
+    }
+
+    /// Run the next frame at a concrete window size.
+    fn layout_at(app: &mut Framed<AuthenticatorApp>, w: u32, h: u32) {
+        Framed::harness_mut(app)
+            .relayout_at((w, h))
+            .expect("layout settles");
     }
 
     /// Route one event through the app's real `handle_event`, returning
     /// whether it was marked handled.
     fn dispatch(
-        app: &mut AuthenticatorApp,
+        app: &mut Framed<AuthenticatorApp>,
         ev: &WindowEvent,
         mods: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
     ) -> bool {
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            1.0,
-            &mods,
-            state,
-            root,
-            &mut handled,
-            &mut focus,
-            node,
-            taffy,
-        );
-        handled
+        Framed::harness_mut(app).dispatch_to_root_with(ev, &mods)
     }
 
     /// Only the demo root seeds sample accounts.
@@ -2310,11 +2264,12 @@ mod tests {
             let secret = remote.secret.clone();
             AuthDoc::upsert_account(&mut state.doc, &remote);
             app.reload_from_doc(&state.doc);
-            let _ = layout_at(&mut app, 900.0, 700.0);
+            let mut framed = Framed::new(state, app, (900, 700), Theme::dark());
+            let (app, state) = Framed::split(&mut framed);
 
             assert!(!app.has_local_secret(id));
             let resource =
-                Widget::resource(&app, &state.doc, &crate::actions::account_resource_id(id))
+                Widget::resource(app, &state.doc, &crate::actions::account_resource_id(id))
                     .expect("the shared account resolves locally");
             let copy = resource
                 .actions
@@ -2435,7 +2390,8 @@ mod tests {
             let mut app = AuthenticatorApp::demo_persistence_error();
             let mut state = ui::State::new();
             app.sync(&mut state.doc, &state.root);
-            let _ = layout_at(&mut app, 390.0, 720.0);
+            let mut framed = Framed::new(state, app, (390, 720), Theme::dark());
+            let (app, state) = Framed::split(&mut framed);
             let selected = app.vault.ordered()[0].id;
             app.selected = Some(selected);
             assert!(
@@ -2611,37 +2567,16 @@ mod tests {
 
     /// Add button, Ctrl+N, slash/Ctrl+F, Escape and the modal's gating of global search.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
     fn shortcuts_and_clicks_open_the_modal_and_focus_search() {
         // Case `clicking_the_add_button_opens_the_modal`.
         {
-            let (mut app, mut state) = app_with_state();
-            let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
+            let mut app = framed(app_with_state(), 1000, 800);
             assert!(!app.add_panel.is_open(), "starts on the list, modal closed");
 
             let btn = app.add_btn_rect.center();
             let mods = no_mods();
-            dispatch(
-                &mut app,
-                &cursor_at(btn),
-                mods,
-                &mut state.doc,
-                &state.root,
-                node,
-                &taffy,
-            );
-            dispatch(
-                &mut app,
-                &left_press(),
-                mods,
-                &mut state.doc,
-                &state.root,
-                node,
-                &taffy,
-            );
+            dispatch(&mut app, &cursor_at(btn), mods);
+            dispatch(&mut app, &left_press(), mods);
             assert!(
                 app.add_panel.is_open(),
                 "clicking the + Add account button opens the add modal"
@@ -2650,73 +2585,38 @@ mod tests {
 
         // Case `ctrl_n_opens_the_add_modal`.
         {
-            let (mut app, mut state) = app_with_state();
-            let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
+            let mut app = framed(app_with_state(), 1000, 800);
             let ctrl = ctrl();
-            let handled = dispatch(
-                &mut app,
-                &char_press("n"),
-                ctrl,
-                &mut state.doc,
-                &state.root,
-                node,
-                &taffy,
-            );
+            let handled = dispatch(&mut app, &char_press("n"), ctrl);
             assert!(handled, "Ctrl+N is consumed");
             assert!(app.add_panel.is_open(), "Ctrl+N opens the add modal");
         }
 
         // Case `slash_and_ctrl_f_focus_the_search_field`.
         {
-            let (mut app, mut state) = app_with_state();
-            let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
+            let mut app = framed(app_with_state(), 1000, 800);
             assert!(!app.search.is_focused());
 
             // "/" focuses search when not already typing there.
             let mods = no_mods();
-            dispatch(
-                &mut app,
-                &char_press("/"),
-                mods,
-                &mut state.doc,
-                &state.root,
-                node,
-                &taffy,
-            );
+            dispatch(&mut app, &char_press("/"), mods);
             assert!(app.search.is_focused(), "'/' focuses the search field");
 
             // Ctrl+F also focuses search.
             app.search.set_focus(false);
             let ctrl = ctrl();
-            dispatch(
-                &mut app,
-                &char_press("f"),
-                ctrl,
-                &mut state.doc,
-                &state.root,
-                node,
-                &taffy,
-            );
+            dispatch(&mut app, &char_press("f"), ctrl);
             assert!(app.search.is_focused(), "Ctrl+F focuses the search field");
         }
 
         // Case `escape_clears_a_nonempty_search_query`.
         {
-            let (mut app, mut state) = app_with_state();
-            let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
+            let mut app = framed(app_with_state(), 1000, 800);
             app.search.set_focus(true);
             app.search.set_text("github");
 
             let mods = no_mods();
-            let handled = dispatch(
-                &mut app,
-                &named_press(NamedKey::Escape),
-                mods,
-                &mut state.doc,
-                &state.root,
-                node,
-                &taffy,
-            );
+            let handled = dispatch(&mut app, &named_press(NamedKey::Escape), mods);
             assert!(handled, "Escape is consumed while clearing the query");
             assert!(
                 app.search.value().is_empty(),
@@ -2730,22 +2630,14 @@ mod tests {
             // While the add modal is open it owns all input: a key that would be a
             // global shortcut on the list (here "/", focus-search) must be swallowed
             // by the modal and NOT focus the underlying search field.
-            let (mut app, mut state) = app_with_state();
-            let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
+            let mut app = framed(app_with_state(), 1000, 800);
             app.add_panel.open();
-            app.add_panel.layout(app.rect);
+            let rect = app.rect;
+            app.add_panel.layout(rect);
             assert!(!app.search.is_focused());
 
             let mods = no_mods();
-            dispatch(
-                &mut app,
-                &char_press("/"),
-                mods,
-                &mut state.doc,
-                &state.root,
-                node,
-                &taffy,
-            );
+            dispatch(&mut app, &char_press("/"), mods);
             assert!(
                 !app.search.is_focused(),
                 "the open modal gates the '/' shortcut from reaching the list"

@@ -3065,6 +3065,7 @@ impl Widget for ImageEditorApp {
 mod portal_tests {
     use super::*;
     use image::{Rgba, RgbaImage};
+    use ui::headless::Framed;
 
     /// Responsive layout: the toolbar compacts before collisions, and every published
     /// target (empty-state open, phone toolbar, More menu, inspector, graph ports) is
@@ -3086,8 +3087,7 @@ mod portal_tests {
     }
 
     fn empty_state_open_is_a_real_touch_sized_semantic_button() {
-        let mut app = ImageEditorApp::new();
-        layout_at(&mut app, 390.0, 760.0);
+        let mut app = framed(ImageEditorApp::new(), 390.0, 760.0);
         let rect = app.empty_open.get_rect();
         assert!(rect.width() >= 44.0 && rect.height() >= 44.0);
         assert!(app.canvas_rect.contains(rect.center()));
@@ -3107,32 +3107,20 @@ mod portal_tests {
         assert!(app.picker.is_some());
     }
 
-    fn layout_at(app: &mut ImageEditorApp, width: f32, height: f32) {
-        let mut tree = TaffyTree::new();
-        let child = tree
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        tree.compute_layout(
-            child,
-            Size {
-                width: ui::taffy::AvailableSpace::Definite(width),
-                height: ui::taffy::AvailableSpace::Definite(height),
-            },
+    /// Mount `app` in the shared frame harness and run its first frame at
+    /// `width`x`height`.
+    fn framed(app: ImageEditorApp, width: f32, height: f32) -> Framed<ImageEditorApp> {
+        Framed::new(
+            ui::State::new(),
+            app,
+            ui::headless::viewport((width, height)),
+            ui::Theme::dark(),
         )
-        .unwrap();
-        app.apply_layout(&tree, child, Point::ZERO);
     }
 
     fn phone_toolbar_targets_are_touch_sized_and_never_overlap() {
         for width in [360.0, 390.0] {
-            let mut app = ImageEditorApp::new();
-            layout_at(&mut app, width, 640.0);
+            let app = framed(ImageEditorApp::new(), width, 640.0);
             let visible = app
                 .toolbar
                 .iter()
@@ -3158,8 +3146,7 @@ mod portal_tests {
     }
 
     fn keyboard_connection_flow_selects_a_real_port_and_commits() {
-        let mut app = ImageEditorApp::new();
-        layout_at(&mut app, 1_280.0, 800.0);
+        let mut app = framed(ImageEditorApp::new(), 1_280.0, 800.0);
         app.advanced_graph = true;
         app.editor.select_only("source");
         let mut state = AutoCommit::new();
@@ -3258,8 +3245,7 @@ mod portal_tests {
     }
 
     fn advanced_graph_exposes_touch_sized_accessible_ports() {
-        let mut app = ImageEditorApp::new();
-        layout_at(&mut app, 1_280.0, 800.0);
+        let mut app = framed(ImageEditorApp::new(), 1_280.0, 800.0);
         app.advanced_graph = true;
         let access = app.accessibility().unwrap();
         let ports = access
@@ -3292,7 +3278,7 @@ mod portal_tests {
         for width in [360.0, 390.0] {
             let mut app = ImageEditorApp::new();
             app.more_open = true;
-            layout_at(&mut app, width, 640.0);
+            let app = framed(app, width, 640.0);
             let menu_targets = app
                 .toolbar
                 .iter()
