@@ -29,7 +29,7 @@ impl App {
         if encoded.type_id == HISTORY_OPERATION {
             return self.history_chrome_enabled || self.history.is_some();
         }
-        if encoded.type_id == crate::host_chrome::model::EDIT_OPERATION {
+        if encoded.type_id == crate::host_chrome::edit::EDIT_OPERATION {
             return true;
         }
         self.history_local_resources().iter().flat_map(|resource| &resource.actions).any(|action| matches!(&action.input, tilo_actions::ActionInput::Immediate(value) if value == encoded))
@@ -277,7 +277,7 @@ impl App {
         if encoded.type_id == HISTORY_OPERATION {
             return self.invoke_history_local(encoded);
         }
-        if encoded.type_id == crate::host_chrome::model::EDIT_OPERATION {
+        if encoded.type_id == crate::host_chrome::edit::EDIT_OPERATION {
             return self.execute_edit_operation(encoded);
         }
         let pane = self
