@@ -59,6 +59,21 @@ enum TargetPlatform {
     TiloOs,
     /// WebAssembly side module for the browser toolkit core (`wasm32`).
     Web,
+    /// Self-contained Windows executable (`x86_64` or `aarch64`).
+    Windows,
+    /// Self-contained macOS executable (`x86_64` or `aarch64`).
+    Macos,
+}
+
+impl TargetPlatform {
+    fn wire(self) -> &'static str {
+        match self {
+            Self::TiloOs => registry_types::TILO_OS_PLATFORM,
+            Self::Web => registry_types::WEB_PLATFORM,
+            Self::Windows => registry_types::WINDOWS_PLATFORM,
+            Self::Macos => registry_types::MACOS_PLATFORM,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -117,6 +132,34 @@ enum Command {
         /// peer or a registry.
         #[arg(long)]
         thin: bool,
+    },
+    /// Pack the Windows or macOS build of an app: one self-contained
+    /// executable with the toolkit linked in, shipped as `bin/<file name>`
+    /// under a signed `[target]`.
+    PackDesktop {
+        /// The authored manifest (TOML), the same one the Tilo OS build uses.
+        /// Its `[package].runtime` names the toolkit release linked in.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// The release executable.
+        #[arg(long)]
+        executable: PathBuf,
+        /// `windows` or `macos`.
+        #[arg(long, value_enum)]
+        platform: DesktopPlatform,
+        /// `x86_64` or `aarch64`.
+        #[arg(long)]
+        arch: String,
+        /// Feature level the executable was compiled for; defaults to the
+        /// architecture's baseline (`x86_64`, `aarch64`).
+        #[arg(long)]
+        isa: Option<String>,
+        /// Output .tapp path.
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        /// Identity JSON; a fresh keypair is generated when absent.
+        #[arg(long)]
+        identity: Option<PathBuf>,
     },
     /// Pack the web build of an app (or of the toolkit core) from its
     /// authored manifest and WebAssembly module. The module's
@@ -301,6 +344,23 @@ fn main() -> Result<()> {
             },
             thin,
         }),
+        Command::PackDesktop {
+            manifest,
+            executable,
+            platform,
+            arch,
+            isa,
+            output,
+            identity,
+        } => cmd_pack_desktop(&PackDesktopArgs {
+            manifest: &manifest,
+            executable: &executable,
+            platform,
+            isa: isa.as_deref().unwrap_or(&arch),
+            arch: &arch,
+            output: &output,
+            identity: identity.as_deref(),
+        }),
         Command::Thin { output, file } => cmd_thin(&file, &output),
         Command::Sign { identity, file } => cmd_sign(&identity, &file),
         Command::Verify { trusted_key, file } => cmd_verify(&trusted_key, &file),
@@ -455,6 +515,67 @@ fn cmd_pack_web(args: &PackWebArgs<'_>) -> Result<()> {
         packed.id(),
         target.runtime,
         packed.meta.payload_hashes().len()
+    );
+    Ok(())
+}
+
+/// The desktop systems `pack-desktop` builds for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum DesktopPlatform {
+    Windows,
+    Macos,
+}
+
+struct PackDesktopArgs<'a> {
+    manifest: &'a Path,
+    executable: &'a Path,
+    platform: DesktopPlatform,
+    arch: &'a str,
+    isa: &'a str,
+    output: &'a Path,
+    identity: Option<&'a Path>,
+}
+
+fn cmd_pack_desktop(args: &PackDesktopArgs<'_>) -> Result<()> {
+    let manifest_src = std::fs::read_to_string(args.manifest)
+        .with_context(|| format!("read manifest {}", args.manifest.display()))?;
+    let mut authored = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
+    let identity = match args.identity {
+        Some(path) => load_identity(path)?,
+        None => SigningIdentity::generate(),
+    };
+    authored.publisher.identity = format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
+    let name = args
+        .executable
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            anyhow!(
+                "executable path {} has no UTF-8 file name",
+                args.executable.display()
+            )
+        })?;
+    let module = format!("bin/{name}");
+    let platform = match args.platform {
+        DesktopPlatform::Windows => registry_types::WINDOWS_PLATFORM,
+        DesktopPlatform::Macos => registry_types::MACOS_PLATFORM,
+    };
+    let manifest = tilo_app_package::desktop::desktop_manifest(
+        &authored, platform, args.arch, args.isa, &module,
+    )?;
+
+    let staging = tempfile::tempdir().context("create staging directory")?;
+    std::fs::create_dir_all(staging.path().join("bin")).context("create bin directory")?;
+    std::fs::copy(args.executable, staging.path().join(&module))
+        .with_context(|| format!("stage executable {}", args.executable.display()))?;
+    let packed = pack(staging.path(), &manifest, &identity)
+        .map_err(|error| anyhow!("pack failed: {error}"))?;
+    write_tapp(args.output, &packed.meta, Some(&packed))?;
+    eprintln!(
+        "packed {platform}/{} {} linking {}",
+        args.arch,
+        packed.id(),
+        manifest.package.runtime.as_deref().unwrap_or_default()
     );
     Ok(())
 }
@@ -808,11 +929,10 @@ fn write_tapp(path: &Path, meta: &PackageMeta, payload: Option<&dyn BlobSource>)
     let archive_size = std::fs::metadata(&temp)
         .with_context(|| format!("stat temporary package {}", temp.display()))?
         .len();
-    if !tilo_app_package::tapp_size_allowed(meta.manifest.package.kind, archive_size) {
-        bail!(
-            "application tapp is {archive_size} bytes; limit is {} bytes",
-            tilo_app_package::MAX_APP_TAPP_BYTES
-        );
+    if let Some(limit) = tilo_app_package::app_size_limit(&meta.manifest)
+        && archive_size > limit
+    {
+        bail!("application tapp is {archive_size} bytes; limit is {limit} bytes");
     }
     std::fs::rename(&temp, path).with_context(|| format!("install package {}", path.display()))?;
     pending.0.clear();
@@ -916,7 +1036,9 @@ fn registry_entry_for(
     let publisher = SigningIdentity::from_signing_key(signer.clone());
     let binding = match platform {
         TargetPlatform::TiloOs => native_binding(tapp_bytes, &publisher, arch)?,
-        TargetPlatform::Web => web_binding(tapp_bytes, &publisher, arch)?,
+        TargetPlatform::Web | TargetPlatform::Windows | TargetPlatform::Macos => {
+            signed_target_binding(tapp_bytes, &publisher, platform, arch)?
+        }
     };
     let meta = app_registry::tapp::load(tapp_bytes).map_err(|e| anyhow!("load tapp: {e}"))?;
     let package = &meta.manifest.package;
@@ -986,7 +1108,9 @@ fn registry_entry_for(
                 TargetPlatform::TiloOs => {
                     format!("{display_name} is a native Tilo OS application.").into()
                 }
-                TargetPlatform::Web => format!("{display_name} is a Tilo application.").into(),
+                TargetPlatform::Web | TargetPlatform::Windows | TargetPlatform::Macos => {
+                    format!("{display_name} is a Tilo application.").into()
+                }
             },
             |entry| entry.description.clone(),
         ),
@@ -994,6 +1118,8 @@ fn registry_entry_for(
             || match platform {
                 TargetPlatform::TiloOs => format!("{display_name} for Tilo OS").into(),
                 TargetPlatform::Web => format!("{display_name} on Tilo").into(),
+                TargetPlatform::Windows => format!("{display_name} for Windows").into(),
+                TargetPlatform::Macos => format!("{display_name} for macOS").into(),
             },
             |entry| entry.tagline.clone(),
         ),
@@ -1065,14 +1191,18 @@ fn native_binding(
     })
 }
 
-/// A web build binds the `[target]` its signed manifest records; the tapp
-/// passes the same verification a native one does before anything is signed.
-fn web_binding(
+/// A web, Windows or macOS build binds the `[target]` its signed manifest
+/// records; the tapp passes the same verification a native one does before
+/// anything is signed.
+fn signed_target_binding(
     tapp_bytes: &[u8],
     publisher: &SigningIdentity,
+    platform: TargetPlatform,
     arch: Option<&str>,
 ) -> Result<ArtifactBinding> {
-    if arch.is_some_and(|arch| arch != registry_types::WASM32_ARCHITECTURE) {
+    if platform == TargetPlatform::Web
+        && arch.is_some_and(|arch| arch != registry_types::WASM32_ARCHITECTURE)
+    {
         bail!("web builds target --arch wasm32");
     }
     let meta = app_registry::tapp::load(tapp_bytes).map_err(|e| anyhow!("load tapp: {e}"))?;
@@ -1080,26 +1210,40 @@ fn web_binding(
         .map_err(|error| anyhow!("verify tapp for registry entry: {error}"))?;
     app_registry::tapp::verify_bytes(tapp_bytes, meta.package_id, publisher.public_key_bytes())
         .map_err(|error| anyhow!("verify tapp for registry entry: {error}"))?;
-    if !tilo_app_package::tapp_size_allowed(meta.manifest.package.kind, tapp_bytes.len() as u64) {
+    if let Some(limit) = tilo_app_package::app_size_limit(&meta.manifest)
+        && tapp_bytes.len() as u64 > limit
+    {
         bail!(
-            "application .tapp is {} bytes; limit is {} bytes",
-            tapp_bytes.len(),
-            tilo_app_package::MAX_APP_TAPP_BYTES
+            "application .tapp is {} bytes; limit is {limit} bytes",
+            tapp_bytes.len()
         );
     }
-    let target = meta
-        .manifest
-        .target
-        .as_ref()
-        .ok_or_else(|| anyhow!("the tapp is not a web build; pack it with `pack-web`"))?;
+    let target = meta.manifest.target.as_ref().ok_or_else(|| {
+        anyhow!(
+            "the tapp has no [target]; it is a Tilo OS build, not a {} build",
+            platform.wire()
+        )
+    })?;
     let target = registry_types::RegistryTarget {
         platform: target.platform.clone(),
         architecture: target.architecture.clone(),
         isa: target.isa.clone(),
         runtime: Some(target.runtime.clone()),
     };
-    if !target.is_web() {
-        bail!("the tapp's target is not a web target");
+    if target.platform != platform.wire() {
+        bail!(
+            "the tapp's target is {}, not {}",
+            target.platform,
+            platform.wire()
+        );
+    }
+    if let Some(arch) = arch
+        && arch != target.architecture
+    {
+        bail!(
+            "the tapp was built for {}, not --arch {arch}",
+            target.architecture
+        );
     }
     Ok(ArtifactBinding {
         package_id: meta.package_id,

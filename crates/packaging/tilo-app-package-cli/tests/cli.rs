@@ -589,3 +589,76 @@ fn cli_packs_a_web_build_and_emits_its_registry_request() {
         .unwrap();
     assert!(!native_as_web.status.success());
 }
+
+#[test]
+fn cli_packs_a_macos_build_and_emits_its_registry_request() {
+    let workdir = tempfile::tempdir().unwrap();
+    let path = |name: &str| workdir.path().join(name).to_str().unwrap().to_string();
+    run(&["keygen", "--out", &path("publisher.json")]);
+    std::fs::write(
+        path("manifest.toml"),
+        sample_manifest_with(&"00".repeat(32)),
+    )
+    .unwrap();
+    std::fs::write(path("hello"), b"\xcf\xfa\xed\xfe").unwrap();
+
+    run(&[
+        "pack-desktop",
+        "--manifest",
+        &path("manifest.toml"),
+        "--executable",
+        &path("hello"),
+        "--platform",
+        "macos",
+        "--arch",
+        "aarch64",
+        "--identity",
+        &path("publisher.json"),
+        "-o",
+        &path("hello-macos.tapp"),
+    ]);
+    let inspected = run(&["inspect", &path("hello-macos.tapp")]);
+    let inspected = String::from_utf8_lossy(&inspected.stdout);
+    assert!(inspected.contains("platform = \"macos\""), "{inspected}");
+    assert!(inspected.contains("module = \"bin/hello\""), "{inspected}");
+    run(&["verify", &path("hello-macos.tapp")]);
+
+    let entry = |platform: &str, arch: &str| {
+        Command::new(bin_path())
+            .args([
+                "entry",
+                "--url",
+                "https://apps.tilo.so/artifacts/hello-macos.tapp",
+                "--identity",
+                &path("publisher.json"),
+                "--platform",
+                platform,
+                "--arch",
+                arch,
+                "--action",
+                "add",
+                &path("hello-macos.tapp"),
+            ])
+            .output()
+            .unwrap()
+    };
+    let emitted = entry("macos", "aarch64");
+    assert!(
+        emitted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&emitted.stderr)
+    );
+    let request: registry_types::EntryChangeRequest =
+        serde_json::from_slice(&emitted.stdout).unwrap();
+    let key = hex::decode(&request.entry.publisher_pubkey_hex).unwrap();
+    registry_types::verify_change_request(&request, &[key.try_into().unwrap()]).unwrap();
+    let target = &request.entry.versions[0].target;
+    assert_eq!(target.platform, registry_types::MACOS_PLATFORM);
+    assert_eq!(target.architecture, "aarch64");
+    assert_eq!(target.isa, "aarch64");
+    assert_eq!(target.runtime.as_deref(), Some("tilo-runtime/2025.06"));
+
+    assert!(!entry("windows", "aarch64").status.success());
+    assert!(!entry("macos", "x86_64").status.success());
+    assert!(!entry("tilo-os", "aarch64").status.success());
+}

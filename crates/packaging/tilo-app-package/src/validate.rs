@@ -255,6 +255,9 @@ fn validate_target(m: &Manifest) -> Result<(), ManifestError> {
     registry_target
         .validate()
         .map_err(|error| ManifestError::BadTarget(error.to_string()))?;
+    if registry_types::DESKTOP_PLATFORMS.contains(&target.platform.as_str()) {
+        return validate_desktop_target(m, target);
+    }
     let runtime = registry_target.web_runtime().ok_or_else(|| {
         ManifestError::BadTarget(format!(
             "platform {:?} is native; native builds declare `[package.isa]` instead",
@@ -296,6 +299,41 @@ fn validate_target(m: &Manifest) -> Result<(), ManifestError> {
         Kind::Service | Kind::FormatProvider | Kind::Plugin => {
             return Err(ManifestError::TargetKindUnsupported);
         }
+    }
+    Ok(())
+}
+
+/// A Windows or macOS app: `module` is the executable the entrypoint names,
+/// and `runtime` is the toolkit release linked into it, as declared.
+fn validate_desktop_target(
+    m: &Manifest,
+    target: &crate::manifest::Target,
+) -> Result<(), ManifestError> {
+    if !crate::package::is_safe_path(&target.module) || target.module.len() > 255 {
+        return Err(ManifestError::BadTargetModule(target.module.clone()));
+    }
+    if m.package.isa.x86_64.is_some() || m.package.isa.aarch64.is_some() {
+        return Err(ManifestError::TargetWithNativeIsa);
+    }
+    if m.package.kind != Kind::App {
+        return Err(ManifestError::TargetKindUnsupported);
+    }
+    let declared = m.package.runtime.clone().unwrap_or_default();
+    if declared.is_empty() || declared != target.runtime {
+        return Err(ManifestError::TargetRuntimeMismatch {
+            declared,
+            target: target.runtime.clone(),
+        });
+    }
+    let entry = m
+        .entrypoint
+        .as_ref()
+        .and_then(|entry| entry.gui_bin_path())
+        .and_then(|path| path.to_str());
+    if entry != Some(target.module.as_str()) {
+        return Err(ManifestError::TargetEntrypointMismatch(
+            target.module.clone(),
+        ));
     }
     Ok(())
 }
