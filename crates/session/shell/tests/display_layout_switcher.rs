@@ -44,6 +44,7 @@ fn output(connector: &str, builtin: bool, modes: &[OutputMode]) -> DisplayOutput
             monitor: None,
         },
         current_mode: modes[0],
+        scale: 1.0,
         builtin,
         sink_hdr: false,
         hdr_unavailable_reason: None,
