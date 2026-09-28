@@ -387,6 +387,11 @@ impl Contexts {
             }
             _ => HostContext::prepare(definition, inputs, target)?,
         };
+        // A local desktop's records are the page's, which its other mounts
+        // of the profile and device edit too.
+        if self.handle.local.is_some() {
+            context.write_as_author();
+        }
         if let Some(content) = &self.content {
             context.provide_content(content.clone());
         }

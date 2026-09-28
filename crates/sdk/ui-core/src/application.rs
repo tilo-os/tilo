@@ -77,6 +77,8 @@ pub struct HostContext {
     permissions: Rc<RefCell<PermissionContext>>,
     author: UserId,
     action_context: tilo_actions::ActionContext,
+    /// See [`Self::write_as_author`].
+    writes_as_author: bool,
     wake_scope: WakeScope,
     construction: Rc<()>,
     lifetime_id: uuid::Uuid,
@@ -246,6 +248,7 @@ impl HostContext {
             permissions,
             author,
             action_context,
+            writes_as_author: false,
             wake_scope: WakeScope::new(),
             construction: Rc::new(()),
             lifetime_id: uuid::Uuid::new_v4(),
@@ -257,6 +260,16 @@ impl HostContext {
             content: None,
             open_file: None,
         })
+    }
+    /// Commit this instance's edits to its record under an actor of its
+    /// author's own ([`crate::record::author_writer`]) rather than the
+    /// record's writer, which every instance sharing the record's store
+    /// writes as. For a host that mounts several authors on one store (a
+    /// page's mounts of one profile and device), so history can tell whose
+    /// edit each change is. The record's writer, which the store persists,
+    /// is unchanged, as is everything written outside the instance.
+    pub fn write_as_author(&mut self) {
+        self.writes_as_author = true;
     }
     /// Lend the component the host's content store for this storage scope:
     /// opaque bytes addressed by hash that outlive the component and that
@@ -357,6 +370,7 @@ impl HostContext {
             permissions: self.permissions.clone(),
             author: self.author.clone(),
             operation_context: self.action_context.clone(),
+            writes_as_author: self.writes_as_author,
         }
     }
     fn envelope(&self, view: View, application: Option<ApplicationLocalView>) -> SavedInstanceView {

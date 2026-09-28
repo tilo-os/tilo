@@ -4738,6 +4738,7 @@ fn component_control_root(
             )),
             author: crate::permissions::UserId("component-control-author".into()),
             operation_context: tilo_actions::ActionContext::default(),
+            writes_as_author: false,
         };
         let live = ComponentControlOwner::new(
             id,
