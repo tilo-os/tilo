@@ -2011,18 +2011,15 @@ COPY --chmod=0755 \
     os/usr/libexec/tilo-session \
     os/usr/libexec/tilo-security-audit \
     /usr/libexec/
-# User units: the graphical-session target; the user unit that read-only
-# verifies the identity after tilo-session's first-login ceremony, `--global`
-# enabled further down (`systemctl --global enable` resolves the unit file at
+# User units: the graphical-session target and the opt-in peer-sync user
+# service. (`systemctl --global enable` further down resolves each unit file at
 # build time, so a unit that was never copied in fails the build outright with
-# "does not exist" — which is what a unit whose ExecStart is wrong looks like
-# too); and the opt-in peer-sync user service. Peer sync is NOT enabled by
+# "does not exist".) Peer sync is NOT enabled by
 # default — users opt in via `systemctl --user enable shell-peer-sync` or by
 # picking the "Tilo (peer-sync)" session entry at the greetd prompt. See
 # /usr/share/doc/tilo/peer-sync.md for the privacy / discovery trade-off.
 COPY \
     os/usr/lib/systemd/user/tilo-graphical-session.target \
-    os/usr/lib/systemd/user/tilo-identity.service \
     os/usr/lib/systemd/user/shell-peer-sync.service \
     /usr/lib/systemd/user/
 
@@ -2385,7 +2382,6 @@ RUN systemctl enable greetd.service && \
     systemctl enable tilo-system-extension-dispatcher.socket && \
     systemctl enable tilo-system-extension-boot-pack-status.timer && \
     systemctl enable tilo-system-extension-boot-pack-stage.path && \
-    systemctl --global enable tilo-identity.service && \
     systemctl --global enable tilo-models.socket && \
     systemctl --global enable tilo-model-gateway.socket && \
     systemctl --global enable tilo-app-host.socket && \
