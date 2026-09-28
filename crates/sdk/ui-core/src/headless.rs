@@ -4628,13 +4628,16 @@ impl FrameHarness {
             history.route_event(
                 self.root.as_mut(),
                 event,
-                self.input_scale,
-                &self.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                &mut handled,
-                &mut focus_target,
-                &self.taffy,
+                &mut EventCtx {
+                    scale_factor: self.input_scale,
+                    modifiers: &self.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: self.child_node,
+                    taffy: &self.taffy,
+                },
             );
         } else if !history_handled && self.history_layout.is_none_or(|layout| layout.app_visible) {
             self.root.handle_event(

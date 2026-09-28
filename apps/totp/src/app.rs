@@ -1376,16 +1376,7 @@ impl Widget for AuthenticatorApp {
 
         // Modal owns all input while open.
         if self.add_panel.is_open() {
-            self.add_panel.handle_event(
-                event,
-                ctx.scale_factor,
-                ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                ctx.handled,
-                ctx.node_id,
-                ctx.taffy,
-            );
+            self.add_panel.handle_event(event, ctx);
             if let Some(ev) = self.add_panel.take_event() {
                 self.apply_add_panel_event(ev, ctx.state);
             }

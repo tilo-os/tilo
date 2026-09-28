@@ -11,7 +11,7 @@ use crate::{
     theme::Theme,
     widget::{ActivityTimeline, Button, Column, Row, TaffyTreeExt, Text, TextInput, Widget},
 };
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
+use automerge::{AutoCommit, transaction::Transactable};
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},

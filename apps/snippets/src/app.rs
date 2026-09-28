@@ -1777,13 +1777,16 @@ impl SnippetsApp {
                 if self.search_input.is_focused()
                     && self.route_search_event(
                         event,
-                        ctx.scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        focus_target,
-                        node_id,
-                        taffy,
+                        &mut ui::widget::EventCtx {
+                            scale_factor: ctx.scale_factor,
+                            modifiers: &modifiers,
+                            state,
+                            path,
+                            handled: &mut *ctx.handled,
+                            focus_target,
+                            node_id,
+                            taffy,
+                        },
                     ) =>
             {
                 *ctx.handled = true;
@@ -1840,16 +1843,7 @@ impl SnippetsApp {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if matches!(event, WindowEvent::CursorMoved { .. }) {
-            let _ = self.route_search_event(
-                event,
-                ctx.scale_factor,
-                *ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                ctx.focus_target,
-                ctx.node_id,
-                ctx.taffy,
-            );
+            let _ = self.route_search_event(event, ctx);
         }
         if matches!(
             event,
@@ -1863,16 +1857,7 @@ impl SnippetsApp {
         }
         matches!(event, WindowEvent::MouseInput { .. })
             && (self.search_input.is_focused() || self.search_rect.contains(self.last_mouse))
-            && self.route_search_event(
-                event,
-                ctx.scale_factor,
-                *ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                ctx.focus_target,
-                ctx.node_id,
-                ctx.taffy,
-            )
+            && self.route_search_event(event, ctx)
     }
 
     fn handle_left_click(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -1884,16 +1869,7 @@ impl SnippetsApp {
             let search_click = matches!(action, Action::FocusSearch);
             self.apply(action, ctx.state);
             if search_click {
-                let _ = self.route_search_event(
-                    event,
-                    ctx.scale_factor,
-                    *ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.focus_target,
-                    ctx.node_id,
-                    ctx.taffy,
-                );
+                let _ = self.route_search_event(event, ctx);
             }
             *ctx.handled = true;
         } else {
@@ -1950,16 +1926,7 @@ impl SnippetsApp {
                     *ctx.handled = true;
                 }
                 _ => {
-                    if self.route_search_event(
-                        event,
-                        ctx.scale_factor,
-                        *ctx.modifiers,
-                        ctx.state,
-                        ctx.path,
-                        ctx.focus_target,
-                        ctx.node_id,
-                        ctx.taffy,
-                    ) {
+                    if self.route_search_event(event, ctx) {
                         *ctx.handled = true;
                     }
                 }
@@ -1986,33 +1953,26 @@ impl SnippetsApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event in this file — bundling it into a context struct would ripple into the shared ui widget trait, out of scope here"
-    )]
+    /// Hand `event` to the search field; `true` when the field used it. The
+    /// field's own handled flag stays local: the caller decides what the
+    /// event means for the rest of the app.
     fn route_search_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let mut input_handled = false;
         self.search_input.handle_event(
             event,
             &mut ui::widget::EventCtx {
-                scale_factor,
-                modifiers: &modifiers,
-                state,
-                path,
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state: &mut *ctx.state,
+                path: ctx.path,
                 handled: &mut input_handled,
-                focus_target,
-                node_id,
-                taffy,
+                focus_target: &mut *ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
             },
         );
         if self.search_input.take_dirty().is_some() {
@@ -3097,15 +3057,19 @@ mod tests {
             let mut focus_target = None;
 
             app.search_input.set_focus(true);
+            let mut handled = false;
             assert!(app.route_search_event(
                 &WindowEvent::Ime(winit::event::Ime::Commit("language:rust".into())),
-                1.0,
-                winit::event::Modifiers::default(),
-                &mut doc,
-                &automerge::ROOT,
-                &mut focus_target,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut doc,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             ));
 
             assert!(app.visible_count_for_test() < visible_before);

@@ -2324,17 +2324,7 @@ impl Widget for TileHost {
         if let Some(history) = &mut self.history {
             history.observe_pointer(event, ctx.scale_factor);
             if history.controls_event(event, ctx.scale_factor) {
-                history.route_event(
-                    app.as_mut(),
-                    event,
-                    ctx.scale_factor,
-                    ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.handled,
-                    ctx.focus_target,
-                    ctx.taffy,
-                );
+                history.route_event(app.as_mut(), event, ctx);
                 return;
             }
             if !history.live_interactive() {

@@ -9792,24 +9792,12 @@ impl ShellOverlayHost {
     fn handle_projection_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let open = self.overlay_flags().projection;
-        let outcome = self.projection_overlay.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            focus_target,
-            self.last_cursor,
-            self.rect,
-            open,
-        );
+        let outcome =
+            self.projection_overlay
+                .handle_event(event, ctx, self.last_cursor, self.rect, open);
         if outcome.close_requested
             && let Some(chrome) = self.chrome.as_ref()
         {
@@ -9879,16 +9867,7 @@ impl ShellOverlayHost {
         // Runs before everything and absorbs every event: genuinely
         // modal (a D-Bus method in another process is parked on the
         // answer), and a typed filename shares characters with chords.
-        if self.file_picker_overlay.handle_event(
-            self.rect,
-            event,
-            ctx.scale_factor,
-            *ctx.modifiers,
-            ctx.state,
-            ctx.path,
-            ctx.handled,
-            ctx.focus_target,
-        ) {
+        if self.file_picker_overlay.handle_event(self.rect, event, ctx) {
             return true;
         }
 
@@ -9903,14 +9882,7 @@ impl ShellOverlayHost {
             return true;
         }
 
-        if self.handle_projection_event(
-            event,
-            ctx.scale_factor,
-            *ctx.modifiers,
-            ctx.state,
-            ctx.path,
-            ctx.focus_target,
-        ) {
+        if self.handle_projection_event(event, ctx) {
             *ctx.handled = true;
             return true;
         }
@@ -16189,13 +16161,16 @@ impl Widget for ShellOverlayHost {
         if self.onboarding.is_none()
             && self.pairing.handle_event(
                 event,
-                ctx.scale_factor,
-                ctx.modifiers,
-                state,
-                ctx.path,
-                ctx.handled,
-                ctx.focus_target,
-                ctx.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state,
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             )
         {
             if let Some(chrome) = self.chrome.as_ref() {
