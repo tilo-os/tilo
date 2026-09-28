@@ -1689,7 +1689,8 @@ pub(crate) fn execute_resource_operation(
         if let Some(envelope) = applied {
             // Reuse the executor's actual admission frontier: this adds no
             // document loan, commit, replay behavior, or cross-owner traversal.
-            widget.document_action_applied(
+            crate::history_mode::capability::document_action_applied(
+                widget,
                 &envelope.action,
                 &envelope.base_change_hashes(),
                 doc,

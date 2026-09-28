@@ -226,7 +226,9 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
         label: "report.txt".into(),
         transport: transport.clone(),
     }));
-    let registration = root.history_registration().unwrap().unwrap();
+    let registration = ui::history_mode::capability::history_registration(&root)
+        .unwrap()
+        .unwrap();
     let mut state = ui::State::new();
     state
         .doc
@@ -371,7 +373,9 @@ fn framework_history_production_registration_and_session_recovery() {
     // --- phase: framework_history_production_registration_rejects_foreign_or_replaced_source_witness ---
     {
         let root = FileExplorerWidget::new();
-        let registration = root.history_registration().unwrap().unwrap();
+        let registration = ui::history_mode::capability::history_registration(&root)
+            .unwrap()
+            .unwrap();
         let foreign = FileExplorerWidget::new();
         assert!(matches!(
             ui::headless::FrameHarness::from_managed_root(
@@ -382,7 +386,9 @@ fn framework_history_production_registration_and_session_recovery() {
             Err(ui::history_mode::HistoryRegistrationError::UnsupportedOwner)
         ));
         let mut root = FileExplorerWidget::new();
-        let registration = root.history_registration().unwrap().unwrap();
+        let registration = ui::history_mode::capability::history_registration(&root)
+            .unwrap()
+            .unwrap();
         root.framework_history = ui::history_mode::checked_files::FileHistorySource::default();
         assert!(matches!(
             ui::headless::FrameHarness::from_managed_root(
@@ -532,7 +538,9 @@ fn framework_history_production_registration_and_session_recovery() {
         let root = FileExplorerWidget::new();
         let source = root.framework_history.clone();
         source.set_target(Some(target(&a, record_a, "A")));
-        let registration = root.history_registration().unwrap().unwrap();
+        let registration = ui::history_mode::capability::history_registration(&root)
+            .unwrap()
+            .unwrap();
         let mut driver = ui::headless::FrameHarness::from_managed_root(
             ui::State::new(),
             ManagedRoot::new(Box::new(root), registration),

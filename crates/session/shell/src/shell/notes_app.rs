@@ -305,11 +305,10 @@ impl CompleteContentProvider for NotesApp {
 }
 
 impl Widget for NotesApp {
-    ui::provides!(dyn ui::widget::CompleteContentProvider);
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&HISTORY)
-    }
+    ui::provides!(
+        dyn ui::widget::CompleteContentProvider,
+        dyn ui::history_mode::capability::DocumentHistory
+    );
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
@@ -504,6 +503,12 @@ impl Widget for NotesApp {
             self.selection = Selection::collapsed(pos);
             self.clamp_cursor();
         }
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for NotesApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&HISTORY)
     }
 }
 
@@ -1342,7 +1347,7 @@ mod framework_history_tests {
         tile.bind_record(records.clone(), checkout.clone());
         tile.bind_record(records.clone(), checkout.clone());
         let mut surfaces = 0;
-        tile.visit_framework_history(&mut |_, _| surfaces += 1);
+        ui::history_mode::capability::visit_framework_history(&tile, &mut |_, _| surfaces += 1);
         assert_eq!(surfaces, 1);
         let original = records
             .read(&checkout.id, |doc| doc.base_heads()[0])

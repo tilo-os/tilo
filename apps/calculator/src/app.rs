@@ -1220,7 +1220,10 @@ impl CalculatorApp {
 }
 
 impl Widget for CalculatorApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory
+    );
 
     fn is_focusable(&self) -> bool {
         true
@@ -1249,10 +1252,6 @@ impl Widget for CalculatorApp {
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         self.host_focused
             .then_some(winit::window::ImePurpose::Normal)
-    }
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -1899,6 +1898,12 @@ impl Widget for CalculatorApp {
     /// change.
     fn is_layout_dirty(&self) -> bool {
         self.area == Rect::ZERO
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for CalculatorApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 
