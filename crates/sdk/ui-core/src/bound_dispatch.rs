@@ -464,6 +464,9 @@ impl BoundPublication {
     }
 }
 
+/// Only the App host (not built for the browser) validates a mounted
+/// component's surface.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn validate_bound_resources(
     root: &mut dyn Widget,
     binding: &CallbackBinding,
