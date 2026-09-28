@@ -580,7 +580,7 @@ pub struct FrameHarness {
     /// re-solve in place. False until the first successful build and after
     /// every path that discards the raw maps, so the next frame rebuilds.
     layout_built: bool,
-    /// Test override for the `QUICK_UI_FULL_RELAYOUT` safety valve: `Some`
+    /// Test override for the `TILO_UI_FULL_RELAYOUT` safety valve: `Some`
     /// wins over the environment.
     full_relayout_override: Option<bool>,
     /// What the most recent completed relayout did; see [`RelayoutStats`].
@@ -626,14 +626,14 @@ pub struct RelayoutStats {
     pub marked_leaves: usize,
 }
 
-/// `QUICK_UI_FULL_RELAYOUT=1` forces the headless host to rebuild its layout
+/// `TILO_UI_FULL_RELAYOUT=1` forces the headless host to rebuild its layout
 /// tree on every frame, as it did before retained relayout — a safety valve if
 /// a widget ever changes size without reporting `is_layout_dirty`, mirroring
-/// `App`'s `QUICK_UI_NO_SCROLL_OPT`.
+/// `App`'s `TILO_UI_NO_SCROLL_OPT`.
 fn full_relayout_forced() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("QUICK_UI_FULL_RELAYOUT").is_ok_and(|s| !s.is_empty()))
+    *FLAG.get_or_init(|| crate::env::var("TILO_UI_FULL_RELAYOUT").is_ok_and(|s| !s.is_empty()))
 }
 
 /// Backwards-compatible name for the input-driving use of [`FrameHarness`].
@@ -2354,7 +2354,7 @@ impl FrameHarness {
         // reports structure dirty, a history owner was invalidated, the
         // viewport moved, or nothing has been built yet); re-solve sizes in
         // place only when some widget reports it needs measuring; otherwise
-        // just re-apply positions. `QUICK_UI_FULL_RELAYOUT` forces the
+        // just re-apply positions. `TILO_UI_FULL_RELAYOUT` forces the
         // rebuild path on every frame.
         let history_width = f64::from(self.viewport.0);
         let structure = self.full_relayout_forced_now()
@@ -6224,14 +6224,14 @@ impl FrameHarness {
     // -- Retained relayout diagnostics -------------------------------------
 
     /// Whether this frame must rebuild the layout tree regardless of what the
-    /// widgets report: the test override first, then `QUICK_UI_FULL_RELAYOUT`.
+    /// widgets report: the test override first, then `TILO_UI_FULL_RELAYOUT`.
     fn full_relayout_forced_now(&self) -> bool {
         self.full_relayout_override
             .unwrap_or_else(full_relayout_forced)
     }
 
     /// Force (`Some(true)`) or forbid (`Some(false)`) the full-rebuild path
-    /// for every following frame, overriding `QUICK_UI_FULL_RELAYOUT`; `None`
+    /// for every following frame, overriding `TILO_UI_FULL_RELAYOUT`; `None`
     /// returns to the environment's choice. Benchmarks use this to compare
     /// both paths inside one process.
     pub fn set_full_relayout(&mut self, forced: Option<bool>) {

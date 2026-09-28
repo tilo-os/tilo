@@ -5,6 +5,9 @@ copy, and performance-harness controls. It covers the retained UI, vendored
 Vello, DRM bridge, and presentation loop, not unrelated application settings or
 every graphics-driver environment variable. Defaults below mean **unset**.
 
+The toolkit's knobs are `TILO_UI_*` (read through `ui::env`). Their former
+`QUICK_UI_*` names still work and print a one-time deprecation warning.
+
 Use release binaries, record the exact commit, binary hash, adapter/driver,
 dimensions, environment, and workload, and change one variable at a time.
 Requested does not mean applied: unsupported paths fall back, and the harnesses
@@ -33,7 +36,7 @@ Where code uses `env::var`, a non-Unicode value is treated as unavailable;
 Set controls **before launching the process**. Renderer/device options are
 latched at construction; application fast-path switches use `OnceLock`, and
 benchmarks mostly read their configuration at startup. They are not live
-settings. `QUICK_UI_DASH_DAMAGE` is an exception: the harness checks it per
+settings. `TILO_UI_DASH_DAMAGE` is an exception: the harness checks it per
 redraw. Hidden Rust setters used by differential tests can override renderer
 settings; they are not additional environment flags.
 
@@ -44,7 +47,7 @@ A/B or troubleshooting control, not an optimization recommendation.
 
 | Variable | Default / values | Effect and limits |
 | --- | --- | --- |
-| `QUICK_UI_DAMAGE_GEOMETRIC` | Default-on | Reuses geometrically sized damage-target allocations in offscreen and window rendering. Disabling changes capacity policy, not native output resolution. |
+| `TILO_UI_DAMAGE_GEOMETRIC` | Default-on | Reuses geometrically sized damage-target allocations in offscreen and window rendering. Disabling changes capacity policy, not native output resolution. |
 | `VELLO_COMPUTE_BATCH` | `2`; `0`, `1`, `2` | `0`: separate dispatches; `1`: conservative compute batching; `2`: also batches across deferred frees. Unset/invalid values select `2`. CPU dispatches break GPU batches; profiler builds preserve their query boundaries. |
 | `VELLO_SPARSE_FINE` | Default-on | Shades damaged native tiles with Area antialiasing on the GPU path. Full damage, unsupported modes, or invalid retained state use full rendering. Does not itself enable sparse coarse dispatch. |
 | `VELLO_CPU_PATHTAG` | Default-on | Runs the supported path-tag prefix work on the CPU, avoiding small GPU dispatches. This is selective CPU work, not a full software renderer. |
@@ -70,7 +73,7 @@ plan. Sparse shader experiments below require the supported GPU/Area path.
 
 | Variable | Values | Effect / dependencies |
 | --- | --- | --- |
-| `QUICK_UI_VELLO_CPU` | Present | Selects Vello's CPU coarse pipeline in UI renderer construction; this does not remove every GPU operation. Disables the GPU-only sparse/metadata experiments. **`=0` still selects CPU mode.** |
+| `TILO_UI_VELLO_CPU` | Present | Selects Vello's CPU coarse pipeline in UI renderer construction; this does not remove every GPU operation. Disables the GPU-only sparse/metadata experiments. **`=0` still selects CPU mode.** |
 | `VELLO_SPARSE_COARSE` | Exact-1 | Forces sparse coarse dispatch. `1` selects legacy-mask mode unless active bins are also `1`. **Any explicit non-`1` value forces dense coarse and overrides AUTO.** |
 | `VELLO_SPARSE_COARSE_ACTIVE_BINS` | Exact-1 | With `VELLO_SPARSE_COARSE=1`, dispatches native active-bin lists. Alone it does not select a coarse policy. |
 | `VELLO_SPARSE_COARSE_AUTO` | Exact-1 | When `VELLO_SPARSE_COARSE` is **unset**, chooses the adaptive coarse policy. The policy may choose dense work; it is not an unconditional sparse switch. |
@@ -114,15 +117,15 @@ time. Readback payload counters exclude row-padding holes.
 
 | Variable | Default / values | Effect |
 | --- | --- | --- |
-| `QUICK_UI_NO_SCROLL_OPT` | Nonempty, off | Disables the scroll-reposition fast path; forces full layout solving on layout-dirty frames. Cached at first use. |
-| `QUICK_UI_NO_SPLIT_CACHE` | Nonempty, off | Disables `NavSplit` scene caching for troubleshooting. Cached at first use. |
-| `QUICK_UI_PERF` | Nonempty, off | Enables application performance logging. Cached at first use. |
-| `QUICK_UI_PRESENT` | Present, off | Render-thread encode/acquire/present timing logs; useful for costs absent from offscreen benchmarks. Latched when the render thread starts. |
+| `TILO_UI_NO_SCROLL_OPT` | Nonempty, off | Disables the scroll-reposition fast path; forces full layout solving on layout-dirty frames. Cached at first use. |
+| `TILO_UI_NO_SPLIT_CACHE` | Nonempty, off | Disables `NavSplit` scene caching for troubleshooting. Cached at first use. |
+| `TILO_UI_PERF` | Nonempty, off | Enables application performance logging. Cached at first use. |
+| `TILO_UI_PRESENT` | Present, off | Render-thread encode/acquire/present timing logs; useful for costs absent from offscreen benchmarks. Latched when the render thread starts. |
 | `TILO_PROFILE` | Nonempty, off | Enables the in-app profiling HUD, including in release builds. The HUD itself adds UI work. |
 | `TILO_PROFILE_OUT` | Nonempty path, unset | Enables per-frame profiling without requiring the HUD. Appends CSV for `.csv`, JSON-lines otherwise. Choose a dedicated output path. |
 | `TILO_WEBVIEW_PROFILE` | Unset/empty/`0`: off | Other nonempty strings enable periodic WebView timing summaries; exact `trace` adds initial frame/draw detail. Includes SHM swizzle and input-to-paint diagnostics; latched at first use. |
 
-`QUICK_UI_DEBUG` is a presence-enabled **debug-build-only** UI debug mode, not
+`TILO_UI_DEBUG` is a presence-enabled **debug-build-only** UI debug mode, not
 a release optimization. `TILO_A11Y_REDUCE_MOTION` / `TILO_REDUCE_MOTION` are
 accessibility inputs: trimmed nonempty values other than `0` or
 case-insensitive `false` request reduced motion. Record the effective theme
@@ -162,19 +165,19 @@ harness-only; none sets a production frame-rate limit.
 
 | Variable | Default / values | Workload or report |
 | --- | --- | --- |
-| `QUICK_UI_DASH_WIDTH` | `1800`; positive u32 | Native output width in pixels. Invalid/zero falls back. Set `3840` for UHD 4K. |
-| `QUICK_UI_DASH_HEIGHT` | `1200`; positive u32 | Native output height in pixels. Invalid/zero falls back. Set `2160` for UHD 4K. |
-| `QUICK_UI_DASH_ITERS` | `500`; usize | Measured event iterations. Invalid falls back; zero parses but is not a valid performance sample. Use `1000` for redraws or `1000000` for the idle-event test. |
-| `QUICK_UI_DASH_STATIC` | Present, off | Omits animated spinners/indeterminate bars. Alone it does not guarantee no redraw. |
-| `QUICK_UI_DASH_FROZEN` | Present, off | Identical stationary cursor events. Combine with STATIC for the no-redraw workload; do not combine with SCROLL. |
-| `QUICK_UI_DASH_SCROLL` | Present, off | Wheel event workload; tests scroll/layout/cache behavior. |
-| `QUICK_UI_DASH_DAMAGE` | Present, off | Prints damage rectangles on each redraw; contaminates timing with console I/O. |
-| `QUICK_UI_DASH_RENDER_PROFILE` | Nonempty, off | Host render-phase breakdown. Also automatically enabled by GPU timestamp mode. |
-| `QUICK_UI_DASH_FRAME_BREAKDOWN` | Nonempty, off | Prints detailed frame breakdown. |
-| `QUICK_UI_DASH_ALLOC_PROFILE` | Nonempty, off | Counts allocations in the measured loop after harness storage preparation. |
-| `QUICK_UI_DASH_ALLOC_BREAKDOWN` | Nonempty, off | Enables allocation counting plus phase attribution; also enabled automatically by either per-redraw allocation budget. |
-| `QUICK_UI_DASH_VERIFY` | Exact-1, off | Retained-versus-full native pixel preflight. Adds reference textures/readbacks, suppresses performance reporting, rejects all acceptance budgets and the four profile-report flags above. Cannot combine with GPU timestamp mode. |
-| `QUICK_UI_DASH_VERIFY_FRAMES` | `40`; integer `20..=100` | Number of frames required for verification; invalid values fail with exit 2. Used in verification mode; supply enough iterations/redraws (normally the same number). |
+| `TILO_UI_DASH_WIDTH` | `1800`; positive u32 | Native output width in pixels. Invalid/zero falls back. Set `3840` for UHD 4K. |
+| `TILO_UI_DASH_HEIGHT` | `1200`; positive u32 | Native output height in pixels. Invalid/zero falls back. Set `2160` for UHD 4K. |
+| `TILO_UI_DASH_ITERS` | `500`; usize | Measured event iterations. Invalid falls back; zero parses but is not a valid performance sample. Use `1000` for redraws or `1000000` for the idle-event test. |
+| `TILO_UI_DASH_STATIC` | Present, off | Omits animated spinners/indeterminate bars. Alone it does not guarantee no redraw. |
+| `TILO_UI_DASH_FROZEN` | Present, off | Identical stationary cursor events. Combine with STATIC for the no-redraw workload; do not combine with SCROLL. |
+| `TILO_UI_DASH_SCROLL` | Present, off | Wheel event workload; tests scroll/layout/cache behavior. |
+| `TILO_UI_DASH_DAMAGE` | Present, off | Prints damage rectangles on each redraw; contaminates timing with console I/O. |
+| `TILO_UI_DASH_RENDER_PROFILE` | Nonempty, off | Host render-phase breakdown. Also automatically enabled by GPU timestamp mode. |
+| `TILO_UI_DASH_FRAME_BREAKDOWN` | Nonempty, off | Prints detailed frame breakdown. |
+| `TILO_UI_DASH_ALLOC_PROFILE` | Nonempty, off | Counts allocations in the measured loop after harness storage preparation. |
+| `TILO_UI_DASH_ALLOC_BREAKDOWN` | Nonempty, off | Enables allocation counting plus phase attribution; also enabled automatically by either per-redraw allocation budget. |
+| `TILO_UI_DASH_VERIFY` | Exact-1, off | Retained-versus-full native pixel preflight. Adds reference textures/readbacks, suppresses performance reporting, rejects all acceptance budgets and the four profile-report flags above. Cannot combine with GPU timestamp mode. |
+| `TILO_UI_DASH_VERIFY_FRAMES` | `40`; integer `20..=100` | Number of frames required for verification; invalid values fail with exit 2. Used in verification mode; supply enough iterations/redraws (normally the same number). |
 
 ### Optional acceptance budgets
 
@@ -185,17 +188,17 @@ corresponding instrumentation automatically.
 
 | Variable | Unit / statistic | Parsing |
 | --- | --- | --- |
-| `QUICK_UI_DASH_FRAME_BUDGET_US` | Redrawing-frame p99, microseconds | Positive u128; invalid/zero ignored |
-| `QUICK_UI_DASH_MEAN_FRAME_BUDGET_US` | Exact redrawing-frame mean, microseconds | Positive u128; an explicitly supplied invalid/zero/non-Unicode value fails |
-| `QUICK_UI_DASH_EVENT_BUDGET_US` | Event p99, microseconds | Positive u128; invalid/zero ignored |
-| `QUICK_UI_DASH_RASTER_PIXEL_BUDGET` | Mean native pixels rasterized per redraw | Positive u128; invalid/zero ignored; fails with no redraws |
-| `QUICK_UI_DASH_ALLOC_BUDGET_PER_1000` | Allocator calls per 1,000 events | u64; zero allowed, invalid ignored |
-| `QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW` | Allocator calls per redraw | u64; zero allowed, invalid ignored |
-| `QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW` | Allocated bytes per redraw, not retained bytes | u64; zero allowed, invalid ignored |
-| `QUICK_UI_DASH_RSS_BUDGET_KIB` | Current process RSS after the loop, KiB | Positive u64; invalid/zero ignored; not peak RSS |
-| `QUICK_UI_DASH_GPU_BUDGET_BYTES` | Known retained GPU bytes | Positive u64; invalid/zero ignored; not total driver VRAM |
-| `QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB` | Warm-to-final RSS increase, KiB | u64; zero allowed, invalid ignored; negative growth treated as zero |
-| `QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES` | Warm-to-final known GPU increase, bytes | u64; zero allowed, invalid ignored; negative growth treated as zero |
+| `TILO_UI_DASH_FRAME_BUDGET_US` | Redrawing-frame p99, microseconds | Positive u128; invalid/zero ignored |
+| `TILO_UI_DASH_MEAN_FRAME_BUDGET_US` | Exact redrawing-frame mean, microseconds | Positive u128; an explicitly supplied invalid/zero/non-Unicode value fails |
+| `TILO_UI_DASH_EVENT_BUDGET_US` | Event p99, microseconds | Positive u128; invalid/zero ignored |
+| `TILO_UI_DASH_RASTER_PIXEL_BUDGET` | Mean native pixels rasterized per redraw | Positive u128; invalid/zero ignored; fails with no redraws |
+| `TILO_UI_DASH_ALLOC_BUDGET_PER_1000` | Allocator calls per 1,000 events | u64; zero allowed, invalid ignored |
+| `TILO_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW` | Allocator calls per redraw | u64; zero allowed, invalid ignored |
+| `TILO_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW` | Allocated bytes per redraw, not retained bytes | u64; zero allowed, invalid ignored |
+| `TILO_UI_DASH_RSS_BUDGET_KIB` | Current process RSS after the loop, KiB | Positive u64; invalid/zero ignored; not peak RSS |
+| `TILO_UI_DASH_GPU_BUDGET_BYTES` | Known retained GPU bytes | Positive u64; invalid/zero ignored; not total driver VRAM |
+| `TILO_UI_DASH_RSS_GROWTH_BUDGET_KIB` | Warm-to-final RSS increase, KiB | u64; zero allowed, invalid ignored; negative growth treated as zero |
+| `TILO_UI_DASH_GPU_GROWTH_BUDGET_BYTES` | Warm-to-final known GPU increase, bytes | u64; zero allowed, invalid ignored; negative growth treated as zero |
 
 Always check that the expected gate actually printed a result: a misspelled
 budget or an invalid value in an ignore-on-error parser is not a passing gate.
@@ -212,7 +215,7 @@ results are not interchangeable with native-4K dashboard redraws:
 | --- | --- |
 | `perf_scenario --count N` (also `--count=N`) | `120` usize iterations; missing/invalid count falls back. Runs CPU-only list-scroll and gallery-steady scenarios, without a GPU or window. Use a positive count. |
 | `perf_scenario --json` | Off; emits JSON reports instead of text. |
-| `widget_perf_bench` / `QUICK_UI_PERF_ITERS` | `20` usize iterations; invalid falls back. A separate 1100×800 click/layout/draw/offscreen-render workload; use a positive count. |
+| `widget_perf_bench` / `TILO_UI_PERF_ITERS` | `20` usize iterations; invalid falls back. A separate 1100×800 click/layout/draw/offscreen-render workload; use a positive count. |
 | `ui-shots perf_hud_shot` / `PERF_HUD_FRAMES` | `90` usize frames; invalid falls back. Feeds real CPU pass timings into a HUD screenshot at 1280×800, not an acceptance run. |
 | `PERF_HUD_OUT` | `/tmp/perf_hud/hud.png`; PNG output path for the HUD fixture, which creates parent directories and writes the image. Use a dedicated path to avoid replacing an existing image. |
 

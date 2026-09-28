@@ -122,7 +122,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the exact per-frame passes the live event loop runs (compute_layout /
     // apply_layout / draw) over a large Home grid, in two modes — the pre-fix
     // "always re-solve" baseline and the scroll-reposition fast path — and
-    // prints the numbers. No window, no GPU present (matches the QUICK_UI_PERF
+    // prints the numbers. No window, no GPU present (matches the TILO_UI_PERF
     // main-thread breakdown, which excludes the render worker).
     if let Some(frames) = parse_flag_usize(&args, "--bench-scroll", 90) {
         // `--watch` benches the watch page (full-bleed player + a long comment

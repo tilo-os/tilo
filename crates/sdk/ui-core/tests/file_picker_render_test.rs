@@ -5,7 +5,7 @@
 //!
 //! Renders on the dark and the light preset and asserts the picker's
 //! derived panel edge registers against its own fill in both (HIG §9.5).
-//! Skips when no wgpu adapter is available. Set `QUICK_UI_SCREENSHOT_DIR`
+//! Skips when no wgpu adapter is available. Set `TILO_UI_SCREENSHOT_DIR`
 //! to dump PNGs (`file_picker_{open,save}_{dark,light}.png`).
 
 #![allow(
@@ -116,7 +116,7 @@ fn assert_panel_edge_registers(rgba: &[u8], w: u32, theme_name: &str) {
 }
 
 fn dump(name: &str, rgba: &[u8], w: u32, h: u32) {
-    if let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") {
+    if let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") {
         let _ = std::fs::create_dir_all(&dir);
         let path = format!("{dir}/{name}.png");
         tilo_ui::png::write_rgba8(&path, w, h, rgba).unwrap();
