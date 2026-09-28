@@ -4949,7 +4949,7 @@ impl Widget for NotesApp {
 
 impl ui::resources::PublishesResources for NotesApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        let mut resources = self.publish_resources(doc);
         resources.extend(self.pending_import_resource());
         resources
     }
@@ -4967,7 +4967,7 @@ impl ui::resources::PublishesResources for NotesApp {
         if id == "notes.pending-import" {
             return self.pending_import_resource();
         }
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        self.publish_resource(doc, id)
     }
 }
 
@@ -5031,7 +5031,7 @@ impl ui::undo::CommittedActions for NotesApp {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         // A body edit dispatches through the page's editor; everything else
         // through the app's own host. One event does one or the other.
-        let body = self.main.body_editor_mut().take_committed_action();
+        let body = ui::undo::CommittedActions::take_committed_action(self.main.body_editor_mut());
         let notes = self.actions.take_committed();
         body.or(notes)
     }

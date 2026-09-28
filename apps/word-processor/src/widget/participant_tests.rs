@@ -784,8 +784,7 @@ fn a_participant_host_publishes_the_schema_as_its_own_tree() {
     let (mut wp, state, _) = widget_with(&["x"]);
     ui::collaboration::participants::set_participant_host(&mut wp, true);
     let published = ui::resources::resources(&wp, &state.doc);
-    let schema =
-        <WordProcessorWidget as tilo_actions::ResourceProvider>::catalogue_schema(&wp, &state.doc);
+    let schema = wp.publish_catalogue_schema(&state.doc);
     assert_eq!(published.len(), schema.len());
     assert_eq!(
         published
@@ -918,8 +917,7 @@ fn a_participant_host_resolves_a_delivered_invocation_against_the_invokers_view(
     // Outside any invocation the host still publishes the schema.
     assert_eq!(
         ui::resources::resources(&wp, &state.doc).len(),
-        <WordProcessorWidget as tilo_actions::ResourceProvider>::catalogue_schema(&wp, &state.doc)
-            .len()
+        wp.publish_catalogue_schema(&state.doc).len()
     );
 }
 

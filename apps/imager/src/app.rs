@@ -5316,7 +5316,7 @@ impl ui::resources::PublishesResources for ImagerApp {
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`]. Empty unless an installable Tilo image is selected.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        let mut resources = self.publish_resources(doc);
         let available = self.source.is_some() && self.target().is_some();
         let mut job = crate::actions::operation_resource(
             self.target().map(TargetDrive::dev_path).as_deref(),

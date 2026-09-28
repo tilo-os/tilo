@@ -2191,7 +2191,7 @@ impl ui::resources::PublishesResources for SettingsApp {
     /// in [`crate::actions`]. Level-triggered: recomputed each frame from the
     /// shared document.
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        self.publish_resources(doc)
     }
     /// Resolve canonical Settings resources at activation time as well as
     /// publishing the eager palette snapshot above.  Search results retain
@@ -2199,7 +2199,7 @@ impl ui::resources::PublishesResources for SettingsApp {
     /// re-checks an address against the current resource surface before the
     /// action door opens it.
     fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        self.publish_resource(doc, id)
     }
 }
 

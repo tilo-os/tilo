@@ -5155,10 +5155,10 @@ impl ui::resources::PublishesResources for BackupsApp {
     /// Publish the retention-policy resource tree to the shell's Ctrl+K palette
     /// (see [`crate::actions`]).
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        self.publish_resources(doc)
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        self.publish_resource(doc, id)
     }
 }
 

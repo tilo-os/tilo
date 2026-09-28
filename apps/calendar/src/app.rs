@@ -7361,7 +7361,7 @@ impl Widget for CalendarApp {
 
 impl ui::resources::PublishesResources for CalendarApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        let mut resources = self.publish_resources(doc);
         resources.extend(self.pending_launch_resource());
         resources
     }
@@ -7384,7 +7384,7 @@ impl ui::resources::PublishesResources for CalendarApp {
         if id == "calendar.pending-import" {
             return self.pending_launch_resource();
         }
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        self.publish_resource(doc, id)
     }
 }
 

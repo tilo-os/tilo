@@ -8235,14 +8235,14 @@ impl ui::resources::PublishesResources for ContactsApp {
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        self.publish_resources(doc)
     }
     /// Resolve contacts outside the contextual palette page. This is the
     /// other half of bounded discovery: a search hit for contact 65,000 still
     /// reaches the exact current resource/action catalogue, while a deleted
     /// contact has no resource for the broker to invoke.
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        self.publish_resource(doc, id)
     }
 }
 
