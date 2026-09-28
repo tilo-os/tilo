@@ -63,12 +63,6 @@ pub enum WeatherAction {
 
 impl Action for WeatherAction {
     fn apply(&self, doc: &mut AutoCommit) -> Result<(), ActionError> {
-        // A pre-action document from the first Weather schema has an ordered
-        // `locations` list. Promote it before adding/removing so an upgrade
-        // cannot hide a user's existing saved places.
-        if !matches!(self, Self::SelectLocation { .. }) {
-            WeatherDoc::migrate_legacy_locations(doc);
-        }
         match self {
             Self::Initialize => WeatherDoc::ensure_schema(doc),
             Self::AddLocation { location } => {
