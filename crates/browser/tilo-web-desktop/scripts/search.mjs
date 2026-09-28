@@ -6,6 +6,8 @@
 // 2. `notes` and Enter opens Notes; the "New note" action, found by typing,
 //    runs with its argument and makes a note.
 // 3. Search finds that note by its title, and Enter opens it.
+// 4. An app the web cannot run (Firewall: Tilo OS only; Terminal: Linux and
+//    macOS only) is a result that says why, and Enter opens nothing.
 //
 // usage: node search.mjs BUNDLE_DIR
 //   BUNDLE_DIR  build.sh --bundle desktop output
@@ -57,6 +59,18 @@ const results = async () => {
     const root = globalThis.tiloMount?.state()?.semantics?.root;
     if (root) find(root);
     return rows;
+  })()`);
+};
+// The palette's first result row, every semantic field serialized.
+const firstRow = async () => {
+  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()');
+  await sleep(500);
+  return tab.evaluate(`(() => {
+    let row = null;
+    const find = n => { if (n.widget === 'CommandPalette') row = n.semantics?.children?.[1]?.children?.[0] ?? null; (n.children || []).forEach(find); };
+    const root = globalThis.tiloMount?.state()?.semantics?.root;
+    if (root) find(root);
+    return row && {name: row.name, text: JSON.stringify(row)};
   })()`);
 };
 
@@ -151,6 +165,26 @@ try {
   check(await until('search closes', async () => !(await state())?.searchOpen), 'Enter on the note closes search');
   check((await active()) === 'Notes', 'the note opens in Notes');
   console.log(`  windows: ${JSON.stringify(await windows())}`);
+
+  // 4. Apps this desktop cannot run are listed with why and open nothing.
+  for (const [query, name, reason] of [
+    ['firewall', 'Firewall', 'Tilo OS only'],
+    ['terminal', 'Terminal', 'Linux and macOS only'],
+  ]) {
+    const before = await windows();
+    await key('k', command);
+    await until('search opens', async () => (await state())?.searchOpen);
+    await type(query);
+    const row = await firstRow();
+    console.log(`  first row for "${query}": ${row?.text?.slice(0, 300)}`);
+    check(row?.name === name, `${name} is listed on the web`);
+    check(row?.text.includes(reason), `the ${name} row says "${reason}"`);
+    if (shots) writeFileSync(`${shots}/search-unavailable-${query}.png`, await tab.screenshot());
+    await key('Enter');
+    await sleep(1000);
+    check(JSON.stringify(await windows()) === JSON.stringify(before), `Enter on ${name} opens nothing`);
+    if ((await state())?.searchOpen) await key('Escape');
+  }
   const errors = tab.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
   check(errors.length === 0, `no exceptions or panics${errors.length ? `: ${errors[0]}` : ''}`);
 } catch (error) {
