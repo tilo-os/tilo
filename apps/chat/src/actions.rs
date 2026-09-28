@@ -549,6 +549,19 @@ impl Action for ChatAction {
         // ordering host for a message row.
         ExecutionLocus::ClientLocal
     }
+
+    /// A read watermark is shared state about the channel, not a message.
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        match self {
+            ChatAction::MarkRead { .. } => tilo_actions::ChangeKind::Housekeeping,
+            ChatAction::AgentAuthored { send, .. }
+                if !matches!(**send, ChatAction::AgentAuthored { .. }) =>
+            {
+                send.change_kind()
+            }
+            _ => tilo_actions::ChangeKind::Content,
+        }
+    }
 }
 
 impl ChatAction {
