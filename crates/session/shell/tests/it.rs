@@ -191,6 +191,8 @@ mod shell_narration;
 mod shell_state_test;
 #[path = "sidebar_wheel_disc_snapshot.rs"]
 mod sidebar_wheel_disc_snapshot;
+#[path = "speaker_calibration_fabric.rs"]
+mod speaker_calibration_fabric;
 #[path = "speaker_clock_policy.rs"]
 mod speaker_clock_policy;
 #[path = "state_file_format.rs"]

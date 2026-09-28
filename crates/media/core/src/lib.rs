@@ -78,6 +78,7 @@ pub mod audio;
 pub mod audio_runtime;
 pub mod cache;
 pub mod calibration;
+pub mod calibration_fusion;
 pub mod dmabuf;
 pub mod encode;
 pub mod engine;

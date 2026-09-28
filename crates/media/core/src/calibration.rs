@@ -277,6 +277,7 @@ impl LogSweep {
             arrival_samples,
             arrival_ns: round_to_i64(arrival_samples / rate * 1e9),
             level_db,
+            snr_db: 20.0 * (peak_value / rms.max(f64::MIN_POSITIVE)).log10(),
             response: magnitude,
             eq,
         })
@@ -292,6 +293,9 @@ pub struct SpeakerMeasurement {
     pub arrival_ns: i64,
     /// Level relative to a speaker that reproduces the sweep at unity gain.
     pub level_db: f64,
+    /// How far the direct sound's peak stands above the impulse response's
+    /// RMS, in dB: how much a fused result should trust this reading.
+    pub snr_db: f64,
     pub response: MagnitudeResponse,
     /// Cuts that flatten this speaker's room modes toward `level_db`.
     pub eq: Vec<EqBand>,
@@ -344,6 +348,63 @@ impl MagnitudeResponse {
             })
             .collect();
         Self { points }
+    }
+
+    /// The response on the grid [`LogSweep::measure`] reports for a sweep
+    /// from `start_hz` to `end_hz`, from its dB values alone. `None` when the
+    /// count does not match that grid or a value is not finite.
+    #[must_use]
+    pub fn from_grid_db(start_hz: f64, end_hz: f64, db: &[f64]) -> Option<Self> {
+        if !(start_hz > 0.0 && end_hz > start_hz) || db.iter().any(|value| !value.is_finite()) {
+            return None;
+        }
+        let steps = round_to_usize((end_hz / start_hz).log2() / RESPONSE_STEP_OCTAVES);
+        (db.len() == steps.checked_add(1)?).then(|| Self {
+            points: db
+                .iter()
+                .enumerate()
+                .map(|(step, &db)| ResponsePoint {
+                    hz: start_hz * 2.0_f64.powf(usize_to_f64(step) * RESPONSE_STEP_OCTAVES),
+                    db,
+                })
+                .collect(),
+        })
+    }
+
+    /// The dB-domain weighted mean of responses on one grid: a multi-position
+    /// room response. `None` when there is nothing to average, the weights
+    /// sum to zero, or the grids differ.
+    #[must_use]
+    pub fn weighted_mean(responses: &[(&Self, f64)]) -> Option<Self> {
+        let (first, _) = responses.first()?;
+        let total: f64 = responses.iter().map(|(_, weight)| weight.max(0.0)).sum();
+        let same_grid = responses.iter().all(|(response, _)| {
+            response.points.len() == first.points.len()
+                && response
+                    .points
+                    .iter()
+                    .zip(&first.points)
+                    .all(|(a, b)| (a.hz - b.hz).abs() <= 1e-9 * b.hz.abs().max(1.0))
+        });
+        if total <= 0.0 || !total.is_finite() || !same_grid {
+            return None;
+        }
+        let points = first
+            .points
+            .iter()
+            .enumerate()
+            .map(|(index, point)| ResponsePoint {
+                hz: point.hz,
+                db: responses
+                    .iter()
+                    .filter_map(|(response, weight)| {
+                        response.points.get(index).map(|p| p.db * weight.max(0.0))
+                    })
+                    .sum::<f64>()
+                    / total,
+            })
+            .collect();
+        Some(Self { points })
     }
 
     /// Mean of the dB values of the points between `low_hz` and `high_hz`.
@@ -443,6 +504,12 @@ pub fn eq_db(bands: &[EqBand], hz: f64, sample_rate: u32) -> f64 {
 /// excess (at most [`EQ_MAX_CUT_DB`] including overlapping bands) and as wide
 /// as the part of it above half its height. Dips are never filled: boosting
 /// into a room null wastes amplifier power without raising what is heard.
+#[must_use]
+pub fn room_eq(response: &MagnitudeResponse, level_db: f64, sample_rate: u32) -> Vec<EqBand> {
+    fit_room_eq(response, level_db, sample_rate)
+}
+
+/// The same fit as [`room_eq`].
 pub fn fit_room_eq(response: &MagnitudeResponse, target_db: f64, sample_rate: u32) -> Vec<EqBand> {
     let lowest = response.points.first().map_or(0.0, |p| p.hz);
     let points: Vec<ResponsePoint> = response
@@ -746,6 +813,35 @@ mod tests {
         sweep
             .measure(capture, CAPTURE_START_NS, CAPTURE_START_NS + LEAD_NS)
             .unwrap()
+    }
+
+    #[test]
+    fn responses_rebuild_from_their_db_values_and_average_by_weight() {
+        let sweep = sweep();
+        let measured = measure(&sweep, &room(&sweep, 150.0, -4.0, None, 3));
+        assert!(measured.snr_db > 20.0 * MIN_PEAK_TO_RMS.log10());
+        let db: Vec<f64> = measured.response.points.iter().map(|p| p.db).collect();
+        let rebuilt = MagnitudeResponse::from_grid_db(20.0, 20_000.0, &db).unwrap();
+        for (a, b) in rebuilt.points.iter().zip(&measured.response.points) {
+            assert!((a.hz - b.hz).abs() < 1e-9 && a.db.to_bits() == b.db.to_bits());
+        }
+        assert!(MagnitudeResponse::from_grid_db(20.0, 20_000.0, &db[1..]).is_none());
+        assert!(MagnitudeResponse::from_grid_db(20.0, 20_000.0, &[f64::NAN; 1]).is_none());
+        let louder = MagnitudeResponse::from_grid_db(
+            20.0,
+            20_000.0,
+            &db.iter().map(|db| db + 6.0).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let mean = MagnitudeResponse::weighted_mean(&[(&rebuilt, 2.0), (&louder, 1.0)]).unwrap();
+        assert!((mean.points[10].db - (db[10] + 2.0)).abs() < 1e-9);
+        assert!(MagnitudeResponse::weighted_mean(&[]).is_none());
+        assert!(MagnitudeResponse::weighted_mean(&[(&rebuilt, 0.0)]).is_none());
+        assert_eq!(
+            room_eq(&rebuilt, measured.level_db, RATE),
+            measured.eq,
+            "the same fit as measuring"
+        );
     }
 
     #[test]

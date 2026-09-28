@@ -13077,22 +13077,10 @@ impl ShellOverlayHost {
                 Some((
                     DeviceFabricUiAction::ResolveSpeakerGroupConsent {
                         group: consent.group,
+                        kind: consent.scope.kind(),
                         approved,
                     },
-                    if approved {
-                        t_args(
-                            "host-fabric-speaker-joined",
-                            &[
-                                ("group", consent.name.clone().into()),
-                                ("role", consent.role.describe().into()),
-                            ],
-                        )
-                    } else {
-                        t_args(
-                            "host-fabric-speaker-declined",
-                            &[("group", consent.name.into())],
-                        )
-                    },
+                    consent.outcome(approved),
                 ))
             }
             DeviceFabricPaneRow::SpeakerSession(session) => Some((
@@ -13140,11 +13128,9 @@ impl ShellOverlayHost {
             DeviceFabricPaneRow::SpeakerMembership(membership) => Some((
                 DeviceFabricUiAction::LeaveSpeakerGroup {
                     group: membership.group,
+                    kind: membership.scope.kind(),
                 },
-                t_args(
-                    "host-fabric-speaker-left",
-                    &[("group", membership.name.into())],
-                ),
+                membership.left(),
             )),
             DeviceFabricPaneRow::RemoteAudioRoute(route) => Some((
                 DeviceFabricUiAction::StopRemoteAudio {
@@ -17248,22 +17234,13 @@ impl Widget for ShellOverlayHost {
                                             Vec::new(),
                                         ),
                                         DeviceFabricPaneRow::SpeakerConsent(consent) => (
-                                            t_args(
-                                                "a11y-speaker-join",
-                                                &[
-                                                    ("group", consent.name.as_str().into()),
-                                                    ("role", consent.role.describe().into()),
-                                                ],
-                                            ),
-                                            t_args(
-                                                "a11y-speaker-join-description",
-                                                &[("leader", consent.leader_label.as_str().into())],
-                                            ),
+                                            consent.accessible_name(),
+                                            consent.accessible_description(),
                                             vec![
                                                 AccessNode::new(Role::Button)
-                                                    .with_name(t("a11y-speaker-join-allow")),
+                                                    .with_name(consent.allow_label()),
                                                 AccessNode::new(Role::Button)
-                                                    .with_name(t("a11y-speaker-join-decline")),
+                                                    .with_name(consent.decline_label()),
                                             ],
                                         ),
                                         DeviceFabricPaneRow::SpeakerSession(session) => (
@@ -17288,14 +17265,8 @@ impl Widget for ShellOverlayHost {
                                             Vec::new(),
                                         ),
                                         DeviceFabricPaneRow::SpeakerMembership(membership) => (
-                                            t_args(
-                                                "a11y-speaker-membership",
-                                                &[
-                                                    ("role", sentence_case(&membership.role.describe()).into()),
-                                                    ("group", membership.name.as_str().into()),
-                                                ],
-                                            ),
-                                            t("a11y-speaker-membership-description"),
+                                            membership.title(sentence_case),
+                                            membership.accessible_description(),
                                             Vec::new(),
                                         ),
                                         DeviceFabricPaneRow::RemoteAudioConsent(consent) => (
@@ -22742,31 +22713,16 @@ impl ShellOverlayHost {
                     true,
                 ),
                 DeviceFabricPaneRow::SpeakerConsent(consent) => (
-                    t_args(
-                        "qs-devices-speaker-join",
-                        &[
-                            ("group", consent.name.as_str().into()),
-                            ("role", consent.role.describe().into()),
-                        ],
-                    ),
-                    consent.output_label.as_ref().map_or_else(
-                        || {
-                            t_args(
-                                "qs-devices-speaker-join-note",
-                                &[("leader", consent.leader_label.as_str().into())],
-                            )
-                        },
-                        |label| {
-                            t_args(
-                                "qs-devices-speaker-join-note-output",
-                                &[
-                                    ("leader", consent.leader_label.as_str().into()),
-                                    ("output", label.as_str().into()),
-                                ],
-                            )
-                        },
-                    ),
-                    ui::icons::Icon::Volume2,
+                    consent.prompt(),
+                    consent.note(),
+                    match consent.scope {
+                        crate::shell::speaker_group_runtime::SpeakerConsentScope::Play(_) => {
+                            ui::icons::Icon::Volume2
+                        }
+                        crate::shell::speaker_group_runtime::SpeakerConsentScope::Listen => {
+                            ui::icons::Icon::Mic
+                        }
+                    },
                     false,
                     true,
                 ),
@@ -22842,17 +22798,8 @@ impl ShellOverlayHost {
                     true,
                 ),
                 DeviceFabricPaneRow::SpeakerMembership(membership) => (
-                    t_args(
-                        "a11y-speaker-membership",
-                        &[
-                            ("role", sentence_case(&membership.role.describe()).into()),
-                            ("group", membership.name.as_str().into()),
-                        ],
-                    ),
-                    t_args(
-                        "qs-devices-speaker-membership-note",
-                        &[("leader", membership.leader_label.as_str().into())],
-                    ),
+                    membership.title(sentence_case),
+                    membership.note(),
                     ui::icons::Icon::Volume2,
                     false,
                     true,
@@ -23456,7 +23403,7 @@ impl ShellOverlayHost {
                             DeviceFabricPaneRow::RemoteAudioConsent(_) => {
                                 t("a11y-remote-audio-allow")
                             }
-                            DeviceFabricPaneRow::SpeakerConsent(_) => t("a11y-speaker-join-allow"),
+                            DeviceFabricPaneRow::SpeakerConsent(consent) => consent.allow_label(),
                             DeviceFabricPaneRow::RemoteCaptureConsent(_) => {
                                 t("a11y-remote-capture-allow")
                             }
@@ -23487,9 +23434,7 @@ impl ShellOverlayHost {
                             DeviceFabricPaneRow::RemoteAudioConsent(_) => {
                                 t("a11y-remote-audio-decline")
                             }
-                            DeviceFabricPaneRow::SpeakerConsent(_) => {
-                                t("a11y-speaker-join-decline")
-                            }
+                            DeviceFabricPaneRow::SpeakerConsent(consent) => consent.decline_label(),
                             DeviceFabricPaneRow::RemoteCaptureConsent(_) => {
                                 t("a11y-remote-capture-decline")
                             }
