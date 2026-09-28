@@ -1353,7 +1353,7 @@ dependencies = [
 name = "bounded-zip"
 version = "0.1.0"
 dependencies = [
- "roxmltree 0.20.0",
+ "roxmltree 0.21.1",
  "thiserror 2.0.18",
  "workspace-hack",
  "zip",
@@ -3406,7 +3406,7 @@ dependencies = [
  "bounded-zip",
  "image",
  "qdoc-rich-text",
- "roxmltree 0.20.0",
+ "roxmltree 0.21.1",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -11988,7 +11988,7 @@ dependencies = [
  "mime_guess",
  "os-actions",
  "registry-types",
- "roxmltree 0.20.0",
+ "roxmltree 0.21.1",
  "runtime",
  "runtime-fs",
  "runtime-identity",
@@ -15200,7 +15200,7 @@ version = "0.1.0"
 dependencies = [
  "quick-xml 0.41.0",
  "reqwest",
- "roxmltree 0.20.0",
+ "roxmltree 0.21.1",
  "test-http",
  "tilo-net",
  "tokio",
