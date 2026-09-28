@@ -200,6 +200,7 @@ fn framed_page_navigation(parts: &Parts, origin: &Origin) -> bool {
 
 /// `frame-ancestors` for exact dashboard origins: `https://` with a loopback or
 /// DNS host, or `http://` on loopback for local development.
+#[cfg(any(test, feature = "media"))]
 fn frame_ancestors_policy(ancestors: &[String]) -> io::Result<hyper::header::HeaderValue> {
     if ancestors.is_empty() || ancestors.len() > 16 {
         return Err(io::Error::other("1-16 frame ancestors required"));
@@ -867,6 +868,7 @@ impl HttpsAdapter {
         })
     }
     /// Let the listed dashboard origins embed the page (`frame-ancestors`).
+    #[cfg(feature = "media")]
     pub(crate) fn with_frame_ancestors(mut self, ancestors: &[String]) -> io::Result<Self> {
         if ancestors.is_empty() {
             return Ok(self);
