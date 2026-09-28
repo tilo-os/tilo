@@ -337,4 +337,9 @@ async fn loopback_operator_administers_invitations_as_the_governing_authority() 
     let (code, _) = operator(origin, r#"{"action":"media.call.end","params":{}}"#, &cap).await;
     assert_eq!(code, 404);
     drop(host);
+    // Native members reach the host through the packet relay URL their
+    // invitation named; a restart must keep it.
+    let (host, restarted, _) = start(&state, &ready).await;
+    assert_eq!(restarted["packet_relay"], metadata["packet_relay"]);
+    drop(host);
 }

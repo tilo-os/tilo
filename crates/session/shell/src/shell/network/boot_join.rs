@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 /// A file holding one invitation text to redeem at startup.
 pub const JOIN_INVITATION_FILE_ENV: &str = "TILO_SHELL_JOIN_INVITATION_FILE";
-const JOIN_DEADLINE: Duration = Duration::from_secs(120);
+const JOIN_DEADLINE: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(250);
 
 /// What the startup join did.
@@ -19,24 +19,20 @@ pub(crate) enum BootJoin {
 }
 
 impl ShellNetwork {
-    /// Redeem the invitation [`JOIN_INVITATION_FILE_ENV`] names, off the
-    /// compositor loop. Nothing happens when it is unset.
-    pub(crate) fn spawn_boot_join(self: &Arc<Self>) {
+    /// Redeem the invitation [`JOIN_INVITATION_FILE_ENV`] names before the
+    /// session builds anything on the active workspace's room (its broker and
+    /// agent endpoints bind that room). Nothing happens when it is unset; a
+    /// failure leaves the session in its own room.
+    pub(crate) fn join_at_boot(&self) {
         let Some(path) = std::env::var_os(JOIN_INVITATION_FILE_ENV) else {
             return;
         };
-        let net = Arc::clone(self);
-        let spawned = std::thread::Builder::new()
-            .name("tilo-boot-join".into())
-            .spawn(move || match net.boot_join(Path::new(&path)) {
-                Ok(BootJoin::Joined(room)) => tracing::info!(%room, "boot join: room joined"),
-                Ok(BootJoin::AlreadyMember(room)) => {
-                    tracing::info!(%room, "boot join: already a member");
-                }
-                Err(error) => tracing::warn!(%error, "boot join failed"),
-            });
-        if let Err(error) = spawned {
-            tracing::warn!(%error, "boot join could not start");
+        match self.boot_join(Path::new(&path)) {
+            Ok(BootJoin::Joined(room)) => tracing::info!(%room, "boot join: room joined"),
+            Ok(BootJoin::AlreadyMember(room)) => {
+                tracing::info!(%room, "boot join: already a member");
+            }
+            Err(error) => tracing::warn!(%error, "boot join failed"),
         }
     }
 
