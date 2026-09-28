@@ -20,7 +20,7 @@ which bootc keeps across images. Sessions restart with the reboot.
 |---|---|
 | a component `os/components.toml` lists (shell, fs, an app, ...) | `tilo-vm swap <component>`: seconds, no reboot (`tilo-vm guide swapping`) |
 | anything else, and CI has built the commit | `tilo-vm vm upgrade --from sha:<commit>` |
-| anything else, not pushed yet | `tilo-vm vm upgrade --from local`, or build on the rcargo builder (below) and `vm upgrade --image target/tilo-vm/image` |
+| anything else, not pushed yet | `tilo-vm vm upgrade --from local`, or build on another machine (below) and `vm upgrade --image target/tilo-vm/image` |
 
 Swap whatever it can swap. An image upgrade reboots the VM and restarts every
 slot's session, including other agents'.
@@ -59,12 +59,15 @@ onto it. `tilo-vm image disk` writes a dev disk from it,
 `target/tilo-vm/disk.qcow2` (`image build --disk` does both in one go), for
 `vm create --image`.
 
-A laptop does not have to compile the OS: rcargo runs `image build` on its
-builder, in the build container, and brings back only what changed:
+A laptop does not have to compile the OS: run `image build` on a build
+machine, in a copy of the worktree inside the dev build container, and bring
+`target/tilo-vm` back:
 
 ```sh
-export RCARGO_ENV_SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)   # the commit time dates the image
-rcargo --on-builder --fetch tilo-vm run -p tilo-vm -- image build
+# on the build machine, in the synced worktree:
+export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)   # the commit time dates the image (needed without git)
+tilo-vm image build
+# back here, after syncing target/tilo-vm:
 tilo-vm vm upgrade --image target/tilo-vm/image       # new layers into the VM, reboot
 
 # no VM yet, and no published disk to create one from:
@@ -72,18 +75,18 @@ tilo-vm image disk                                    # here: loop device, sudo
 tilo-vm vm create dev --image target/tilo-vm/disk.qcow2 && tilo-vm vm start
 ```
 
-- rcargo syncs the worktree as for any build, uncommitted edits included, and
-  `--fetch tilo-vm` mirrors `target/tilo-vm` back: blobs the laptop has stay,
-  only new layers cross.
-- On the builder the build is incremental like a local one: the base is
+- Sync the worktree over, uncommitted edits included, and mirror
+  `target/tilo-vm` back incrementally (rsync or similar): blobs the laptop has
+  stay, only new layers cross.
+- On the build machine the build is incremental like a local one: the base is
   rebuilt only when its inputs changed (outside a git checkout its files are
   fingerprinted directly), podman's layer cache and the builder stage's cargo
   cache keep everything else, and a failed step reruns on its own.
-- The nested podman keeps its image store in the directory the rcargo
-  project's `container_args` bind at `/var/lib/containers` (for tilo:
-  `/srv/rcargo/os-dev/containers` on the builder); that is the whole cache.
-- The disk is written where loop devices are, not on the builder: its build
-  containers are rootless. A new disk replaces `target/tilo-vm/disk.qcow2`,
+- The nested podman keeps its image store in whatever directory the build
+  container binds at `/var/lib/containers`; a persistent directory there is the
+  whole cache.
+- The disk is written where loop devices are, not in a rootless build
+  container. A new disk replaces `target/tilo-vm/disk.qcow2`,
   which backs any VM made from it: keep a VM current with `vm upgrade
   --image`, and write a disk only for a new VM.
 
