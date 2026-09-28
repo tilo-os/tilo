@@ -57,6 +57,7 @@ pub mod audio;
 pub mod curve;
 pub mod doc;
 pub mod export;
+mod files;
 pub mod gpu;
 pub(crate) mod layout;
 pub mod media;
@@ -75,9 +76,16 @@ pub mod timecode;
 pub mod waveform;
 
 pub use app::VideoEditorApp;
-pub use resource::{VideoEditor, VideoProject, launch_spec};
+#[cfg(not(target_arch = "wasm32"))]
+pub use resource::launch_spec;
+pub use resource::{VideoEditor, VideoProject};
 
 use ui::widget::Widget;
+
+/// The app as every host mounts it.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::framework::definition::<VideoEditor>()
+}
 
 /// Build the standalone editor widget: it opens on a blank project and never
 /// fabricates media or clips.

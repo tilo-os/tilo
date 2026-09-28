@@ -21,6 +21,10 @@ runtime  = "tilo-runtime/2026.07"
 x86_64 = "v3"
 aarch64 = "aarch64"
 
+[capabilities]
+# CalDAV sync; the calendar itself works without an account.
+optional = ["network.http", "network.fetch-proxy"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

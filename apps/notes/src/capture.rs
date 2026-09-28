@@ -199,7 +199,7 @@ fn prepare_fixture_owned(
     let records = host.records_for(crate::definition())?;
     let prepared = crate::hosting::prepare_default(&mut host, INSTANCE, Some(&source), inputs)?;
     if matches!(scenario, Some("image" | "image_edit")) {
-        let bytes = std::fs::read(source.join(crate::storage::PAGES_DIR).join("image.png"))
+        let bytes = crate::files::read(&source.join(crate::storage::PAGES_DIR).join("image.png"))
             .map_err(|error| LaunchError::Operation(error.to_string()))?;
         records
             .with(&crate::hosting::default_notebook().id, |doc| {
@@ -737,7 +737,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
             driver.type_text(" Chen");
         }
         Some("image" | "image_edit") => {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let deadline = ui::time::now() + std::time::Duration::from_secs(2);
             let target = loop {
                 driver.relayout();
                 if let Some(target) =
@@ -745,7 +745,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
                 {
                     break target;
                 }
-                if std::time::Instant::now() >= deadline {
+                if ui::time::now() >= deadline {
                     return Err(LaunchError::Operation(
                         "image preview did not become ready within two seconds".into(),
                     ));
@@ -866,7 +866,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
                 alice,
                 block,
                 SelectionRange { start: 0, end: 18 },
-                std::time::Instant::now(),
+                ui::time::now(),
             );
             presence.upsert_remote_cursor("alice".into(), [560.0, 300.0], Some("Alice"));
             if let Some(other) = driver

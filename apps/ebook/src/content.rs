@@ -14,7 +14,6 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::hash::BuildHasher;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use automerge::AutoCommit;
@@ -306,44 +305,18 @@ fn write_shared_copy(bytes: &[u8], id: &str) -> Result<PathBuf, String> {
         return Err("No collaborative workspace is configured on this device".into());
     }
     let dir = workspace_books_dir();
-    std::fs::create_dir_all(&dir)
-        .map_err(|_| "the shared Books folder could not be created".to_string())?;
     let file_id = id.strip_prefix("book:").unwrap_or(id);
-    let dest = dir.join(format!("book-{file_id}.epub"));
-    // Publish only a complete, flushed object. A direct write to `dest` lets a
-    // peer observe a valid name containing partial bytes while an import is in
-    // flight. A same-directory hard link is an atomic no-overwrite publish.
-    let mut temporary = None;
-    for attempt in 0..32 {
-        let candidate = dir.join(format!(
-            ".book-{file_id}-{}-{attempt}.part",
-            std::process::id()
-        ));
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
-            Ok(mut file) => {
-                file.write_all(bytes)
-                    .and_then(|()| file.sync_all())
-                    .map_err(|_| {
-                        "the book could not be copied to the shared library".to_string()
-                    })?;
-                temporary = Some(candidate);
-                break;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(_) => return Err("the book could not be copied to the shared library".into()),
-        }
-    }
-    let temporary = temporary
-        .ok_or_else(|| "the book could not reserve a shared-library upload".to_string())?;
-    let publish = std::fs::hard_link(&temporary, &dest);
-    let _ = std::fs::remove_file(&temporary);
-    match publish {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+    let file_name = format!("book-{file_id}.epub");
+    let dest = dir.join(&file_name);
+    let shelf = tilo_files::Dir::open(tilo_files::Location::Native(dir))
+        .map_err(|_| "the shared Books folder could not be opened".to_string())?;
+    let name = tilo_files::VPath::new(&file_name)
+        .map_err(|_| "the book has no valid shared name".to_string())?;
+    // Publish only a complete, synced object, and never over an existing
+    // name: a peer must not observe partial bytes under a valid name.
+    match tilo_files::blocking::create_new(&shelf, &name, bytes) {
+        Ok(true) => {}
+        Ok(false) => {
             // A peer may have uploaded the same content first. Reuse that
             // exact object, but never replace a different/corrupt file.
             let existing = read_epub_bytes(&dest)
@@ -481,15 +454,12 @@ pub fn open_epub_path(path: &Path) -> Option<Book> {
 /// check gives a cheap refusal for ordinary huge files; `take` is the actual
 /// guard if the file grows between that check and the read.
 fn read_epub_bytes(path: &Path) -> Option<Vec<u8>> {
-    if std::fs::metadata(path).ok()?.len() > MAX_EPUB_BYTES as u64 {
+    let (dir, name) = tilo_files::file_at(path).ok()?;
+    if tilo_files::blocking::metadata(&dir, &name).ok()?.len > MAX_EPUB_BYTES as u64 {
         tracing::warn!(path = %path.display(), "ebook: file exceeds size limit");
         return None;
     }
-    let file = std::fs::File::open(path).ok()?;
-    let mut bytes = Vec::new();
-    file.take(MAX_EPUB_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
+    let bytes = tilo_files::blocking::read(&dir, &name).ok()?;
     if bytes.len() > MAX_EPUB_BYTES {
         tracing::warn!(path = %path.display(), "ebook: file grew beyond size limit");
         return None;
@@ -520,13 +490,14 @@ fn scan_watched(watched_folders: &[PathBuf]) -> Vec<PathBuf> {
 
 /// Recursively (bounded `depth`) collect `*.epub` file paths under `dir`.
 fn collect_epubs(dir: &Path, depth: usize, out: &mut BTreeSet<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = tilo_files::Dir::open(tilo_files::Location::Native(dir.to_path_buf()))
+        .and_then(|folder| tilo_files::blocking::list(&folder, &tilo_files::VPath::root()))
+    else {
         return;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(ft) = entry.file_type() else { continue };
-        if ft.is_dir() {
+    for entry in entries {
+        let path = dir.join(&entry.name);
+        if entry.kind == tilo_files::Kind::Dir {
             if depth > 0 {
                 collect_epubs(&path, depth - 1, out);
             }

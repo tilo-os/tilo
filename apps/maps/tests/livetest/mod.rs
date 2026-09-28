@@ -22,8 +22,18 @@
 //! The module is generic over `ui::widget::Widget`, so any app can reuse it;
 //! the map-specific predicates live in the app's own live tests.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "pixel and timing arithmetic in a test harness"
+)]
+
+use std::collections::HashMap;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use ui::headless::Framed;
 use ui::offscreen::OffscreenRenderer;
@@ -95,7 +105,7 @@ where
     W: Widget,
     F: FnMut(&W) -> bool,
 {
-    let start = Instant::now();
+    let start = ui::time::now();
     let mut frames = 0u32;
     loop {
         h.pump_frame();

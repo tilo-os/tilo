@@ -2710,9 +2710,9 @@ mod command_path_tests {
         widget.scroll_offset.set((0.0, 137.0));
         std::fs::rename(&before, &after).unwrap();
         xattr::set(&after, crate::model::SYNC_XATTR, b"local").unwrap();
-        widget.next_metadata_refresh = Instant::now();
+        widget.next_metadata_refresh = ui::time::now();
 
-        assert!(widget.refresh_metadata_if_due(Instant::now()));
+        assert!(widget.refresh_metadata_if_due(ui::time::now()));
         assert_eq!(widget.entries[0].path, after);
         assert_eq!(
             widget.entries[0].sync_state,
@@ -5080,7 +5080,7 @@ mod injected_startup_tests {
         ui::widget::Widget::sync(&mut widget, &mut document, &automerge::ROOT);
         widget.refresh_external_search_catalogs();
         assert!(!widget.refresh_trusted_identities(None));
-        widget.refresh_metadata_if_due(Instant::now() + metadata_refresh::LIVE_INTERVAL);
+        widget.refresh_metadata_if_due(ui::time::now() + metadata_refresh::LIVE_INTERVAL);
         widget.refresh();
         assert_eq!(widget.current_path, child);
         assert!(widget.workspace_roots.is_empty());
@@ -5136,9 +5136,9 @@ mod injected_startup_tests {
             startup(&child),
             deferred_services(),
         );
-        widget.nearby_send.poll_if_due(Instant::now());
+        widget.nearby_send.poll_if_due(ui::time::now());
         assert!(
-            Widget::next_wake_deadline(&widget).is_some_and(|deadline| deadline > Instant::now()),
+            Widget::next_wake_deadline(&widget).is_some_and(|deadline| deadline > ui::time::now()),
             "the completed-reply branch, rather than Nearby Send's initial poll, must supply the immediate wake"
         );
         widget
@@ -5164,7 +5164,7 @@ mod injected_startup_tests {
             .borrow_mut()
             .complete(token, Err("document storage unavailable".into()));
         assert!(
-            Widget::next_wake_deadline(&widget).is_some_and(|deadline| deadline <= Instant::now()),
+            Widget::next_wake_deadline(&widget).is_some_and(|deadline| deadline <= ui::time::now()),
             "a shell reply after draw must schedule the one follow-up Files sync"
         );
         let mut document = automerge::AutoCommit::new();

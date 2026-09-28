@@ -24,6 +24,8 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
 tilo-automerge.workspace = true
+blake3.workspace = true
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 # The Tilo ACTION model: the reader's `actions` module exports its markup-store
 # operations as replayable actions the host's Ctrl+K palette dispatches.
 tilo-actions = { path = "../../crates/collab/actions" }
@@ -43,7 +45,8 @@ anyhow.workspace = true
 tilo-pdf = { path = "../../crates/platform/tilo-pdf" }
 image = { workspace = true, features = ["png", "jpeg"] }
 tempfile.workspace = true
-workspace-hack = { version = "0.1" }
+# Documents the user opens and saves.
+tilo-files = { path = "../../crates/platform/tilo-files" }
 # Host-native file open/save through the XDG Desktop Portal; calls run off the
 # UI thread and return through `ui::portal`.
 
@@ -51,6 +54,7 @@ workspace-hack = { version = "0.1" }
 # Serialise tests that touch the shared system clipboard.
 serial_test.workspace = true
 # Two distinct files for the multi-document test.
+tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 
@@ -60,3 +64,7 @@ path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

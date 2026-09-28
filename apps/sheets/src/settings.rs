@@ -119,32 +119,26 @@ impl GlobalSettings {
         serde_json::to_string_pretty(&root).unwrap_or_else(|_| "{}".into())
     }
 
-    /// Load from the shared path. Returns defaults if the file is absent.
+    /// Load from the shared settings document (on the web, the page's
+    /// profile). Defaults for anything absent.
     pub fn load() -> Self {
-        let Some(path) = settings_path() else {
-            return Self::default();
-        };
-        match std::fs::read_to_string(&path) {
-            Ok(text) => Self::from_json(&text),
-            Err(_) => Self::default(),
-        }
+        Self::from_json(&serde_json::Value::Object(settings_store::load()).to_string())
     }
 
-    /// Persist to the shared path, preserving foreign keys. Creates the
-    /// `tilo` config directory if needed. Returns the path written.
+    /// Persist the `locale` section to the shared settings document,
+    /// preserving every other section.
     ///
     /// # Errors
     ///
-    /// Returns an error if no config directory is available, or if creating
-    /// the `tilo` config directory or writing the settings file fails.
-    pub fn save(&self) -> std::io::Result<PathBuf> {
-        let path = settings_path().ok_or_else(|| std::io::Error::other("no config dir"))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+    /// Returns an error if there is no settings document, or the write
+    /// fails.
+    pub fn save(&self) -> std::io::Result<()> {
+        match serde_json::to_value(self.locale).map_err(std::io::Error::other)? {
+            serde_json::Value::Object(locale) => settings_store::update_section("locale", locale),
+            _ => Err(std::io::Error::other(
+                "the locale is not a settings section",
+            )),
         }
-        let existing = std::fs::read_to_string(&path).unwrap_or_default();
-        std::fs::write(&path, self.to_json_merged(&existing))?;
-        Ok(path)
     }
 }
 

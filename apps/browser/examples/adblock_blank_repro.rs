@@ -6,7 +6,7 @@
 //!   cargo run -p browser --example adblock_blank_repro --features wpe --release -- both
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use ui::webview::wpe::WpeEngine;
 use ui::webview::{SharedEngine, WebViewCommand, WebViewEngine};
@@ -69,8 +69,8 @@ fn main() {
     engine.send(WebViewCommand::Navigate(url));
 
     // Wait for the real page.
-    let deadline = Instant::now() + Duration::from_secs(25);
-    while Instant::now() < deadline {
+    let deadline = ui::time::now() + Duration::from_secs(25);
+    while ui::time::now() < deadline {
         if let Some((r, _, _)) = latest(&*engine) {
             if uniformity(&r) < 0.9 {
                 break;

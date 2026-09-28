@@ -466,7 +466,7 @@ impl CallChromeMotion {
             );
             self.target_open = open;
         }
-        let now = ui::clock::Instant::now();
+        let now = ui::time::now();
         self.sampled = self.transition.value(now);
         self.animating = self.transition.is_animating(now);
     }

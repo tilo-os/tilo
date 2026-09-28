@@ -15,7 +15,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Instant;
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -609,7 +609,7 @@ impl FeedsApp {
             hamburger_rect: Rect::ZERO,
             scrim_rect: Rect::ZERO,
             back_rect: Rect::ZERO,
-            last_frame: Instant::now(),
+            last_frame: ui::time::now(),
             worker: None,
             synced: false,
             actions: ui::ActionHost::new(),
@@ -782,7 +782,7 @@ impl FeedsApp {
     }
 
     fn set_toast(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), Instant::now()));
+        self.toast = Some((msg.into(), ui::time::now()));
     }
 
     fn worker(&mut self) -> &mut FetchWorker {
@@ -1372,10 +1372,14 @@ impl FeedsApp {
             return;
         };
         match outcome {
-            PortalOutcome::Opened(path) => match std::fs::write(&path, xml) {
-                Ok(()) => self.set_toast(format!("Exported OPML → {}", path.display())),
-                Err(error) => self.set_toast(format!("Export failed: {error}")),
-            },
+            PortalOutcome::Opened(path) => {
+                match tilo_files::file_at(&path).and_then(|(dir, name)| {
+                    tilo_files::blocking::save_document(&dir, &name, xml.as_bytes())
+                }) {
+                    Ok(()) => self.set_toast(format!("Exported OPML → {}", path.display())),
+                    Err(error) => self.set_toast(format!("Export failed: {error}")),
+                }
+            }
             PortalOutcome::Cancelled => self.set_toast("Export cancelled"),
             PortalOutcome::Failed(reason) => self.set_toast(format!("Export failed: {reason}")),
         }
@@ -1413,7 +1417,12 @@ impl FeedsApp {
         };
         self.import_rx = None;
         match outcome {
-            PortalOutcome::Opened(path) => match std::fs::read_to_string(&path) {
+            PortalOutcome::Opened(path) => match tilo_files::file_at(&path)
+                .and_then(|(dir, name)| tilo_files::blocking::read(&dir, &name))
+                .and_then(|bytes| {
+                    String::from_utf8(bytes)
+                        .map_err(|_| tilo_files::FsError::Io("the file is not UTF-8 text".into()))
+                }) {
                 Ok(text) => {
                     let new_ids = self.apply_opml_import(&text, doc);
                     if new_ids.is_empty() {
@@ -1794,7 +1803,7 @@ impl FeedsApp {
             && self.refresh.done >= self.refresh.total
             && self.refresh.finished_at.is_none()
         {
-            self.refresh.finished_at = Some(Instant::now());
+            self.refresh.finished_at = Some(ui::time::now());
             if let Some(invocation) = self.resource_refresh_invocation.take() {
                 self.resource_refresh_result = Some(if self.refresh.failed_feeds > 0 {
                     tilo_actions::InvocationUpdate::Failed {
@@ -2326,7 +2335,7 @@ impl FeedsApp {
 
         // Advance the sidebar flap transition with real elapsed time, then
         // recompute the eased geometry so the slide is reflected this frame.
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.last_frame).as_secs_f64().min(0.1);
         self.last_frame = now;
         let nav_layout = self.nav_layout();
@@ -3059,7 +3068,7 @@ impl FeedsApp {
     }
 
     fn open_url(&mut self, url: &str) {
-        let Some(url) = reqwest::Url::parse(url.trim())
+        let Some(url) = tilo_net::Url::parse(url.trim())
             .ok()
             .filter(|url| match url.scheme() {
                 "http" | "https" | "gemini" => url.host_str().is_some(),
@@ -5350,9 +5359,9 @@ impl Widget for FeedsApp {
             return None;
         }
         let deadline = self.background_poll_deadline.get().unwrap_or_else(|| {
-            Instant::now()
+            ui::time::now()
                 .checked_add(std::time::Duration::from_millis(16))
-                .unwrap_or_else(Instant::now)
+                .unwrap_or_else(ui::time::now)
         });
         self.background_poll_deadline.set(Some(deadline));
         Some(deadline)
@@ -5787,7 +5796,7 @@ mod tests {
         // --- phase: real_worker_refresh_keeps_main_thread_responsive ---
         // A real refresh worker must not block the UI thread.
         {
-            use std::time::{Duration, Instant};
+            use ui::time::Duration;
 
             let mut a = framed(app());
             // Compare active-refresh work with warmed idle frames to avoid tying
@@ -5821,7 +5830,7 @@ mod tests {
             }
 
             // Worker and runtime startup must stay off the UI thread.
-            let t_refresh = Instant::now();
+            let t_refresh = ui::time::now();
             a.refresh_all();
             let refresh_cost = t_refresh.elapsed();
             assert!(
@@ -5832,7 +5841,7 @@ mod tests {
             assert!(a.refresh.in_progress());
 
             // Pump frames while requests remain outstanding.
-            let deadline = Instant::now() + Duration::from_millis(500);
+            let deadline = ui::time::now() + Duration::from_millis(500);
             let mut frames = 0u32;
             let mut best_draw = Duration::from_secs(9999);
             let mut best_event = Duration::from_secs(9999);
@@ -5882,8 +5891,6 @@ mod tests {
         // touch the network.
         {
             fn refresh_is_async_and_drains_without_blocking() {
-                use std::time::Instant;
-
                 let mut a = app();
                 let mut doc = AutoCommit::new();
                 a.sync(&mut doc, &automerge::ROOT);
@@ -5893,7 +5900,7 @@ mod tests {
                 let tx = a.install_test_worker();
 
                 // Kick off a refresh. This must return immediately — it only enqueues.
-                let start = Instant::now();
+                let start = ui::time::now();
                 a.refresh_all();
                 assert!(
                     start.elapsed().as_millis() < 50,
@@ -5982,6 +5989,8 @@ mod tests {
         // frame budget even when hundreds of articles land at once. Proves the
         // flush is bounded per frame rather than persisting everything in one go.
         {
+            use ui::time::Duration;
+
             let mut mounted = framed(app());
             let (a, st) = Framed::split(&mut mounted);
             let doc = &mut st.doc;
@@ -6027,11 +6036,10 @@ mod tests {
                 .unwrap();
             }
 
-            // The live drain folds everything into the store in one pass. It is
-            // pure in-memory work: it persists nothing to the CRDT, which is what
-            // keeps it cheap on the draw thread even for a big batch. (A wall-clock
-            // bound here measures the shared test host, not the drain.)
-            let heads_before = doc.get_heads();
+            // The live drain folds everything into the store in one pass. This is
+            // pure in-memory work (no CRDT, no network) and must be cheap even for
+            // a big batch — it's what runs on the draw thread every frame.
+            let t_drain = ui::time::now();
             a.drain_fetches_live();
             assert_eq!(
                 doc.get_heads(),

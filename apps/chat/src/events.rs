@@ -297,10 +297,7 @@ impl ChatApp {
         } = dispatch;
         self.last_mouse = last_mouse;
         let tooltip_target = self.hover_tooltip_target(last_mouse);
-        if self
-            .tooltips
-            .on_pointer(tooltip_target, ui::clock::Instant::now())
-        {
+        if self.tooltips.on_pointer(tooltip_target, ui::time::now()) {
             *handled = true;
         }
         // Live-drag the floating call overlay.
@@ -1593,8 +1590,8 @@ impl ChatApp {
         self.attach_open = true;
         let sender = self.attachment_picker_result_tx.clone();
         let dir = crate::picker::attach_dir();
-        std::thread::spawn(move || {
-            let result = if std::fs::read_dir(&dir).is_ok() {
+        let job = move || {
+            let result = if crate::picker::folder_readable(&dir) {
                 AttachmentPickerResult::Ready {
                     generation,
                     entries: crate::picker::list_attachments(&dir),
@@ -1606,7 +1603,8 @@ impl ChatApp {
                 }
             };
             let _ = sender.send(result);
-        });
+        };
+        run_worker("chat-attachment-picker", job, &mut self.attachment_status);
     }
 
     /// Apply one bounded directory enumeration result during sync. Generation
@@ -1688,13 +1686,14 @@ impl ChatApp {
         let sender = self.attachment_result_tx.clone();
         let content = self.content.clone();
         let path = path.to_path_buf();
-        std::thread::spawn(move || {
+        let job = move || {
             let result = prepare_attachment_import(&content, token, &path);
             // One worker may be active and the reply channel holds one result,
             // so this can never accumulate unbounded buffers. If the app has
             // gone away, dropping the result is cancellation.
             let _ = sender.send(result);
-        });
+        };
+        run_worker("chat-attachment-import", job, &mut self.attachment_status);
         true
     }
 
@@ -1787,13 +1786,16 @@ fn prepare_attachment_import(
         token,
         reason: reason.into(),
     };
-    let Ok(metadata) = std::fs::metadata(path) else {
+    let Ok((dir, name)) = tilo_files::file_at(path) else {
         return fail("file is unavailable");
     };
-    if !metadata.is_file() || metadata.len() > crate::doc::MAX_ATTACHMENT_BYTES {
+    let Ok(metadata) = tilo_files::blocking::metadata(&dir, &name) else {
+        return fail("file is unavailable");
+    };
+    if metadata.kind != tilo_files::Kind::File || metadata.len > crate::doc::MAX_ATTACHMENT_BYTES {
         return fail("file is not shareable or exceeds 32 MiB");
     }
-    let Ok(bytes) = std::fs::read(path) else {
+    let Ok(bytes) = tilo_files::blocking::read(&dir, &name) else {
         return fail("could not read file");
     };
     if bytes.is_empty() {
@@ -1827,6 +1829,19 @@ fn prepare_attachment_import(
         width: meta.w,
         height: meta.h,
         video: crate::picker::is_video_name(&name),
+    }
+}
+
+/// Run a bounded job on its own thread, or inline where no thread can start
+/// (a browser page, where the job's workspace reads fail fast). A native
+/// thread that cannot start leaves the reason on the status line.
+fn run_worker(name: &str, job: impl FnOnce() + Send + 'static, status: &mut Option<String>) {
+    if ui::rt::availability(ui::rt::Feature::Threads) != ui::rt::Availability::Available {
+        job();
+        return;
+    }
+    if let Err(error) = ui::rt::spawn_thread(name, job) {
+        *status = Some(format!("Attachments unavailable: {error}"));
     }
 }
 

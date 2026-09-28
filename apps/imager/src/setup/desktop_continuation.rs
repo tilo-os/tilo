@@ -718,7 +718,7 @@ mod tests {
             // way; this test only needs to reach a known full queue promptly.
             assert_eq!(unsafe { libc::listen(_server.as_raw_fd(), 1) }, 0);
             let mut held = Vec::new();
-            let started = std::time::Instant::now();
+            let started = ui::time::now();
             loop {
                 match connect_readiness(&path) {
                     Ok(stream) => held.push(stream),

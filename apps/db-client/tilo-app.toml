@@ -12,6 +12,8 @@ category = "Development"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
+platforms = ["linux", "macos"]
+platform-reason = "Opens raw TCP database connections and links C SQLite."
 
 [package.isa]
 x86_64 = "v3"

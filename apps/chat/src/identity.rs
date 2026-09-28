@@ -83,13 +83,15 @@ impl LocalIdentity {
     /// session (no `TILO_USER_IDENTITY`) still keeps one stable id across runs.
     fn from_persisted_uuid() -> Option<Self> {
         let dir = crate::storage::data_dir()?;
-        let path = dir.join("peer-id");
-        let id = match std::fs::read_to_string(&path) {
-            Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
+        let (dir, name) = tilo_files::file_at(&dir.join("peer-id")).ok()?;
+        let stored = tilo_files::blocking::read(&dir, &name)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok());
+        let id = match stored {
+            Some(s) if !s.trim().is_empty() => s.trim().to_string(),
             _ => {
                 let fresh = format!("u_{}", uuid::Uuid::new_v4().simple());
-                std::fs::create_dir_all(&dir).ok()?;
-                std::fs::write(&path, &fresh).ok()?;
+                tilo_files::blocking::write_atomic(&dir, &name, fresh.as_bytes()).ok()?;
                 fresh
             }
         };
@@ -193,8 +195,10 @@ fn hostname() -> String {
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| {
-            std::fs::read_to_string("/etc/hostname")
+            tilo_files::file_at(std::path::Path::new("/etc/hostname"))
+                .and_then(|(dir, name)| tilo_files::blocking::read(&dir, &name))
                 .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
                 .map(|s| s.trim().to_string())
         })
         .unwrap_or_default()

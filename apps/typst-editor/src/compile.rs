@@ -7,8 +7,10 @@
 //!
 //! A minimal [`World`] implementation backs compilation. We need only one
 //! in-memory source file (`/main.typ`) plus the fonts embedded by
-//! `typst-assets` (plus the shared Windows emoji face). There is no package
-//! resolution, no filesystem, no clock.
+//! `typst-assets` (plus the shared Windows emoji face). In the browser the
+//! same fonts arrive as host data after the editor opens, keeping 9 MiB out
+//! of the page's first download. There is no package resolution, no
+//! filesystem, no clock.
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -116,6 +118,94 @@ impl CompileOutput {
     }
 }
 
+/// Whether a [`WorldParts`] has every font it will ever have.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Fonts {
+    Ready,
+    /// The host is still fetching some; build again once it relayouts.
+    Loading,
+    /// The host could not supply some; compile with the rest.
+    Failed(String),
+}
+
+/// The browser bundle ships the fonts `typst-assets` embeds as host data
+/// (`build.sh` copies them from the crate, checking them against this list),
+/// fetched when the editor opens.
+#[cfg(target_arch = "wasm32")]
+mod fonts {
+    use typst::foundations::Bytes;
+    use typst::text::Font;
+
+    use super::Fonts;
+
+    pub const BROWSER_FONTS: [&str; 17] = [
+        "typst/LibertinusSerif-Regular.otf",
+        "typst/LibertinusSerif-Bold.otf",
+        "typst/LibertinusSerif-Italic.otf",
+        "typst/LibertinusSerif-BoldItalic.otf",
+        "typst/LibertinusSerif-Semibold.otf",
+        "typst/LibertinusSerif-SemiboldItalic.otf",
+        "typst/NewCMMath-Bold.otf",
+        "typst/NewCMMath-Book.otf",
+        "typst/NewCMMath-Regular.otf",
+        "typst/NewCM10-Regular.otf",
+        "typst/NewCM10-Bold.otf",
+        "typst/NewCM10-Italic.otf",
+        "typst/NewCM10-BoldItalic.otf",
+        "typst/DejaVuSansMono-Bold.ttf",
+        "typst/DejaVuSansMono-BoldOblique.ttf",
+        "typst/DejaVuSansMono-Oblique.ttf",
+        "typst/DejaVuSansMono.ttf",
+    ];
+
+    /// The bundled fonts available now.
+    pub fn bundled() -> (Vec<Font>, Fonts) {
+        let mut fonts = Vec::new();
+        let mut state = Fonts::Ready;
+        for name in BROWSER_FONTS {
+            match ui::host_data::request(name) {
+                ui::host_data::Status::Ready(bytes) => fonts.extend(Font::iter(Bytes::new(bytes))),
+                ui::host_data::Status::Pending => state = Fonts::Loading,
+                ui::host_data::Status::Failed(reason) => {
+                    if state == Fonts::Ready {
+                        state = Fonts::Failed(format!("{name}: {reason}"));
+                    }
+                }
+            }
+        }
+        (fonts, state)
+    }
+
+    pub fn loading() -> bool {
+        BROWSER_FONTS
+            .iter()
+            .any(|name| ui::host_data::request(name) == ui::host_data::Status::Pending)
+    }
+}
+
+/// Every other build embeds the fonts.
+#[cfg(not(target_arch = "wasm32"))]
+mod fonts {
+    use typst::foundations::Bytes;
+    use typst::text::Font;
+
+    use super::Fonts;
+
+    pub fn bundled() -> (Vec<Font>, Fonts) {
+        #[cfg(feature = "thin")]
+        let fonts = runtime_dylib::typst_fonts();
+        #[cfg(not(feature = "thin"))]
+        let fonts: Vec<Font> = typst_assets::fonts()
+            .flat_map(|data| Font::iter(Bytes::new(data)))
+            .collect();
+        (fonts, Fonts::Ready)
+    }
+
+    pub fn loading() -> bool {
+        false
+    }
+}
+
 /// Immutable, reusable pieces of a [`World`]: the standard library, the font
 /// book, and the parsed fonts. Built once (parsing every embedded font is the
 /// expensive part) and shared by `Arc` across every compile.
@@ -123,35 +213,64 @@ pub struct WorldParts {
     library: LazyHash<Library>,
     book: LazyHash<FontBook>,
     fonts: Vec<Font>,
+    state: Fonts,
 }
 
 impl WorldParts {
     /// Build the default library and font book once per process, then share
-    /// their immutable data across documents and compilation workers.
+    /// their immutable data across documents and compilation workers. While
+    /// the host is still supplying fonts the parts are rebuilt on each call
+    /// and kept only once complete.
     pub fn new() -> Arc<Self> {
         static PARTS: OnceLock<Arc<WorldParts>> = OnceLock::new();
-        Arc::clone(PARTS.get_or_init(|| {
-            #[cfg(feature = "thin")]
-            let fonts = runtime_dylib::typst_fonts();
-            #[cfg(not(feature = "thin"))]
-            let fonts: Vec<Font> = typst_assets::fonts()
-                .flat_map(|data| Font::iter(Bytes::new(data)))
-                .collect();
+        if let Some(parts) = PARTS.get() {
+            return Arc::clone(parts);
+        }
+        let parts = Arc::new(Self::build());
+        if parts.state == Fonts::Loading {
+            return parts;
+        }
+        Arc::clone(PARTS.get_or_init(|| parts))
+    }
+
+    pub fn fonts(&self) -> &Fonts {
+        &self.state
+    }
+
+    /// Whether the host is still fetching bundled fonts: cheap, so a caller
+    /// can wait for it before building again.
+    pub fn fonts_loading() -> bool {
+        fonts::loading()
+    }
+
+    fn build() -> Self {
+        let (fonts, state) = fonts::bundled();
+        #[cfg(target_os = "windows")]
+        let fonts = {
             let mut fonts = fonts;
-            // Reuse the toolkit's emoji face where it ships one instead of
-            // bundling a second copy.
-            if let Some((data, index)) = ui::text_render::bundled_emoji_face()
-                && let Some(font) = Font::new(Bytes::new(data), index)
-            {
+            // The toolkit already validates and shares the installed font
+            // catalog. Reuse its emoji face instead of bundling a second
+            // copy or relying on machine-specific Windows font discovery.
+            let system = ui::text_render::configured_font_system();
+            let database = system.db();
+            if let Some(face) = database.faces().find(|face| {
+                face.families
+                    .iter()
+                    .any(|(name, _)| name == "Noto Color Emoji")
+            }) && let Some(Some(font)) = database.with_face_data(face.id, |data, index| {
+                Font::new(Bytes::new(data.to_vec()), index)
+            }) {
                 fonts.push(font);
             }
-            let book = FontBook::from_fonts(fonts.iter());
-            Arc::new(Self {
-                library: LazyHash::new(Library::builder().build()),
-                book: LazyHash::new(book),
-                fonts,
-            })
-        }))
+            fonts
+        };
+        let book = FontBook::from_fonts(fonts.iter());
+        Self {
+            library: LazyHash::new(Library::builder().build()),
+            book: LazyHash::new(book),
+            fonts,
+            state,
+        }
     }
 }
 
@@ -216,7 +335,7 @@ impl World for TypstWorld {
 /// bad input — compiler errors are returned as [`Diagnostic`]s with an empty
 /// page list.
 pub fn compile_source(parts: &Arc<WorldParts>, src: &str, pixel_per_pt: f32) -> CompileOutput {
-    let started = std::time::Instant::now();
+    let started = ui::time::now();
     let world = TypstWorld::new(parts.clone(), src);
 
     let result = typst::compile::<PagedDocument>(&world);

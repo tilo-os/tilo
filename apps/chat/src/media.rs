@@ -919,16 +919,16 @@ mod tests {
         use super::super::live::IrohTransport;
         use super::*;
         use crate::audio::{OpusDecoder, OpusEncoder};
-        use std::time::{Duration, Instant};
+        use ui::time::Duration;
 
         /// Spin the transport's poll (non-blocking) until `want` objects have
         /// arrived or the deadline passes. The endpoints do their real QUIC
         /// handshake + stream I/O on the app runtime's thread, so a
         /// short sleep between polls lets them make progress.
         fn drain_until(t: &mut IrohTransport, want: usize, timeout: Duration) -> Vec<MediaObject> {
-            let deadline = Instant::now() + timeout;
+            let deadline = ui::time::now() + timeout;
             let mut got = Vec::new();
-            while got.len() < want && Instant::now() < deadline {
+            while got.len() < want && ui::time::now() < deadline {
                 got.extend(t.poll());
                 if got.len() < want {
                     std::thread::sleep(Duration::from_millis(20));
