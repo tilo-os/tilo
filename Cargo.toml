@@ -51,6 +51,8 @@ members = [
     "crates/session/tilo-ntfs-helper",
     "crates/session/tilo-ntfs-protocol",
     "crates/browser/chromium-blocker",
+    "crates/browser/tilo-browser-peer",
+    "crates/browser/tilo-web-desktop",
     # Core product surfaces
     "crates/session/shell",
     "crates/sdk/ui-core",
@@ -257,6 +259,8 @@ members = [
     # Session
     "crates/session/console-control",
     "crates/session/desktop-model",
+    "crates/session/desktop-search",
+    "crates/session/desktop-surface",
     "crates/session/greetd-client",
     "crates/session/greeter",
     "crates/session/installer",
@@ -781,6 +785,17 @@ strip = "symbols"
 overflow-checks = false
 debug = "line-tables-only"
 incremental = false
+
+# The browser bundles' release build (`build.sh --profile release`), measured
+# in crates/browser/tilo-web-desktop/SIZE.md. Fat LTO, one codegen unit and
+# stripped symbols come from `release`. `panic = "abort"` is the only panic
+# strategy wasm32-unknown-unknown has on stable: the runtime's panic hook
+# reports the message, then the module traps and the page must reload.
+# No debug info: `strip` would drop it after the linker had written it.
+[profile.wasm-release]
+inherits = "release"
+opt-level = 3
+debug = false
 
 # Thin-app profile: release settings minus those incompatible with dynamic SDK
 # linking.
