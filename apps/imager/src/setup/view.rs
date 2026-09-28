@@ -3046,35 +3046,21 @@ impl Widget for SetupApp {
         vec![super::actions::resource(&self.setup_projection())]
     }
 
-    fn invoke_resource_operation_v2(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        if let Some(import_app) = &mut self.import_app {
-            return import_app.invoke_resource_operation_v2(kind, type_id, payload, doc, path);
-        }
-        let Some(operation) = super::actions::decode(type_id, payload)? else {
-            for child in self.children_mut() {
-                if let Some(output) =
-                    child.invoke_resource_operation_v2(kind, type_id, payload, doc, path)?
-                {
-                    return Ok(Some(output));
-                }
-            }
-            return Ok(None);
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        if kind != tilo_actions::OperationKind::View {
-            return Err("Guided setup operations are local view operations.".into());
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        self.apply_setup_operation(operation)?;
-        Ok(Some(tilo_actions::ActionOutput {
-            value: Some(self.setup_projection().value()),
-            resources: Vec::new(),
-        }))
+        Ok(self
+            .answer_resource_operation_v2(request.kind, request.type_id, request.payload)?
+            .map(ui::widget::ResourceOperationStart::Completed))
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -3266,6 +3252,30 @@ impl Widget for SetupApp {
                 .composed
                 .as_mut()
                 .is_some_and(|child| child.take_structure_dirty())
+    }
+}
+
+impl SetupApp {
+    fn answer_resource_operation_v2(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        if self.import_app.is_some() {
+            return Ok(None);
+        }
+        let Some(operation) = super::actions::decode(type_id, payload)? else {
+            return Ok(None);
+        };
+        if kind != tilo_actions::OperationKind::View {
+            return Err("Guided setup operations are local view operations.".into());
+        }
+        self.apply_setup_operation(operation)?;
+        Ok(Some(tilo_actions::ActionOutput {
+            value: Some(self.setup_projection().value()),
+            resources: Vec::new(),
+        }))
     }
 }
 
@@ -4520,7 +4530,7 @@ mod tests {
         {
             let mut app = supported_fixture();
             app.import_launcher = || ImportApp::for_shot("import-first-login-later");
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let setup = Widget::resources(&app, &doc).pop().unwrap();
             let open = setup
                 .actions
@@ -4529,12 +4539,15 @@ mod tests {
                 .unwrap()
                 .build_json(&serde_json::Map::new())
                 .unwrap();
-            Widget::invoke_resource_operation_v2(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::View,
-                &open.type_id,
-                &open.payload,
-                &doc,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &open.type_id,
+                    &open.payload,
+                ),
+                &mut doc,
                 &automerge::ROOT,
             )
             .unwrap()
@@ -4551,13 +4564,16 @@ mod tests {
                     .all(|resource| resource.kind != "imager.setup")
             );
             assert!(
-                Widget::invoke_resource_operation_v2(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::View,
-                    &open.type_id,
-                    &open.payload,
-                    &state,
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        &open.type_id,
+                        &open.payload
+                    ),
+                    &mut state,
+                    &automerge::ROOT
                 )
                 .unwrap()
                 .is_none(),
@@ -4574,12 +4590,15 @@ mod tests {
                 .find(|action| action.id == "one-time-copy")
                 .unwrap();
             let copy = copy_action.build_json(&serde_json::Map::new()).unwrap();
-            Widget::invoke_resource_operation_v2(
+            Widget::start_operation(
                 &mut app,
-                copy_action.kind,
-                &copy.type_id,
-                &copy.payload,
-                &state,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    copy_action.kind,
+                    &copy.type_id,
+                    &copy.payload,
+                ),
+                &mut state,
                 &automerge::ROOT,
             )
             .unwrap()
@@ -4725,20 +4744,26 @@ mod tests {
         id: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
-        let doc = AutoCommit::new();
+        let mut doc = AutoCommit::new();
         let action = setup_action(app, id, &doc);
         let encoded = action
             .build_json(&arguments)
             .map_err(|error| error.to_string())?;
-        Widget::invoke_resource_operation_v2(
+        Widget::start_operation(
             app,
-            action.kind,
-            &encoded.type_id,
-            &encoded.payload,
-            &doc,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                action.kind,
+                &encoded.type_id,
+                &encoded.payload,
+            ),
+            &mut doc,
             &automerge::ROOT,
         )?
-        .and_then(|output| output.value)
+        .and_then(|started| match started {
+            ui::widget::ResourceOperationStart::Completed(output) => output.value,
+            _ => None,
+        })
         .ok_or_else(|| "setup operation returned no state projection".to_string())
     }
 
@@ -4760,17 +4785,23 @@ mod tests {
         app: &mut SetupApp,
         operation: super::super::actions::SetupOperation,
     ) -> Result<serde_json::Value, String> {
-        let doc = AutoCommit::new();
+        let mut doc = AutoCommit::new();
         let encoded = super::super::actions::encode(&operation);
-        Widget::invoke_resource_operation_v2(
+        Widget::start_operation(
             app,
-            tilo_actions::OperationKind::View,
-            &encoded.type_id,
-            &encoded.payload,
-            &doc,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload,
+            ),
+            &mut doc,
             &automerge::ROOT,
         )?
-        .and_then(|output| output.value)
+        .and_then(|started| match started {
+            ui::widget::ResourceOperationStart::Completed(output) => output.value,
+            _ => None,
+        })
         .ok_or_else(|| "setup operation returned no state projection".to_string())
     }
 
@@ -4789,16 +4820,22 @@ mod tests {
         app: &mut SetupApp,
         encoded: &tilo_actions::EncodedAction,
     ) -> Result<serde_json::Value, String> {
-        let doc = AutoCommit::new();
-        Widget::invoke_resource_operation_v2(
+        let mut doc = AutoCommit::new();
+        Widget::start_operation(
             app,
-            tilo_actions::OperationKind::View,
-            &encoded.type_id,
-            &encoded.payload,
-            &doc,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload,
+            ),
+            &mut doc,
             &automerge::ROOT,
         )?
-        .and_then(|output| output.value)
+        .and_then(|started| match started {
+            ui::widget::ResourceOperationStart::Completed(output) => output.value,
+            _ => None,
+        })
         .ok_or_else(|| "setup operation returned no state projection".to_string())
     }
 
@@ -4836,7 +4873,7 @@ mod tests {
 
     fn assert_live_import_after_activation(
         app: &mut SetupApp,
-        doc: &AutoCommit,
+        doc: &mut AutoCommit,
         retained_setup: &tilo_actions::EncodedAction,
     ) {
         let resource = Widget::resources(app, doc).pop().unwrap();
@@ -4857,13 +4894,16 @@ mod tests {
             "complete"
         );
         assert!(
-            Widget::invoke_resource_operation_v2(
+            Widget::start_operation(
                 app,
-                tilo_actions::OperationKind::View,
-                &retained_setup.type_id,
-                &retained_setup.payload,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &retained_setup.type_id,
+                    &retained_setup.payload
+                ),
                 doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             )
             .unwrap()
             .is_none(),
@@ -5025,7 +5065,7 @@ mod tests {
                 );
                 assert_eq!(app.controller().folders(), before.as_slice());
             }
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let set_mode = folder_action(&app, 0, "set-mode", &doc);
             assert!(set_mode.build_json(&serde_json::Map::new()).is_err());
             assert!(
@@ -5034,13 +5074,16 @@ mod tests {
                     .is_err()
             );
             assert!(
-                Widget::invoke_resource_operation_v2(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::View,
-                    super::super::actions::SETUP_OPERATION_TYPE,
-                    b"{not-json",
-                    &doc,
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        super::super::actions::SETUP_OPERATION_TYPE,
+                        b"{not-json"
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .is_err()
             );
@@ -5247,7 +5290,7 @@ mod tests {
                 connected_folders: false,
             });
             app.import_launcher = || ImportApp::for_shot("import-complete");
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let resource = Widget::resources(&app, &doc).pop().unwrap();
             assert_eq!(resource.kind, "imager.setup");
             assert_eq!(
@@ -5306,7 +5349,7 @@ mod tests {
             let opened = invoke_setup(&mut app, "open-imports", serde_json::Map::new()).unwrap();
             assert_eq!(opened["selection"]["imports_open"], true);
             assert_eq!(app.children()[0].name(), "ImportApp");
-            assert_live_import_after_activation(&mut app, &doc, &retained_help);
+            assert_live_import_after_activation(&mut app, &mut doc, &retained_help);
         }
 
         // Phase `setup_resource_browses_complete_path_free_folder_selection`.

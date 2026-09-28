@@ -9,7 +9,7 @@
 //! back-pressuring input and animation.
 
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
@@ -304,18 +304,14 @@ fn default_profile_path() -> Option<PathBuf> {
     std::env::var_os("TILO_PROJECTOR_PROFILE")
         .map(PathBuf::from)
         .or_else(|| {
-            std::env::var_os("XDG_RUNTIME_DIR")
-                .map(|dir| Path::new(&dir).join("tilo-projector/capture-profile.json"))
+            xdg_paths::xdg::runtime_dir().map(|dir| dir.join("tilo-projector/capture-profile.json"))
         })
 }
 
 fn default_socket_path() -> Option<PathBuf> {
     std::env::var_os(VIDEO_SOCKET_ENV)
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("XDG_RUNTIME_DIR")
-                .map(|dir| Path::new(&dir).join("tilo-projector/video.sock"))
-        })
+        .or_else(|| xdg_paths::xdg::runtime_dir().map(|dir| dir.join("tilo-projector/video.sock")))
 }
 
 fn target_size(source: (u32, u32), profile: CaptureProfile) -> Option<(u32, u32, f64)> {

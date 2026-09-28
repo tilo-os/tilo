@@ -226,8 +226,8 @@ fn stage_launch_content(
     {
         return Err("launch content failed integrity validation".into());
     }
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map_or_else(std::env::temp_dir, std::path::PathBuf::from)
+    let dir = xdg_paths::xdg::runtime_dir()
+        .unwrap_or_else(std::env::temp_dir)
         .join("tilo-opened");
     std::fs::create_dir_all(&dir).map_err(|error| format!("create launch staging: {error}"))?;
     #[cfg(unix)]

@@ -70,6 +70,6 @@ pub use tilo_app_package::PackageId;
 
 /// Default socket path: `$XDG_RUNTIME_DIR/tilo/services/app-host.sock`.
 pub fn default_socket_path() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
+    let base = xdg_paths::xdg::runtime_dir().unwrap_or_else(std::env::temp_dir);
     base.join("tilo").join("services").join("app-host.sock")
 }

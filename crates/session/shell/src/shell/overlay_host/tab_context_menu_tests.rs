@@ -625,7 +625,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
         let mut tr = TextRenderer::new();
         let presence = ui::presence::PresenceCtx::default();
         let mut closed = Scene::new();
-        let viewport = h.host.rect;
+        let outputs = h.host.layer_outputs();
         h.host.layers.draw(
             LayerId::TabContextMenu,
             &mut LayerPaint {
@@ -634,7 +634,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
                 text_renderer: &mut tr,
                 theme: &h.theme,
                 presence: &presence,
-                viewport,
+                geometry: h.host.layer_geometry(&outputs),
             },
         );
         assert!(
@@ -643,7 +643,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
         );
         h.right_click_pill(1);
         let mut open = Scene::new();
-        let viewport = h.host.rect;
+        let outputs = h.host.layer_outputs();
         h.host.layers.draw(
             LayerId::TabContextMenu,
             &mut LayerPaint {
@@ -652,7 +652,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
                 text_renderer: &mut tr,
                 theme: &h.theme,
                 presence: &presence,
-                viewport,
+                geometry: h.host.layer_geometry(&outputs),
             },
         );
         assert!(

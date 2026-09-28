@@ -1802,88 +1802,35 @@ impl Widget for HexView {
         &[crate::actions::HEX_EDITOR_OPERATION_TYPE]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match operation {
-            HexOperation::Open { .. } => self.begin_open(),
-            HexOperation::Save { .. } if self.has_file => self.begin_save(),
-            HexOperation::Search if self.has_file => {
-                self.overlay = Overlay::Search;
-                self.search_input.set_focus(true);
-                self.recompute_matches();
-                self.dirty = true;
-            }
-            HexOperation::GotoOffset if self.has_file => {
-                self.overlay = Overlay::Goto;
-                self.goto_input.set_focus(true);
-                self.dirty = true;
-            }
-            HexOperation::Edit { edit } if self.has_file => {
-                self.model.apply_local_edit(&edit.into());
-                self.record_local_history();
-                self.dirty = true;
-            }
-            HexOperation::Undo if !self.undo.is_empty() => {
-                let _ = self.undo_local();
-            }
-            HexOperation::Redo if !self.redo.is_empty() => {
-                let _ = self.redo_local();
-            }
-            HexOperation::Undo => return Err("no local edit to undo".into()),
-            HexOperation::Redo => return Err("no local edit to redo".into()),
-            _ => return Err("open a file first".into()),
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        match &operation {
-            crate::actions::HexOperation::Open { .. }
-            | crate::actions::HexOperation::Save { .. } => {}
-            _ => {
-                return self
-                    .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
-                    .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
-            }
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if self.resource_invocation.is_some() || self.pending_resource_io.is_some() {
-            return Err("another file operation is already running".into());
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        match &operation {
-            crate::actions::HexOperation::Open { path: None } => {
-                self.begin_open();
-                self.resource_invocation = Some(invocation);
-            }
-            crate::actions::HexOperation::Save { path: None } => {
-                self.begin_save();
-                self.resource_invocation = Some(invocation);
-            }
-            _ => self.pending_resource_io = Some((invocation, operation)),
-        }
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -2289,6 +2236,98 @@ impl Widget for HexView {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+    }
+}
+
+impl HexView {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            HexOperation::Open { .. } => self.begin_open(),
+            HexOperation::Save { .. } if self.has_file => self.begin_save(),
+            HexOperation::Search if self.has_file => {
+                self.overlay = Overlay::Search;
+                self.search_input.set_focus(true);
+                self.recompute_matches();
+                self.dirty = true;
+            }
+            HexOperation::GotoOffset if self.has_file => {
+                self.overlay = Overlay::Goto;
+                self.goto_input.set_focus(true);
+                self.dirty = true;
+            }
+            HexOperation::Edit { edit } if self.has_file => {
+                self.model.apply_local_edit(&edit.into());
+                self.record_local_history();
+                self.dirty = true;
+            }
+            HexOperation::Undo if !self.undo.is_empty() => {
+                let _ = self.undo_local();
+            }
+            HexOperation::Redo if !self.redo.is_empty() => {
+                let _ = self.redo_local();
+            }
+            HexOperation::Undo => return Err("no local edit to undo".into()),
+            HexOperation::Redo => return Err("no local edit to redo".into()),
+            _ => return Err("open a file first".into()),
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        match &operation {
+            crate::actions::HexOperation::Open { .. }
+            | crate::actions::HexOperation::Save { .. } => {}
+            _ => {
+                return self
+                    .answer_resource_operation(kind, type_id, payload, doc, path)
+                    .map(|handled| {
+                        handled.then(|| {
+                            ui::widget::ResourceOperationStart::Completed(
+                                ui::tilo_actions::ActionOutput::default(),
+                            )
+                        })
+                    });
+            }
+        }
+        if self.resource_invocation.is_some() || self.pending_resource_io.is_some() {
+            return Err("another file operation is already running".into());
+        }
+        match &operation {
+            crate::actions::HexOperation::Open { path: None } => {
+                self.begin_open();
+                self.resource_invocation = Some(invocation);
+            }
+            crate::actions::HexOperation::Save { path: None } => {
+                self.begin_save();
+                self.resource_invocation = Some(invocation);
+            }
+            _ => self.pending_resource_io = Some((invocation, operation)),
+        }
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -2779,13 +2818,15 @@ mod tests {
             path: Some(source.display().to_string()),
         })
         .unwrap();
-        let started = Widget::start_resource_operation(
+        let started = Widget::start_operation(
             &mut view,
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::HEX_EDITOR_OPERATION_TYPE,
-            &payload,
-            &doc,
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::HEX_EDITOR_OPERATION_TYPE,
+                &payload,
+            ),
+            &mut doc,
             &automerge::ROOT,
         )
         .unwrap()
@@ -2801,16 +2842,19 @@ mod tests {
 
         // Canonical edit, undo and redo stay local and update availability.
         let mut view = HexView::new(vec![0x10, 0x20], "bytes.bin");
-        let doc = AutoCommit::new();
+        let mut doc = AutoCommit::new();
         let undo = serde_json::to_vec(&crate::actions::HexOperation::Undo).unwrap();
         assert!(
-            Widget::invoke_resource_operation(
+            Widget::start_operation(
                 &mut view,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::HEX_EDITOR_OPERATION_TYPE,
-                &undo,
-                &doc,
-                &automerge::ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::HEX_EDITOR_OPERATION_TYPE,
+                    &undo
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
             .is_err()
         );
@@ -2821,17 +2865,21 @@ mod tests {
             },
         })
         .unwrap();
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut view,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::HEX_EDITOR_OPERATION_TYPE,
-                &edit,
-                &doc,
-                &automerge::ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::HEX_EDITOR_OPERATION_TYPE,
+                    &edit
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
-            .unwrap()
-        );
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(view.model.bytes(), &[0x10, 0xAB]);
         assert!(
             Widget::resources(&view, &doc)[0]
@@ -2841,31 +2889,39 @@ mod tests {
                 .is_some_and(|action| action.contract.availability.is_available())
         );
 
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut view,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::HEX_EDITOR_OPERATION_TYPE,
-                &undo,
-                &doc,
-                &automerge::ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::HEX_EDITOR_OPERATION_TYPE,
+                    &undo
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
-            .unwrap()
-        );
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(view.model.bytes(), &[0x10, 0x20]);
 
         let redo = serde_json::to_vec(&crate::actions::HexOperation::Redo).unwrap();
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut view,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::HEX_EDITOR_OPERATION_TYPE,
-                &redo,
-                &doc,
-                &automerge::ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::HEX_EDITOR_OPERATION_TYPE,
+                    &redo
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
-            .unwrap()
-        );
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(view.model.bytes(), &[0x10, 0xAB]);
         assert!(doc.get(automerge::ROOT, "bytes").unwrap().is_none());
     }

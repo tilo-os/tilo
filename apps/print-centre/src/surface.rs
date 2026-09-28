@@ -3257,6 +3257,56 @@ impl Default for PrintCentre {
         Self::new()
     }
 }
+impl PrintCentre {
+    fn answer_resource_operation(
+        &mut self,
+        k: OperationKind,
+        id: &str,
+        payload: &[u8],
+        _: &AutoCommit,
+        _: &ObjId,
+    ) -> Result<bool, String> {
+        if id != PRINT_CENTRE_OPERATION || !matches!(k, OperationKind::View | OperationKind::Effect)
+        {
+            return Ok(false);
+        }
+        let command: String = serde_json::from_slice(payload)
+            .map_err(|error| format!("invalid Print Centre operation: {error}"))?;
+        let (verb, value) = command.split_once('\0').unwrap_or((&command, ""));
+        let expected_kind = match verb {
+            "refresh" | "discover" | "default" | "pause" | "resume" | "cancel" | "retry" => {
+                OperationKind::Effect
+            }
+            "dashboard" | "queue" | "history" | "diagnostics" | "print" | "scan" | "device"
+            | "scan-device" => OperationKind::View,
+            _ => return Err("unknown Print Centre operation".into()),
+        };
+        if k != expected_kind {
+            return Err("Print Centre operation has the wrong execution kind".into());
+        }
+        let next = match verb {
+            "refresh" => UiCommand::Refresh,
+            "discover" => UiCommand::Discover,
+            "dashboard" => UiCommand::Dashboard,
+            "queue" => UiCommand::Queue,
+            "history" => UiCommand::History,
+            "diagnostics" => UiCommand::Diagnostics,
+            "print" => UiCommand::ChooseDocument,
+            "scan" => UiCommand::ScanSetup,
+            "device" if !value.is_empty() => UiCommand::Device(value.into()),
+            "scan-device" if !value.is_empty() => UiCommand::SelectScanner(value.into()),
+            "default" if !value.is_empty() => UiCommand::SetDefault(value.into()),
+            "pause" if !value.is_empty() => UiCommand::SetEnabled(value.into(), false),
+            "resume" if !value.is_empty() => UiCommand::SetEnabled(value.into(), true),
+            "cancel" if !value.is_empty() => UiCommand::ConfirmCancel(value.into()),
+            "retry" if !value.is_empty() => UiCommand::RetryJob(value.into()),
+            _ => return Err("Print Centre resource is no longer available".into()),
+        };
+        self.handle_command(next);
+        Ok(true)
+    }
+}
+
 impl Widget for PrintCentre {
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         if self.poll_picker() {
@@ -3396,52 +3446,25 @@ impl Widget for PrintCentre {
         }
         vec![root]
     }
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        k: OperationKind,
-        id: &str,
-        payload: &[u8],
-        _: &AutoCommit,
-        _: &ObjId,
-    ) -> Result<bool, String> {
-        if id != PRINT_CENTRE_OPERATION || !matches!(k, OperationKind::View | OperationKind::Effect)
-        {
-            return Ok(false);
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let command: String = serde_json::from_slice(payload)
-            .map_err(|error| format!("invalid Print Centre operation: {error}"))?;
-        let (verb, value) = command.split_once('\0').unwrap_or((&command, ""));
-        let expected_kind = match verb {
-            "refresh" | "discover" | "default" | "pause" | "resume" | "cancel" | "retry" => {
-                OperationKind::Effect
-            }
-            "dashboard" | "queue" | "history" | "diagnostics" | "print" | "scan" | "device"
-            | "scan-device" => OperationKind::View,
-            _ => return Err("unknown Print Centre operation".into()),
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
         };
-        if k != expected_kind {
-            return Err("Print Centre operation has the wrong execution kind".into());
-        }
-        let next = match verb {
-            "refresh" => UiCommand::Refresh,
-            "discover" => UiCommand::Discover,
-            "dashboard" => UiCommand::Dashboard,
-            "queue" => UiCommand::Queue,
-            "history" => UiCommand::History,
-            "diagnostics" => UiCommand::Diagnostics,
-            "print" => UiCommand::ChooseDocument,
-            "scan" => UiCommand::ScanSetup,
-            "device" if !value.is_empty() => UiCommand::Device(value.into()),
-            "scan-device" if !value.is_empty() => UiCommand::SelectScanner(value.into()),
-            "default" if !value.is_empty() => UiCommand::SetDefault(value.into()),
-            "pause" if !value.is_empty() => UiCommand::SetEnabled(value.into(), false),
-            "resume" if !value.is_empty() => UiCommand::SetEnabled(value.into(), true),
-            "cancel" if !value.is_empty() => UiCommand::ConfirmCancel(value.into()),
-            "retry" if !value.is_empty() => UiCommand::RetryJob(value.into()),
-            _ => return Err("Print Centre resource is no longer available".into()),
-        };
-        self.handle_command(next);
-        Ok(true)
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[PRINT_CENTRE_OPERATION]
@@ -3509,7 +3532,7 @@ mod tests {
         {
             let mut centre = PrintCentre::demo(DemoScenario::Dashboard);
             centre.snapshot = Some(demo_snapshot());
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let resources = centre.resources(&doc);
             let root = resources.first().expect("Print Centre root resource");
             let action_ids = root
@@ -3550,13 +3573,17 @@ mod tests {
             let payload = serde_json::to_vec("queue").expect("operation payload");
             assert!(
                 centre
-                    .invoke_resource_operation(
-                        OperationKind::View,
-                        PRINT_CENTRE_OPERATION,
-                        &payload,
-                        &doc,
-                        &ROOT,
+                    .start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            ui::tilo_actions::InvocationId::new(),
+                            OperationKind::View,
+                            PRINT_CENTRE_OPERATION,
+                            &payload
+                        ),
+                        &mut doc,
+                        &ROOT
                     )
+                    .map(|started| started.is_some())
                     .expect("queue view operation")
             );
         }

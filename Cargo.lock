@@ -596,6 +596,7 @@ dependencies = [
  "tracing-subscriber",
  "wire-frame",
  "workspace-hack",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -1591,6 +1592,7 @@ dependencies = [
  "vello",
  "winit",
  "workspace-hack",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -2503,6 +2505,7 @@ dependencies = [
  "tilo-actions",
  "tilo-test-env",
  "workspace-hack",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -2594,6 +2597,7 @@ dependencies = [
  "vello",
  "winit",
  "workspace-hack",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -7497,6 +7501,7 @@ dependencies = [
  "uuid",
  "wire-frame",
  "workspace-hack",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -8154,6 +8159,7 @@ dependencies = [
  "chrono",
  "fnv",
  "hex",
+ "lru 0.18.3",
  "reqwest",
  "runtime-dylib",
  "serde",
@@ -8262,6 +8268,7 @@ dependencies = [
  "url",
  "web-time",
  "workspace-hack",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -9821,6 +9828,7 @@ dependencies = [
  "tokio",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -10259,6 +10267,7 @@ dependencies = [
  "vello_encoding",
  "winit",
  "workspace-hack",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -12025,6 +12034,7 @@ dependencies = [
  "tokio",
  "wire-frame",
  "workspace-hack",
+ "xdg-paths",
  "zeroize",
 ]
 
@@ -13838,6 +13848,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
+ "lru 0.18.3",
  "package-store",
  "rand_core 0.10.0",
  "registry-types",
@@ -14395,6 +14406,7 @@ dependencies = [
  "vte",
  "winit",
  "workspace-hack",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -14593,6 +14605,7 @@ dependencies = [
  "wire-frame",
  "word-processor",
  "workspace-hack",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -14792,8 +14805,6 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "futures",
  "hex",
- "iroh",
- "iroh-base",
  "js-sys",
  "notes",
  "postcard",
@@ -15618,6 +15629,7 @@ dependencies = [
  "wire-frame",
  "word-processor",
  "workspace-hack",
+ "xdg-paths",
  "zeroize",
 ]
 
@@ -15780,6 +15792,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "workspace-hack",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -18807,6 +18820,7 @@ dependencies = [
  "tilo-net",
  "tokio",
  "workspace-hack",
+ "xdg-paths",
 ]
 
 [[package]]

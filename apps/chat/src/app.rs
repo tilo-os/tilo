@@ -3569,6 +3569,187 @@ impl ChatApp {
         menu.widget.restore_overlay_state(Some(restored));
         self.menu = Some(menu);
     }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive operation dispatcher preserves the resource contract at a single boundary"
+    )]
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match &operation {
+            crate::actions::ChatOperation::NativeVoice { request, .. } => {
+                if kind != tilo_actions::OperationKind::Effect
+                    || !request.valid()
+                    || request.intent != 0
+                {
+                    return Err("Call controls require a valid local Effect".into());
+                }
+            }
+            crate::actions::ChatOperation::ImportAttachment { .. } => {
+                if !self.external_services {
+                    return Err("attachment import unsupported: no host asset transport".into());
+                }
+                if kind != tilo_actions::OperationKind::Effect {
+                    return Err("this operation is an Effect".into());
+                }
+            }
+            crate::actions::ChatOperation::Comment { .. } => {
+                if kind != tilo_actions::OperationKind::Effect {
+                    return Err("this operation is an Effect".into());
+                }
+            }
+            _ if !chat_navigation_kind(kind)? => return Ok(false),
+            _ => {}
+        }
+        match operation {
+            crate::actions::ChatOperation::NativeVoice { channel, request } => {
+                self.native_voice_command(&channel, request.command)?;
+            }
+            crate::actions::ChatOperation::OpenWorkspace { workspace } => {
+                self.reveal_workspace_resource(workspace)?;
+            }
+            crate::actions::ChatOperation::OpenChannel { workspace, channel } => {
+                if !self
+                    .channels
+                    .iter()
+                    .any(|item| item.id == channel && item.workspace == workspace)
+                {
+                    return Err("conversation no longer exists".into());
+                }
+                self.active_ws = workspace;
+                self.active_channel = channel;
+                self.inbox_open = false;
+                self.thread_open = None;
+                self.revealed_message = None;
+                self.reveal_scroll_pending = false;
+                self.revealed_person = None;
+                self.reset_timeline_to_latest();
+                self.focus = Focus::Main;
+            }
+            crate::actions::ChatOperation::OpenCategory {
+                workspace,
+                category,
+            } => self.reveal_category_resource(workspace, &category)?,
+            crate::actions::ChatOperation::RevealMessage {
+                workspace,
+                channel,
+                message,
+                parent,
+            } => {
+                if !self
+                    .channels
+                    .iter()
+                    .any(|item| item.id == channel && item.workspace == workspace)
+                {
+                    return Err("conversation no longer exists".into());
+                }
+                if !ChatDoc::list_messages(doc, &channel)
+                    .iter()
+                    .any(|item| item.id == message)
+                {
+                    return Err("message no longer exists".into());
+                }
+                self.active_ws = workspace;
+                self.active_channel = channel;
+                self.inbox_open = false;
+                self.thread_open = parent;
+                self.revealed_message = Some(message);
+                self.reveal_scroll_pending = true;
+                self.revealed_person = None;
+                self.timeline_total_height = 0.0;
+                self.timeline_at_end = false;
+                self.focus = if self.thread_open.is_some() {
+                    Focus::Thread
+                } else {
+                    Focus::Main
+                };
+                if self.thread_open.is_some() {
+                    self.right_flap.open();
+                }
+            }
+            crate::actions::ChatOperation::OpenPerson { user } => {
+                if !ChatDoc::list_users(doc).iter().any(|item| item.id == user) {
+                    return Err("person no longer exists".into());
+                }
+                // Prefer the current workspace when it already evidences this
+                // person; otherwise open the first workspace where they wrote.
+                if !self.users.iter().any(|item| item.id == user)
+                    && let Some(channel) = self.channels.iter().find(|channel| {
+                        ChatDoc::list_messages(doc, &channel.id)
+                            .iter()
+                            .any(|message| {
+                                message.author == user
+                                    || message.mentions.iter().any(|mention| mention.user == user)
+                                    || message
+                                        .reactions
+                                        .iter()
+                                        .any(|reaction| reaction.users.iter().any(|id| id == &user))
+                            })
+                    })
+                {
+                    self.active_ws = channel.workspace.clone();
+                    self.active_channel = channel.id.clone();
+                }
+                self.inbox_open = false;
+                self.thread_open = None;
+                self.revealed_message = None;
+                self.revealed_person = Some(user);
+                self.focus = Focus::Main;
+                self.right_flap.open();
+            }
+            crate::actions::ChatOperation::SetReportView { channel, view } => {
+                if !self
+                    .channels
+                    .iter()
+                    .any(|item| item.id == channel && item.feedback)
+                {
+                    return Err("not a feedback channel".into());
+                }
+                self.feedback.views.insert(channel, view);
+                self.messages = self.channel_messages(doc, &self.active_channel.clone());
+                self.arrange_reports();
+            }
+            crate::actions::ChatOperation::Comment { action } => {
+                // A comment is the author's own record, kept now: waiting for
+                // the next model pass would leave the invocation succeeded
+                // while nothing was kept, and a Chat that is not drawing may
+                // not have one for a long while. A refused comment fails the
+                // invocation with its reason. Only a comment no record can
+                // hold waits for that pass, which holds the document its
+                // conversation write needs.
+                match self.perform_as_comment(doc, &action) {
+                    Some(Ok(())) => self.reload(doc),
+                    Some(Err(reason)) => {
+                        tracing::warn!(%reason, "a comment was not kept");
+                        return Err(reason);
+                    }
+                    None => self.feedback.pending.push_back(*action),
+                }
+                self.relayout = true;
+            }
+            crate::actions::ChatOperation::ImportAttachment { channel, path } => {
+                if path.is_empty() {
+                    return Err("attachment path is empty".into());
+                }
+                if !self.channels.iter().any(|item| item.id == channel) {
+                    return Err("conversation no longer exists".into());
+                }
+                if !self.begin_attachment_import_into(&channel, std::path::Path::new(&path)) {
+                    return Err("attachment import was not accepted".into());
+                }
+            }
+        }
+        Ok(true)
+    }
 }
 
 impl Widget for ChatApp {
@@ -4402,185 +4583,25 @@ impl Widget for ChatApp {
         &[crate::actions::CHAT_OPERATION_TYPE]
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one exhaustive operation dispatcher preserves the resource contract at a single boundary"
-    )]
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
         };
-        match &operation {
-            crate::actions::ChatOperation::NativeVoice { request, .. } => {
-                if kind != tilo_actions::OperationKind::Effect
-                    || !request.valid()
-                    || request.intent != 0
-                {
-                    return Err("Call controls require a valid local Effect".into());
-                }
-            }
-            crate::actions::ChatOperation::ImportAttachment { .. } => {
-                if !self.external_services {
-                    return Err("attachment import unsupported: no host asset transport".into());
-                }
-                if kind != tilo_actions::OperationKind::Effect {
-                    return Err("this operation is an Effect".into());
-                }
-            }
-            crate::actions::ChatOperation::Comment { .. } => {
-                if kind != tilo_actions::OperationKind::Effect {
-                    return Err("this operation is an Effect".into());
-                }
-            }
-            _ if !chat_navigation_kind(kind)? => return Ok(false),
-            _ => {}
-        }
-        match operation {
-            crate::actions::ChatOperation::NativeVoice { channel, request } => {
-                self.native_voice_command(&channel, request.command)?;
-            }
-            crate::actions::ChatOperation::OpenWorkspace { workspace } => {
-                self.reveal_workspace_resource(workspace)?;
-            }
-            crate::actions::ChatOperation::OpenChannel { workspace, channel } => {
-                if !self
-                    .channels
-                    .iter()
-                    .any(|item| item.id == channel && item.workspace == workspace)
-                {
-                    return Err("conversation no longer exists".into());
-                }
-                self.active_ws = workspace;
-                self.active_channel = channel;
-                self.inbox_open = false;
-                self.thread_open = None;
-                self.revealed_message = None;
-                self.reveal_scroll_pending = false;
-                self.revealed_person = None;
-                self.reset_timeline_to_latest();
-                self.focus = Focus::Main;
-            }
-            crate::actions::ChatOperation::OpenCategory {
-                workspace,
-                category,
-            } => self.reveal_category_resource(workspace, &category)?,
-            crate::actions::ChatOperation::RevealMessage {
-                workspace,
-                channel,
-                message,
-                parent,
-            } => {
-                if !self
-                    .channels
-                    .iter()
-                    .any(|item| item.id == channel && item.workspace == workspace)
-                {
-                    return Err("conversation no longer exists".into());
-                }
-                if !ChatDoc::list_messages(doc, &channel)
-                    .iter()
-                    .any(|item| item.id == message)
-                {
-                    return Err("message no longer exists".into());
-                }
-                self.active_ws = workspace;
-                self.active_channel = channel;
-                self.inbox_open = false;
-                self.thread_open = parent;
-                self.revealed_message = Some(message);
-                self.reveal_scroll_pending = true;
-                self.revealed_person = None;
-                self.timeline_total_height = 0.0;
-                self.timeline_at_end = false;
-                self.focus = if self.thread_open.is_some() {
-                    Focus::Thread
-                } else {
-                    Focus::Main
-                };
-                if self.thread_open.is_some() {
-                    self.right_flap.open();
-                }
-            }
-            crate::actions::ChatOperation::OpenPerson { user } => {
-                if !ChatDoc::list_users(doc).iter().any(|item| item.id == user) {
-                    return Err("person no longer exists".into());
-                }
-                // Prefer the current workspace when it already evidences this
-                // person; otherwise open the first workspace where they wrote.
-                if !self.users.iter().any(|item| item.id == user)
-                    && let Some(channel) = self.channels.iter().find(|channel| {
-                        ChatDoc::list_messages(doc, &channel.id)
-                            .iter()
-                            .any(|message| {
-                                message.author == user
-                                    || message.mentions.iter().any(|mention| mention.user == user)
-                                    || message
-                                        .reactions
-                                        .iter()
-                                        .any(|reaction| reaction.users.iter().any(|id| id == &user))
-                            })
-                    })
-                {
-                    self.active_ws = channel.workspace.clone();
-                    self.active_channel = channel.id.clone();
-                }
-                self.inbox_open = false;
-                self.thread_open = None;
-                self.revealed_message = None;
-                self.revealed_person = Some(user);
-                self.focus = Focus::Main;
-                self.right_flap.open();
-            }
-            crate::actions::ChatOperation::SetReportView { channel, view } => {
-                if !self
-                    .channels
-                    .iter()
-                    .any(|item| item.id == channel && item.feedback)
-                {
-                    return Err("not a feedback channel".into());
-                }
-                self.feedback.views.insert(channel, view);
-                self.messages = self.channel_messages(doc, &self.active_channel.clone());
-                self.arrange_reports();
-            }
-            crate::actions::ChatOperation::Comment { action } => {
-                // A comment is the author's own record, kept now: waiting for
-                // the next model pass would leave the invocation succeeded
-                // while nothing was kept, and a Chat that is not drawing may
-                // not have one for a long while. A refused comment fails the
-                // invocation with its reason. Only a comment no record can
-                // hold waits for that pass, which holds the document its
-                // conversation write needs.
-                match self.perform_as_comment(doc, &action) {
-                    Some(Ok(())) => self.reload(doc),
-                    Some(Err(reason)) => {
-                        tracing::warn!(%reason, "a comment was not kept");
-                        return Err(reason);
-                    }
-                    None => self.feedback.pending.push_back(*action),
-                }
-                self.relayout = true;
-            }
-            crate::actions::ChatOperation::ImportAttachment { channel, path } => {
-                if path.is_empty() {
-                    return Err("attachment path is empty".into());
-                }
-                if !self.channels.iter().any(|item| item.id == channel) {
-                    return Err("conversation no longer exists".into());
-                }
-                if !self.begin_attachment_import_into(&channel, std::path::Path::new(&path)) {
-                    return Err("attachment import was not accepted".into());
-                }
-            }
-        }
-        Ok(true)
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn name(&self) -> &'static str {

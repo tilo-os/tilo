@@ -855,8 +855,7 @@ struct PendingShellDrop {
 }
 
 fn drag_import_directory() -> Option<std::path::PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
+    xdg_paths::xdg::runtime_dir()
         .map(|runtime| runtime.join(format!("tilo-drag-imports-{}", std::process::id())))
 }
 

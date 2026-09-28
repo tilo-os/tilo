@@ -395,7 +395,7 @@ pub struct ContainersApp {
     pending_resource_tab: Option<DetailTab>,
     /// In-app lifecycle controls emit the same inert resource intent as Ctrl+K
     /// and agents. The host re-resolves authority, records the Effect, then
-    /// calls `invoke_resource_operation`.
+    /// calls `Widget::start_operation`.
     pub(crate) pending_control_invocation: RawControlSlot,
     /// Collapsible sidebar reveal kernel (the shared `ui` flap animation).
     pub(crate) sidebar_flap: FlapState,
@@ -1308,7 +1308,7 @@ impl ContainersApp {
             .build_json(&intent.arguments)
             .expect("valid palette arguments");
         assert!(
-            self.invoke_resource_operation(
+            self.answer_resource_operation(
                 kind,
                 &encoded.type_id,
                 &encoded.payload,
@@ -2081,6 +2081,104 @@ fn distrobox_resource(distrobox: &crate::model::DistroBox, engine_live: bool) ->
     resource
 }
 
+impl ContainersApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        let Some(verb) = args.first().map(String::as_str) else {
+            return Err("missing operation".into());
+        };
+        let target = args.get(1).map(String::as_str).unwrap_or_default();
+        if kind == OperationKind::View && type_id == "containers.engine" && verb == "create" {
+            self.create_open = true;
+            self.focus_create_field(CreateField::Image);
+            return Ok(true);
+        }
+        if kind == OperationKind::View && type_id == "containers.container" && verb == "select" {
+            self.pending_resource_selection = Some(target.to_string());
+            return Ok(true);
+        }
+        if kind == OperationKind::View && type_id == "containers.logs" && verb == "logs" {
+            self.pending_resource_selection = Some(target.to_string());
+            self.pending_resource_section = Some(Section::Containers);
+            self.pending_resource_tab = Some(DetailTab::Logs);
+            return Ok(true);
+        }
+        if kind == OperationKind::View && verb == "open" {
+            self.pending_resource_section = Some(match type_id {
+                "containers.image" => Section::Images,
+                "containers.volume" => Section::Volumes,
+                "containers.distrobox" => Section::Distrobox,
+                _ => return Ok(false),
+            });
+            return Ok(true);
+        }
+        if kind != OperationKind::Effect {
+            return Ok(false);
+        }
+        if !self.engine.live {
+            return Err("container engine actions are unavailable while Podman is offline".into());
+        }
+        #[cfg(test)]
+        if let Some(result) = self.controlled_immediate(
+            format!("{type_id}.{verb}"),
+            target.to_string(),
+            args.clone(),
+        ) {
+            result?;
+            self.spawn_refresh();
+            self.show_toast(format!("{verb} accepted for {target}"), false);
+            return Ok(true);
+        }
+        match type_id {
+            "containers.container" => match verb {
+                "start" => {
+                    podman::run_action(Action::Start, target)?;
+                }
+                "stop" => {
+                    podman::run_action(Action::Stop, target)?;
+                }
+                "restart" => {
+                    podman::run_action(Action::Restart, target)?;
+                }
+                "pause" => {
+                    podman::run_action(Action::Pause, target)?;
+                }
+                "unpause" => {
+                    podman::run_action(Action::Unpause, target)?;
+                }
+                "remove" => {
+                    podman::run_action(Action::Remove, target)?;
+                }
+                "shell" => {
+                    crate::terminal::spawn_exec_attach(target, "/bin/sh")
+                        .map_err(|e| e.to_string())?;
+                }
+                _ => return Ok(false),
+            },
+            "containers.image" if verb == "remove" => {
+                podman::remove_image(target, true)?;
+            }
+            "containers.volume" if verb == "remove" => {
+                podman::remove_volume(target, false)?;
+            }
+            "containers.distrobox" if verb == "enter" => {
+                crate::terminal::spawn_distrobox_enter(target).map_err(|e| e.to_string())?;
+            }
+            _ => return Ok(false),
+        }
+        self.spawn_refresh();
+        self.show_toast(format!("{verb} accepted for {target}"), false);
+        Ok(true)
+    }
+}
+
 impl Widget for ContainersApp {
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
@@ -2213,100 +2311,25 @@ impl Widget for ContainersApp {
         vec![Box::new(self.search_index.provider())]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let Some(verb) = args.first().map(String::as_str) else {
-            return Err("missing operation".into());
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
         };
-        let target = args.get(1).map(String::as_str).unwrap_or_default();
-        if kind == OperationKind::View && type_id == "containers.engine" && verb == "create" {
-            self.create_open = true;
-            self.focus_create_field(CreateField::Image);
-            return Ok(true);
-        }
-        if kind == OperationKind::View && type_id == "containers.container" && verb == "select" {
-            self.pending_resource_selection = Some(target.to_string());
-            return Ok(true);
-        }
-        if kind == OperationKind::View && type_id == "containers.logs" && verb == "logs" {
-            self.pending_resource_selection = Some(target.to_string());
-            self.pending_resource_section = Some(Section::Containers);
-            self.pending_resource_tab = Some(DetailTab::Logs);
-            return Ok(true);
-        }
-        if kind == OperationKind::View && verb == "open" {
-            self.pending_resource_section = Some(match type_id {
-                "containers.image" => Section::Images,
-                "containers.volume" => Section::Volumes,
-                "containers.distrobox" => Section::Distrobox,
-                _ => return Ok(false),
-            });
-            return Ok(true);
-        }
-        if kind != OperationKind::Effect {
-            return Ok(false);
-        }
-        if !self.engine.live {
-            return Err("container engine actions are unavailable while Podman is offline".into());
-        }
-        #[cfg(test)]
-        if let Some(result) = self.controlled_immediate(
-            format!("{type_id}.{verb}"),
-            target.to_string(),
-            args.clone(),
-        ) {
-            result?;
-            self.spawn_refresh();
-            self.show_toast(format!("{verb} accepted for {target}"), false);
-            return Ok(true);
-        }
-        match type_id {
-            "containers.container" => match verb {
-                "start" => {
-                    podman::run_action(Action::Start, target)?;
-                }
-                "stop" => {
-                    podman::run_action(Action::Stop, target)?;
-                }
-                "restart" => {
-                    podman::run_action(Action::Restart, target)?;
-                }
-                "pause" => {
-                    podman::run_action(Action::Pause, target)?;
-                }
-                "unpause" => {
-                    podman::run_action(Action::Unpause, target)?;
-                }
-                "remove" => {
-                    podman::run_action(Action::Remove, target)?;
-                }
-                "shell" => {
-                    crate::terminal::spawn_exec_attach(target, "/bin/sh")
-                        .map_err(|e| e.to_string())?;
-                }
-                _ => return Ok(false),
-            },
-            "containers.image" if verb == "remove" => {
-                podman::remove_image(target, true)?;
-            }
-            "containers.volume" if verb == "remove" => {
-                podman::remove_volume(target, false)?;
-            }
-            "containers.distrobox" if verb == "enter" => {
-                crate::terminal::spawn_distrobox_enter(target).map_err(|e| e.to_string())?;
-            }
-            _ => return Ok(false),
-        }
-        self.spawn_refresh();
-        self.show_toast(format!("{verb} accepted for {target}"), false);
-        Ok(true)
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {

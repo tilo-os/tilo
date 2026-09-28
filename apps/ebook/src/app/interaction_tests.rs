@@ -323,17 +323,20 @@ fn resource_operations_refuse_wrong_or_stale_targets() {
     // --- phase: resource_operations_reject_wrong_kinds_without_changing_state ---
     {
         let mut app = app_with_sample();
-        let doc = AutoCommit::new();
+        let mut doc = AutoCommit::new();
         let view_before = std::mem::discriminant(&app.view);
         let settings = serde_json::to_vec(&crate::actions::EbookOperation::OpenSettings).unwrap();
         assert!(
-            Widget::invoke_resource_operation(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::EBOOK_OPERATION_TYPE,
-                &settings,
-                &doc,
-                &automerge::ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::EBOOK_OPERATION_TYPE,
+                    &settings
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
             .is_err()
         );
@@ -341,14 +344,16 @@ fn resource_operations_refuse_wrong_or_stale_targets() {
 
         let open = serde_json::to_vec(&crate::actions::EbookOperation::OpenBook).unwrap();
         assert!(
-            Widget::start_resource_operation(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::View,
-                crate::actions::EBOOK_OPERATION_TYPE,
-                &open,
-                &doc,
-                &automerge::ROOT,
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    crate::actions::EBOOK_OPERATION_TYPE,
+                    &open
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
             .is_err()
         );
@@ -358,7 +363,7 @@ fn resource_operations_refuse_wrong_or_stale_targets() {
     // --- phase: stale_resource_reveal_refuses_missing_chapter_or_annotation_target ---
     {
         let mut app = app_with_sample();
-        let doc = AutoCommit::new();
+        let mut doc = AutoCommit::new();
         let book_id = app.open_book().expect("sample book").id.clone();
         let before = (app.book_idx, app.chapter, app.page, app.pending_jump_block);
         for operation in [
@@ -377,13 +382,16 @@ fn resource_operations_refuse_wrong_or_stale_targets() {
         ] {
             let payload = serde_json::to_vec(&operation).expect("operation serializes");
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::View,
-                    crate::actions::EBOOK_OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        crate::actions::EBOOK_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .is_err()
             );
@@ -398,18 +406,20 @@ fn resource_operations_refuse_wrong_or_stale_targets() {
     // --- phase: canonical_share_operation_refuses_a_missing_local_capability ---
     {
         let mut app = app_with_sample();
-        let doc = AutoCommit::new();
+        let mut doc = AutoCommit::new();
         let id = app.library[0].id.clone();
         app.library_paths.remove(&id);
         let payload =
             serde_json::to_vec(&crate::actions::EbookOperation::ShareBook { book_id: id }).unwrap();
-        let error = Widget::start_resource_operation(
+        let error = Widget::start_operation(
             &mut app,
-            tilo_actions::InvocationId::new(),
-            tilo_actions::OperationKind::Effect,
-            crate::actions::EBOOK_OPERATION_TYPE,
-            &payload,
-            &doc,
+            &ui::widget::ResourceOperation::local(
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
+                crate::actions::EBOOK_OPERATION_TYPE,
+                &payload,
+            ),
+            &mut doc,
             &automerge::ROOT,
         )
         .unwrap_err();
@@ -3525,14 +3535,16 @@ fn workspace_sharing_materialises_and_verifies_books() {
         let invocation = tilo_actions::InvocationId::new();
 
         assert!(matches!(
-            Widget::start_resource_operation(
+            Widget::start_operation(
                 &mut app,
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::EBOOK_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &automerge::ROOT,
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::EBOOK_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
             .unwrap(),
             Some(ui::widget::ResourceOperationStart::Accepted)
@@ -3573,14 +3585,16 @@ fn workspace_sharing_materialises_and_verifies_books() {
         .unwrap();
 
         assert!(matches!(
-            Widget::start_resource_operation(
+            Widget::start_operation(
                 &mut app,
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::EBOOK_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &automerge::ROOT,
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::EBOOK_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
             .unwrap(),
             Some(ui::widget::ResourceOperationStart::Accepted)
@@ -3620,13 +3634,15 @@ fn workspace_sharing_materialises_and_verifies_books() {
             serde_json::to_vec(&crate::actions::EbookOperation::HydrateSharedBook { book_id: id })
                 .unwrap();
         let invocation = tilo_actions::InvocationId::new();
-        Widget::start_resource_operation(
+        Widget::start_operation(
             &mut app,
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::EBOOK_OPERATION_TYPE,
-            &payload,
-            &doc,
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::EBOOK_OPERATION_TYPE,
+                &payload,
+            ),
+            &mut doc,
             &automerge::ROOT,
         )
         .unwrap();
@@ -3653,13 +3669,15 @@ fn workspace_sharing_materialises_and_verifies_books() {
         })
         .unwrap();
         let invocation = tilo_actions::InvocationId::new();
-        Widget::start_resource_operation(
+        Widget::start_operation(
             &mut app,
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::EBOOK_OPERATION_TYPE,
-            &payload,
-            &doc,
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::EBOOK_OPERATION_TYPE,
+                &payload,
+            ),
+            &mut doc,
             &automerge::ROOT,
         )
         .unwrap();
@@ -4756,6 +4774,26 @@ fn reader_controls_fit_their_labels() {
         assert!(
             BooksApp::size_stepper_width(&mut tr, &theme, &field) >= SIZE_STEPPER_BTN * 2.0 + slot,
             "the stepper reserves both buttons and the measured slot"
+        );
+    }
+}
+
+#[test]
+fn a_rail_shorter_than_the_minimum_scrollbar_thumb_still_draws() {
+    let theme = ui::Theme::dark();
+    let mut scene = Scene::new();
+    for (y0, y1) in [(0.0, 1.0), (10.0, 30.0), (0.0, 400.0)] {
+        BooksApp::draw_rail_scrollbar(
+            &mut scene,
+            Affine::IDENTITY,
+            &theme.tokens.colors,
+            0.0,
+            y0,
+            y1,
+            40.0,
+            200.0,
+            100.0,
+            300.0,
         );
     }
 }

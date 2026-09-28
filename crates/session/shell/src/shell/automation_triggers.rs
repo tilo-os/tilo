@@ -898,8 +898,8 @@ impl TriggerHost {
     /// the launcher-provided state root.
     #[must_use]
     pub fn for_session() -> Self {
-        let schedules = std::env::var_os("XDG_STATE_HOME")
-            .map(|state| PathBuf::from(state).join("tilo/automation/schedules.json"));
+        let schedules = xdg_paths::env_dir("XDG_STATE_HOME")
+            .map(|state| state.join("tilo/automation/schedules.json"));
         Self::new(Arc::new(SystemClock), schedules)
     }
 

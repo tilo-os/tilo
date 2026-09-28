@@ -486,7 +486,7 @@ mod tests {
         }
         // Phase: search_addresses_resolve_and_navigate_exactly.
         {
-            let (mut app, doc) = seeded();
+            let (mut app, mut doc) = seeded();
             let resources = app.resources(&doc);
             let providers = app.search_providers();
             let provider = &providers[0];
@@ -498,13 +498,17 @@ mod tests {
             let address = channel_hit.action_address().unwrap();
             let encoded = tilo_actions::door::encode(&resources, &address, None)
                 .expect("exported channel action");
-            app.invoke_resource_operation(
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut doc,
                 &ROOT,
             )
+            .map(|started| started.is_some())
             .unwrap();
             assert_eq!(
                 app.active_channel,
@@ -531,13 +535,17 @@ mod tests {
                 .expect("message resolves lazily");
             let encoded = tilo_actions::door::encode(&[message_resource], &message_address, None)
                 .expect("exported message action");
-            app.invoke_resource_operation(
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut doc,
                 &ROOT,
             )
+            .map(|started| started.is_some())
             .unwrap();
             assert_eq!(app.active_channel, message.channel);
             assert_eq!(app.revealed_message.as_deref(), Some(message.id.as_str()));
@@ -552,13 +560,17 @@ mod tests {
             let encoded =
                 tilo_actions::door::encode(&resources, &person_hit.action_address().unwrap(), None)
                     .expect("exported person action");
-            app.invoke_resource_operation(
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut doc,
                 &ROOT,
             )
+            .map(|started| started.is_some())
             .unwrap();
             assert_eq!(app.revealed_person.as_deref(), Some(person.id.as_str()));
             assert!(app.right_flap_open());
@@ -590,13 +602,17 @@ mod tests {
             app.reload(&doc);
 
             assert!(
-                app.invoke_resource_operation(
-                    tilo_actions::OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
-                    &ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
+                .map(|started| started.is_some())
                 .is_err()
             );
         }

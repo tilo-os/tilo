@@ -55,7 +55,7 @@ pidfd_getfd, fanotify_init, fsopen, fspick, fsconfig, fsmount, move_mount,
 mount_setattr, quotactl, acct
 ```
 
-The default profile, `tilo-default`, also refuses any `mmap`/`mprotect`/`pkey_mprotect` asking for writable and executable memory at once. `tilo-jit` drops only that rule, and a manifest's request for it is honoured only for packages the image entitles (`/usr/lib/tilo/jit-entitled.conf`; `launcher::seccomp::resolve_profile`). The compiled programs are pinned byte for byte by the launcher's tests, so any change to the filter is reviewed as a policy change.
+The default profile, `tilo-default`, also refuses any `mmap`/`mprotect`/`pkey_mprotect` asking for writable and executable memory at once. `tilo-jit` drops only that rule, and a manifest's request for it is honoured only for packages the image entitles (`/usr/lib/tilo/jit-entitled.conf`; `launcher::seccomp::resolve_profile`). `tilo-web-engine` is `tilo-jit` for a web engine that confines its own renderers: it also permits `clone`/`unshare` with `CLONE_NEWUSER`, `CLONE_NEWPID` and `CLONE_NEWNET` and `chroot`, the parts of Chromium's renderer sandbox, and still refuses `setns`, `mount`, `pivot_root` and every other namespace kind. It is honoured only for packages in `/usr/lib/tilo/web-engine-entitled.conf` (built in: the browser); a package entitled to the JIT but not to this gets `tilo-jit`. The compiled programs are pinned byte for byte by the launcher's tests, so any change to the filter is reviewed as a policy change.
 
 ## Per-workspace Wayland bridge socket
 

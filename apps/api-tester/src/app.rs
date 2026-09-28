@@ -3898,7 +3898,104 @@ impl Widget for ApiTesterApp {
         self.actions.take_committed()
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        for child in self.children_mut_ref() {
+            if let Some(update) =
+                child.poll_resource_operation(invocation, cancellation_requested, doc, path)
+            {
+                return Some(update);
+            }
+        }
+        self.poll_worker();
+        if self
+            .resource_send_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            self.resource_send_result.take()
+        } else {
+            None
+        }
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        // Drain child structure-dirty flags per the trait contract, then add
+        // our own child-set changes. A plain loop, not `.any()`: every child
+        // must be drained regardless of an earlier `true`, which `.any()`
+        // would short-circuit past.
+        let mut child_changed = false;
+        for c in self.children_mut_ref() {
+            child_changed |= c.take_structure_dirty();
+        }
+        let sig = self.child_sig();
+        let self_changed = sig != self.last_sig;
+        self.last_sig = sig;
+        let rows_replaced = std::mem::take(&mut self.nav_rows_replaced);
+        child_changed || self_changed || rows_replaced
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+            || self.sending
+            || self.rail.is_animating()
+            || self.children_ref().iter().any(|c| c.needs_redraw())
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.rail.is_animating()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        for c in self.children_mut_ref() {
+            c.mark_drawn();
+        }
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        self.sending || !self.pending_history.is_empty() || !self.adopted
+    }
+}
+
+impl ApiTesterApp {
+    fn answer_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
         type_id: &str,
@@ -3980,7 +4077,7 @@ impl Widget for ApiTesterApp {
         Ok(true)
     }
 
-    fn start_resource_operation(
+    fn admit_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
         kind: tilo_actions::OperationKind,
@@ -3989,15 +4086,6 @@ impl Widget for ApiTesterApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        // This container also owns retained controls with native view/effect
-        // actions. Preserve their canonical dispatch before admitting Send.
-        for child in self.children_mut_ref() {
-            if let Some(started) =
-                child.start_resource_operation(invocation, kind, type_id, payload, doc, path)?
-            {
-                return Ok(Some(started));
-            }
-        }
         if kind != tilo_actions::OperationKind::Effect
             || type_id != crate::actions::API_TESTER_OPERATION_TYPE
         {
@@ -4006,75 +4094,11 @@ impl Widget for ApiTesterApp {
         if self.sending || self.resource_send_invocation.is_some() {
             return Err("another API request is already running".into());
         }
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
             return Ok(None);
         }
         self.resource_send_invocation = Some(invocation);
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        for child in self.children_mut_ref() {
-            if let Some(update) =
-                child.poll_resource_operation(invocation, cancellation_requested, doc, path)
-            {
-                return Some(update);
-            }
-        }
-        self.poll_worker();
-        if self
-            .resource_send_result
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            self.resource_send_result.take()
-        } else {
-            None
-        }
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        // Drain child structure-dirty flags per the trait contract, then add
-        // our own child-set changes. A plain loop, not `.any()`: every child
-        // must be drained regardless of an earlier `true`, which `.any()`
-        // would short-circuit past.
-        let mut child_changed = false;
-        for c in self.children_mut_ref() {
-            child_changed |= c.take_structure_dirty();
-        }
-        let sig = self.child_sig();
-        let self_changed = sig != self.last_sig;
-        self.last_sig = sig;
-        let rows_replaced = std::mem::take(&mut self.nav_rows_replaced);
-        child_changed || self_changed || rows_replaced
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-            || self.sending
-            || self.rail.is_animating()
-            || self.children_ref().iter().any(|c| c.needs_redraw())
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        self.rail.is_animating()
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-        for c in self.children_mut_ref() {
-            c.mark_drawn();
-        }
-    }
-
-    fn needs_idle_sync(&self) -> bool {
-        self.sending || !self.pending_history.is_empty() || !self.adopted
     }
 }
 
@@ -4552,7 +4576,7 @@ mod tests {
     /// Case of `ui_commands_dispatch_canonical_actions_or_stay_device_local`.
     fn visible_context_menus_open_real_request_and_environment_workflows() {
         let mut a = app();
-        let doc = AutoCommit::new();
+        let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
 
         let request = serde_json::to_vec(&crate::actions::ApiTesterOperation::RequestMenu {
@@ -4560,14 +4584,19 @@ mod tests {
         })
         .expect("operation encodes");
         assert_eq!(
-            a.invoke_resource_operation(
-                tilo_actions::OperationKind::View,
-                crate::actions::API_TESTER_OPERATION_TYPE,
-                &request,
-                &doc,
-                &root,
+            a.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    crate::actions::API_TESTER_OPERATION_TYPE,
+                    &request
+                ),
+                &mut doc,
+                &root
             ),
-            Ok(true)
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                ui::tilo_actions::ActionOutput::default()
+            )))
         );
         assert_eq!(a.form, Some(FormMode::RenameRequest));
         assert_eq!(a.request_actions.selected(), "Request actions");
@@ -4579,14 +4608,19 @@ mod tests {
             })
             .expect("operation encodes");
         assert_eq!(
-            a.invoke_resource_operation(
-                tilo_actions::OperationKind::View,
-                crate::actions::API_TESTER_OPERATION_TYPE,
-                &environment,
-                &doc,
-                &root,
+            a.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    crate::actions::API_TESTER_OPERATION_TYPE,
+                    &environment
+                ),
+                &mut doc,
+                &root
             ),
-            Ok(true)
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                ui::tilo_actions::ActionOutput::default()
+            )))
         );
         assert_eq!(a.form, Some(FormMode::NewVariable));
         assert_eq!(a.environment_actions.selected(), "Environment actions");
@@ -4723,12 +4757,14 @@ mod tests {
         let payload =
             serde_json::to_vec(&crate::actions::ApiTesterOperation::SendActiveRequest).unwrap();
         assert!(matches!(
-            app.start_resource_operation(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::API_TESTER_OPERATION_TYPE,
-                &payload,
-                &doc,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::API_TESTER_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
                 &automerge::ROOT
             )
             .unwrap(),

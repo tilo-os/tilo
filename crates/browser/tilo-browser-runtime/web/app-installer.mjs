@@ -9,6 +9,28 @@ export const APP_ALIASES = Object.freeze({writer: 'so.tilo.word-processor', chat
 export const canonicalAppId = app => Object.hasOwn(APP_ALIASES, app) ? APP_ALIASES[app] : app;
 
 /**
+ * A local desktop's seed (`MountOptions.local`) with every app named by its
+ * full id, and the apps it needs linked: its windows' and the `apps` its
+ * launcher should list.
+ */
+export function localSeed(local) {
+  if (!local || typeof local !== 'object') throw TypeError('local must be an object');
+  const apps = new Set((local.apps ?? []).map(canonicalAppId));
+  const workspaces = (local.workspaces ?? []).map(workspace => ({
+    ...workspace,
+    strips: (workspace.strips ?? []).map(strip => ({
+      ...strip,
+      windows: (strip.windows ?? []).map(window => {
+        const app = canonicalAppId(window.app);
+        apps.add(app);
+        return {...window, app};
+      }),
+    })),
+  }));
+  return {seed: {...local, apps: [...apps], workspaces}, apps: [...apps]};
+}
+
+/**
  * Installs apps the core does not contain from side modules a resolver
  * supplies (WEB_RUNTIME.md).
  *
@@ -114,5 +136,9 @@ export function createAppInstaller({ready, installed, canonical = canonicalAppId
     preload,
     setResolver(resolver) {defaultResolver = resolver;},
     assets: appId => assets.get(canonical(appId)),
+    /** Where any linked app's resolver placed the asset `name`. */
+    asset: name => {
+      for (const named of assets.values()) if (named.has(name)) return named.get(name);
+    },
   };
 }

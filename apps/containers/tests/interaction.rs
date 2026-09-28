@@ -599,13 +599,17 @@ fn container_resources_open_terminal_and_log_detail() {
         let payload = serde_json::to_vec(&vec!["logs", id.as_str()]).unwrap();
         let (app, doc) = d.parts();
         assert!(
-            app.invoke_resource_operation(
-                ui::tilo_actions::OperationKind::View,
-                "containers.logs",
-                &payload,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    ui::tilo_actions::OperationKind::View,
+                    "containers.logs",
+                    &payload,
+                ),
                 doc,
                 &automerge::ROOT,
             )
+            .map(|started| started.is_some())
             .unwrap()
         );
         let (app, doc) = d.parts();

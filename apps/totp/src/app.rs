@@ -1090,6 +1090,77 @@ impl AuthenticatorApp {
     }
 }
 
+impl AuthenticatorApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        let (raw, expected_kind) = match operation {
+            crate::actions::TotpOperation::OpenAddAccount => {
+                if kind != OperationKind::View {
+                    return Err("Authenticator add screen requires a view broker route".into());
+                }
+                self.add_panel.open();
+                self.add_panel.layout(self.rect);
+                return Ok(true);
+            }
+            crate::actions::TotpOperation::SetUpLocal { id } => {
+                if kind != OperationKind::View {
+                    return Err("Authenticator setup requires a view broker route".into());
+                }
+                let account_id = id
+                    .parse()
+                    .map_err(|_| "Invalid authenticator account id".to_string())?;
+                let Some(account) = self.vault.get(account_id).cloned() else {
+                    return Err("Authenticator account is no longer available".into());
+                };
+                self.selected = Some(account_id);
+                self.add_panel.open_for_provision(&account);
+                self.add_panel.layout(self.rect);
+                return Ok(true);
+            }
+            crate::actions::TotpOperation::RetryPersist => {
+                if kind != OperationKind::Effect {
+                    return Err("Authenticator retry requires an effect broker route".into());
+                }
+                self.retry_persist();
+                return Ok(true);
+            }
+            crate::actions::TotpOperation::OpenAccount { id } => (id, OperationKind::View),
+            crate::actions::TotpOperation::CopyCode { id } => (id, OperationKind::Effect),
+        };
+        if kind != expected_kind {
+            return Err(format!(
+                "Authenticator operation requires a {} broker route",
+                expected_kind.as_str()
+            ));
+        }
+        let id = raw
+            .parse()
+            .map_err(|_| "Invalid authenticator account id".to_string())?;
+        if self.vault.get(id).is_none() {
+            return Err("Authenticator account is no longer available".into());
+        }
+        self.selected = Some(id);
+        self.search.set_text("");
+        self.list_dirty = true;
+        if expected_kind == OperationKind::Effect {
+            self.copy_account(id);
+        }
+        Ok(true)
+    }
+}
+
 impl Widget for AuthenticatorApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::TOTP_OPERATION_TYPE]
@@ -1405,73 +1476,25 @@ impl Widget for AuthenticatorApp {
         })
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == OperationKind::Document {
-            return Ok(false);
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
         };
-        let (raw, expected_kind) = match operation {
-            crate::actions::TotpOperation::OpenAddAccount => {
-                if kind != OperationKind::View {
-                    return Err("Authenticator add screen requires a view broker route".into());
-                }
-                self.add_panel.open();
-                self.add_panel.layout(self.rect);
-                return Ok(true);
-            }
-            crate::actions::TotpOperation::SetUpLocal { id } => {
-                if kind != OperationKind::View {
-                    return Err("Authenticator setup requires a view broker route".into());
-                }
-                let account_id = id
-                    .parse()
-                    .map_err(|_| "Invalid authenticator account id".to_string())?;
-                let Some(account) = self.vault.get(account_id).cloned() else {
-                    return Err("Authenticator account is no longer available".into());
-                };
-                self.selected = Some(account_id);
-                self.add_panel.open_for_provision(&account);
-                self.add_panel.layout(self.rect);
-                return Ok(true);
-            }
-            crate::actions::TotpOperation::RetryPersist => {
-                if kind != OperationKind::Effect {
-                    return Err("Authenticator retry requires an effect broker route".into());
-                }
-                self.retry_persist();
-                return Ok(true);
-            }
-            crate::actions::TotpOperation::OpenAccount { id } => (id, OperationKind::View),
-            crate::actions::TotpOperation::CopyCode { id } => (id, OperationKind::Effect),
-        };
-        if kind != expected_kind {
-            return Err(format!(
-                "Authenticator operation requires a {} broker route",
-                expected_kind.as_str()
-            ));
-        }
-        let id = raw
-            .parse()
-            .map_err(|_| "Invalid authenticator account id".to_string())?;
-        if self.vault.get(id).is_none() {
-            return Err("Authenticator account is no longer available".into());
-        }
-        self.selected = Some(id);
-        self.search.set_text("");
-        self.list_dirty = true;
-        if expected_kind == OperationKind::Effect {
-            self.copy_account(id);
-        }
-        Ok(true)
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -1764,19 +1787,23 @@ mod tests {
     fn copy_paths_share_row_semantics_and_toast_severity() {
         // Case `resource_copy_invokes_the_same_clipboard_semantics_as_the_row`.
         {
-            let (mut app, state) = app_with_state();
+            let (mut app, mut state) = app_with_state();
             let id = app.vault.ordered()[0].id;
             let payload =
                 serde_json::to_vec(&crate::actions::TotpOperation::CopyCode { id: id.to_string() })
                     .unwrap();
             assert!(
-                app.invoke_resource_operation(
-                    OperationKind::Effect,
-                    crate::actions::TOTP_OPERATION_TYPE,
-                    &payload,
-                    &state.doc,
-                    &state.root,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        crate::actions::TOTP_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut state.doc,
+                    &state.root
                 )
+                .map(|started| started.is_some())
                 .unwrap()
             );
             assert_eq!(app.selected, Some(id));
@@ -2283,13 +2310,17 @@ mod tests {
                 "the exact-account setup route carries an id, never a secret"
             );
             assert!(
-                app.invoke_resource_operation(
-                    OperationKind::View,
-                    crate::actions::TOTP_OPERATION_TYPE,
-                    &encoded,
-                    &state.doc,
-                    &state.root,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::View,
+                        crate::actions::TOTP_OPERATION_TYPE,
+                        &encoded
+                    ),
+                    &mut state.doc,
+                    &state.root
                 )
+                .map(|started| started.is_some())
                 .unwrap()
             );
             assert!(app.add_panel.is_open(), "setup opens the local form");
@@ -2355,13 +2386,17 @@ mod tests {
                 }
             };
             assert!(
-                app.invoke_resource_operation(
-                    OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &state.doc,
-                    &state.root,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut state.doc,
+                    &state.root
                 )
+                .map(|started| started.is_some())
                 .unwrap()
             );
             assert!(

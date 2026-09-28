@@ -1203,26 +1203,33 @@ impl Default for ClocksApp {
         Self::new()
     }
 }
-impl Widget for ClocksApp {
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::OPERATION_TYPE]
-    }
+impl ClocksApp {
     #[expect(
         clippy::too_many_lines,
         reason = "one flat match arm per Clocks operation; each arm is a short state update"
     )]
-    fn invoke_resource_operation(
+    fn answer_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
         ty: &str,
         payload: &[u8],
-        doc: &AutoCommit,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<bool, String> {
         if ty != crate::actions::OPERATION_TYPE {
             return self
                 .inner
-                .invoke_resource_operation(kind, ty, payload, doc, path);
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        kind,
+                        ty,
+                        payload,
+                    ),
+                    doc,
+                    path,
+                )
+                .map(|started| started.is_some());
         }
         let Some(op) = crate::actions::decode(ty, payload)? else {
             return Ok(false);
@@ -1324,6 +1331,32 @@ impl Widget for ClocksApp {
             }
         }
         Ok(true)
+    }
+}
+
+impl Widget for ClocksApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::OPERATION_TYPE]
+    }
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         let _ = doc;
@@ -1794,20 +1827,24 @@ mod tests {
         use ui::widget::Widget;
 
         let mut app = ClocksApp::scenario("empty");
-        let doc = automerge::AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         let create = crate::actions::ClockOperation::NewAlarm {
             hours: 12,
             minutes: 0,
             label: "Lunch".into(),
         };
         assert!(
-            app.invoke_resource_operation(
-                tilo_actions::OperationKind::Effect,
-                crate::actions::OPERATION_TYPE,
-                &serde_json::to_vec(&create).unwrap(),
-                &doc,
-                &automerge::ROOT,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::OPERATION_TYPE,
+                    &serde_json::to_vec(&create).unwrap()
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
+            .map(|started| started.is_some())
             .unwrap()
         );
         let id = app.state.with(|state| state.alarms[0].id);
@@ -1817,13 +1854,17 @@ mod tests {
             app.state
                 .update(|state| state.alarms[0].next_due_utc = Some(Utc::now()));
             assert!(
-                app.invoke_resource_operation(
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::OPERATION_TYPE,
-                    &toggle,
-                    &doc,
-                    &automerge::ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::OPERATION_TYPE,
+                        &toggle
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
+                .map(|started| started.is_some())
                 .unwrap()
             );
             app.state.with(|state| {

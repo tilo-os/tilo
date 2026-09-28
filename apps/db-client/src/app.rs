@@ -1933,68 +1933,35 @@ impl Widget for DbClientApp {
             .or_else(|| self.search_index.resource(id))
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if !matches!(kind, OperationKind::Effect | OperationKind::View)
-            || type_id != DB_OPERATION_TYPE
-        {
-            return Ok(false);
-        }
-        let operation: DbClientOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        self.execute_operation(operation)?;
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if !matches!(kind, OperationKind::Effect | OperationKind::View)
-            || type_id != DB_OPERATION_TYPE
-        {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if kind == OperationKind::View {
-            return self
-                .invoke_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                });
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        if self.resource_operation.is_some() || self.session.busy() {
-            return Err("another database operation is already running".into());
-        }
-        let operation: DbClientOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        // Reconnecting and browsing are idempotent reads/handle opens. An
-        // arbitrary SQL statement is deliberately *not* retryable: repeating
-        // an INSERT/UPDATE after an uncertain network outcome could duplicate
-        // a real side effect.
-        let retryable = matches!(
-            operation,
-            DbClientOperation::Connect { .. } | DbClientOperation::BrowseTable { .. }
-        );
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        self.resource_operation = Some((invocation, retryable));
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -2726,6 +2693,72 @@ impl Widget for DbClientApp {
         (self.session.tab == MainTab::Query)
             .then(|| self.editor.text_review())
             .flatten()
+    }
+}
+
+impl DbClientApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if !matches!(kind, OperationKind::Effect | OperationKind::View)
+            || type_id != DB_OPERATION_TYPE
+        {
+            return Ok(false);
+        }
+        let operation: DbClientOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        self.execute_operation(operation)?;
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if !matches!(kind, OperationKind::Effect | OperationKind::View)
+            || type_id != DB_OPERATION_TYPE
+        {
+            return Ok(None);
+        }
+        if kind == OperationKind::View {
+            return self
+                .answer_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            tilo_actions::ActionOutput::default(),
+                        )
+                    })
+                });
+        }
+        if self.resource_operation.is_some() || self.session.busy() {
+            return Err("another database operation is already running".into());
+        }
+        let operation: DbClientOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        // Reconnecting and browsing are idempotent reads/handle opens. An
+        // arbitrary SQL statement is deliberately *not* retryable: repeating
+        // an INSERT/UPDATE after an uncertain network outcome could duplicate
+        // a real side effect.
+        let retryable = matches!(
+            operation,
+            DbClientOperation::Connect { .. } | DbClientOperation::BrowseTable { .. }
+        );
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        self.resource_operation = Some((invocation, retryable));
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -5371,13 +5404,15 @@ mod behavior_tests {
             ] {
                 let invocation = tilo_actions::InvocationId::new();
                 assert_eq!(
-                    app.start_resource_operation(
-                        invocation,
-                        OperationKind::Effect,
-                        DB_OPERATION_TYPE,
-                        &serde_json::to_vec(&operation).unwrap(),
-                        &doc,
-                        &ROOT,
+                    app.start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            invocation,
+                            OperationKind::Effect,
+                            DB_OPERATION_TYPE,
+                            &serde_json::to_vec(&operation).unwrap()
+                        ),
+                        &mut doc,
+                        &ROOT
                     )
                     .unwrap(),
                     Some(ui::widget::ResourceOperationStart::Accepted)
@@ -5407,7 +5442,7 @@ mod behavior_tests {
     fn resource_tree_and_queries_are_schema_qualified_and_secret_free() {
         // --- phase: resource_query_is_pending_until_the_database_worker_finishes ---
         {
-            let (mut app, doc) = synced();
+            let (mut app, mut doc) = synced();
             let invocation = tilo_actions::InvocationId::new();
             let payload = serde_json::to_vec(&DbClientOperation::RunQuery {
                 connection_id: app.session.active_connection_id().unwrap().to_string(),
@@ -5415,13 +5450,15 @@ mod behavior_tests {
             })
             .unwrap();
             assert_eq!(
-                app.start_resource_operation(
-                    invocation,
-                    OperationKind::Effect,
-                    DB_OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        OperationKind::Effect,
+                        DB_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)

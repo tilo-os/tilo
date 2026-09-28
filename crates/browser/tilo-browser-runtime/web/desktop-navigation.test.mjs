@@ -303,3 +303,24 @@ test('newer toolbar or native selection cancels committed launch focus even whil
   await Promise.resolve();assert.deepEqual(f.calls,[],'an intervening selection must win and retries cannot re-arm launch focus');f.nav.close();
  }
 });
+test('open links the app before dispatching its full id, and needs a topology owner that settles',async()=>{
+ const raw={version:1,generation:'surface',entries:[],capabilities:{open:true}},sent=[],installed=[];
+ let release;const linked=new Promise(resolve=>{release=resolve;});
+ const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>'1',dispatch:command=>{sent.push(JSON.parse(command));return'invocation';},awaitTerminal:async()=>{},
+  install:async app=>{installed.push(app);await linked;return app==='writer'?'so.tilo.word-processor':app;},active:()=>true});
+ assert.equal(nav.controller.getSnapshot().capabilities.open,true);
+ const opening=nav.controller.dispatch({kind:'open',generation:'surface',app:'writer'});
+ await Promise.resolve();
+ assert.deepEqual(installed,['writer']);assert.deepEqual(sent,[],'nothing is opened before the app is linked');
+ release();await opening;
+ assert.deepEqual(sent,[{kind:'open',generation:'surface',app:'so.tilo.word-processor'}]);
+ await assert.rejects(nav.controller.dispatch({kind:'open',generation:'old',app:'so.tilo.notes'}),/Stale/);
+ await assert.rejects(nav.controller.dispatch({kind:'open',generation:'surface',app:''}),/Invalid application/);
+ nav.close();
+ const unavailable=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>'1',dispatch:()=>{throw Error('dispatched');},awaitTerminal:async()=>{},install:async app=>{throw Error(`application "${app}" is not available`);},active:()=>true});
+ await assert.rejects(unavailable.controller.dispatch({kind:'open',generation:'surface',app:'so.tilo.nope'}),/not available/);
+ unavailable.close();
+ const peerless=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>'1',dispatch:()=>{throw Error('dispatched');},active:()=>true});
+ assert.equal(peerless.controller.getSnapshot().capabilities.open,false,'a queued open without a command bridge would never land');
+ await assert.rejects(peerless.controller.dispatch({kind:'open',generation:'surface',app:'so.tilo.notes'}),/Open unavailable/);
+});

@@ -549,6 +549,7 @@ chrono = { version = "0.4", default-features = false }
 qcms = "0.3.0"
 walkdir = "2.5.0"
 # The one in-memory cache: fs, thumbnail and the app mount share it.
+lru = { version = "0.18.3", default-features = false }
 moka = { version = "0.12.15", features = ["sync"] }
 regex = "1"
 semver = "1"

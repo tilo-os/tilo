@@ -5678,81 +5678,35 @@ impl Widget for MapsApp {
         Some(resource)
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        match (kind, type_id) {
-            (OperationKind::View, "maps.search") => {
-                let query: String =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                self.model.query = query;
-                self.run_search(None);
-            }
-            (OperationKind::Effect, "maps.locate") => {
-                if self.location_rx.is_some() {
-                    return Err("A location request is already in progress".into());
-                }
-                self.use_my_location();
-            }
-            (OperationKind::View, "maps.toggle-traffic") => {
-                self.set_traffic(!self.map_controls.traffic_enabled());
-            }
-            (OperationKind::View, "maps.open-place" | "maps.directions") => {
-                let id: String =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                if self.model.place(&id).is_none() {
-                    return Err("Map place is no longer available".into());
-                }
-                self.select_place(&id);
-                if type_id == "maps.directions" {
-                    self.enter_directions();
-                }
-            }
-            (OperationKind::View, "maps.open-poi" | "maps.directions-poi") => {
-                let id: String =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                if !self.pois.iter().any(|poi| poi.id == id) {
-                    return Err("Map point of interest is no longer in this viewport".into());
-                }
-                self.select_poi(&id);
-                if type_id == "maps.directions-poi" {
-                    self.poi_directions();
-                }
-            }
-            _ => return Ok(false),
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        if (kind, type_id) != (OperationKind::Effect, "maps.locate") {
-            return self
-                .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
-                .map(|output| output.map(ResourceOperationStart::Completed));
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if !self.online {
-            return Err("The location service is unavailable in this session".into());
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        if self.location_invocation.is_some() || self.location_rx.is_some() {
-            return Err("A location request is already in progress".into());
-        }
-        self.location_invocation = Some(invocation);
-        self.location_terminal = None;
-        self.use_my_location();
-        Ok(Some(ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -5953,6 +5907,89 @@ impl Widget for MapsApp {
     ) {
         // Root fills the window — never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl MapsApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        match (kind, type_id) {
+            (OperationKind::View, "maps.search") => {
+                let query: String =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                self.model.query = query;
+                self.run_search(None);
+            }
+            (OperationKind::Effect, "maps.locate") => {
+                if self.location_rx.is_some() {
+                    return Err("A location request is already in progress".into());
+                }
+                self.use_my_location();
+            }
+            (OperationKind::View, "maps.toggle-traffic") => {
+                self.set_traffic(!self.map_controls.traffic_enabled());
+            }
+            (OperationKind::View, "maps.open-place" | "maps.directions") => {
+                let id: String =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                if self.model.place(&id).is_none() {
+                    return Err("Map place is no longer available".into());
+                }
+                self.select_place(&id);
+                if type_id == "maps.directions" {
+                    self.enter_directions();
+                }
+            }
+            (OperationKind::View, "maps.open-poi" | "maps.directions-poi") => {
+                let id: String =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                if !self.pois.iter().any(|poi| poi.id == id) {
+                    return Err("Map point of interest is no longer in this viewport".into());
+                }
+                self.select_poi(&id);
+                if type_id == "maps.directions-poi" {
+                    self.poi_directions();
+                }
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        if (kind, type_id) != (OperationKind::Effect, "maps.locate") {
+            return self
+                .answer_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ResourceOperationStart::Completed(ui::tilo_actions::ActionOutput::default())
+                    })
+                });
+        }
+        if !self.online {
+            return Err("The location service is unavailable in this session".into());
+        }
+        if self.location_invocation.is_some() || self.location_rx.is_some() {
+            return Err("A location request is already in progress".into());
+        }
+        self.location_invocation = Some(invocation);
+        self.location_terminal = None;
+        self.use_my_location();
+        Ok(Some(ResourceOperationStart::Accepted))
     }
 }
 

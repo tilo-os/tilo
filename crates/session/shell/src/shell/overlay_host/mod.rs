@@ -34,6 +34,7 @@ use crate::shell::quick_settings::actions::QsActions as _;
 mod controller;
 mod device_fabric;
 mod displays;
+mod emoji_layer;
 mod history;
 pub(crate) mod layers;
 mod now_playing;
@@ -44,7 +45,9 @@ mod shortcuts;
 mod tab_menu;
 
 pub use controller::{ControllerDelivery, ControllerKey};
-use layers::{LayerCx, LayerId, LayerIntent, LayerPaint, OverlayStack, ShellLayer as _};
+use layers::{
+    Band, LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, OverlayStack, ShellLayer as _,
+};
 use tab_menu::TabMenuTarget;
 
 pub use device_fabric::{
@@ -793,17 +796,12 @@ pub struct ShellOverlayHost {
     /// Numbered cards painted on every display when Settings asks which
     /// screen is which.
     display_identify: crate::shell::display_identify::DisplayIdentify,
-    /// Keep or revert a display change a layout tool made, on every display.
-    display_confirm: crate::shell::display_confirm::DisplayConfirmPrompt,
     /// Alt+Tab: which windows were used most recently, and the switcher
     /// while Alt is held.
     window_switcher: tilo_desktop::window_switcher::WindowSwitcher,
     /// Live window previews the switcher and the overview show, rendered
     /// by the compositor only while one of them is up.
     window_previews: crate::shell::window_previews::WindowPreviews,
-    /// The emoji picker. Its picks wait here for the compositor, which
-    /// commits them through the seat's input method.
-    emoji_picker: tilo_desktop::emoji_picker::EmojiPicker,
     /// The focused text field's caret in desktop coordinates, as the
     /// compositor last reported it; the emoji picker opens against it.
     text_caret: Option<Rect>,
@@ -1588,6 +1586,7 @@ impl ShellOverlayHost {
             .into_iter()
             .chain(self.strip_chrome_bounds(flags, quick_settings_transition_visible))
             .reduce(|current, rect| current.union(rect));
+        let outputs = self.layer_outputs();
         self.layers.draw(
             LayerId::PowerMenu,
             &mut LayerPaint {
@@ -1596,7 +1595,7 @@ impl ShellOverlayHost {
                 text_renderer,
                 theme,
                 presence,
-                viewport: self.rect,
+                geometry: self.layer_geometry(&outputs),
             },
         );
         self.draw_collaborators_dropdown(
@@ -1685,9 +1684,7 @@ impl ShellOverlayHost {
             return layer.is_open();
         }
         match id {
-            LayerId::DisplayConfirmation => self.display_confirm.visible(),
             LayerId::WindowSwitcher => self.window_switcher.is_revealed(Instant::now()),
-            LayerId::EmojiPicker => self.emoji_picker.is_open(),
             LayerId::DisplayLayouts => flags.projection,
             // The palette has a complete semantic tree (query, result list,
             // and focused result).  It is drawn as a top overlay, so publish
@@ -1718,7 +1715,10 @@ impl ShellOverlayHost {
             LayerId::NowPlaying => self.now_playing_published(),
             LayerId::ShortcutHelp => flags.shortcut_help,
             // Stacked; answered above.
-            LayerId::TabContextMenu | LayerId::PowerMenu => false,
+            LayerId::DisplayConfirmation
+            | LayerId::EmojiPicker
+            | LayerId::TabContextMenu
+            | LayerId::PowerMenu => false,
         }
     }
 
@@ -2130,10 +2130,8 @@ impl ShellOverlayHost {
             remark: remark::RemarkHost::default(),
             projection_overlay: inputs.projection_overlay,
             display_identify: crate::shell::display_identify::DisplayIdentify::default(),
-            display_confirm: crate::shell::display_confirm::DisplayConfirmPrompt::default(),
             window_switcher: tilo_desktop::window_switcher::WindowSwitcher::default(),
             window_previews: crate::shell::window_previews::WindowPreviews::default(),
-            emoji_picker: tilo_desktop::emoji_picker::EmojiPicker::new(),
             text_caret: None,
             pairing: crate::bluetooth_prompt::PairingOverlay::default(),
             followed_peer: None,
@@ -2868,13 +2866,17 @@ impl ShellOverlayHost {
     /// Open the emoji picker at the focused field's caret (centred on the
     /// display with focus when the field reports none), or close it.
     pub fn toggle_emoji_picker(&mut self) {
-        if self.emoji_picker.is_open() {
-            self.emoji_picker.close();
+        if self.layers.emoji_picker.is_open() {
+            self.layers.emoji_picker.close();
         } else {
             let caret = self.text_caret;
-            let viewport = self.emoji_picker_viewport_for(caret);
-            self.emoji_picker
-                .open_at(viewport, caret, &crate::shell::i18n::current_locale());
+            let outputs = self.layer_outputs();
+            let viewport = self.layer_geometry(&outputs).display_for(caret);
+            self.layers.emoji_picker.open_at(
+                viewport,
+                caret,
+                &crate::shell::i18n::current_locale(),
+            );
         }
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().bump();
@@ -2882,7 +2884,7 @@ impl ShellOverlayHost {
     }
 
     pub fn emoji_picker_open(&self) -> bool {
-        self.emoji_picker.is_open()
+        self.layers.emoji_picker.is_open()
     }
 
     /// Where the focused text field's caret is, in desktop coordinates, or
@@ -2894,13 +2896,13 @@ impl ShellOverlayHost {
     /// The emoji picked since the last call, for the compositor to commit
     /// into the focused field.
     pub fn take_emoji_commits(&mut self) -> Vec<String> {
-        self.emoji_picker.take_commits()
+        self.layers.emoji_picker.take_commits()
     }
 
     /// The compositor committed `text` into a field; a secret field's emoji
     /// stay out of the recents.
     pub fn note_emoji_delivered(&mut self, text: &str, sensitive: bool) {
-        self.emoji_picker.note_delivered(text, sensitive);
+        self.layers.emoji_picker.note_delivered(text, sensitive);
     }
 
     /// Keep the emoji recents in the user's private state.
@@ -2908,49 +2910,12 @@ impl ShellOverlayHost {
         &mut self,
         store: crate::shell::emoji_recents::FileRecentsStore,
     ) {
-        self.emoji_picker.attach_store(Box::new(store));
+        self.layers.emoji_picker.attach_store(Box::new(store));
     }
 
     /// The picker's state, for tests and the control socket's state dump.
     pub fn emoji_picker(&self) -> &tilo_desktop::emoji_picker::EmojiPicker {
-        &self.emoji_picker
-    }
-
-    /// The display the open picker is placed on.
-    fn emoji_picker_viewport(&self) -> Rect {
-        self.emoji_picker_viewport_for(self.emoji_picker.anchor())
-    }
-
-    /// The display holding `caret`, else the display with focus on a
-    /// partitioned desktop, else the desktop.
-    fn emoji_picker_viewport_for(&self, caret: Option<Rect>) -> Rect {
-        let output_rect = |output: &OutputGeometry| {
-            Rect::new(
-                output.x,
-                output.y,
-                output.x + output.width,
-                output.y + output.height,
-            )
-        };
-        if let Some(display) = caret.and_then(|caret| {
-            self.outputs
-                .iter()
-                .map(output_rect)
-                .find(|display| display.contains(caret.center()))
-        }) {
-            return display;
-        }
-        let focused = self
-            .is_partitioned()
-            .then(|| {
-                self.chrome
-                    .as_ref()
-                    .and_then(|chrome| chrome.borrow().tree().desktop.outputs.focused_display())
-            })
-            .flatten();
-        focused
-            .and_then(|id| self.outputs.iter().find(|output| output.id == id))
-            .map_or(self.rect, output_rect)
+        &self.layers.emoji_picker
     }
 
     /// Open global search, as a lone Super tap does.
@@ -3748,7 +3713,9 @@ impl ShellOverlayHost {
         transaction: u64,
         tool: Option<settings_store::display_tools::DisplayTool>,
     ) {
-        self.display_confirm.show(transaction, tool, Instant::now());
+        self.layers
+            .display_confirm
+            .show(transaction, tool, Instant::now());
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().bump();
         }
@@ -3777,14 +3744,14 @@ impl ShellOverlayHost {
     /// Whether the keep-or-revert prompt for a tool's display change is up.
     /// It owns the keyboard and pointer while it is.
     pub fn display_confirmation_visible(&self) -> bool {
-        self.display_confirm.visible()
+        self.layers.display_confirm.visible()
     }
 
     /// Re-read the transaction the prompt asks about now: close it if it
     /// was answered elsewhere, revert it if its time ran out. Returns
     /// whether the prompt closed.
     pub fn poll_display_confirmation(&mut self) -> bool {
-        let closed = self.display_confirm.poll(Instant::now(), true);
+        let closed = self.layers.display_confirm.poll(Instant::now(), true);
         if closed && let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().bump();
         }
@@ -3793,14 +3760,35 @@ impl ShellOverlayHost {
 
     /// Where the prompt's card sits on each display.
     pub fn display_confirmation_cards(&self) -> Vec<crate::shell::display_confirm::ConfirmCard> {
-        self.display_confirm.cards(&self.display_confirm_outputs())
+        self.layers.display_confirm.cards(&self.layer_outputs())
     }
 
-    fn display_confirm_outputs(&self) -> Vec<Rect> {
+    /// Every display's rect; the host's bounds alone before it knows of any.
+    fn layer_outputs(&self) -> Vec<Rect> {
         if self.outputs.is_empty() {
             vec![self.rect]
         } else {
             self.outputs.iter().map(OutputGeometry::rect).collect()
+        }
+    }
+
+    /// Where stacked layers may place themselves, over `outputs` from
+    /// [`Self::layer_outputs`].
+    fn layer_geometry<'a>(&self, outputs: &'a [Rect]) -> LayerGeometry<'a> {
+        let focused_output = self
+            .is_partitioned()
+            .then(|| {
+                self.chrome
+                    .as_ref()
+                    .and_then(|chrome| chrome.borrow().tree().desktop.outputs.focused_display())
+            })
+            .flatten()
+            .and_then(|id| self.outputs.iter().find(|output| output.id == id))
+            .map(OutputGeometry::rect);
+        LayerGeometry {
+            viewport: self.rect,
+            outputs,
+            focused_output,
         }
     }
 
@@ -10189,7 +10177,8 @@ impl ShellOverlayHost {
             || (f.ws_settings && self.ws_settings_rect().contains(p))
             || (f.room_activity && self.room_activity.rect().contains(p))
             || (f.projection && ProjectionOverlay::contains(self.rect, p))
-            || (self.emoji_picker.is_open() && self.emoji_picker.card_rect().contains(p))
+            || (self.layers.emoji_picker.is_open()
+                && self.layers.emoji_picker.card_rect().contains(p))
     }
 
     /// Route the modal component before application content and apply its
@@ -10304,7 +10293,7 @@ impl ShellOverlayHost {
             return true;
         }
 
-        if self.route_emoji_picker_event(event, ctx.scale_factor, *ctx.modifiers, ctx.handled) {
+        if self.route_layer_band(Band::Modal, event, ctx) {
             return true;
         }
 
@@ -10321,43 +10310,6 @@ impl ShellOverlayHost {
         }
 
         false
-    }
-
-    /// The emoji picker owns every key and pointer event while open. Its own
-    /// shortcut closes it again.
-    fn route_emoji_picker_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        handled: &mut bool,
-    ) -> bool {
-        if !self.emoji_picker.is_open() {
-            return false;
-        }
-        let toggles = matches!(
-            event,
-            WindowEvent::KeyboardInput { event: key, .. }
-                if key.state == ElementState::Pressed
-                    && self.configured_shortcut_action(&key.logical_key, modifiers)
-                        == Some(settings_store::hardware::ShortcutAction::EmojiPicker)
-        );
-        if toggles {
-            self.emoji_picker.close();
-        } else {
-            self.emoji_picker.handle_event(
-                event,
-                scale_factor,
-                modifiers.state(),
-                self.last_cursor,
-                Instant::now(),
-            );
-        }
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
-        *handled = true;
-        true
     }
 
     /// Routes an in-progress root-page slider drag before modal absorption.
@@ -15991,15 +15943,27 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Route `event` through the overlay stack and carry out what its
-    /// layers asked for before the event finishes dispatching.
-    fn route_overlay_layers(
+    /// Route `event` through the stacked layers in `band` and carry out
+    /// what they asked for before the event finishes dispatching.
+    fn route_layer_band(
         &mut self,
+        band: Band,
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        let mut cx = LayerCx::new(self.rect, self.last_cursor, ctx);
-        let consumed = self.layers.route(event, &mut cx);
+        if !self.layers.listens(band) {
+            return false;
+        }
+        let shortcut = match event {
+            WindowEvent::KeyboardInput { event: key, .. } if key.state == ElementState::Pressed => {
+                self.configured_shortcut_action(&key.logical_key, *ctx.modifiers)
+            }
+            _ => None,
+        };
+        let outputs = self.layer_outputs();
+        let mut cx = LayerCx::new(self.layer_geometry(&outputs), self.last_cursor, ctx)
+            .with_shortcut(shortcut);
+        let consumed = self.layers.route(band, event, &mut cx);
         for intent in cx.into_intents() {
             self.apply_layer_intent(intent);
         }
@@ -16018,6 +15982,12 @@ impl ShellOverlayHost {
             }
             LayerIntent::Session(action) => {
                 self.execute_session_action(action);
+                true
+            }
+            LayerIntent::Repaint => {
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
                 true
             }
         }
@@ -17047,18 +17017,21 @@ impl Widget for ShellOverlayHost {
         }
         // A display tool's change waits for Keep or Revert, possibly with a
         // screen blanked: the answer comes before any other surface.
-        if self.display_confirm.visible() {
-            let outputs = self.display_confirm_outputs();
-            if self
-                .display_confirm
-                .handle_event(event, self.last_cursor, &outputs)
-            {
-                *ctx.handled = true;
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
-                return;
-            }
+        if self.route_layer_band(
+            Band::Session,
+            event,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state,
+                path: ctx.path,
+                handled: &mut *ctx.handled,
+                focus_target: &mut *ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
+        ) {
+            return;
         }
         if let Some((_, display)) = self.personal_display.as_mut() {
             display.handle_event(
@@ -17327,10 +17300,11 @@ impl Widget for ShellOverlayHost {
         ) {
             return;
         }
-        // Stacked layers sit below the genuinely modal sheets above (a
+        // Menus and flyouts sit below the genuinely modal sheets above (a
         // portal answer still wins) and above every other overlay and the
         // windows.
-        if self.route_overlay_layers(
+        if self.route_layer_band(
+            Band::Popover,
             event,
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
@@ -17536,9 +17510,11 @@ impl Widget for ShellOverlayHost {
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let mut root = AccessNode::new(Role::Group).with_name(t("a11y-workspace"));
+        let outputs = self.layer_outputs();
+        let geometry = self.layer_geometry(&outputs);
         for overlay in self.accessible_overlay_order() {
             if let Some(layer) = self.layers.layer(overlay) {
-                root.children.extend(layer.accessibility(self.rect));
+                root.children.extend(layer.accessibility(geometry));
                 continue;
             }
             match overlay {
@@ -17548,7 +17524,10 @@ impl Widget for ShellOverlayHost {
                     }
                 }
                 // Stacked; published above.
-                LayerId::TabContextMenu | LayerId::PowerMenu => {}
+                LayerId::DisplayConfirmation
+                | LayerId::EmojiPicker
+                | LayerId::TabContextMenu
+                | LayerId::PowerMenu => {}
                 LayerId::CommandPalette => {
                     if let Some(mut palette) = self.palette.accessibility() {
                         // The filter band is the host's, painted over the
@@ -18408,19 +18387,6 @@ impl Widget for ShellOverlayHost {
                 LayerId::DisplayLayouts => {
                     root.children.push(self.projection_overlay.accessibility());
                 }
-                LayerId::EmojiPicker => {
-                    if let Some(picker) = self.emoji_picker.accessibility() {
-                        root.children.push(picker);
-                    }
-                }
-                LayerId::DisplayConfirmation => {
-                    if let Some(prompt) = self
-                        .display_confirm
-                        .accessibility(&self.display_confirm_outputs())
-                    {
-                        root.children.push(prompt);
-                    }
-                }
                 LayerId::ShortcutHelp => {
                     use settings_store::hardware::ShortcutAction;
                     let shortcuts = &self.shortcut_config;
@@ -18505,7 +18471,8 @@ impl Widget for ShellOverlayHost {
         let (&overlay_index, child_path) = path.split_first()?;
         let overlay = *self.accessible_overlay_order().get(overlay_index)?;
         if let Some(layer) = self.layers.layer(overlay) {
-            return layer.accessibility_rect(self.rect, child_path);
+            let outputs = self.layer_outputs();
+            return layer.accessibility_rect(self.layer_geometry(&outputs), child_path);
         }
         match overlay {
             LayerId::WindowSwitcher => match child_path {
@@ -18609,14 +18576,12 @@ impl Widget for ShellOverlayHost {
                 _ => None,
             },
             LayerId::NowPlaying => self.now_playing_accessibility_rect(child_path),
-            LayerId::EmojiPicker => {
-                self.emoji_picker.accessibility_rect_for_path(child_path)
-            }
             LayerId::MemberSheet
             | LayerId::ShortcutHelp
             | LayerId::DisplayLayouts
-            | LayerId::DisplayConfirmation
             // Stacked; answered above.
+            | LayerId::DisplayConfirmation
+            | LayerId::EmojiPicker
             | LayerId::TabContextMenu
             | LayerId::PowerMenu => None,
         }
@@ -18666,9 +18631,9 @@ impl Widget for ShellOverlayHost {
             | LayerId::MemberSheet
             | LayerId::ShortcutHelp
             | LayerId::DisplayLayouts
+            // Stacked; answered above.
             | LayerId::DisplayConfirmation
             | LayerId::EmojiPicker
-            // Stacked; answered above.
             | LayerId::TabContextMenu
             | LayerId::PowerMenu => false,
         }
@@ -18849,8 +18814,7 @@ impl ShellOverlayHost {
         let room_replay_in_flight = self.room_activity.replay_is_playing();
         let capture_in_flight = self.capture_studio.needs_animation_frame();
         let projection_needs_frame = self.projection_overlay.needs_animation_frame(now)
-            || self.display_identify.needs_frame(now)
-            || self.display_confirm.needs_frame();
+            || self.display_identify.needs_frame(now);
         let sidebar_frame = self
             .sidebar
             .as_ref()
@@ -19558,6 +19522,7 @@ impl ShellOverlayHost {
 
         let _ = self.draw_quick_settings_dropdown(scene, transform, text_renderer, theme);
 
+        let outputs = self.layer_outputs();
         self.layers.draw(
             LayerId::PowerMenu,
             &mut LayerPaint {
@@ -19566,32 +19531,42 @@ impl ShellOverlayHost {
                 text_renderer,
                 theme,
                 presence,
-                viewport: self.rect,
+                geometry: self.layer_geometry(&outputs),
             },
         );
 
         self.draw_collaborators_dropdown(scene, transform, text_renderer, theme, presence, flags);
         self.draw_room_activity_sheet(scene, transform, text_renderer, theme, presence, flags);
         self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
-        let emoji_viewport = self.emoji_picker_viewport();
-        self.emoji_picker.draw(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            emoji_viewport,
+        self.layers.draw(
+            LayerId::EmojiPicker,
+            &mut LayerPaint {
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                geometry: self.layer_geometry(&outputs),
+            },
         );
         self.display_identify
             .draw(scene, transform, text_renderer, theme, Instant::now());
-        if self.display_confirm.poll(Instant::now(), false)
+        if self.layers.tick(Instant::now())
             && let Some(chrome) = self.chrome.as_ref()
         {
             chrome.borrow_mut().bump();
         }
-        let outputs = self.display_confirm_outputs();
-        self.display_confirm
-            .draw(scene, transform, text_renderer, theme, &outputs);
+        self.layers.draw(
+            LayerId::DisplayConfirmation,
+            &mut LayerPaint {
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                geometry: self.layer_geometry(&outputs),
+            },
+        );
     }
 
     /// Ribbon and rail sit below Quick Settings and every popover.
@@ -20923,6 +20898,7 @@ impl ShellOverlayHost {
         // The tab menu: above the windows and the strip chrome it was
         // opened from, below the sheets that follow (a portal answer or a
         // token prompt is modal; a menu is not).
+        let outputs = self.layer_outputs();
         self.layers.draw(
             LayerId::TabContextMenu,
             &mut LayerPaint {
@@ -20931,7 +20907,7 @@ impl ShellOverlayHost {
                 text_renderer,
                 theme,
                 presence,
-                viewport: self.rect,
+                geometry: self.layer_geometry(&outputs),
             },
         );
 

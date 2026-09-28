@@ -2396,210 +2396,35 @@ impl Widget for RemoteApp {
         self.actions.take_committed()
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        if kind != crate::actions::operation_kind(&operation) {
-            return Err("remote operation kind does not match its declared contract".into());
-        }
-        match operation {
-            crate::actions::RemoteOperation::ShowConnections => {
-                self.apply(Action::GoList, &mut AutoCommit::new());
-            }
-            crate::actions::RemoteOperation::NewConnectionForm => {
-                self.apply(Action::NewConnection, &mut AutoCommit::new());
-            }
-            crate::actions::RemoteOperation::EditConnection { connection_id } => {
-                if self.workspace.get(connection_id).is_none() {
-                    return Err("saved connection no longer exists".into());
-                }
-                self.apply(
-                    Action::EditConnection(connection_id),
-                    &mut AutoCommit::new(),
-                );
-            }
-            crate::actions::RemoteOperation::Connect { connection_id } => {
-                if self.workspace.get(connection_id).is_none() {
-                    return Err("saved connection no longer exists".to_string());
-                }
-                self.open_session(connection_id);
-            }
-            crate::actions::RemoteOperation::Disconnect { connection_id } => {
-                if self.session_for != Some(connection_id) {
-                    return Err("that remote session is no longer active".to_string());
-                }
-                self.disconnect_session();
-            }
-            crate::actions::RemoteOperation::SendText {
-                connection_id,
-                text,
-            } => {
-                if self.session_for != Some(connection_id) {
-                    return Err("that remote session is no longer active".to_string());
-                }
-                match &self.live {
-                    Some(LiveSession::Ssh(session))
-                        if session.status() == SessionStatus::Connected =>
-                    {
-                        session.send_input(text.into_bytes())?;
-                        self.dirty = true;
-                    }
-                    _ => return Err("text input requires a connected SSH terminal".to_string()),
-                }
-            }
-            crate::actions::RemoteOperation::TrustSshHostKey {
-                connection_id,
-                observed,
-            } => {
-                let connection = self
-                    .workspace
-                    .get(connection_id)
-                    .ok_or_else(|| "saved connection no longer exists".to_string())?;
-                if !matches!(self.ssh_host_key_issue(connection_id), Some(crate::ssh::HostKeyIssue::FirstContact { observed: ref current }) if current == &observed)
-                {
-                    return Err(
-                        "the observed SSH host key is stale; reconnect to inspect the current key"
-                            .into(),
-                    );
-                }
-                let path = crate::ssh::default_known_hosts_path().map_err(|error| {
-                    format!("private SSH host-key storage is unavailable: {error}")
-                })?;
-                crate::ssh::trust_host_key(&path, &connection.host, connection.port, &observed)
-                    .map_err(|error| format!("could not save SSH host-key trust: {error}"))?;
-                self.open_session(connection_id);
-            }
-            crate::actions::RemoteOperation::ForgetSshHostKey { connection_id } => {
-                let connection = self
-                    .workspace
-                    .get(connection_id)
-                    .ok_or_else(|| "saved connection no longer exists".to_string())?;
-                if !matches!(
-                    self.ssh_host_key_issue(connection_id),
-                    Some(crate::ssh::HostKeyIssue::Changed { .. })
-                ) {
-                    return Err(
-                        "only the currently observed changed SSH host key can be forgotten".into(),
-                    );
-                }
-                let path = crate::ssh::default_known_hosts_path().map_err(|error| {
-                    format!("private SSH host-key storage is unavailable: {error}")
-                })?;
-                crate::ssh::forget_host_key(&path, &connection.host, connection.port)
-                    .map_err(|error| format!("could not forget SSH host-key trust: {error}"))?;
-                self.disconnect_session();
-            }
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(None);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        if self.pending_resource_operation.is_some() {
-            return Err("another remote operation is still running".into());
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        match operation {
-            crate::actions::RemoteOperation::ShowConnections
-            | crate::actions::RemoteOperation::NewConnectionForm
-            | crate::actions::RemoteOperation::EditConnection { .. } => {
-                Err("view operations do not start background work".into())
-            }
-            crate::actions::RemoteOperation::Connect { connection_id } => {
-                let Some(connection) = self.workspace.get(connection_id) else {
-                    return Err("saved connection no longer exists".into());
-                };
-                let readiness = connection_readiness(connection);
-                if !readiness.can_connect() {
-                    let reason = if readiness == TransportReadiness::InvalidProfile {
-                        connection
-                            .profile_issue()
-                            .unwrap_or_else(|| readiness.detail(connection.kind))
-                    } else {
-                        readiness.detail(connection.kind)
-                    };
-                    return Err(reason.to_string());
-                }
-                self.open_session(connection_id);
-                match self.live.as_ref().map(LiveSession::status) {
-                    Some(SessionStatus::Connecting) => {
-                        self.pending_resource_operation = Some(PendingResourceOperation::Connect {
-                            invocation,
-                            connection_id,
-                            session_generation: self.session_generation,
-                        });
-                        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-                    }
-                    Some(SessionStatus::Connected) => {
-                        Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )))
-                    }
-                    Some(SessionStatus::Failed(message) | SessionStatus::Unavailable(message)) => {
-                        Err(message)
-                    }
-                    Some(SessionStatus::Closed) | None => {
-                        Err("remote transport did not start".into())
-                    }
-                }
-            }
-            crate::actions::RemoteOperation::SendText {
-                connection_id,
-                text,
-            } => {
-                if self.session_for != Some(connection_id) {
-                    return Err("that remote session is no longer active".into());
-                }
-                let acknowledgement = match &self.live {
-                    Some(LiveSession::Ssh(session))
-                        if session.status() == SessionStatus::Connected =>
-                    {
-                        session.send_input_ack(text.into_bytes())?
-                    }
-                    _ => return Err("text input requires a connected SSH terminal".into()),
-                };
-                self.pending_resource_operation = Some(PendingResourceOperation::SshInput {
-                    invocation,
-                    connection_id,
-                    session_generation: self.session_generation,
-                    acknowledgement,
-                });
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            crate::actions::RemoteOperation::Disconnect { .. }
-            | crate::actions::RemoteOperation::TrustSshHostKey { .. }
-            | crate::actions::RemoteOperation::ForgetSshHostKey { .. } => {
-                if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-                    return Ok(None);
-                }
-                Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                )))
-            }
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     #[allow(
@@ -3763,6 +3588,214 @@ impl Widget for RemoteApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl RemoteApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        if kind != crate::actions::operation_kind(&operation) {
+            return Err("remote operation kind does not match its declared contract".into());
+        }
+        match operation {
+            crate::actions::RemoteOperation::ShowConnections => {
+                self.apply(Action::GoList, &mut AutoCommit::new());
+            }
+            crate::actions::RemoteOperation::NewConnectionForm => {
+                self.apply(Action::NewConnection, &mut AutoCommit::new());
+            }
+            crate::actions::RemoteOperation::EditConnection { connection_id } => {
+                if self.workspace.get(connection_id).is_none() {
+                    return Err("saved connection no longer exists".into());
+                }
+                self.apply(
+                    Action::EditConnection(connection_id),
+                    &mut AutoCommit::new(),
+                );
+            }
+            crate::actions::RemoteOperation::Connect { connection_id } => {
+                if self.workspace.get(connection_id).is_none() {
+                    return Err("saved connection no longer exists".to_string());
+                }
+                self.open_session(connection_id);
+            }
+            crate::actions::RemoteOperation::Disconnect { connection_id } => {
+                if self.session_for != Some(connection_id) {
+                    return Err("that remote session is no longer active".to_string());
+                }
+                self.disconnect_session();
+            }
+            crate::actions::RemoteOperation::SendText {
+                connection_id,
+                text,
+            } => {
+                if self.session_for != Some(connection_id) {
+                    return Err("that remote session is no longer active".to_string());
+                }
+                match &self.live {
+                    Some(LiveSession::Ssh(session))
+                        if session.status() == SessionStatus::Connected =>
+                    {
+                        session.send_input(text.into_bytes())?;
+                        self.dirty = true;
+                    }
+                    _ => return Err("text input requires a connected SSH terminal".to_string()),
+                }
+            }
+            crate::actions::RemoteOperation::TrustSshHostKey {
+                connection_id,
+                observed,
+            } => {
+                let connection = self
+                    .workspace
+                    .get(connection_id)
+                    .ok_or_else(|| "saved connection no longer exists".to_string())?;
+                if !matches!(self.ssh_host_key_issue(connection_id), Some(crate::ssh::HostKeyIssue::FirstContact { observed: ref current }) if current == &observed)
+                {
+                    return Err(
+                        "the observed SSH host key is stale; reconnect to inspect the current key"
+                            .into(),
+                    );
+                }
+                let path = crate::ssh::default_known_hosts_path().map_err(|error| {
+                    format!("private SSH host-key storage is unavailable: {error}")
+                })?;
+                crate::ssh::trust_host_key(&path, &connection.host, connection.port, &observed)
+                    .map_err(|error| format!("could not save SSH host-key trust: {error}"))?;
+                self.open_session(connection_id);
+            }
+            crate::actions::RemoteOperation::ForgetSshHostKey { connection_id } => {
+                let connection = self
+                    .workspace
+                    .get(connection_id)
+                    .ok_or_else(|| "saved connection no longer exists".to_string())?;
+                if !matches!(
+                    self.ssh_host_key_issue(connection_id),
+                    Some(crate::ssh::HostKeyIssue::Changed { .. })
+                ) {
+                    return Err(
+                        "only the currently observed changed SSH host key can be forgotten".into(),
+                    );
+                }
+                let path = crate::ssh::default_known_hosts_path().map_err(|error| {
+                    format!("private SSH host-key storage is unavailable: {error}")
+                })?;
+                crate::ssh::forget_host_key(&path, &connection.host, connection.port)
+                    .map_err(|error| format!("could not forget SSH host-key trust: {error}"))?;
+                self.disconnect_session();
+            }
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != tilo_actions::OperationKind::Effect {
+            return Ok(None);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        if self.pending_resource_operation.is_some() {
+            return Err("another remote operation is still running".into());
+        }
+        match operation {
+            crate::actions::RemoteOperation::ShowConnections
+            | crate::actions::RemoteOperation::NewConnectionForm
+            | crate::actions::RemoteOperation::EditConnection { .. } => {
+                Err("view operations do not start background work".into())
+            }
+            crate::actions::RemoteOperation::Connect { connection_id } => {
+                let Some(connection) = self.workspace.get(connection_id) else {
+                    return Err("saved connection no longer exists".into());
+                };
+                let readiness = connection_readiness(connection);
+                if !readiness.can_connect() {
+                    let reason = if readiness == TransportReadiness::InvalidProfile {
+                        connection
+                            .profile_issue()
+                            .unwrap_or_else(|| readiness.detail(connection.kind))
+                    } else {
+                        readiness.detail(connection.kind)
+                    };
+                    return Err(reason.to_string());
+                }
+                self.open_session(connection_id);
+                match self.live.as_ref().map(LiveSession::status) {
+                    Some(SessionStatus::Connecting) => {
+                        self.pending_resource_operation = Some(PendingResourceOperation::Connect {
+                            invocation,
+                            connection_id,
+                            session_generation: self.session_generation,
+                        });
+                        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+                    }
+                    Some(SessionStatus::Connected) => {
+                        Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                            tilo_actions::ActionOutput::default(),
+                        )))
+                    }
+                    Some(SessionStatus::Failed(message) | SessionStatus::Unavailable(message)) => {
+                        Err(message)
+                    }
+                    Some(SessionStatus::Closed) | None => {
+                        Err("remote transport did not start".into())
+                    }
+                }
+            }
+            crate::actions::RemoteOperation::SendText {
+                connection_id,
+                text,
+            } => {
+                if self.session_for != Some(connection_id) {
+                    return Err("that remote session is no longer active".into());
+                }
+                let acknowledgement = match &self.live {
+                    Some(LiveSession::Ssh(session))
+                        if session.status() == SessionStatus::Connected =>
+                    {
+                        session.send_input_ack(text.into_bytes())?
+                    }
+                    _ => return Err("text input requires a connected SSH terminal".into()),
+                };
+                self.pending_resource_operation = Some(PendingResourceOperation::SshInput {
+                    invocation,
+                    connection_id,
+                    session_generation: self.session_generation,
+                    acknowledgement,
+                });
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            crate::actions::RemoteOperation::Disconnect { .. }
+            | crate::actions::RemoteOperation::TrustSshHostKey { .. }
+            | crate::actions::RemoteOperation::ForgetSshHostKey { .. } => {
+                if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+                    return Ok(None);
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                )))
+            }
+        }
     }
 }
 
@@ -7364,25 +7397,32 @@ mod tests {
                 &crate::actions::RemoteOperation::EditConnection { connection_id: id },
             )
             .expect("serializable view operation");
-            assert!(
-                app.invoke_resource_operation(
-                    tilo_actions::OperationKind::View,
-                    &edit.type_id,
-                    &edit.payload,
-                    &doc(),
-                    &automerge::ROOT,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        &edit.type_id,
+                        &edit.payload
+                    ),
+                    &mut doc(),
+                    &automerge::ROOT
                 )
-                .expect("view routed")
-            );
+                .expect("view routed"),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(app.screen, Screen::Form { editing: Some(id) });
 
             assert!(
-                app.invoke_resource_operation(
-                    tilo_actions::OperationKind::Effect,
-                    &edit.type_id,
-                    &edit.payload,
-                    &doc(),
-                    &automerge::ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        &edit.type_id,
+                        &edit.payload
+                    ),
+                    &mut doc(),
+                    &automerge::ROOT
                 )
                 .is_err()
             );

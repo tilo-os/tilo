@@ -113,14 +113,18 @@ fn managed_history_is_truthful_inert_and_returns_to_the_same_logs_view() {
 fn invoke(app: &mut crate::LogsApp, operation: &crate::actions::LogsOperation) {
     let payload = serde_json::to_vec(&operation).unwrap();
     assert!(
-        Widget::invoke_resource_operation(
+        Widget::start_operation(
             app,
-            OperationKind::Effect,
-            crate::actions::LOGS_OPERATION_TYPE,
-            &payload,
-            &automerge::AutoCommit::new(),
-            &automerge::ROOT,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                OperationKind::Effect,
+                crate::actions::LOGS_OPERATION_TYPE,
+                &payload
+            ),
+            &mut automerge::AutoCommit::new(),
+            &automerge::ROOT
         )
+        .map(|started| started.is_some())
         .unwrap()
     );
 }
