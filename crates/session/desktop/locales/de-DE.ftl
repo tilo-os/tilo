@@ -440,16 +440,16 @@ search-provider-desktop-windows = Fenster auf dem Desktop
 search-badge-tab = Tab
 search-badge-window-group = Fenstergruppe
 search-window-move-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ verschieben
-search-window-move-tab-detail = App { $app } · aus dem Arbeitsbereich „{ $workspace }“ · Gruppe { $group } · Tab { $tab }
+search-window-move-tab-detail = App { $app } · aus dem Arbeitsbereich „{ $workspace }“ · Gruppe { $position }
 search-window-copy-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ kopieren
-search-window-group-untitled = Fenstergruppe { $group }
+search-window-group-untitled = Fenstergruppe { $position }
 search-window-close-group = Fenstergruppe „{ $group }“ schließen
-search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $group } · { $count ->
+search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $position } · { $count ->
     [one] 1 Tab
    *[other] { $count } Tabs
 }
 search-window-close-tab = Tab „{ $tab }“ schließen
-search-window-close-tab-detail = App { $app } · Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $group } · Tab { $tab }
+search-window-close-tab-detail = App { $app } · Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $position }
 
 # Notifications: banner stack and notification centre
 drill-in-back = Zurück

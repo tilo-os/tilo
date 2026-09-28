@@ -345,6 +345,14 @@ mod tests {
                         .as_deref()
                         .is_some_and(|text| text.contains("group"))
             }));
+            assert!(
+                actions.iter().all(|action| action
+                    .subtitle
+                    .as_deref()
+                    .is_some_and(|text| !text.contains("100") && !text.contains("200"))),
+                "a subtitle names a group by its place, never its internal id: {:?}",
+                actions.iter().map(|a| &a.subtitle).collect::<Vec<_>>()
+            );
             assert_eq!(
                 actions[2].title,
                 "Close window group “Profilfehler aufgetreten”"

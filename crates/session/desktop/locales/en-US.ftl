@@ -416,16 +416,16 @@ search-provider-desktop-windows = Desktop windows
 search-badge-tab = Tab
 search-badge-window-group = Window group
 search-window-move-tab = Move tab “{ $tab }” to workspace “{ $workspace }”
-search-window-move-tab-detail = App { $app } · from workspace “{ $workspace }” · group { $group } · tab { $tab }
+search-window-move-tab-detail = App { $app } · from workspace “{ $workspace }” · group { $position }
 search-window-copy-tab = Copy tab “{ $tab }” to workspace “{ $workspace }”
-search-window-group-untitled = Window group { $group }
+search-window-group-untitled = Window group { $position }
 search-window-close-group = Close window group “{ $group }”
-search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ $strip }” · group { $group } · { $count ->
+search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ $strip }” · group { $position } · { $count ->
     [one] 1 tab
    *[other] { $count } tabs
 }
 search-window-close-tab = Close tab “{ $tab }”
-search-window-close-tab-detail = App { $app } · workspace “{ $workspace }” · strip “{ $strip }” · group { $group } · tab { $tab }
+search-window-close-tab-detail = App { $app } · workspace “{ $workspace }” · strip “{ $strip }” · group { $position }
 
 # Notifications: banner stack and notification centre
 drill-in-back = Back
