@@ -44,7 +44,8 @@ web_graph "${roots[@]}" --features "$core_features" >"$build/graph.json"
 
 abi_json=$(node "$web_scripts/abi.mjs" "$build/core-cargo.json" "$build/graph.json" "$repo" "$web_runtime_name")
 printf '%s\n' "$abi_json" >"$build/abi-inputs.json"
-abi=$(node -e 'console.log(JSON.parse(process.argv[1]).abi)' "$abi_json")
+# Read from the file: the inputs outgrow one argument (Linux caps it at 128 KiB).
+abi=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).abi)' "$build/abi-inputs.json")
 
 core="$out/pkg/tilo_browser_runtime_bg.wasm"
 # At opt-level z every crate exports the instantiations of foreign generics it
