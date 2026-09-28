@@ -9,79 +9,35 @@ use crate::{NeighbourMsg, coverage::Coverage, durability::DurableReceipt};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, Automerge, ROOT, ReadDoc, ScalarValue, Value};
 use collab_types::{DocumentMutation, WholeDocumentPayload};
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tilo_user_identity::DeviceCert;
 
-/// A local trust configuration, never inferred from a publication. Deserialization
-/// validates the exact certificate and canonical namespace too.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "AuthorityFields")]
-pub struct RetentionAuthority {
-    room: String,
-    governor: DeviceCert,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AuthorityFields {
-    room: String,
-    governor: DeviceCert,
-}
-impl TryFrom<AuthorityFields> for RetentionAuthority {
-    type Error = String;
-    fn try_from(value: AuthorityFields) -> Result<Self, String> {
-        Self::new(&value.room, value.governor)
-    }
-}
-impl RetentionAuthority {
-    /// Pin the retention authority of `room` to `governor`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `room` is not a canonical UUID or `governor` does not verify.
-    pub fn new(room: &str, governor: DeviceCert) -> Result<Self, String> {
-        if uuid::Uuid::parse_str(room)
-            .map_err(|e| e.to_string())?
-            .to_string()
-            != room
-        {
-            return Err("retention authority requires canonical room UUID".into());
-        }
-        tilo_user_identity::verify_device_cert(&governor).map_err(|e| e.to_string())?;
-        Ok(Self {
-            room: room.into(),
-            governor,
-        })
-    }
-    pub fn room(&self) -> &str {
-        &self.room
-    }
-    pub fn governor(&self) -> &DeviceCert {
-        &self.governor
-    }
+pub use tilo_relay_protocol::retention::RetentionAuthority;
 
-    /// Derive the locally pinned retention authority from an existing governed
-    /// room document without creating or replacing room state.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the room id is missing or `governor` is not the governed owner.
-    pub fn from_governance(document: &AutoCommit, governor: DeviceCert) -> Result<Self, String> {
-        let room = document
-            .get(ROOT, "room")
-            .map_err(|error| error.to_string())?
-            .and_then(|(value, _)| value.as_str().map(ToOwned::to_owned))
-            .ok_or("governed room id is missing")?;
-        let authority = Self::new(&room, governor)?;
-        if crate::room::governance_of(Some(document)).0.as_deref()
-            != Some(&hex::encode(authority.governor.user_public_key))
-        {
-            return Err("retention governor is not the governed room owner".into());
-        }
-        identities(&authority, None, document)
-            .map_err(|_| "retention governor is absent or revoked in governance".to_string())?;
-        Ok(authority)
+/// Derive the locally pinned retention authority from an existing governed
+/// room document without creating or replacing room state.
+///
+/// # Errors
+///
+/// Returns an error if the room id is missing or `governor` is not the governed owner.
+pub fn retention_authority_from_governance(
+    document: &AutoCommit,
+    governor: DeviceCert,
+) -> Result<RetentionAuthority, String> {
+    let room = document
+        .get(ROOT, "room")
+        .map_err(|error| error.to_string())?
+        .and_then(|(value, _)| value.as_str().map(ToOwned::to_owned))
+        .ok_or("governed room id is missing")?;
+    let authority = RetentionAuthority::new(&room, governor)?;
+    if crate::room::governance_of(Some(document)).0.as_deref()
+        != Some(&hex::encode(authority.governor().user_public_key))
+    {
+        return Err("retention governor is not the governed room owner".into());
     }
+    identities(&authority, None, document)
+        .map_err(|_| "retention governor is absent or revoked in governance".to_string())?;
+    Ok(authority)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -225,9 +181,9 @@ fn room_changes(changes: &[Vec<u8>]) -> Result<(), ProofError> {
     Ok(())
 }
 fn valid_coverage(authority: &RetentionAuthority, key: &str, coverage: &Coverage) -> bool {
-    coverage.room == authority.room
+    coverage.room == authority.room()
         && key == crate::coverage::route_key(&coverage.app, &coverage.record)
-        && coverage.author == authority.governor.device_public_key
+        && coverage.author == authority.governor().device_public_key
         && coverage.sequence > 0
         && coverage.watermarks.get(&hex::encode(coverage.author)) == Some(&coverage.sequence)
         && coverage.watermarks.iter().all(|(author, seq)| {
@@ -293,10 +249,10 @@ fn identities(
     };
     let prior = parse(before)?;
     let current = parse(Some(doc))?;
-    let pinned = hex::encode(authority.governor.device_public_key);
+    let pinned = hex::encode(authority.governor().device_public_key);
     if current
         .get(&pinned)
-        .is_none_or(|row| row.device_cert != authority.governor)
+        .is_none_or(|row| row.device_cert != *authority.governor())
     {
         return Err(ProofError::Unknown);
     }
@@ -323,7 +279,7 @@ fn identities(
                 .map_err(|_| ProofError::Unknown)?;
         }
     }
-    if revoked.is_revoked(&authority.governor.device_public_key) {
+    if revoked.is_revoked(&authority.governor().device_public_key) {
         return Err(ProofError::Unknown);
     }
     Ok(())
@@ -346,7 +302,7 @@ pub fn verify_room(
     kind: RoomInput,
     prior: Option<&VerifiedRoom>,
 ) -> Result<VerifiedRoom, ProofError> {
-    if source != authority.governor.device_public_key
+    if source != authority.governor().device_public_key
         || channel != *blake3::hash(b"shell-tree").as_bytes()
         || prior.is_some_and(|prior| prior.authority != *authority)
     {
@@ -355,7 +311,7 @@ pub fn verify_room(
     let NeighbourMsg::SyncResp { room, changes } = decode(body)? else {
         return Err(ProofError::Unknown);
     };
-    if room != authority.room {
+    if room != authority.room() {
         return Err(ProofError::Unknown);
     }
     room_changes(&changes)?;
@@ -368,7 +324,7 @@ pub fn verify_room(
         return Err(ProofError::Unknown);
     }
     match doc.get(ROOT, "room").map_err(|_| ProofError::Unknown)? {
-        Some((Value::Scalar(value), _)) if matches!(value.as_ref(), ScalarValue::Str(value) if value.as_str() == authority.room) =>
+        Some((Value::Scalar(value), _)) if matches!(value.as_ref(), ScalarValue::Str(value) if value.as_str() == authority.room()) =>
             {}
         _ => return Err(ProofError::Unknown),
     }
@@ -484,11 +440,11 @@ pub fn verify_snapshot(
     channel: [u8; 32],
     body: &[u8],
 ) -> Result<VerifiedSnapshot, ProofError> {
-    if source != room.authority.governor.device_public_key {
+    if source != room.authority.governor().device_public_key {
         return Err(ProofError::Unknown);
     }
     let (app, record, envelope, mutation) =
-        signed_document(source, channel, body, &room.authority.room)?;
+        signed_document(source, channel, body, room.authority.room())?;
     let DocumentMutation::Snapshot(bytes) = mutation else {
         return Err(ProofError::Unknown);
     };
@@ -558,7 +514,7 @@ impl VerifiedRoom {
         channel: [u8; 32],
         body: &[u8],
     ) -> CoverageDecision {
-        if source != self.authority.governor.device_public_key
+        if source != self.authority.governor().device_public_key
             || channel != *blake3::hash(b"shell-tree").as_bytes()
         {
             return CoverageDecision::Unknown;
@@ -566,7 +522,7 @@ impl VerifiedRoom {
         let Ok(NeighbourMsg::SyncResp { room, changes }) = decode(body) else {
             return CoverageDecision::Unknown;
         };
-        if room != self.authority.room || room_changes(&changes).is_err() {
+        if room != self.authority.room() || room_changes(&changes).is_err() {
             return CoverageDecision::Unknown;
         }
         for bytes in changes {
@@ -589,11 +545,11 @@ impl VerifiedSnapshot {
         channel: [u8; 32],
         body: &[u8],
     ) -> bool {
-        if source != self.authority.governor.device_public_key {
+        if source != self.authority.governor().device_public_key {
             return false;
         }
         let Ok((app, record, envelope, DocumentMutation::Snapshot(bytes))) =
-            signed_document(source, channel, body, &self.authority.room)
+            signed_document(source, channel, body, self.authority.room())
         else {
             return false;
         };
@@ -709,7 +665,7 @@ impl OrderedTailReadiness {
             return false;
         }
         let Ok((app, record, _, DocumentMutation::Incremental(bytes))) =
-            signed_document(source, channel, body, &self.authority.room)
+            signed_document(source, channel, body, self.authority.room())
         else {
             return false;
         };
@@ -738,7 +694,7 @@ fn classify_tail(
         floor: FloorSafety::Unknown,
     };
     let Ok((app, record, envelope, DocumentMutation::Incremental(bytes))) =
-        signed_document(source, channel, body, &authority.room)
+        signed_document(source, channel, body, authority.room())
     else {
         return unknown;
     };
@@ -757,7 +713,7 @@ fn classify_tail(
         combined.get_missing_deps(&[]).is_empty() && combined.get_heads() == original_heads
     });
     TailDecision {
-        coverage: if source != authority.governor.device_public_key {
+        coverage: if source != authority.governor().device_public_key {
             CoverageDecision::Unknown
         } else if contained && floor >= envelope.seq {
             CoverageDecision::Covered

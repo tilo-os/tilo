@@ -277,6 +277,89 @@ pub enum Envelope {
         /// Human-readable reason (for tracing / logging).
         reason: String,
     },
+
+    /// A [`Envelope::Delta`] whose author wants to know when the host has
+    /// made it durable. The host admits it exactly like a `Delta`, fans it
+    /// out to other subscribers as a plain `Delta`, and answers the author
+    /// with [`Envelope::Committed`] once it is persisted, or
+    /// [`Envelope::CommitRefused`]. Only the author sees either answer, so
+    /// peers that predate these variants never receive them.
+    Commit {
+        /// Workspace id.
+        workspace_id: u64,
+        /// Author-chosen id echoed in the answer. Resending the same commit
+        /// after a reconnect reuses it.
+        op: [u8; 16],
+        /// Must equal the authenticated device.
+        author_device_public_key: [u8; 32],
+        /// Authored-at nanoseconds since epoch (metadata only).
+        authored_at_ns: u64,
+        /// The same body an `Envelope::Delta` carries.
+        #[serde(with = "serde_bytes")]
+        delta: Vec<u8>,
+    },
+
+    /// The host persisted commit `op` of this connection. `seq` is the
+    /// host's order for the workspace: later commits get larger values.
+    Committed {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The commit's id.
+        op: [u8; 16],
+        /// Host order of the commit within the workspace.
+        seq: u64,
+    },
+
+    /// The host did not admit commit `op`. Nothing was persisted or fanned
+    /// out.
+    CommitRefused {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The commit's id.
+        op: [u8; 16],
+        /// Human-readable reason (for tracing / logging).
+        reason: String,
+    },
+
+    /// Join the workspace's live plane. Requires an accepted `Subscribe` on
+    /// the same connection. The host answers with one
+    /// [`Envelope::LiveMember`] per current live member, then relays their
+    /// [`Envelope::Live`] frames.
+    LiveJoin {
+        /// Workspace id.
+        workspace_id: u64,
+    },
+
+    /// Leave the workspace's live plane.
+    LiveLeave {
+        /// Workspace id.
+        workspace_id: u64,
+    },
+
+    /// One ephemeral live frame ([`crate::live::LiveFrame`] bytes). The host
+    /// validates and rate-limits it, stamps `from_device_public_key` from
+    /// the authenticated connection, forwards it to the other live members
+    /// and never stores it.
+    Live {
+        /// Workspace id.
+        workspace_id: u64,
+        /// Publishing device, stamped by the host. Whatever a sender puts
+        /// here is overwritten.
+        from_device_public_key: [u8; 32],
+        /// Canonical [`crate::live::LiveFrame`] encoding.
+        #[serde(with = "serde_bytes")]
+        frame: Vec<u8>,
+    },
+
+    /// A device joined (`active`) or left the workspace's live plane.
+    LiveMember {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The device.
+        device_public_key: [u8; 32],
+        /// Whether it is now a live member.
+        active: bool,
+    },
 }
 
 /// Version of the [`Envelope::RemoteAction`] kind this build routes. The
