@@ -2324,6 +2324,24 @@ fn genesis_actor_of(id: &RecordId, kind: &RecordKind, workspace: &str) -> autome
     automerge::ActorId::from(digest.get(..16).unwrap_or_default())
 }
 
+/// The actor `author`'s mount edits a record as, when the record's own
+/// writer is `record_writer` and the host asked for per-author writers
+/// ([`crate::application::HostContext::write_as_author`]). Mounts of one
+/// profile and device share a record's document and so its writer; this
+/// keeps each author's edits apart in history. It is unique wherever the
+/// record's writer is, and the same after a reopen, so history names the
+/// same author again.
+pub fn author_writer(record_writer: &automerge::ActorId, author: &str) -> automerge::ActorId {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::new()
+        .chain_update(b"tilo.record.author-writer\0")
+        .chain_update(record_writer.to_bytes())
+        .chain_update(b"\0")
+        .chain_update(author.as_bytes())
+        .finalize();
+    automerge::ActorId::from(digest.get(..16).unwrap_or_default())
+}
+
 /// The actor that made the genesis of the record `doc` holds. Nobody edits
 /// as it, and its changes carry no time, so history lists none of them.
 /// `None` when `doc` holds no record.

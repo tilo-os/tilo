@@ -1581,38 +1581,10 @@ pub trait Widget {
     }
 
     // --- Collab / DnD contract extensions ---
-    /// Stable identity for presence/permission lookup. Default: opt-out.
-    fn presence_key(&self) -> Option<PresenceKey> {
-        None
-    }
-    /// Outbound presence (typically caret/selection) broadcast while this
-    /// widget holds focus; the App polls the focused widget after each event
-    /// and diffs it out to peers.
-    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
-        None
-    }
     /// Whether `sync` still needs to run on idle frames without input or
     /// collab events — e.g. waiting out a document-adoption grace window.
     fn needs_idle_sync(&self) -> bool {
         false
-    }
-    /// Which permission scope, if any, gates this widget. Default: no gating.
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        None
-    }
-
-    /// Folded into the unified Ctrl+K palette alongside
-    /// [`resources`](Self::resources) actions — one
-    /// [`SearchProvider`](crate::search::SearchProvider) per findable kind.
-    /// A hit activates via
-    /// [`activate_search_result`](Self::activate_search_result).
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        Vec::new()
-    }
-
-    /// Presentation (navigation), not a CRDT action — mutate the doc only
-    /// if selecting changes shared state.
-    fn activate_search_result(&mut self, _action_id: &str, _doc: &mut AppModel, _path: &ModelPath) {
     }
 
     /// The affordance-driven twin of the Ctrl+K palette: when a widget's own

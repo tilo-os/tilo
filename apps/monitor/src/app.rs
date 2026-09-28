@@ -5420,7 +5420,8 @@ impl Widget for MonitorApp {
     ui::provides!(
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -5446,10 +5447,6 @@ impl Widget for MonitorApp {
                     ui::tilo_actions::ActionOutput::default(),
                 )
             }))
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
-        vec![Box::new(self.process_search.clone())]
     }
 
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
@@ -5870,6 +5867,12 @@ impl Widget for MonitorApp {
         if reduced {
             self.proc_push.snap(self.proc_push.pane());
         }
+    }
+}
+
+impl ui::search::capability::SearchSource for MonitorApp {
+    fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
+        vec![Box::new(self.process_search.clone())]
     }
 }
 
@@ -8579,7 +8582,9 @@ mod tests {
             a.model.processes.push(tail.clone());
             a.process_search.refresh(&a.model.processes);
 
-            let provider = a.search_providers().pop().expect("process provider");
+            let provider = ui::search::capability::search_providers(&a)
+                .pop()
+                .expect("process provider");
             let hit = provider
                 .search_limited("tail-worker", 1)
                 .pop()

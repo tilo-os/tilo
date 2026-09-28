@@ -3624,7 +3624,7 @@ mod tests {
             let (mut app, mut doc) = seeded();
 
             let resources = ui::resources::resources(&app, &doc);
-            let all_hits = Widget::search_providers(&app)[0].search("");
+            let all_hits = ui::search::capability::search_providers(&app)[0].search("");
             assert!(
                 all_hits.iter().all(|hit| {
                     hit.action_address().is_some_and(|address| {
@@ -3641,7 +3641,7 @@ mod tests {
                 let resources = ui::resources::resources(&app, &doc);
                 let mut palette = ui::ActionPalette::new();
                 palette.load_open_resources(&resources);
-                palette.set_providers(Widget::search_providers(&app));
+                palette.set_providers(ui::search::capability::search_providers(&app));
                 palette.open();
                 palette.set_query(query);
                 let labels = palette.result_labels();
@@ -3756,7 +3756,7 @@ mod tests {
                 .name
                 .clone();
             assert!(
-                Widget::search_providers(&app)[0]
+                ui::search::capability::search_providers(&app)[0]
                     .search(&name)
                     .iter()
                     .any(|hit| hit.action_address() == Some(open_project_address(id)))

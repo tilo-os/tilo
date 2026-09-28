@@ -6920,7 +6920,7 @@ fn the_presence_payload_reports_focus_caret_and_selection() {
         let mut framed = mount(state, wp, 1100, 760);
         let (wp, _) = Framed::split(&mut framed);
 
-        match wp.presence_payload() {
+        match ui::presence::capability::presence_payload(wp) {
             Some((key, ui::PresencePayload::Caret { pos })) => {
                 assert_eq!(
                     key,
@@ -6948,7 +6948,7 @@ fn the_presence_payload_reports_focus_caret_and_selection() {
         let (wp, _) = pipeline_draw(&mut framed, 1100, 760);
 
         let block = wp.model().caret().block.clone();
-        match wp.presence_payload() {
+        match ui::presence::capability::presence_payload(wp) {
             Some((key, ui::PresencePayload::Selection { start, end })) => {
                 assert_eq!(key, block_presence_key(false, &block));
                 assert_eq!((start, end), (1, 4), "selection reported as a byte range");
@@ -6966,7 +6966,7 @@ fn the_presence_payload_reports_focus_caret_and_selection() {
         let (wp, _) = Framed::split(&mut framed);
         wp.set_focus(false);
         assert!(
-            wp.presence_payload().is_none(),
+            ui::presence::capability::presence_payload(wp).is_none(),
             "no presence while unfocused"
         );
     }

@@ -437,6 +437,11 @@ impl Default for DesktopBackdrop {
 }
 
 impl Widget for DesktopBackdrop {
+    ui::provides!(
+        dyn ui::permissions::capability::PermissionGated,
+        dyn ui::presence::capability::PublishesPresence
+    );
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -616,11 +621,15 @@ impl Widget for DesktopBackdrop {
             child.mark_drawn();
         }
     }
+}
 
+impl ui::presence::capability::PublishesPresence for DesktopBackdrop {
     fn presence_key(&self) -> Option<PresenceKey> {
         None
     }
+}
 
+impl ui::permissions::capability::PermissionGated for DesktopBackdrop {
     fn permission_scope(&self) -> Option<PermissionScope> {
         None
     }

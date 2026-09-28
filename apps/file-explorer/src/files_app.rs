@@ -7402,7 +7402,8 @@ impl Widget for FileExplorerWidget {
         dyn ui::widget::Collaborative,
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
@@ -7955,18 +7956,6 @@ impl Widget for FileExplorerWidget {
         d
     }
 
-    /// Keep ordinary Places search and add a separately bounded snapshot of
-    /// collaborative records from the live mount projection. Collaborative
-    /// actions carry stable record UUIDs; their current paths are provenance,
-    /// never identity.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![
-            Box::new(self.places_search.clone()),
-            Box::new(self.collaborative_search.clone()),
-            Box::new(self.remote_accounts_search.clone()),
-        ]
-    }
-
     fn needs_animation_frame(&self) -> bool {
         // The body's docked→push / reveal slide must keep the host pumping
         // frames while it settles; the floating status bubble likewise while it
@@ -8159,6 +8148,20 @@ impl Widget for FileExplorerWidget {
             return false;
         }
         false
+    }
+}
+
+impl ui::search::capability::SearchSource for FileExplorerWidget {
+    /// Keep ordinary Places search and add a separately bounded snapshot of
+    /// collaborative records from the live mount projection. Collaborative
+    /// actions carry stable record UUIDs; their current paths are provenance,
+    /// never identity.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![
+            Box::new(self.places_search.clone()),
+            Box::new(self.collaborative_search.clone()),
+            Box::new(self.remote_accounts_search.clone()),
+        ]
     }
 }
 

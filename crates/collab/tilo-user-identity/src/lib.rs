@@ -85,6 +85,8 @@ pub mod directory;
 pub mod enrollment;
 pub mod image;
 pub mod machine_mesh;
+#[cfg(target_os = "linux")]
+pub mod nofollow;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod persist;
 pub mod projection;

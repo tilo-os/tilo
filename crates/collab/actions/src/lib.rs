@@ -107,7 +107,8 @@ pub use action::{
 };
 pub use context::{
     AGENT_TASK_PARTICIPANT_PREFIX, ActionApp, ActionContext, ActionFacet, ActionGroup,
-    ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, MAX_PARTICIPANT_ID_BYTES, ParticipantId,
+    ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, ChangeKind, MAX_PARTICIPANT_ID_BYTES,
+    ParticipantId,
 };
 pub use contract::{
     ARGUMENT_RISK_TAG, ActionContract, Availability, ConfirmationPolicy, DiscoveryScope,
@@ -198,10 +199,90 @@ mod tests {
         }
     }
 
+    /// A read marker: shared state about the document, not its content.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct Seen(i64);
+
+    const SEEN_TYPE: &str = "test.seen";
+
+    impl Action for Seen {
+        fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+            doc.put(&ROOT, "seen", ScalarValue::Int(self.0))?;
+            Ok(())
+        }
+
+        fn change_kind(&self) -> ChangeKind {
+            ChangeKind::Housekeeping
+        }
+    }
+
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
         r.register::<Counter>(COUNTER_TYPE);
+        r.register::<Seen>(SEEN_TYPE);
         r
+    }
+
+    fn last_message(doc: &mut AutoCommit) -> Option<String> {
+        let heads = doc.get_heads();
+        doc.get_change_by_hash(heads.first()?)?
+            .message()
+            .map(ToString::to_string)
+    }
+
+    fn last_context(doc: &mut AutoCommit) -> Option<ActionContext> {
+        ActionContext::from_change_message(&last_message(doc)?)
+    }
+
+    /// The executor writes an action's declared kind into its change, with or
+    /// without a caller's context, and replay reproduces the same change.
+    #[test]
+    fn declared_housekeeping_travels_in_the_change_and_content_writes_nothing_new() {
+        let (mut a, mut b) = two_replicas();
+        let env = apply_local(
+            &mut a,
+            &Seen(3),
+            EncodedAction::encode(SEEN_TYPE, &Seen(3)).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            env.context
+                .as_ref()
+                .is_some_and(ActionContext::is_housekeeping)
+        );
+        assert!(last_context(&mut a).is_some_and(|context| context.is_housekeeping()));
+        replay(&mut b, &env, &registry()).unwrap();
+        assert_eq!(a.get_heads(), b.get_heads(), "replay makes the same change");
+
+        let labelled =
+            ActionContext::for_resource("Mark as read", "c:1", "chat.channel", "general");
+        apply_local_with_context(
+            &mut a,
+            &Seen(4),
+            EncodedAction::encode(SEEN_TYPE, &Seen(4)).unwrap(),
+            None,
+            labelled,
+        )
+        .unwrap();
+        let context = last_context(&mut a).unwrap();
+        assert!(context.is_housekeeping());
+        assert_eq!(
+            context.action_label, "Mark as read",
+            "the caller's context is kept"
+        );
+
+        let put = Counter::Put {
+            key: "score".into(),
+            value: 1,
+        };
+        let env = apply_local(
+            &mut a,
+            &put,
+            EncodedAction::encode(COUNTER_TYPE, &put).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(env.context, None, "content without context stays as it was");
+        assert_eq!(last_message(&mut a), None);
     }
 
     /// Seed two independent replicas that share history (so a replayed

@@ -3492,7 +3492,8 @@ impl Widget for CodeApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
@@ -4212,15 +4213,6 @@ impl Widget for CodeApp {
             .flatten()
     }
 
-    /// Publish canonical file, symbol and live project-result search rows. Each
-    /// row points at an exported resource action, so there is no callback-only
-    /// path with weaker semantics than the palette/agent door.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(
-            crate::search_provider::FileSearchProvider::from_catalog(self.search_catalog.clone()),
-        )]
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -4284,6 +4276,17 @@ impl Widget for CodeApp {
         self.editor.mark_drawn();
         self.panel.mark_drawn();
         self.find.mark_drawn();
+    }
+}
+
+impl ui::search::capability::SearchSource for CodeApp {
+    /// Publish canonical file, symbol and live project-result search rows. Each
+    /// row points at an exported resource action, so there is no callback-only
+    /// path with weaker semantics than the palette/agent door.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(
+            crate::search_provider::FileSearchProvider::from_catalog(self.search_catalog.clone()),
+        )]
     }
 }
 

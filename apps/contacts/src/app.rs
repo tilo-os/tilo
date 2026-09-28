@@ -6825,7 +6825,8 @@ impl Widget for ContactsApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
         dyn ui::history_mode::capability::DocumentHistory,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -7093,14 +7094,6 @@ impl Widget for ContactsApp {
             return self.completed_resource_invocation.take();
         }
         None
-    }
-
-    /// Fold the address book into the unified Ctrl+K palette: a snapshot
-    /// [`ContactSearchProvider`](crate::search_provider::ContactSearchProvider)
-    /// makes every contact findable there, alongside any actions the app
-    /// exports.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
     }
 
     fn get_rect(&self) -> Rect {
@@ -8226,6 +8219,16 @@ impl Widget for ContactsApp {
         _permissions: &PermissionContext,
     ) {
         self.render(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::search::capability::SearchSource for ContactsApp {
+    /// Fold the address book into the unified Ctrl+K palette: a snapshot
+    /// [`ContactSearchProvider`](crate::search_provider::ContactSearchProvider)
+    /// makes every contact findable there, alongside any actions the app
+    /// exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
     }
 }
 

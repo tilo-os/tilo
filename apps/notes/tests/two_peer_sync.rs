@@ -91,7 +91,7 @@ fn peers_seed_adopt_and_report_presence_without_duplicating_welcome() {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
         let sel = app.selected_for_test().expect("a page is selected");
-        match app.presence_payload() {
+        match ui::presence::capability::presence_payload(&app) {
             Some((PresenceKey::Tab { id }, PresencePayload::Arrived)) => {
                 assert_eq!(id, sel.to_string());
             }

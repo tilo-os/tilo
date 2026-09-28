@@ -520,7 +520,7 @@ by `microsoft/winget-pkgs`. Configure:
   user token described above; the workflow accepts no repository token fallback;
 - repository variable `WINGET_GITHUB_USER`: that bot account's login.
 
-The `Monitor / WinGet acceptance` workflow runs every six hours and can also be
+The `Release / imager WinGet acceptance` workflow runs every six hours and can also be
 dispatched manually. It reads the release already published by the landing
 page, refuses to select another version, and uses
 `IMAGER_SITE_CREDENTIAL_BROKER` to advance `submitted` to `available` only

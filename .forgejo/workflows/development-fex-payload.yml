@@ -1,4 +1,4 @@
-name: Development / build retained ARM FEX payload
+name: Build / ARM FEX payload
 
 on:
   workflow_dispatch:

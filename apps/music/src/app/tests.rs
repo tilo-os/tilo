@@ -2237,7 +2237,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
         let album = app.lib.albums.values().next().unwrap().clone();
         let artist_for_resolution = app.lib.artists.values().next().unwrap().clone();
         let playlist = app.lib.playlists.first().unwrap().clone();
-        let providers = Widget::search_providers(&app);
+        let providers = ui::search::capability::search_providers(&app);
         for (query, expected) in [
             (
                 track.title.as_str(),
@@ -2269,7 +2269,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
         }
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
-        palette.set_providers(Widget::search_providers(&app));
+        palette.set_providers(ui::search::capability::search_providers(&app));
         palette.open();
         palette.set_query(&track.title);
         let row = palette
@@ -2318,7 +2318,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
         let artist = app.lib.artists.values().next().unwrap().clone();
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
-        palette.set_providers(Widget::search_providers(&app));
+        palette.set_providers(ui::search::capability::search_providers(&app));
         palette.open();
         palette.set_query(&artist.name);
         let row = palette
@@ -2365,8 +2365,8 @@ fn global_search_and_canonical_views_route_without_mutation() {
         let builds = app.library_search_builds;
         let track = app.lib.tracks.values().next().expect("seed track").clone();
 
-        let first = Widget::search_providers(&app);
-        let second = Widget::search_providers(&app);
+        let first = ui::search::capability::search_providers(&app);
+        let second = ui::search::capability::search_providers(&app);
         assert_eq!(
             app.library_search_builds, builds,
             "retrieval does not reindex"
@@ -2397,7 +2397,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
             "one changed library revision rebuilds the catalog exactly once"
         );
         assert!(
-            Widget::search_providers(&app)[0]
+            ui::search::capability::search_providers(&app)[0]
                 .search("Refresh proof")
                 .iter()
                 .any(|result| {

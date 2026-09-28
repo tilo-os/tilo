@@ -178,7 +178,7 @@ mod tests {
         let config = crate::prefs::test_env::ScratchConfig::new();
 
         let mut app = config.app();
-        let providers = app.search_providers();
+        let providers = ui::search::capability::search_providers(&app);
         assert!(
             !providers.is_empty(),
             "settings publishes a search provider"

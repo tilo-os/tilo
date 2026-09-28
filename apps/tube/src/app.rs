@@ -2425,17 +2425,12 @@ impl Widget for TubeApp {
         dyn ui::widget::FullscreenProvider,
         dyn ui::undo::CommittedActions,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::TUBE_OPERATION_TYPE]
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_type::TubeSearchProvider::new(
-            &self.model,
-        ))]
     }
 
     fn start_operation(
@@ -2980,6 +2975,14 @@ impl Widget for TubeApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::search::capability::SearchSource for TubeApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_type::TubeSearchProvider::new(
+            &self.model,
+        ))]
     }
 }
 

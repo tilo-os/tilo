@@ -79,8 +79,7 @@ fn provider<W: Widget + ?Sized>(
     binding: &CallbackBinding,
     address: &ActionAddress,
 ) -> Option<Resource> {
-    let mut found = root
-        .search_providers()
+    let mut found = crate::search::capability::search_providers(root)
         .into_iter()
         .filter(|p| {
             p.callback_binding()

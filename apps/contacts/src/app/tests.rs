@@ -271,7 +271,7 @@ fn resource_and_search_providers_bound_large_books() {
         let mut doc = AutoCommit::new();
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&ui::resources::resources(&app, &doc));
-        palette.set_providers(Widget::search_providers(&app));
+        palette.set_providers(ui::search::capability::search_providers(&app));
         palette.open();
         palette.set_query("navy");
         assert_eq!(palette.result_labels(), vec!["Grace Hopper"]);

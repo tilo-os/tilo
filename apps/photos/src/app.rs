@@ -14310,7 +14310,8 @@ impl Widget for PhotosApp {
         dyn ui::undo::CommittedActions,
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -16045,15 +16046,17 @@ impl Widget for PhotosApp {
         }
     }
 
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+impl ui::search::capability::SearchSource for PhotosApp {
     /// Keep the palette projection derived from the same fresh document
     /// resource tree as agents and assistive technology. The provider's
     /// catalog gives Ctrl+K Unicode-safe, cursor-paged bounded queries.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(self.search_provider.clone())]
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

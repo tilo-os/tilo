@@ -37,15 +37,49 @@ impl Ended {
     }
 }
 
+/// The variables that place a process in a user's session. `runuser` sets
+/// only `HOME`, `SHELL`, `USER` and `LOGNAME`, so without these the command
+/// would keep the daemon's (root's `XDG_RUNTIME_DIR=/run/user/0`, no bus).
+pub const SESSION_ENV: &[&str] = &[
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "WAYLAND_DISPLAY",
+    "DISPLAY",
+    "XDG_SEAT",
+    "XDG_SESSION_ID",
+    "XDG_SESSION_TYPE",
+    "TILO_TEST_CONTROL",
+];
+
+/// The [`SESSION_ENV`] entries of a `/proc/PID/environ` image.
+pub fn session_env(environ: &[u8]) -> Vec<(String, String)> {
+    environ
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| {
+            let (key, value) = std::str::from_utf8(entry).ok()?.split_once('=')?;
+            SESSION_ENV
+                .contains(&key)
+                .then(|| (key.to_owned(), value.to_owned()))
+        })
+        .collect()
+}
+
 /// The command that runs `args` as `user` inside the mount namespace of
-/// process `pid`.
-pub fn in_session(pid: u32, user: &str, args: &[String]) -> Command {
+/// process `pid`, with that session's `env` (see [`session_env`]) in place
+/// of the daemon's.
+pub fn in_session(pid: u32, user: &str, env: &[(String, String)], args: &[String]) -> Command {
     let mut command = Command::new("nsenter");
     command
         .arg(format!("--target={pid}"))
         .arg("--mount")
-        .args(["--", "runuser", "-u", user, "--"])
-        .args(args);
+        .args(["--", "runuser", "-u", user, "--", "env"]);
+    for key in SESSION_ENV {
+        command.arg(format!("--unset={key}"));
+    }
+    for (key, value) in env {
+        command.arg(format!("{key}={value}"));
+    }
+    command.arg("--").args(args);
     command
 }
 
@@ -168,9 +202,21 @@ mod tests {
     fn exec_runs_in_the_session_as_the_slot_user_bounded_and_streamed() {
         // Phase `the_command_joins_the_session_namespace_as_the_slot_user`.
         {
+            let env = session_env(
+                b"HOME=/home/tds-a\0XDG_RUNTIME_DIR=/run/user/1001\0SECRET=x\0\
+                  WAYLAND_DISPLAY=wayland-1\0",
+            );
+            assert_eq!(
+                env,
+                [
+                    ("XDG_RUNTIME_DIR".to_owned(), "/run/user/1001".to_owned()),
+                    ("WAYLAND_DISPLAY".to_owned(), "wayland-1".to_owned()),
+                ]
+            );
             let command = in_session(
                 4242,
                 "tds-a",
+                &env,
                 &["sha256sum".into(), "/usr/bin/shell".into()],
             );
             let args: Vec<String> = command
@@ -188,9 +234,19 @@ mod tests {
                     "-u",
                     "tds-a",
                     "--",
-                    "sha256sum",
-                    "/usr/bin/shell"
+                    "env"
                 ]
+                .into_iter()
+                .map(str::to_owned)
+                .chain(SESSION_ENV.iter().map(|key| format!("--unset={key}")))
+                .chain([
+                    "XDG_RUNTIME_DIR=/run/user/1001".to_owned(),
+                    "WAYLAND_DISPLAY=wayland-1".to_owned(),
+                    "--".to_owned(),
+                    "sha256sum".to_owned(),
+                    "/usr/bin/shell".to_owned(),
+                ])
+                .collect::<Vec<_>>()
             );
         }
         // Phase `output_streams_and_the_exit_status_passes_through`.

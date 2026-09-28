@@ -145,8 +145,10 @@ impl HistorySource {
 
     /// Leave out a record's genesis: the change that created it with its
     /// initial content, made by an actor derived from the record's identity
-    /// at time zero. A document's own history keeps it as the version to
-    /// restore to; a feed of what people did has no one to name for it.
+    /// at time zero (for a package-primary document, which records no
+    /// identity, the root change that stamps its store's schema). A
+    /// document's own history keeps it as the version to restore to; a feed
+    /// of what people did has no one to name for it.
     #[must_use]
     pub fn without_record_genesis(mut self) -> Self {
         self.record_genesis = false;
@@ -238,8 +240,11 @@ impl HistorySource {
             // `versions`, which stays positional (`materialize_at` / `prefix_heads`
             // address a change by its place).
             // A record's genesis is the same kind of change, when the caller
-            // leaves it out.
-            if tilo_doc::model::is_schema_genesis(v) || genesis.as_deref() == Some(v.actor.as_str())
+            // leaves it out; so is a package-primary document's, which holds
+            // no identity to derive its actor from.
+            if tilo_doc::model::is_schema_genesis(v)
+                || genesis.as_deref() == Some(v.actor.as_str())
+                || (!self.record_genesis && is_store_genesis(doc, v))
             {
                 continue;
             }
@@ -283,6 +288,23 @@ impl HistorySource {
         }
         out
     }
+}
+
+/// Whether `v` is the genesis of a document its store created: the root
+/// change, made at time zero, which stamps the store's schema along with the
+/// initial content. Nobody's edit writes the schema stamp.
+fn is_store_genesis(doc: &mut AutoCommit, v: &tilo_resource::history::Version) -> bool {
+    v.time_ms == 0
+        && doc
+            .get_change_by_hash(&v.hash)
+            .is_some_and(|change| change.deps().is_empty())
+        && doc.diff(&[], &[v.hash]).iter().any(|patch| {
+            patch.obj == automerge::ROOT
+                && matches!(
+                    &patch.action,
+                    PatchAction::PutMap { key, .. } if key == app_state::SCHEMA_VERSION_KEY
+                )
+        })
 }
 
 /// The other half of [`HistorySource::entries`]: a restore needs a document

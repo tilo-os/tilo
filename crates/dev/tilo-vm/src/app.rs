@@ -1224,22 +1224,40 @@ impl App {
                 )),
             }
         }
-        run_all(&mut self.runner, &adapter.stop(&vm.vm()))?;
-        let started = Instant::now();
-        let limit = Duration::from_secs(120);
-        let mut down = lock.as_mut().map(|l| l.wait_for_shutdown(limit));
-        // SSH closes early in a shutdown; where the hypervisor can say, "down"
-        // means the VM is off, so a following vm start finds it stopped.
-        if down != Some(false) && adapter.running(&vm.vm(), &mut self.runner).is_some() {
-            down = Some(loop {
-                match adapter.running(&vm.vm(), &mut self.runner) {
-                    Some(true) if started.elapsed() < limit => {
-                        std::thread::sleep(Duration::from_millis(500));
-                    }
-                    Some(true) => break false,
-                    _ => break true,
-                }
+        // A session holding logind's power-key lock (on seat0 it owns the
+        // key) turns the ACPI request into its own power-key action, so the
+        // guest is asked directly next, and powered off as a last resort.
+        let poweroff = adapter
+            .ssh_endpoint(&vm.vm(), &mut self.runner)
+            .ok()
+            .map(|endpoint| {
+                remote::ssh_command(
+                    &endpoint,
+                    vm.entry.key.as_deref(),
+                    &["systemctl".into(), "poweroff".into()],
+                    false,
+                )
             });
+        let (down, step) = stop_escalating(
+            &mut self.runner,
+            adapter.as_ref(),
+            &vm.vm(),
+            poweroff.as_ref(),
+            lock.as_mut(),
+            StopGraces::default(),
+        )?;
+        match step {
+            StopStep::Acpi => {}
+            StopStep::GuestPoweroff => self.warnings.push(format!(
+                "VM {} ignored the ACPI shutdown request (a session holding the power key?); \
+                 it powered off on `systemctl poweroff` over SSH",
+                vm.name
+            )),
+            StopStep::HardPowerOff => self.warnings.push(format!(
+                "VM {} ignored both the ACPI shutdown request and `systemctl poweroff`; \
+                 it was powered off hard",
+                vm.name
+            )),
         }
         let text = match down {
             Some(true) if lock.is_some() => format!(
@@ -1248,13 +1266,17 @@ impl App {
             ),
             Some(true) => format!("VM {} shut down", vm.name),
             Some(false) => format!(
-                "VM {} was asked to shut down but is still up after 120s; tilo-vm vm status",
+                "VM {} was asked to shut down but is still up; tilo-vm vm status",
                 vm.name
             ),
             None => format!("VM {} is shutting down", vm.name),
         };
         drop(lock);
-        Ok(Outcome::new(text, json!({ "vm": vm.name, "down": down })).next(&["tilo-vm vm start"]))
+        Ok(Outcome::new(
+            text,
+            json!({ "vm": vm.name, "down": down, "step": step.as_str() }),
+        )
+        .next(&["tilo-vm vm start"]))
     }
 
     /// Delete a VM: power it off (with `force`), unregister it from the
@@ -1587,9 +1609,9 @@ impl App {
                 alternative: "use --hypervisor whpx on Windows ARM64, or omit --headless".into(),
             });
         }
-        if (args.heads.is_some() || args.resolution.is_some()) && adapter != "libvirt" {
+        if (args.heads.is_some() || args.resolution.is_some() || args.gl) && adapter != "libvirt" {
             return Err(CliError::Unsupported {
-                what: format!("--heads or --resolution with the {adapter} adapter"),
+                what: format!("--heads, --resolution or --gl with the {adapter} adapter"),
                 alternative: "use --hypervisor libvirt, or omit them".into(),
             });
         }
@@ -1737,6 +1759,7 @@ impl App {
             memory_mb: args.memory_mb,
             headless: args.headless,
             heads: args.heads,
+            gl: args.gl,
             resolution: args.resolution,
             cpus: args.cpus,
             ssh_port: args.ssh_port,
@@ -3283,6 +3306,7 @@ impl App {
             if let ci::Source::Ci { tag, commit } = source {
                 self.ci_layer(&mut remote, &vm, entry, &tag, commit)?
             } else {
+                worktree_buildable(entry)?;
                 let entry = entry.clone().with_profile(profile);
                 self.build_worktree_layer(&mut remote, &vm, &entry, builder)?
             }
@@ -4332,6 +4356,139 @@ pub fn describe_tools(tools: &VmTools) -> String {
         "CI layers pulled on this host"
     };
     format!("{build}; {ci}")
+}
+
+/// The step of `vm stop` that got the VM down (or the last one tried).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopStep {
+    /// The hypervisor's ACPI shutdown request.
+    Acpi,
+    /// `systemctl poweroff` in the guest, over SSH.
+    GuestPoweroff,
+    /// The hypervisor's hard power-off.
+    HardPowerOff,
+}
+
+impl StopStep {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Acpi => "acpi",
+            Self::GuestPoweroff => "guest-poweroff",
+            Self::HardPowerOff => "hard-power-off",
+        }
+    }
+}
+
+/// How long each [`StopStep`] may take before the next one.
+#[derive(Debug, Clone, Copy)]
+pub struct StopGraces {
+    pub acpi: Duration,
+    pub guest: Duration,
+    pub hard: Duration,
+    pub poll: Duration,
+}
+
+impl Default for StopGraces {
+    fn default() -> Self {
+        Self {
+            acpi: Duration::from_secs(30),
+            guest: Duration::from_secs(90),
+            hard: Duration::from_secs(30),
+            poll: Duration::from_millis(500),
+        }
+    }
+}
+
+/// Stop `vm`: ask over ACPI, then run `poweroff` (the guest's
+/// `systemctl poweroff` over SSH) where there is one, then power it off
+/// hard where the hypervisor can. Each step waits its grace for the VM to be
+/// down; only a VM the hypervisor reports still running moves on. Returns
+/// whether it is down (`None`: nothing can tell) and the last step taken.
+///
+/// # Errors
+/// A hypervisor command could not run.
+pub fn stop_escalating(
+    runner: &mut dyn Runner,
+    adapter: &dyn Hypervisor,
+    vm: &Vm<'_>,
+    poweroff: Option<&CommandLine>,
+    mut lock: Option<&mut remote::VmLock>,
+    graces: StopGraces,
+) -> Result<(Option<bool>, StopStep), CliError> {
+    run_all(runner, &adapter.stop(vm))?;
+    let mut down = await_down(
+        runner,
+        adapter,
+        vm,
+        lock.as_deref_mut(),
+        graces.acpi,
+        graces.poll,
+    );
+    if down != Some(false) {
+        return Ok((down, StopStep::Acpi));
+    }
+    let mut step = StopStep::Acpi;
+    if let Some(poweroff) = poweroff {
+        step = StopStep::GuestPoweroff;
+        // ssh fails as the guest drops the connection; the wait below judges.
+        let _ = runner.output(poweroff);
+        down = await_down(runner, adapter, vm, lock, graces.guest, graces.poll);
+        if down != Some(false) {
+            return Ok((down, step));
+        }
+    }
+    if let Some(off) = adapter.power_off(vm) {
+        step = StopStep::HardPowerOff;
+        run_all(runner, &[off])?;
+        down = await_down(runner, adapter, vm, None, graces.hard, graces.poll);
+    }
+    Ok((down, step))
+}
+
+/// Wait up to `limit` for `vm` to be down: the VM lock's SSH session closing
+/// and, where the hypervisor can say, the VM no longer running.
+fn await_down(
+    runner: &mut dyn Runner,
+    adapter: &dyn Hypervisor,
+    vm: &Vm<'_>,
+    lock: Option<&mut remote::VmLock>,
+    limit: Duration,
+    poll: Duration,
+) -> Option<bool> {
+    let started = Instant::now();
+    let mut down = lock.map(|lock| lock.wait_for_shutdown(limit));
+    if down != Some(false) && adapter.running(vm, runner).is_some() {
+        down = Some(loop {
+            match adapter.running(vm, runner) {
+                Some(true) if started.elapsed() < limit => std::thread::sleep(poll),
+                Some(true) => break false,
+                _ => break true,
+            }
+        });
+    }
+    down
+}
+
+/// Refuse `swap --from worktree` for a component only the image build
+/// assembles: either builder would run a cargo build that cannot produce it.
+///
+/// # Errors
+/// [`CliError::Unsupported`], naming the swaps that do work.
+pub fn worktree_buildable(component: &Component) -> Result<(), CliError> {
+    if !component.image_assembled {
+        return Ok(());
+    }
+    Err(CliError::Unsupported {
+        what: format!(
+            "--from worktree for '{}', which the image build assembles and signs",
+            component.name
+        ),
+        alternative: format!(
+            "one app from this worktree: tilo-vm swap app:<dir>; the published set: \
+             tilo-vm swap {} --from ci:<tag>; this worktree's image: tilo-vm vm upgrade --from local",
+            component.name
+        ),
+    })
 }
 
 /// Which builder `swap --from worktree` uses.
@@ -5588,6 +5745,125 @@ mod tests {
             );
         }
 
+        // Phase: vm_stop_escalates_past_a_guest_that_ignores_acpi.
+        {
+            struct Guest {
+                /// The command whose run brings the VM down.
+                obeys: &'static str,
+                ran: Vec<String>,
+                down: bool,
+            }
+            impl Runner for Guest {
+                fn output(
+                    &mut self,
+                    command: &CommandLine,
+                ) -> Result<crate::hypervisor::Output, CliError> {
+                    let line = command.display();
+                    if line.contains("--state-running") {
+                        let stdout = if self.down { "" } else { "dev\n" };
+                        return Ok(crate::hypervisor::Output {
+                            success: true,
+                            status: "exit status: 0".into(),
+                            stdout: stdout.into(),
+                            stderr: String::new(),
+                        });
+                    }
+                    self.down |= line.contains(self.obeys);
+                    self.ran.push(line);
+                    Ok(crate::hypervisor::Output {
+                        success: true,
+                        status: "exit status: 0".into(),
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    })
+                }
+                fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError> {
+                    self.output(command).map(|o| o.success)
+                }
+            }
+            let entry = VmEntry {
+                hypervisor: "libvirt".into(),
+                ..VmEntry::default()
+            };
+            let vm = Vm {
+                name: "dev",
+                entry: &entry,
+            };
+            let graces = StopGraces {
+                acpi: Duration::from_millis(30),
+                guest: Duration::from_millis(30),
+                hard: Duration::from_millis(30),
+                poll: Duration::from_millis(1),
+            };
+            let poweroff = CommandLine::new("ssh", &["dev", "systemctl", "poweroff"]);
+            let stop = |obeys: &'static str, poweroff: Option<&CommandLine>| {
+                let mut guest = Guest {
+                    obeys,
+                    ran: Vec::new(),
+                    down: false,
+                };
+                let result = stop_escalating(
+                    &mut guest,
+                    &hypervisor::Libvirt,
+                    &vm,
+                    poweroff,
+                    None,
+                    graces,
+                )
+                .unwrap();
+                (result, guest.ran)
+            };
+            let acpi = "virsh --connect qemu:///session shutdown dev";
+            let hard = "virsh --connect qemu:///session destroy dev";
+            assert_eq!(
+                stop("shutdown dev", Some(&poweroff)),
+                ((Some(true), StopStep::Acpi), vec![acpi.to_owned()])
+            );
+            assert_eq!(
+                stop("systemctl poweroff", Some(&poweroff)),
+                (
+                    (Some(true), StopStep::GuestPoweroff),
+                    vec![acpi.to_owned(), poweroff.display()]
+                )
+            );
+            assert_eq!(
+                stop("destroy dev", Some(&poweroff)),
+                (
+                    (Some(true), StopStep::HardPowerOff),
+                    vec![acpi.to_owned(), poweroff.display(), hard.to_owned()]
+                )
+            );
+            assert_eq!(
+                stop("destroy dev", None),
+                (
+                    (Some(true), StopStep::HardPowerOff),
+                    vec![acpi.to_owned(), hard.to_owned()]
+                )
+            );
+            assert_eq!(
+                stop("nothing brings it down", Some(&poweroff)).0,
+                (Some(false), StopStep::HardPowerOff)
+            );
+        }
+
+        // Phase: image_assembled_components_refuse_a_worktree_build.
+        {
+            let manifest = Manifest::parse(
+                "[[component]]\nname = \"apps+runtime\"\npackages = [\"runtime-dylib\"]\n\
+                 features = [\"music/audio\"]\nlayer = \"direct\"\n\
+                 [[component]]\nname = \"fs\"\npackages = [\"fs\"]\n",
+            )
+            .unwrap();
+            let error = worktree_buildable(manifest.get("apps+runtime").unwrap()).unwrap_err();
+            let CliError::Unsupported { what, alternative } = &error else {
+                panic!("{error:?}");
+            };
+            assert!(what.contains("apps+runtime"), "{what}");
+            assert!(alternative.contains("swap app:"), "{alternative}");
+            assert!(alternative.contains("--from ci:"), "{alternative}");
+            worktree_buildable(manifest.get("fs").unwrap()).unwrap();
+        }
+
         // Phase: builder_choice_prefers_the_vm_and_explains_fallbacks.
         {
             let ready = VmTools {
@@ -5979,6 +6255,7 @@ mod tests {
             memory_mb: None,
             headless: false,
             heads: None,
+            gl: false,
             resolution: None,
             cpus: None,
             ssh: None,

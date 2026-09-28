@@ -3410,7 +3410,8 @@ fn draw_fold_caret(scene: &mut Scene, t: Affine, center: Point, color: Color, ex
 impl Widget for ApiTesterApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -3928,10 +3929,6 @@ impl Widget for ApiTesterApp {
         self.rect
     }
 
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -4025,6 +4022,12 @@ impl Widget for ApiTesterApp {
 
     fn needs_idle_sync(&self) -> bool {
         self.sending || !self.pending_history.is_empty() || !self.adopted
+    }
+}
+
+impl ui::search::capability::SearchSource for ApiTesterApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
     }
 }
 

@@ -3511,44 +3511,12 @@ impl Widget for PlayerApp {
         dyn ui::undo::CommittedActions,
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        let source_id = self.current_source_id.clone();
-        let revision = self.metadata_revision;
-        let mut cache = self.search_cache.borrow_mut();
-        let reusable = cache
-            .as_ref()
-            .is_some_and(|cached| cached.source_id == source_id && cached.revision == revision);
-        if !reusable {
-            let provider = crate::search::VideoPlayerSearchProvider::new(
-                &self.action_context(
-                    &self.search_metadata.audio_tracks,
-                    &self.search_metadata.subtitle_tracks,
-                    &self.search_metadata.chapters,
-                ),
-                &self.shared_library,
-            );
-            *cache = Some(SearchCache {
-                source_id,
-                revision,
-                provider: Arc::new(provider),
-            });
-            self.search_catalog_builds
-                .set(self.search_catalog_builds.get().saturating_add(1));
-        }
-        if let Some(cached) = cache.as_ref() {
-            vec![Box::new((*cached.provider).clone())]
-        } else {
-            // The cache was initialized immediately above. Returning no stale
-            // provider is safer than panicking if that invariant ever changes.
-            Vec::new()
-        }
     }
 
     fn start_operation(
@@ -4176,6 +4144,41 @@ impl Widget for PlayerApp {
     }
 }
 
+impl ui::search::capability::SearchSource for PlayerApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        let source_id = self.current_source_id.clone();
+        let revision = self.metadata_revision;
+        let mut cache = self.search_cache.borrow_mut();
+        let reusable = cache
+            .as_ref()
+            .is_some_and(|cached| cached.source_id == source_id && cached.revision == revision);
+        if !reusable {
+            let provider = crate::search::VideoPlayerSearchProvider::new(
+                &self.action_context(
+                    &self.search_metadata.audio_tracks,
+                    &self.search_metadata.subtitle_tracks,
+                    &self.search_metadata.chapters,
+                ),
+                &self.shared_library,
+            );
+            *cache = Some(SearchCache {
+                source_id,
+                revision,
+                provider: Arc::new(provider),
+            });
+            self.search_catalog_builds
+                .set(self.search_catalog_builds.get().saturating_add(1));
+        }
+        if let Some(cached) = cache.as_ref() {
+            vec![Box::new((*cached.provider).clone())]
+        } else {
+            // The cache was initialized immediately above. Returning no stale
+            // provider is safer than panicking if that invariant ever changes.
+            Vec::new()
+        }
+    }
+}
+
 impl ui::resources::PublishesResources for PlayerApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         if self.framework_hosted {
@@ -4637,7 +4640,7 @@ mod tests {
         // Case `metadata_revision_boundary_discards_the_cache_before_resetting`.
         {
             let mut app = PlayerApp::for_shot(None, Some("metadata"));
-            let _first = app.search_providers();
+            let _first = ui::search::capability::search_providers(&app);
             assert_eq!(app.search_catalog_builds.get(), 1);
             assert!(app.search_cache.borrow().is_some());
 
@@ -4650,7 +4653,7 @@ mod tests {
                 "the old max-revision provider is discarded before reusing revision zero"
             );
 
-            let _second = app.search_providers();
+            let _second = ui::search::capability::search_providers(&app);
             assert_eq!(
                 app.search_catalog_builds.get(),
                 2,
@@ -5640,9 +5643,9 @@ mod tests {
         // Case `repeated_search_provider_retrieval_does_not_reindex_metadata`.
         {
             let app = PlayerApp::for_shot(None, Some("metadata"));
-            let first = app.search_providers();
+            let first = ui::search::capability::search_providers(&app);
             assert_eq!(app.search_catalog_builds.get(), 1);
-            let second = app.search_providers();
+            let second = ui::search::capability::search_providers(&app);
             assert_eq!(
                 app.search_catalog_builds.get(),
                 1,

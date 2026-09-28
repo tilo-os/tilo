@@ -2433,7 +2433,8 @@ impl Widget for TerminalWidget {
     ui::provides!(
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::presence::capability::PublishesPresence
     );
 
     fn test_id(&self) -> Option<&str> {
@@ -3139,6 +3140,43 @@ impl Widget for TerminalWidget {
         }
     }
 
+    /// Paint the terminal, then overlay remote collaborators' selections and
+    /// carets in their own colours on top (following the `TextInput` model).
+    /// Grid content is shared via the CRDT; this adds the per-peer decoration.
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        _permissions: &PermissionContext,
+    ) {
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
+        self.draw(scene, transform, text_renderer, theme, presence);
+
+        if let Some(key) = ui::presence::capability::presence_key(self) {
+            if let Some(list) = presence.selections.get(&key) {
+                for (user, range) in list {
+                    for rect in self.peer_selection_rects(range.start, range.end) {
+                        presence.draw_peer_selection(scene, theme, transform, user, rect);
+                    }
+                }
+            }
+            if let Some(list) = presence.carets.get(&key) {
+                for (user, caret) in list {
+                    if let Some(rect) = self.peer_caret_rect(*caret) {
+                        presence.draw_peer_caret(scene, theme, transform, user, rect);
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for TerminalWidget {
     /// Scope this terminal's collaboration presence to a shared pane id (see
     /// `terminal_pane_id` in the CRDT) so both peers of a shared session file
     /// their caret/selection under the same key and can find each other's.
@@ -3148,7 +3186,6 @@ impl Widget for TerminalWidget {
             sub: self.pane_id.clone(),
         })
     }
-
     /// Broadcast the local view state to peers: the active text selection when
     /// there is one (so peers see what this user is selecting), otherwise the
     /// cursor position. The grid/scrollback itself rides the shared CRDT, so
@@ -3171,41 +3208,6 @@ impl Widget for TerminalWidget {
             }
         };
         Some((key, payload))
-    }
-
-    /// Paint the terminal, then overlay remote collaborators' selections and
-    /// carets in their own colours on top (following the `TextInput` model).
-    /// Grid content is shared via the CRDT; this adds the per-peer decoration.
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        if let Some(key) = self.presence_key() {
-            if let Some(list) = presence.selections.get(&key) {
-                for (user, range) in list {
-                    for rect in self.peer_selection_rects(range.start, range.end) {
-                        presence.draw_peer_selection(scene, theme, transform, user, rect);
-                    }
-                }
-            }
-            if let Some(list) = presence.carets.get(&key) {
-                for (user, caret) in list {
-                    if let Some(rect) = self.peer_caret_rect(*caret) {
-                        presence.draw_peer_caret(scene, theme, transform, user, rect);
-                    }
-                }
-            }
-        }
     }
 }
 
