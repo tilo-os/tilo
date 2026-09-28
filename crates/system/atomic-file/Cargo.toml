@@ -37,7 +37,7 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Stor
 # The package's own tests and its probe example exercise the test-support
 # hooks; enabling them here runs those tests whenever the package is tested,
 # not only when a dependant happens to unify the feature in.
-atomic-file = { path = ".", features = ["test-support"] }
+tilo-atomic-file = { path = ".", features = ["test-support"] }
 tempfile.workspace = true
 serde.workspace = true
 serde_json.workspace = true
