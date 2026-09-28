@@ -628,7 +628,7 @@ impl TubeApp {
     /// action.  The resulting invocation contains no authority: the app host
     /// resolves the address against a fresh resource tree and enforces the
     /// action's privileged/destructive confirmation contract before calling
-    /// `invoke_resource_operation`.
+    /// `Widget::start_operation`.
     fn queue_device_action(&mut self, action_id: &str, peer_id: Option<&str>) -> bool {
         #[cfg(feature = "grayjay-sync")]
         let root = crate::actions::provide_device_resources(self.device_sync.view());
@@ -2458,6 +2458,29 @@ impl FullscreenProvider for TubeApp {
     }
 }
 
+impl TubeApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        if kind != crate::actions::operation_kind(&operation) {
+            return Err("Tube operation kind does not match its declared contract".into());
+        }
+        self.perform_resource_operation(operation);
+        Ok(true)
+    }
+}
+
 impl Widget for TubeApp {
     ui::provides!(dyn ui::widget::FullscreenProvider);
 
@@ -2524,25 +2547,25 @@ impl Widget for TubeApp {
         self.actions.take_committed()
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
         };
-        if kind != crate::actions::operation_kind(&operation) {
-            return Err("Tube operation kind does not match its declared contract".into());
-        }
-        self.perform_resource_operation(operation);
-        Ok(true)
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -3094,7 +3117,7 @@ mod tests {
         (app, doc)
     }
 
-    fn dispatch_control(app: &mut TubeApp, doc: &AutoCommit) {
+    fn dispatch_control(app: &mut TubeApp, doc: &mut AutoCommit) {
         let intent = app
             .take_control_invocation()
             .expect("custom control emitted an action-native invocation");
@@ -3105,13 +3128,17 @@ mod tests {
             .build_json(&intent.arguments)
             .expect("control arguments satisfy the published contract");
         assert!(
-            app.invoke_resource_operation(
-                spec.kind,
-                &encoded.type_id,
-                &encoded.payload,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    spec.kind,
+                    &encoded.type_id,
+                    &encoded.payload
+                ),
                 doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             )
+            .map(|started| started.is_some())
             .expect("resource operation dispatch succeeds")
         );
     }
@@ -3242,7 +3269,7 @@ mod tests {
         }
         // Case `like_toggles_and_share_copies_a_link`.
         {
-            let (mut app, doc) = fresh();
+            let (mut app, mut doc) = fresh();
             let r = automerge::ROOT;
             assert!(!app.model.is_liked("vid_donut"));
             app.apply(Action::ToggleLike("vid_donut".into()), &doc, &r);
@@ -3258,7 +3285,7 @@ mod tests {
 
             app.apply(Action::OpenVideo("vid_donut".into()), &doc, &r);
             app.apply(Action::Share("vid_donut".into()), &doc, &r);
-            dispatch_control(&mut app, &doc);
+            dispatch_control(&mut app, &mut doc);
             assert!(
                 !app.model.is_liked("vid_donut"),
                 "Share must not like the video"
@@ -3615,7 +3642,7 @@ mod tests {
         }
         // Case `toggle_play_drives_the_engine`.
         {
-            let (mut app, doc) = fresh_synth();
+            let (mut app, mut doc) = fresh_synth();
             let r = automerge::ROOT;
             app.model.route = Route::Watch("vid_donut".into());
             app.load_resolved_stream(
@@ -3626,14 +3653,14 @@ mod tests {
             );
             assert!(app.player.borrow().is_playing());
             app.apply(Action::TogglePlay, &doc, &r);
-            dispatch_control(&mut app, &doc);
+            dispatch_control(&mut app, &mut doc);
             assert!(
                 !app.player.borrow().is_playing(),
                 "TogglePlay paused the engine"
             );
             assert!(!app.model.playing, "the model mirrors the paused engine");
             app.apply(Action::TogglePlay, &doc, &r);
-            dispatch_control(&mut app, &doc);
+            dispatch_control(&mut app, &mut doc);
             assert!(
                 app.player.borrow().is_playing(),
                 "TogglePlay resumed the engine"

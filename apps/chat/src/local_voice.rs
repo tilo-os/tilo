@@ -486,13 +486,17 @@ mod tests {
         };
         assert!(
             resource
-                .invoke_resource_operation(
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::CHAT_OPERATION_TYPE,
-                    &serde_json::to_vec(&operation).unwrap(),
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::CHAT_OPERATION_TYPE,
+                        &serde_json::to_vec(&operation).unwrap()
+                    ),
+                    &mut doc,
                     &automerge::ROOT
                 )
+                .map(|started| started.is_some())
                 .unwrap()
         );
         let resource_requests = resource.take_collab_requests();

@@ -842,13 +842,15 @@ mod tests {
             .expect("search address resolves lazily");
             let encoded = tilo_actions::door::encode(&[resource], &address, None).unwrap();
             assert!(matches!(
-                app.start_resource_operation_with_document(
-                    tilo_actions::InvocationId::default(),
-                    tilo_actions::OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::default(),
+                        tilo_actions::OperationKind::View,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
                     &mut doc,
-                    &ROOT,
+                    &ROOT
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Completed(_))
@@ -876,16 +878,20 @@ mod tests {
             let encoded = tilo_actions::door::encode(&resources, &folder_address, None)
                 .expect("folder address resolves against Mail's exported tree");
             let heads_before_folder_navigation = doc.get_heads();
-            assert!(
-                app.invoke_resource_operation(
-                    tilo_actions::OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
-                    &ROOT,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
-                .unwrap()
-            );
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(app.mail_resource_ctx(&doc).current_folder, Folder::Archive);
             assert_eq!(doc.get_heads(), heads_before_folder_navigation);
         }

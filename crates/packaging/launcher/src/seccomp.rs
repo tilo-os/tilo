@@ -59,6 +59,29 @@ pub fn entitled_to_dynamic_code(package_id: &str) -> bool {
     }
 }
 
+/// Image-owned list of package ids that may build their own nested sandbox
+/// ([`SeccompProfile::TiloWebEngine`]). Same format as [`JIT_POLICY_PATH`].
+pub const WEB_ENGINE_POLICY_PATH: &str = "/usr/lib/tilo/web-engine-entitled.conf";
+
+/// Overrides [`WEB_ENGINE_POLICY_PATH`] in developer builds, as
+/// [`JIT_POLICY_PATH_ENV`] does.
+pub const WEB_ENGINE_POLICY_PATH_ENV: &str = "TILO_WEB_ENGINE_ENTITLED_FILE";
+
+/// Fallback when [`WEB_ENGINE_POLICY_PATH`] is absent: the browser, whose
+/// Chromium engine refuses to run renderers without its own sandbox.
+pub const BUILTIN_WEB_ENGINE_ENTITLED: &[&str] = &["so.tilo.browser"];
+
+/// Whether the image lets `package_id` create the namespaces of a web
+/// engine's renderer sandbox.
+pub fn entitled_to_nested_sandbox(package_id: &str) -> bool {
+    let policy_path = crate::dev_env::dev_override(WEB_ENGINE_POLICY_PATH_ENV)
+        .map_or_else(|| PathBuf::from(WEB_ENGINE_POLICY_PATH), PathBuf::from);
+    match std::fs::read_to_string(&policy_path) {
+        Ok(list) => crate::hardening::policy_matches(&list, package_id),
+        Err(_) => BUILTIN_WEB_ENGINE_ENTITLED.contains(&package_id),
+    }
+}
+
 /// What a manifest asked for, and what it is actually going to get.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileDecision {
@@ -86,17 +109,18 @@ pub struct ProfileDecision {
 /// package id may have it.
 pub fn resolve_profile(requested: &str, package_id: &str) -> ProfileDecision {
     let asked = SeccompProfile::parse(requested);
-    if !asked.allows_dynamic_code() || entitled_to_dynamic_code(package_id) {
-        return ProfileDecision {
-            applied: asked,
-            requested: requested.to_string(),
-            refused: false,
-        };
-    }
+    let dynamic_code = !asked.allows_dynamic_code() || entitled_to_dynamic_code(package_id);
+    let nested_sandbox = !asked.allows_nested_sandbox() || entitled_to_nested_sandbox(package_id);
+    let applied = match (dynamic_code, nested_sandbox) {
+        (true, true) => asked,
+        // Refused one permission of two: keep the one the image granted.
+        (true, false) => SeccompProfile::TiloJit,
+        (false, _) => SeccompProfile::TiloDefault,
+    };
     ProfileDecision {
-        applied: SeccompProfile::TiloDefault,
+        applied,
         requested: requested.to_string(),
-        refused: true,
+        refused: applied != asked,
     }
 }
 
@@ -127,7 +151,7 @@ mod tests {
     #[test]
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     fn compiled_baseline_programs_match_the_pinned_golden_files() {
-        let cases: [(SeccompProfile, &[u8]); 2] = [
+        let cases: [(SeccompProfile, &[u8]); 3] = [
             (
                 SeccompProfile::TiloDefault,
                 include_bytes!("../tests/fixtures/seccomp/tilo-default.x86_64.bpf"),
@@ -135,6 +159,10 @@ mod tests {
             (
                 SeccompProfile::TiloJit,
                 include_bytes!("../tests/fixtures/seccomp/tilo-jit.x86_64.bpf"),
+            ),
+            (
+                SeccompProfile::TiloWebEngine,
+                include_bytes!("../tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf"),
             ),
         ];
         for (profile, golden) in cases {
@@ -158,11 +186,25 @@ mod tests {
 
     impl JitPolicy {
         fn listing(entries: &str) -> Self {
+            Self::lists(entries, entries)
+        }
+
+        /// Separate JIT and nested-sandbox entitlement lists.
+        fn lists(jit: &str, web_engine: &str) -> Self {
             let dir = tempfile::tempdir().unwrap();
-            let file = dir.path().join("jit-entitled.conf");
-            std::fs::write(&file, entries).unwrap();
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.set(JIT_POLICY_PATH_ENV, &file);
+            for (name, entries, variable) in [
+                ("jit-entitled.conf", jit, JIT_POLICY_PATH_ENV),
+                (
+                    "web-engine-entitled.conf",
+                    web_engine,
+                    WEB_ENGINE_POLICY_PATH_ENV,
+                ),
+            ] {
+                let file = dir.path().join(name);
+                std::fs::write(&file, entries).unwrap();
+                env.set(variable, &file);
+            }
             Self {
                 _env: env,
                 _dir: dir,
@@ -174,6 +216,10 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set(JIT_POLICY_PATH_ENV, dir.path().join("does-not-exist.conf"));
+            env.set(
+                WEB_ENGINE_POLICY_PATH_ENV,
+                dir.path().join("does-not-exist.conf"),
+            );
             Self {
                 _env: env,
                 _dir: dir,
@@ -292,6 +338,90 @@ mod tests {
             "10 = W+X was allowed, 11 = an ordinary mapping was refused, \
              12 = the filter would not install"
         );
+    }
+
+    /// A nested sandbox is its own entitlement: the browser's Chromium engine
+    /// gets it, a package that names it for itself does not, and an image that
+    /// entitles only the JIT keeps a web engine rendering without it.
+    #[test]
+    fn web_engine_profile_needs_its_own_entitlement() {
+        // Phase `the_entitled_browser_gets_its_nested_sandbox`.
+        {
+            let _policy = JitPolicy::listing("so.tilo.browser\n");
+            let decision = resolve_profile("tilo-web-engine", "so.tilo.browser");
+            assert_eq!(decision.applied, SeccompProfile::TiloWebEngine);
+            assert!(!decision.refused);
+        }
+        // Phase `an_unentitled_package_is_confined_strictly`.
+        {
+            let _policy = JitPolicy::listing("so.tilo.browser\n");
+            let decision = resolve_profile("tilo-web-engine", "com.example.evil");
+            assert_eq!(decision.applied, SeccompProfile::TiloDefault);
+            assert!(decision.refused);
+        }
+        // Phase `jit_without_nested_sandbox_keeps_the_jit`.
+        {
+            let _policy = JitPolicy::lists("so.tilo.browser\n", "# nobody\n");
+            let decision = resolve_profile("tilo-web-engine", "so.tilo.browser");
+            assert_eq!(
+                decision.applied,
+                SeccompProfile::TiloJit,
+                "refusing the nested sandbox must not also take the JIT away"
+            );
+            assert!(decision.refused);
+        }
+        // Phase `nested_sandbox_without_jit_is_strict`.
+        {
+            let _policy = JitPolicy::lists("# nobody\n", "so.tilo.browser\n");
+            assert_eq!(
+                resolve_profile("tilo-web-engine", "so.tilo.browser").applied,
+                SeccompProfile::TiloDefault
+            );
+        }
+        // Phase `the_fallback_entitles_the_browser_only`.
+        {
+            let _policy = JitPolicy::missing();
+            assert_eq!(
+                resolve_profile("tilo-web-engine", "so.tilo.browser").applied,
+                SeccompProfile::TiloWebEngine
+            );
+            assert_eq!(
+                resolve_profile("tilo-web-engine", "com.example.evil").applied,
+                SeccompProfile::TiloDefault
+            );
+        }
+        // Phase `the_running_filter_follows_the_decision`.
+        #[cfg(target_os = "linux")]
+        {
+            let _policy = JitPolicy::listing("so.tilo.browser\n");
+            for id in ["so.tilo.browser", "com.example.evil"] {
+                let applied = resolve_profile("tilo-web-engine", id).applied;
+                assert_eq!(
+                    sandbox_core::seccomp::testing::probe_namespaces_under(applied),
+                    0,
+                    "{id}: 20 = a sandbox namespace got the wrong answer, 21 = another \
+                     namespace kind was allowed, 22 = chroot got the wrong answer"
+                );
+            }
+        }
+        // Phase `the_shipped_list_and_the_builtin_list_agree`.
+        {
+            let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../os/usr/lib/tilo/web-engine-entitled.conf");
+            let shipped = std::fs::read_to_string(&repo).unwrap_or_else(|e| {
+                panic!(
+                    "the image's list must be in the tree at {}: {e}",
+                    repo.display()
+                )
+            });
+            for id in BUILTIN_WEB_ENGINE_ENTITLED {
+                assert!(crate::hardening::policy_matches(&shipped, id), "{id}");
+            }
+            assert!(!crate::hardening::policy_matches(
+                &shipped,
+                "com.example.evil"
+            ));
+        }
     }
 
     #[test]

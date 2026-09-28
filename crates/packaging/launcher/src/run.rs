@@ -1660,12 +1660,7 @@ fn splice_sandbox_shim(
         argv.push("--rw".to_string());
         argv.push(path.display().to_string());
     }
-    // Standard tmpfs mounts the app expects writable; --rw grants full FS
-    // access, and both vanish with the process (scratch, not hidden state).
-    for p in ["/tmp", "/dev"] {
-        argv.push("--rw".to_string());
-        argv.push(p.to_string());
-    }
+    push_scratch_and_engine_rules(argv, ctx.manifest);
     // Service sockets need no Landlock rule: they arrive as already-connected
     // descriptors dup2'd in, never mounted or opened by path.
     //
@@ -1684,6 +1679,20 @@ fn splice_sandbox_shim(
     argv.push("--".to_string());
     argv.push(entry);
     Ok(())
+}
+
+fn push_scratch_and_engine_rules(argv: &mut Vec<String>, manifest: &MinimalManifest) {
+    // Standard tmpfs mounts the app expects writable; --rw grants full FS
+    // access, and both vanish with the process (scratch, not hidden state).
+    for p in ["/tmp", "/dev"] {
+        argv.push("--rw".to_string());
+        argv.push(p.to_string());
+    }
+    let profile = manifest.sandbox.seccomp_profile(&manifest.package_id);
+    for path in crate::profile::landlock_rw_nested_sandbox_paths(profile) {
+        argv.push("--rw".to_string());
+        argv.push(path.display().to_string());
+    }
 }
 
 /// Finish building `argv` (seccomp prefix + passthrough tail), spawn `bwrap`

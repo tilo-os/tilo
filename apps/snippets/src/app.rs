@@ -978,16 +978,8 @@ impl Default for SnippetsApp {
     }
 }
 
-impl ui::widget::Widget for SnippetsApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::SNIPPETS_OPERATION_TYPE]
-    }
-
-    fn invoke_resource_operation(
+impl SnippetsApp {
+    fn answer_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
         type_id: &str,
@@ -1021,6 +1013,37 @@ impl ui::widget::Widget for SnippetsApp {
             }
         }
         Ok(true)
+    }
+}
+
+impl ui::widget::Widget for SnippetsApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::SNIPPETS_OPERATION_TYPE]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {

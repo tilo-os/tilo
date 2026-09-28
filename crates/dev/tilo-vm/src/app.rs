@@ -1983,7 +1983,16 @@ impl App {
                     break;
                 }
                 // Connection transport failures can resolve while the VM boots.
-                Err(CliError::Unreachable { .. }) => std::thread::sleep(Duration::from_secs(2)),
+                Err(CliError::Unreachable { .. }) => {
+                    // WHPX boots quickly enough that a two-second SSH poll
+                    // accounts for a noticeable part of the restart time.
+                    let interval = if vm.entry.hypervisor == "whpx" {
+                        Duration::from_millis(500)
+                    } else {
+                        Duration::from_secs(2)
+                    };
+                    std::thread::sleep(interval);
+                }
                 // SSH and tilo-vmd already answered. Waiting cannot fix a refused
                 // key, incompatible protocol, or any other semantic failure.
                 Err(error) => return Err(error),
