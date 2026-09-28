@@ -566,6 +566,9 @@ pub fn export_command(image: &str, layout: &Path, digest_file: &Path) -> Command
 
 /// Mirror the layout into [`VM_LAYOUT`]: only new blobs cross, and blobs no
 /// longer referenced go, so the VM keeps one image's worth.
+///
+/// # Errors
+/// Returns an error when the rsync SSH transport is unavailable.
 pub fn rsync_command(
     layout: &Path,
     endpoint: &SshEndpoint,

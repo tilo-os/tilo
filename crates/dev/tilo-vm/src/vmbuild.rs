@@ -50,6 +50,9 @@ pub fn sh_quote(word: &str) -> String {
 /// rsync on Windows is MSYS2, so its SSH child must come from the same
 /// runtime. Native Windows OpenSSH loses the rsync pipe before any bytes are
 /// sent (ERROR from cb :87). Its key and known-hosts paths must be MSYS paths.
+///
+/// # Errors
+/// Returns an error when rsync or its matching MSYS2 SSH executable is absent.
 pub fn rsync_rsh(endpoint: &SshEndpoint, key: Option<&str>) -> Result<String, CliError> {
     let _rsync = crate::host::rsync_program().ok_or_else(|| CliError::ToolMissing {
         tool: "rsync".into(),
@@ -92,6 +95,9 @@ fn use_msys_ssh(ssh: &mut CommandLine, sibling: &Path) {
 /// `.gitignore` rules apply, `.git` and `target/` stay behind (the VM's
 /// `target/` is its own build dir and is never deleted by the sync), and
 /// the remote side holds the worktree's build lock while it writes.
+///
+/// # Errors
+/// Returns an error when the rsync SSH transport is unavailable.
 pub fn rsync_command(
     root: &Path,
     endpoint: &SshEndpoint,
