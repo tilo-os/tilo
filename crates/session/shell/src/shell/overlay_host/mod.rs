@@ -6597,6 +6597,28 @@ impl ShellOverlayHost {
         None
     }
 
+    /// Every tile laid out on this device, with the tab it shows, in
+    /// screen space: what peer pointers are anchored to and placed over
+    /// (see [`crate::shell::peer_presence::PointerAnchor`]).
+    ///
+    /// SAFETY mirrors [`Self::groups_per_strip`].
+    pub fn tab_tiles(&self) -> Vec<(u64, Rect)> {
+        let mut tiles = Vec::new();
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            for group in &row.groups {
+                let Some(rect) = group.active_host().map(ui::Widget::get_rect) else {
+                    continue;
+                };
+                if rect.width() > 0.0 && rect.height() > 0.0 {
+                    tiles.push((group.active_tab_id(), rect));
+                }
+            }
+        }
+        tiles
+    }
+
     /// SAFETY mirrors the rest of the `group_row_ptrs` accessors: pointers
     /// were captured from a `Box<GroupRow>` we own through the content
     /// tree, the host outlives the content, and `&self` here keeps the
