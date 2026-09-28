@@ -55,6 +55,38 @@ pub fn renderer() -> ui::TextRenderer {
     );
     ui::TextRenderer::with_font_catalog(&catalog).unwrap()
 }
+/// Mount `editor` in the production frame host `width` wide at its content
+/// height, the way a scrolling page lays its body out, with its top-left
+/// corner at `(x, y)`, and run its first frame.
+pub fn framed_block_editor(
+    editor: ui::widget::BlockEditor,
+    width: f32,
+    (x, y): (f32, f32),
+    theme: ui::Theme,
+) -> ui::headless::Framed<ui::widget::BlockEditor> {
+    // Tall enough that the viewport cull never drops a fixture block.
+    const HEIGHT: f32 = 10_000.0;
+    ui::headless::Framed::with_options(
+        ui::State::new(),
+        editor,
+        ui::headless::viewport((x + width, HEIGHT)),
+        ui::headless::FrameOptions {
+            theme: Some(theme),
+            text: Some(renderer()),
+            host_style: Some(taffy::Style {
+                flex_direction: taffy::FlexDirection::Column,
+                padding: taffy::Rect {
+                    left: taffy::LengthPercentage::length(x),
+                    top: taffy::LengthPercentage::length(y),
+                    right: taffy::LengthPercentage::length(0.0),
+                    bottom: taffy::LengthPercentage::length(0.0),
+                },
+                ..Default::default()
+            }),
+            content_height: true,
+        },
+    )
+}
 pub fn runner_inputs() -> ui::application::ComponentRunnerInputs {
     ui::application::ComponentRunnerInputs {
         theme: ui::Theme::dark(),
