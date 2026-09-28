@@ -1625,21 +1625,6 @@ impl Widget for Button {
             }))
     }
 
-    /// Legacy adapter: apps not yet on [`Widget::start_operation`] still reach
-    /// a shared button through their read-only routing.
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        Ok(self
-            .invoke_native_control(kind, type_id, payload)?
-            .then(tilo_actions::ActionOutput::default))
-    }
-
     fn refresh_control_action_availability(
         &mut self,
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
@@ -1837,7 +1822,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
-    fn a_shared_button_answers_both_the_single_entry_and_legacy_routing() {
+    fn a_shared_button_answers_through_an_ordinary_container() {
         let clicks = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&clicks);
         let mut column = crate::widget::Column::new().push(Box::new(
@@ -1863,34 +1848,7 @@ mod tests {
                 .is_some()
         );
 
-        // An app still routing through the read-only hooks reaches the button
-        // through an ordinary container, as it did before the single entry.
-        let legacy = column
-            .start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                kind,
-                "tilo.ui.control.invoke",
-                payload,
-                &doc,
-                &automerge::ROOT,
-            )
-            .unwrap();
-        assert!(legacy.is_some(), "legacy start reaches the shared button");
-        let child = &mut column.children_mut()[0];
-        assert!(
-            child
-                .invoke_resource_operation_v2(
-                    kind,
-                    "tilo.ui.control.invoke",
-                    payload,
-                    &doc,
-                    &automerge::ROOT
-                )
-                .unwrap()
-                .is_some(),
-            "a direct legacy call on the button is answered"
-        );
-        assert_eq!(clicks.load(Ordering::SeqCst), 3);
+        assert_eq!(clicks.load(Ordering::SeqCst), 1);
     }
 
     fn layout_fit_host(
