@@ -13257,6 +13257,7 @@ pub mod tests {
                 vec![crate::services::LaunchableApplication {
                     package_id: "so.tilo.word-processor".into(),
                     display_name: "Writer".into(),
+                    unconfined: false,
                 }]
             }
             fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
