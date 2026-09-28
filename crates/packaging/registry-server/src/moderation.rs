@@ -1117,6 +1117,7 @@ mod tests {
                 pubkey_hex: hex::encode(key.verifying_key().to_bytes()),
                 can_add_new: true,
                 note: String::new(),
+                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
             }],
         }
     }

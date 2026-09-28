@@ -153,6 +153,12 @@ of `add`, `update`, or `delete`. All three must carry:
   entry-without-sig preimage;
 - a `publisher_pubkey_hex` matching a row in `publishers.toml`.
 
+`add` and `update` also require the `package_id` to lie in one of that row's
+`namespaces`: `com.acme.notes` needs `com.acme`. Package ids are
+lowercase reverse DNS with at least three labels
+(`registry_types::namespace`). A row without `namespaces` is one of Tilo's own
+publishers and owns `so.tilo`.
+
 `update` and `delete` additionally require that the
 `publisher_pubkey_hex` matches the stored entry's — publishers
 may only edit their own entries. `update` further requires
@@ -190,13 +196,15 @@ under the systemd unit).
 tilo-registry-server add-publisher \
     --pubkey <publisher-hex> \
     --can-add-new \
+    --namespace com.acme \
     --note "in-house team"
 ```
 
 `--can-add-new` says this publisher may submit new entries. Without
 it, they may only propose edits or deletion of their own rows —
 useful for onboarding a publisher who's inheriting an existing
-entry.
+entry. `--namespace` (repeatable) is the reverse-DNS prefix the publisher's
+package ids must start with; it defaults to `so.tilo`.
 
 ### 4. Serve
 
