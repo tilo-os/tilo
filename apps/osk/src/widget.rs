@@ -255,6 +255,9 @@ pub struct OskWidget {
     fingers: Vec<Finger>,
     /// A key held long enough to act on its own: a long press or a repeat.
     hold: Option<Hold>,
+    /// How often the typing language uses each accented letter, computed on
+    /// the first long press in that language; orders the alternates row.
+    accent_usage: Option<(Language, HashMap<char, f64>)>,
     /// The long-press alternates row and the contact that opened it (`None`
     /// for the pointer).
     alternates: Option<(Option<u64>, AlternatesPopup)>,
@@ -376,6 +379,7 @@ impl OskWidget {
             gesture_path: None,
             fingers: Vec::new(),
             hold: None,
+            accent_usage: None,
             alternates: None,
             cursor_drag: None,
             hit_overlay: false,
@@ -1877,7 +1881,7 @@ impl OskWidget {
         self.hold = self.current_layout().key(key).and_then(|k| {
             let (kind, delay) = match &k.action {
                 KeyAction::Backspace => (HoldKind::Repeat, REPEAT_DELAY),
-                _ if !secret && !k.alternates(shift).is_empty() => {
+                _ if !secret && !k.alternates(shift, |_| 0.0).is_empty() => {
                     (HoldKind::Alternates, LONG_PRESS)
                 }
                 _ => return None,
@@ -1911,10 +1915,24 @@ impl OskWidget {
             }
             HoldKind::Alternates => {
                 self.hold = None;
+                let language = self.language;
+                if self
+                    .accent_usage
+                    .as_ref()
+                    .is_none_or(|(l, _)| *l != language)
+                {
+                    let usage = self.predictor.dictionary().accent_usage();
+                    self.accent_usage = Some((language, usage));
+                }
+                let usage = self.accent_usage.as_ref().map(|(_, u)| u);
                 let options = self
                     .current_layout()
                     .key(key)
-                    .map(|k| k.alternates(self.shift))
+                    .map(|k| {
+                        k.alternates(self.shift, |c| {
+                            usage.and_then(|u| u.get(&c)).copied().unwrap_or(0.0)
+                        })
+                    })
                     .unwrap_or_default();
                 let Some(&(_, rect)) = self.key_geom.iter().find(|(id, _)| *id == key) else {
                     return;
@@ -4440,6 +4458,85 @@ mod tests {
         finger(&mut osk, 1, TouchPhase::Ended, cells[1].center());
         assert_eq!(osk.pending_text(), "é");
         assert!(osk.alternates.is_none());
+    }
+
+    fn long_press_options(osk: &mut OskWidget, label: &str) -> Vec<String> {
+        let (id, _) = key_rect(osk, label);
+        let now = Instant::now();
+        osk.begin_hold(id, None, now);
+        osk.poll_hold(now + LONG_PRESS);
+        osk.alternates.take().unwrap().1.options
+    }
+
+    #[test]
+    fn french_accents_come_in_the_order_french_uses_them() {
+        let mut osk = OskWidget::new().with_active_layout("azerty");
+        lay_out(&mut osk, 390.0, 312.0);
+        assert_eq!(osk.language(), Language::French);
+        for (key, leading) in [
+            ("e", &["e", "é", "è", "ê", "ë"][..]),
+            ("a", &["a", "à", "â"][..]),
+            ("u", &["u", "ù", "û"][..]),
+            ("o", &["o", "ô", "œ"][..]),
+            ("c", &["c", "ç"][..]),
+        ] {
+            let options = long_press_options(&mut osk, key);
+            assert_eq!(&options[..leading.len()], leading, "{options:?}");
+        }
+        // Every French accent is on offer.
+        let all: Vec<String> = ["e", "a", "c", "u", "o", "i", "y"]
+            .into_iter()
+            .flat_map(|k| long_press_options(&mut osk, k))
+            .collect();
+        for form in [
+            "é", "è", "ê", "ë", "à", "â", "ç", "ù", "û", "ü", "ô", "œ", "î", "ï", "ÿ",
+        ] {
+            assert!(all.iter().any(|f| f == form), "{form} missing");
+        }
+    }
+
+    #[test]
+    fn the_plain_letter_sits_above_the_finger_even_at_the_edges() {
+        let mut osk = OskWidget::new().with_active_layout("azerty");
+        lay_out(&mut osk, 390.0, 312.0);
+        for label in ["a", "e", "o", "p", "m", "q"] {
+            let (id, rect) = key_rect(&osk, label);
+            let now = Instant::now();
+            osk.begin_hold(id, None, now);
+            osk.poll_hold(now + LONG_PRESS);
+            let Some((_, mut popup)) = osk.alternates.take() else {
+                continue;
+            };
+            let first = popup.cells[0];
+            assert!(
+                (first.center().x - rect.center().x).abs() < 1.0,
+                "{label}: the letter is not above the key"
+            );
+            assert!(
+                popup
+                    .cells
+                    .iter()
+                    .all(|c| c.x0 >= osk.content_rect.x0 - 0.5 && c.x1 <= osk.content_rect.x1 + 0.5),
+                "{label}: row spills out"
+            );
+            // A small wobble keeps the letter.
+            popup.track(rect.center().x + rect.width() * 0.3);
+            assert_eq!(popup.chosen(), Some(label));
+        }
+    }
+
+    #[test]
+    fn shifted_long_press_offers_capitals() {
+        let mut osk = OskWidget::new().with_active_layout("azerty");
+        lay_out(&mut osk, 390.0, 312.0);
+        osk.apply_action(KeyAction::Shift);
+        let e = long_press_options(&mut osk, "e");
+        assert_eq!(&e[..3], ["E", "É", "È"], "{e:?}");
+        // A form whose capital is two letters (ß → SS) stays as it is.
+        let mut s = OskWidget::new();
+        lay_out(&mut s, 390.0, 312.0);
+        s.apply_action(KeyAction::Shift);
+        assert!(long_press_options(&mut s, "s").contains(&"ß".to_string()));
     }
 
     #[test]
