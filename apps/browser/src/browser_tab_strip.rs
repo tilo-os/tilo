@@ -801,42 +801,18 @@ impl Widget for BrowserTabStrip {
 #[cfg(test)]
 mod interaction_tests {
     use super::*;
-    use automerge::AutoCommit;
+    use ui::headless::Framed;
 
-    fn layout(strip: &mut BrowserTabStrip) -> (TaffyTree<()>, NodeId) {
-        let mut tree = TaffyTree::new();
-        let node = strip.build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
-        tree.compute_layout(
-            node,
-            Size {
-                width: taffy::AvailableSpace::Definite(684.0),
-                height: taffy::AvailableSpace::Definite(44.0),
-            },
-        )
-        .unwrap();
-        strip.apply_layout(&tree, node, Point::ORIGIN);
-        (tree, node)
+    fn layout(strip: BrowserTabStrip) -> Framed<BrowserTabStrip> {
+        Framed::new(ui::State::new(), strip, (684, 44), Theme::dark())
     }
 
-    fn dispatch(
-        strip: &mut BrowserTabStrip,
-        tree: &TaffyTree<()>,
-        node: NodeId,
-        event: &WindowEvent,
-    ) {
-        strip.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: &mut AutoCommit::new(),
-                path: &automerge::ROOT,
-                handled: &mut false,
-                focus_target: &mut None,
-                node_id: node,
-                taffy: tree,
-            },
-        );
+    fn relayout(strip: &mut Framed<BrowserTabStrip>) {
+        Framed::harness_mut(strip).relayout();
+    }
+
+    fn dispatch(strip: &mut Framed<BrowserTabStrip>, event: &WindowEvent) {
+        Framed::harness_mut(strip).dispatch_to_root(event);
     }
 
     /// Overflow and mixed-partition activation keep the dragged tab.
@@ -855,14 +831,12 @@ mod interaction_tests {
                 10,
             );
             strip.set_viewport_width(684.0);
-            let (tree, node) = layout(&mut strip);
+            let mut strip = layout(strip);
             assert_eq!(strip.visible_ids(), &[7, 8, 9, 10]);
             let start = strip.tab_rects()[0].center();
             let device_id = winit::event::DeviceId::dummy();
             dispatch(
                 &mut strip,
-                &tree,
-                node,
                 &WindowEvent::CursorMoved {
                     device_id,
                     position: winit::dpi::PhysicalPosition::new(start.x, start.y),
@@ -870,8 +844,6 @@ mod interaction_tests {
             );
             dispatch(
                 &mut strip,
-                &tree,
-                node,
                 &WindowEvent::MouseInput {
                     device_id,
                     state: ElementState::Pressed,
@@ -880,12 +852,10 @@ mod interaction_tests {
             );
             assert_eq!(strip.active_id(), 7);
             strip.set_active(7);
-            let (tree, node) = layout(&mut strip);
+            relayout(&mut strip);
             let destination = strip.tab_rects()[2].center();
             dispatch(
                 &mut strip,
-                &tree,
-                node,
                 &WindowEvent::CursorMoved {
                     device_id,
                     position: winit::dpi::PhysicalPosition::new(
@@ -896,8 +866,6 @@ mod interaction_tests {
             );
             dispatch(
                 &mut strip,
-                &tree,
-                node,
                 &WindowEvent::MouseInput {
                     device_id,
                     state: ElementState::Released,
@@ -921,13 +889,11 @@ mod interaction_tests {
             strip.set_viewport_width(684.0);
             strip.set_active(30);
             strip.set_active(20);
-            let (tree, node) = layout(&mut strip);
+            let mut strip = layout(strip);
             let start = strip.tab_rects().last().unwrap().center();
             let device_id = winit::event::DeviceId::dummy();
             dispatch(
                 &mut strip,
-                &tree,
-                node,
                 &WindowEvent::CursorMoved {
                     device_id,
                     position: winit::dpi::PhysicalPosition::new(start.x, start.y),
@@ -935,8 +901,6 @@ mod interaction_tests {
             );
             dispatch(
                 &mut strip,
-                &tree,
-                node,
                 &WindowEvent::MouseInput {
                     device_id,
                     state: ElementState::Pressed,
@@ -945,15 +909,13 @@ mod interaction_tests {
             );
             assert_eq!(strip.active_id(), 30);
             strip.set_active(30);
-            let (tree, node) = layout(&mut strip);
+            relayout(&mut strip);
             let destination = Point::new(
                 strip.tab_rects()[0].x0 + 1.0,
                 strip.tab_rects()[0].center().y,
             );
             dispatch(
                 &mut strip,
-                &tree,
-                node,
                 &WindowEvent::CursorMoved {
                     device_id,
                     position: winit::dpi::PhysicalPosition::new(destination.x, destination.y),
@@ -961,8 +923,6 @@ mod interaction_tests {
             );
             dispatch(
                 &mut strip,
-                &tree,
-                node,
                 &WindowEvent::MouseInput {
                     device_id,
                     state: ElementState::Released,
@@ -985,9 +945,9 @@ mod interaction_tests {
                 10,
             );
             strip.set_viewport_width(684.0);
-            let (tree, node) = layout(&mut strip);
-            assert!(Widget::is_focusable(&strip));
-            Widget::set_focus(&mut strip, true);
+            let mut strip = layout(strip);
+            assert!(Widget::is_focusable(&*strip));
+            Widget::set_focus(&mut *strip, true);
             for (named, expected) in [
                 (NamedKey::Home, 1),
                 (NamedKey::End, 10),
@@ -999,8 +959,6 @@ mod interaction_tests {
                 event.state = ElementState::Pressed;
                 dispatch(
                     &mut strip,
-                    &tree,
-                    node,
                     &WindowEvent::KeyboardInput {
                         device_id: winit::event::DeviceId::dummy(),
                         event,
@@ -1010,8 +968,8 @@ mod interaction_tests {
                 assert_eq!(strip.active_id(), expected);
                 assert!(strip.active_is_visible());
             }
-            Widget::set_focus(&mut strip, false);
-            assert!(!Widget::is_focused(&strip));
+            Widget::set_focus(&mut *strip, false);
+            assert!(!Widget::is_focused(&*strip));
         }
 
         // Phase `app_focus_traversal_includes_browser_tab_strip`.

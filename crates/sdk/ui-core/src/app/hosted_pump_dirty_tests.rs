@@ -413,9 +413,19 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
         epoch: uuid::Uuid::new_v4(),
     });
     app.init_layout();
-    for _ in 0..3 {
-        app.pump_hosted_model_as(false);
+    // The first pass joins the record route, whose initial catalogue arrives
+    // only once the broker worker has processed the join: settle on the
+    // worker, not on a count of passes.
+    let mut settled = false;
+    for _ in 0..8 {
+        app.collaboration.manager.wait_for_commands_for_test();
+        if app.pump_hosted_model_as(false) == model_lifecycle::HostedPumpReport::default() {
+            settled = true;
+            break;
+        }
     }
+    assert!(settled, "hosted pump never went idle");
+    app.collaboration.manager.wait_for_commands_for_test();
     let before = tilo_actions::door::survey(&app.publication_resources()).len();
     assert!(before > 0);
     let generation = app.actions.resource_generation.get();

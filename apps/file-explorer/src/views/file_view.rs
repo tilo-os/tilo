@@ -2151,22 +2151,12 @@ mod tests {
     fn nested_navigation_layout_preserves_large_text_file_row_geometry() {
         let sink = new_sink();
         let view = FileView::new(&items(2), &SelectionModel::new(), &sink);
-        let mut nav = ui::widget::NavShell::sidebar_over_content(
+        let nav = ui::widget::NavShell::sidebar_over_content(
             Box::new(ui::widget::Text::new("Places")),
             Box::new(view),
         );
         let theme = Theme::dark().with_text_scale(2.0);
-        let mut tree = TaffyTree::new();
-        let root = nav.build_layout(&mut tree, &theme, &mut HashMap::new());
-        tree.compute_layout(
-            root,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(1000.0),
-                height: taffy::AvailableSpace::Definite(700.0),
-            },
-        )
-        .unwrap();
-        nav.apply_layout(&tree, root, Point::ZERO);
+        let nav = ui::headless::Framed::new(ui::State::new(), nav, (1000, 700), theme.clone());
         let row = nav
             .children()
             .iter()
@@ -2179,16 +2169,7 @@ mod tests {
             bounds.y1 - bounds.y0 >= 68.0,
             "nested rows must receive200% layout scale: {bounds:?}"
         );
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let mut scene = Scene::new();
-        nav.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::default(),
-        );
+        let scene = ui::headless::Framed::harness(&nav).scene();
         assert!(
             scene
                 .encoding()

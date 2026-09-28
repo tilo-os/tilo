@@ -14,7 +14,7 @@ DIRECT_CONSUMERS = {
     "release-apps.yml": 1,
 }
 PREPARED_CONSUMERS = {
-    "check.yml": 5,
+    "check.yml": 7,
     "legacy-app-e2e.yml": 1,
     "nightly.yml": 1,
     "refresh-visual-baselines.yml": 1,

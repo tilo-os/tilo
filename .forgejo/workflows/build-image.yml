@@ -69,17 +69,17 @@ on:
         default: ""
 
 concurrency:
-  # Generations are a single dense security series. This workflow can publish
-  # from a tag, a manual main run or the nightly main run. Every run that may
-  # publish shares the series lock so concurrent releases cannot allocate the
-  # same generation; a scheduled run holds it even when it then skips, so its
-  # freshness check sees a publication queued ahead of it. Validation builds
-  # allocate nothing and must not hold up a release, so they serialize per ref.
+  # Generic generations are a single dense security series. Generic tag,
+  # manual main and nightly publications share its lock so concurrent runs
+  # cannot allocate the same generation; a scheduled run also holds it for its
+  # freshness check. The one-off Lenovo image uses fixed generation 1 and an
+  # immutable source-specific tag, so it serializes only with Lenovo reruns of
+  # the same source. Validation builds allocate nothing and serialize per ref.
   # Job outputs are unavailable here; this mirrors the plan job's rule.
   # Epoch 2 retires the lock held by cancelled run 36454. Forgejo left one
   # failed release's ARM worker active after cancellation and queued later
   # signed releases behind it. The old run cannot enter promotion.
-  group: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}
+  group: ${{ (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}
   cancel-in-progress: false
 
 env:
