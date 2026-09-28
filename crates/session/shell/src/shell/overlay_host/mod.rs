@@ -1431,6 +1431,10 @@ impl ShellOverlayHost {
         crate::shell::animation_diagnostics::host_bits(
             &crate::shell::animation_diagnostics::HostDemandInputs {
                 onboarding: self.onboarding.is_some(),
+                onboarding_animating: self
+                    .onboarding
+                    .as_ref()
+                    .is_some_and(Widget::needs_animation_frame),
                 capture_studio: self.capture_studio.needs_animation_frame(),
                 root_transition: self.transition_started.is_some(),
                 quick_settings: self.qs_transition.is_animating(now),

@@ -231,6 +231,15 @@ fn wayland_client_service_deadline(wake_registered: bool, now: Instant) -> Optio
     }
 }
 
+/// Client requests are dispatched after the tick's pump and paint decision,
+/// and what they change (a new toplevel awaiting its first configure, a
+/// title, a selection) is only picked up by the next tick's pump. Nothing
+/// else need wake that tick on a backend that is never polled, so run it at
+/// once; a tick that dispatches nothing parks normally.
+fn client_followup_deadline(clients_dispatched: bool, now: Instant) -> Option<Instant> {
+    clients_dispatched.then_some(now)
+}
+
 fn dispatch_wayland_clients_fairly(
     display: &mut Display<State>,
     state: &mut State,
@@ -2274,6 +2283,8 @@ struct TestControlCtx {
     /// backend or from injected test-control input alike. The shell chrome's
     /// shortcut help follows it.
     input: InputEnvironment,
+    /// The latest `watch` answer, for the loop to hand to the backend.
+    watch_request: Option<bool>,
 }
 
 impl TestControlCtx {
@@ -2286,6 +2297,7 @@ impl TestControlCtx {
             cursor: PhysicalPosition::new(0.0, 0.0),
             direct_touch: DirectTouchOwnership::default(),
             input: InputEnvironment::default(),
+            watch_request: None,
         }
     }
 
@@ -3414,6 +3426,10 @@ fn pump_test_control_conn(
                                     })),
                                     Vec::new(),
                                 )
+                            }
+                            test_control::Command::Watch { watching } => {
+                                ctx.watch_request = Some(watching);
+                                (test_control::Response::Ok { frame: 0 }, Vec::new())
                             }
                             cmd => {
                                 let state = FrameBuilderControlState {
@@ -5818,7 +5834,7 @@ pub fn run() {
             }
         }
     } else {
-        false
+        !backend.needs_idle_poll()
     };
     let (capture_ping, capture_ping_source) = match calloop::ping::make_ping() {
         Ok(pair) => pair,
@@ -9580,7 +9596,7 @@ pub fn run() {
                 &output_globals,
             );
         }
-        if retain_session_redraw(session_changed, should_paint) {
+        if retain_session_redraw(session_changed || injected_redraw, should_paint) {
             injected_redraw_pending = true;
         }
         let t_paint_done = iter_t0.elapsed();
@@ -9632,6 +9648,11 @@ pub fn run() {
                 injected_redraw_pending = true;
             }
         }
+        if let Some(watching) = test_control_ctx.watch_request.take()
+            && backend.set_watched(watching)
+        {
+            injected_redraw_pending = true;
+        }
         test_control_conns.retain_mut(|conn| {
             if conn.closed
                 && let Some(token) = conn.wake.take()
@@ -9650,7 +9671,7 @@ pub fn run() {
         }
         state.pump_selection();
         let dispatch_started = Instant::now();
-        match dispatch_wayland_clients_fairly(&mut display, &mut state) {
+        let clients_dispatched = match dispatch_wayland_clients_fairly(&mut display, &mut state) {
             Ok(dispatched) => {
                 let elapsed = dispatch_started.elapsed();
                 if dispatched > 0 || elapsed > Duration::from_millis(10) {
@@ -9661,12 +9682,13 @@ pub fn run() {
                         "Wayland client requests dispatched"
                     );
                 }
+                dispatched > 0
             }
             Err(err) => {
                 eprintln!("tilo compositor: dispatch_clients error: {err}");
                 break;
             }
-        }
+        };
         // A client commit can enqueue a GPU readback while this dispatch is
         // running, and the worker may complete before we return. Re-apply
         // released transactions here as well as at tick start; otherwise a
@@ -9726,6 +9748,11 @@ pub fn run() {
         let lock_media_deadline = (session.is_locked() && !session.is_blanked())
             .then(|| last_lock_media_poll.checked_add(LOCK_MEDIA_REFRESH))
             .flatten();
+        // A redraw requested after this tick's paint decision (control-socket
+        // input, a configure flush, a released capture barrier) has no fd
+        // left to wake the loop; its frame is due on the next cadence.
+        let cadence_needed =
+            cadence_needed || cadence_wait_needed(pipe_ready, injected_redraw_pending);
         let park = native_loop_park(
             park_now,
             backend_event_wake,
@@ -9750,6 +9777,7 @@ pub fn run() {
                 backend.next_service_deadline(),
                 wayland_client_service_deadline(wayland_client_wake, park_now),
                 state.text_commit_deadline(),
+                client_followup_deadline(clients_dispatched, park_now),
             ],
         );
         let t_sleep_start = Instant::now();
@@ -9986,6 +10014,36 @@ mod tests {
         native_consent_fixture_root, run_isolated_native_consent_test,
         wait_for_local_session_worker_teardown,
     };
+
+    #[test]
+    fn dispatched_client_requests_get_a_follow_up_tick() {
+        let now = Instant::now();
+        let frame = now + Duration::from_millis(8);
+        assert_eq!(
+            native_loop_park(
+                now,
+                true,
+                false,
+                false,
+                frame,
+                [client_followup_deadline(true, now)]
+            ),
+            Some(Duration::ZERO),
+            "a new toplevel's first configure must not wait for an unrelated wake"
+        );
+        assert_eq!(
+            native_loop_park(
+                now,
+                true,
+                false,
+                false,
+                frame,
+                [client_followup_deadline(false, now)]
+            ),
+            None,
+            "a tick that dispatched nothing parks"
+        );
+    }
 
     #[test]
     fn redraw_edges_and_idle_parking_follow_real_wake_sources() {
