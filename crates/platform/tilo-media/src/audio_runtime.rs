@@ -591,7 +591,7 @@ fn echo_cancel_config_installed() -> bool {
     if let Some(dir) = std::env::var_os("PIPEWIRE_CONFIG_DIR") {
         dirs.push(std::path::PathBuf::from(dir));
     }
-    if let Some(config) = xdg_paths::xdg::config_home() {
+    if let Some(config) = tilo_paths::xdg::config_home() {
         dirs.push(config.join("pipewire"));
     }
     dirs.push("/etc/pipewire".into());
