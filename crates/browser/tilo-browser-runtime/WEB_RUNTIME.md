@@ -391,6 +391,7 @@ agent.invokeAction(replyId, 'set-work', {state: 'done', did: 'Add note',
   `{resource, label, outcome: asked | applied | no_change | refused, why?}`;
   `say` supplies the words of a message that has none yet. It writes the
   same `SetAgentWork` a delivered agent task writes, read back as `work`.
+  Chat's timeline does not draw the work yet; a page shows it itself.
 
 `chat.html` in the dev output mounts both side by side; "Agent: answer new
 messages" replies to what the person wrote since the last answer.
@@ -439,14 +440,20 @@ MiB / 4.40 MiB after, measured 2026-09-28): the shell itself
 (`tilo_desktop`, 358 KiB linked; `tilo_desktop_model`, `tilo_automation`,
 `collab_types`), which the core linked but dead-stripped before.
 
-`build-web-dev.sh` writes `build/sizes.md`. Measured 2026-09-27 on main with
-the Cloud stack merged (collection Books + Writer, no `cloud`):
+`build-web-dev.sh` writes `build/sizes.md`. Measured 2026-09-28 (collection
+Books + Writer + Chat, no `cloud`):
 
 | module | linked | linked, brotli | `-Oz` | `-Oz`, brotli |
 |---|---:|---:|---:|---:|
-| core | 32.02 MiB | 4.81 MiB | 16.25 MiB | 3.65 MiB |
-| Books (`so.tilo.ebook`) | 1.50 MiB | 287 KiB | 854 KiB | 248 KiB |
-| Writer (`so.tilo.word-processor`) | 5.03 MiB | 661 KiB | 2.07 MiB | 588 KiB |
+| core | 36.60 MiB | 5.70 MiB | 18.82 MiB | 4.42 MiB |
+| Books (`so.tilo.ebook`) | 2.69 MiB | 468 KiB | 1.49 MiB | 414 KiB |
+| Writer (`so.tilo.word-processor`) | 5.39 MiB | 704 KiB | 2.21 MiB | 625 KiB |
+| Chat (`so.tilo.chat`) | 2.56 MiB | 423 KiB | 1.39 MiB | 370 KiB |
+
+Chat joining the collection grows the core from 18.27 MiB / 4.09 MiB (`-Oz`,
+brotli) to 18.82 MiB / 4.42 MiB: mostly the emoji tables (`crates/text/emoji`,
+in the core through `tilo-desktop` but dead code until Chat's picker imports
+them), and the generic instantiations Chat imports.
 
 | fonts | count | raw | brotli |
 |---|---:|---:|---:|
