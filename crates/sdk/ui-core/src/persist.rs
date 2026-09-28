@@ -27,10 +27,6 @@
 //! every sandboxed launch, always wins — without it a binary run from
 //! `target/debug` would share one document with every other app.
 //!
-//! Apps carrying state an older release wrote elsewhere call
-//! [`open_migrating`] once with that legacy path; the old document is
-//! merged in, so the migration is safe to run repeatedly.
-//!
 //! Every function here resolves storage from the native process
 //! environment (`TILO_PACKAGE_ID`, the XDG data directory) and the local
 //! filesystem. A host with an explicit profile opens records through
@@ -64,7 +60,7 @@ use crate::state::State;
 /// comes up on an empty document, exactly as it did before persistence
 /// existed. An app that would rather know can call [`try_open`].
 pub fn open(manifest_id: &str) -> (State, DocWriter) {
-    if let Some(result) = open_native_initial(manifest_id, None, None) {
+    if let Some(result) = open_native_initial(manifest_id, None) {
         return native_initial_result(result);
     }
     try_open(manifest_id).unwrap_or_else(|e| {
@@ -74,17 +70,12 @@ pub fn open(manifest_id: &str) -> (State, DocWriter) {
 }
 
 /// Open the index for one collaboration room.  Record-aware applications use
-/// this instead of [`open()`]: their package-global document used to be the
-/// room index, which let two rooms hydrate and overwrite each other's record
-/// references after a restart.
-///
-/// On the first scoped open the legacy package document is merged, never
-/// moved or deleted.  The next autosave lands in the room directory, so a
-/// crash during migration still leaves the legacy source intact.
+/// this instead of [`open()`], so two rooms never hydrate or overwrite each
+/// other's record references.
 ///
 /// The host's package id, when set, wins over `manifest_id`.
 pub fn open_room(manifest_id: &str, room_id: &str) -> (State, DocWriter) {
-    if let Some(result) = open_native_initial(manifest_id, Some(room_id), None) {
+    if let Some(result) = open_native_initial(manifest_id, Some(room_id)) {
         return native_initial_result(result);
     }
 
@@ -105,75 +96,11 @@ pub fn open_room_in(
 ) -> (State, DocWriter) {
     let attempt = || -> Result<(State, DocWriter), StoreError> {
         app_state::validate_record_identity(package_id, room_id, "index")?;
-        let legacy = StorageKey::package(package_id);
-        let has_legacy = documents
-            .read(&legacy)?
-            .is_some_and(|stored| !stored.bytes.is_empty());
-        let mut store = DocStore::shared(
-            Rc::clone(&documents),
-            StorageKey::room_index(package_id, room_id),
-        )?;
-        if has_legacy && documents.claim(&legacy, room_id)? {
-            match store.import_from(&legacy) {
-                Ok(true) => tracing::info!(
-                    room = room_id,
-                    from = %legacy,
-                    to = %store.document_path().display(),
-                    "migrated package-global record index into its room"
-                ),
-                Ok(false) => {}
-                Err(error) => tracing::error!(
-                    room = room_id,
-                    error = %error,
-                    "legacy package record index could not be imported"
-                ),
-            }
-        } else if has_legacy {
-            tracing::info!(
-                room = room_id,
-                from = %legacy,
-                "legacy package record index belongs to another room; not importing"
-            );
-        }
+        let store = DocStore::shared(documents, StorageKey::room_index(package_id, room_id))?;
         Ok(finish(store))
     };
     attempt().unwrap_or_else(|error| {
         tracing::error!(room = room_id, error = %error, "room index unavailable; running without persistence");
-        in_memory_fallback()
-    })
-}
-
-/// [`open()`], plus a one-time import of a document an older release of this
-/// app left at `legacy`.
-///
-/// The legacy document is *merged*, so state written since the upgrade is
-/// preserved and running the migration twice is a no-op. The old file is
-/// left on disk; deleting it is a decision for whoever knows whether
-/// anything else still reads it.
-pub fn open_migrating(manifest_id: &str, legacy: &Path) -> (State, DocWriter) {
-    if let Some(result) = open_native_initial(manifest_id, None, Some(legacy)) {
-        return native_initial_result(result);
-    }
-
-    let attempt = || -> Result<(State, DocWriter), StoreError> {
-        // A carried window's record already holds what it brought.
-        if let Some(carried) = open_carried(manifest_id) {
-            return carried;
-        }
-        let mut store = DocStore::open_with_manifest_id(manifest_id)?;
-        match store.migrate_from(legacy) {
-            Ok(true) => tracing::info!(
-                from = %legacy.display(),
-                to = %store.document_path().display(),
-                "imported app state from its previous location"
-            ),
-            Ok(false) => {}
-            Err(e) => tracing::error!(error = %e, "legacy app state could not be imported"),
-        }
-        Ok(finish(store))
-    };
-    attempt().unwrap_or_else(|e| {
-        tracing::error!(error = %e, "app state unavailable; running without persistence");
         in_memory_fallback()
     })
 }
@@ -306,14 +233,10 @@ fn native_initial_result(result: Result<(State, DocWriter), String>) -> (State, 
 fn open_native_initial(
     app: &str,
     room: Option<&str>,
-    legacy: Option<&Path>,
 ) -> Option<Result<(State, DocWriter), String>> {
     crate::collaboration::native_initial::primary(app, room).map(|capture| {
         let (room, read) = capture?;
-        let mut store = DocStore::open_room(app, &room).map_err(|e| e.to_string())?;
-        if let Some(legacy) = legacy {
-            store.migrate_from(legacy).map_err(|e| e.to_string())?;
-        }
+        let store = DocStore::open_room(app, &room).map_err(|e| e.to_string())?;
         finish_initial(store, read)
     })
 }
@@ -446,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn persistence_opens_recovers_and_imports_the_legacy_index_once() {
+    fn persistence_opens_twice_and_recovers_a_stale_state_file() {
         // Case `open_keeps_autosave_enabled_when_the_state_dir_already_exists`:
         // Opening an app for the SECOND time must keep persistence ON. If the
         // store treated an already-existing state directory as an error,
@@ -489,38 +412,6 @@ mod tests {
                 Some("survives"),
                 "state written on the first run must load on the second open"
             );
-        }
-
-        // Case `legacy_record_index_is_imported_by_one_room_only`.
-        {
-            let tmp = tempfile::tempdir().expect("temp dir");
-            let package = "so.tilo.legacy-room-index";
-            let id = crate::record::RecordId::minted();
-            let kind = crate::record::RecordKind::new("note");
-            let mut legacy = DocStore::shared(native(tmp.path()), StorageKey::package(package))
-                .expect("legacy store");
-            let mut legacy_doc = legacy.load_or_new();
-            crate::record::room::reference(&mut legacy_doc, &id, &kind);
-            legacy.save(&mut legacy_doc).expect("write legacy index");
-            let source = legacy.document_path().to_path_buf();
-            drop(legacy);
-
-            let (a, _) = open_room_in(
-                native(tmp.path()),
-                package,
-                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-            );
-            assert!(crate::record::room::holds(&a.doc, &id));
-            let (b, _) = open_room_in(
-                native(tmp.path()),
-                package,
-                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-            );
-            assert!(
-                !crate::record::room::holds(&b.doc, &id),
-                "a second room must not re-import a package-global index"
-            );
-            assert!(source.is_file(), "legacy source is retained for recovery");
         }
 
         // Case `open_recovers_when_the_state_path_is_a_stale_file`:

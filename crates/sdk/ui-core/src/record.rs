@@ -1670,11 +1670,6 @@ impl RecordSet {
         )
     }
 
-    /// The retained pre-room package record, as a read source.
-    fn package_record(&self, record_key: &str) -> StorageKey {
-        StorageKey::package_record(&self.package_id, record_key)
-    }
-
     /// Attach `doc` to this record's file: merge in what's stored, and
     /// hand back the writer. Merges rather than overwrites so adopted
     /// content survives. The writer is seeded from the **stored** heads,
@@ -1719,10 +1714,9 @@ impl RecordSet {
                 ))));
             }
         };
-        // A former identity's record and the old package-global record file
-        // are read-only migration sources. They remain on disk until a later
-        // explicit cleanup, so a crash before the first scoped autosave cannot
-        // lose them.
+        // A former identity's record is a read-only source. It remains on
+        // disk until a later explicit cleanup, so a crash before the first
+        // scoped autosave cannot lose it.
         let mut adopted_elsewhere = false;
         let stored = match stored {
             Some(stored) => Some(stored),
@@ -1738,49 +1732,6 @@ impl RecordSet {
                     ))));
                 }
             },
-        };
-        let stored = if stored.is_some() {
-            stored
-        } else {
-            let legacy = self.package_record(&record_key);
-            let documents = self.documents()?;
-            if documents
-                .read(&legacy)?
-                .is_none_or(|found| found.bytes.is_empty())
-            {
-                None
-            } else {
-                let mut legacy_store =
-                    app_state::DocStore::shared(Rc::clone(documents), legacy.clone())?;
-                let mut legacy_doc = legacy_store.load()?.ok_or_else(|| {
-                    RecordOpenError::Initialization(format!("legacy record {legacy} is empty"))
-                })?;
-                // Identity is checked before the one-room claim: a foreign or
-                // mis-scoped legacy document must never be adopted here.
-                if identity(&legacy_doc)
-                    .is_none_or(|found| found.id != want.id || found.kind != want.kind)
-                    || home(&legacy_doc).as_deref() != Some(self.home.as_str())
-                    || room_scope(&legacy_doc).is_some_and(|scope| scope != self.home)
-                    || !init_scoped(
-                        &mut legacy_doc,
-                        &want.id,
-                        &want.kind,
-                        &self.home,
-                        Some(&self.home),
-                    )
-                    || !documents.claim(&legacy, &self.home)?
-                {
-                    return Err(RecordOpenError::IdentityMismatch);
-                }
-                tracing::info!(
-                    record = %id,
-                    room = %self.home,
-                    from = %legacy,
-                    "adopting a legacy package-global record into a room"
-                );
-                adopted_elsewhere = true;
-                Some(legacy_doc)
-            }
         };
         // Merge transactionally. Automerge may have applied part of a failed
         // merge; never publish or enqueue that partial result to the writer.
@@ -2877,10 +2828,7 @@ impl RecordStore {
             let mut owner = set.scoped_document(&key)?;
             // An empty/corrupt document is existing evidence too, never
             // permission to replace it with a freshly initialized one.
-            if owner.load_complete()?.is_some()
-                || owner.has_stored()?
-                || set.documents()?.read(&set.package_record(&key))?.is_some()
-            {
+            if owner.load_complete()?.is_some() || owner.has_stored()? {
                 return Err(RecordOpenError::AlreadyExists);
             }
             Some(owner)
@@ -2987,37 +2935,13 @@ impl RecordStore {
                     }
                     .into());
                 }
-                if let Some(mut doc) = set.adopt_former_scoped(want)? {
-                    if !init_scoped(&mut doc, &want.id, &want.kind, &set.home, Some(&set.home)) {
-                        return Err(RecordOpenError::IdentityMismatch);
-                    }
-                    (doc, true)
-                } else {
-                    let source = set.package_record(&key);
-                    let documents = Rc::clone(set.documents()?);
-                    if documents.read(&source)?.is_none() {
-                        return Err(RecordOpenError::MissingRecord);
-                    }
-                    let mut legacy =
-                        app_state::DocStore::shared(Rc::clone(&documents), source.clone())?;
-                    let mut doc = legacy.load_complete()?.ok_or_else(|| {
-                        app_state::StoreError::EmptyExistingDocument {
-                            path: legacy.document_path().to_path_buf(),
-                        }
-                    })?;
-                    // Validate before claiming custody or adding only the missing
-                    // room metadata. The old source and all its changes stay intact.
-                    if identity(&doc)
-                        .is_none_or(|found| found.id != want.id || found.kind != want.kind)
-                        || home(&doc).as_deref() != Some(set.home.as_str())
-                        || room_scope(&doc).is_some_and(|scope| scope != set.home)
-                        || !documents.claim(&source, &set.home)?
-                        || !init_scoped(&mut doc, &want.id, &want.kind, &set.home, Some(&set.home))
-                    {
-                        return Err(RecordOpenError::IdentityMismatch);
-                    }
-                    (doc, true)
+                let Some(mut doc) = set.adopt_former_scoped(want)? else {
+                    return Err(RecordOpenError::MissingRecord);
+                };
+                if !init_scoped(&mut doc, &want.id, &want.kind, &set.home, Some(&set.home)) {
+                    return Err(RecordOpenError::IdentityMismatch);
                 }
+                (doc, true)
             };
             validate_identity(&doc, want, &set.home)?;
             if home(&doc).as_deref() != Some(set.home.as_str()) {
@@ -4306,8 +4230,8 @@ mod tests {
     }
 
     #[test]
-    fn history_existing_records_reopen_or_migrate_and_refuse_corruption() {
-        // Case `history_existing_legacy_record_reopens_without_initializing_missing_content`:
+    fn history_existing_records_reopen_and_refuse_corruption() {
+        // Case `history_existing_record_reopens_without_initializing_missing_content`:
         // A record adopted from a live document (the "save as" case) is
         // written out rather than mistaken for something already on disk.
         {
@@ -4346,82 +4270,6 @@ mod tests {
                 Err(RecordOpenError::MissingRecord)
             ));
             assert!(store.read(&missing.id, |_| ()).is_none());
-        }
-
-        // Case `history_existing_package_record_migrates_once_without_losing_old_history`.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let documents = native(tmp.path());
-            let package = "dev.tilo.history-package-record";
-            let checkout = RecordCheckout::new(RecordId::for_tab(403), RecordKind::new("tab"));
-            let room = "11111111-1111-4111-8111-111111111111";
-            let old_heads = {
-                let mut owner = app_state::DocStore::shared(
-                    Rc::clone(&documents),
-                    StorageKey::package_record(package, checkout.id.storage_key()),
-                )
-                .unwrap();
-                let mut doc = owner.new_document();
-                init(&mut doc, &checkout.id, &checkout.kind, room);
-                put_text(&mut doc, "body", "old package content");
-                let heads = doc.get_heads();
-                owner.save(&mut doc).unwrap();
-                heads
-            };
-            let legacy_path = documents
-                .local_path(&StorageKey::package_record(
-                    package,
-                    checkout.id.storage_key(),
-                ))
-                .unwrap();
-            let original_bytes = std::fs::read(&legacy_path).unwrap();
-            {
-                let store =
-                    RecordStore::new(RecordSet::open_in(Rc::clone(&documents), package, room));
-                assert!(
-                    store.open_existing_record_checked(&checkout).is_ok(),
-                    "an existing package record must remain readable"
-                );
-                store
-                    .with(&checkout.id, |doc| {
-                        assert_eq!(text(doc, "body").as_deref(), Some("old package content"));
-                        for head in &old_heads {
-                            assert!(doc.get_change_by_hash(head).is_some());
-                        }
-                        assert_eq!(room_scope(doc).as_deref(), Some(room));
-                    })
-                    .unwrap();
-                store.flush();
-            }
-            assert_eq!(std::fs::read(&legacy_path).unwrap(), original_bytes);
-            assert!(
-                !documents
-                    .claim(
-                        &StorageKey::package_record(package, checkout.id.storage_key()),
-                        "22222222-2222-4222-8222-222222222222"
-                    )
-                    .unwrap(),
-                "the durable migration claim remains pinned to its original room"
-            );
-            let other = RecordStore::new(RecordSet::open_in(
-                Rc::clone(&documents),
-                package,
-                "22222222-2222-4222-8222-222222222222",
-            ));
-            assert!(
-                other.open_existing_record_checked(&checkout).is_err(),
-                "migration cannot admit another room"
-            );
-            let reopened =
-                RecordStore::new(RecordSet::open_in(Rc::clone(&documents), package, room));
-            assert!(reopened.open_existing_record_checked(&checkout).is_ok());
-            assert_eq!(
-                reopened
-                    .read(&checkout.id, |doc| text(doc, "body"))
-                    .flatten()
-                    .as_deref(),
-                Some("old package content")
-            );
         }
 
         // Case `history_existing_scoped_refuses_corruption_empty_and_mismatched_identity`.
@@ -4469,18 +4317,6 @@ mod tests {
                     RecordKind::new("tab"),
                 );
                 let key = checkout.id.storage_key();
-                // A valid older package source must never hide a damaged scoped file.
-                {
-                    let mut legacy = app_state::DocStore::shared(
-                        Rc::clone(&documents),
-                        StorageKey::package_record(package, &key),
-                    )
-                    .unwrap();
-                    let mut doc = legacy.new_document();
-                    init(&mut doc, &checkout.id, &checkout.kind, room);
-                    put_text(&mut doc, "body", "must not become a fallback");
-                    legacy.save(&mut doc).unwrap();
-                }
                 let path = {
                     let owner = app_state::DocStore::shared(
                         Rc::clone(&documents),

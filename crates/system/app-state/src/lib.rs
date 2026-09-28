@@ -39,7 +39,6 @@ use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tilo_automerge::ApplyIncoming;
 
 use advisory_lock::{FileLock, LockMode, TryLockError};
 use durable_store::{DurableStore, StorageKey, WriteOp};
@@ -56,15 +55,11 @@ pub const DOCUMENT_FILE: &str = "state.automerge";
 pub const ACTOR_FILE: &str = "actor";
 pub const CANONICAL_GATE: &str = "canonical.lock";
 pub const LOCK_FILE: &str = "writer.lock";
-/// Subdirectory holding one directory per record. See [`DocStore::open_record`].
+/// Subdirectory holding one directory per record. See [`DocStore::open_room_record`].
 pub const RECORDS_DIR: &str = "records";
 /// Subdirectory holding one directory per **room** — the index of records
 /// that room holds. See [`DocStore::open_room`].
 pub const ROOMS_DIR: &str = "rooms";
-/// Durable claim files prevent a pre-room document from being silently
-/// imported into every room that happens to open after an upgrade.
-const LEGACY_PACKAGE_ROOM_CLAIM: &str = ".tilo-legacy-room-index-claim";
-const LEGACY_RECORD_ROOM_CLAIM: &str = ".tilo-legacy-room-record-claim";
 /// Marker in a room record's directory naming the one record that adopted it
 /// under a new identity.
 const RECORD_SUCCESSOR_CLAIM: &str = "successor-claim";
@@ -336,34 +331,9 @@ impl DocStore {
         Self::shared(Self::native_store(), StorageKey::package(package_id))
     }
 
-    /// Open the store for **one record** of a package. A record is the unit of
-    /// collaboration: one document, one identity, one change graph — Automerge
-    /// changes name dependencies by hash, so a change graph can't be served in
-    /// part, meaning separate documents per record. `record_key` is validated
-    /// as strictly as a package id.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `package_id` fails `validate_package_id` or
-    /// `record_key` fails `validate_record_key`, or if the record's state
-    /// directory can't be created, inspected or locked.
-    pub fn open_record(package_id: &str, record_key: &str) -> Result<Self, StoreError> {
-        validate_package_id(package_id)?;
-        validate_record_key(record_key)?;
-        Self::shared(
-            Self::native_store(),
-            StorageKey::package_record(package_id, record_key),
-        )
-    }
-
     /// Open one record in one collaboration room.  A record id is only
     /// unique *within* a room: a hostile or stale peer must not be able to
     /// make `uuid:...` in room B resolve to room A's change graph.
-    ///
-    /// This deliberately does not remove the pre-room package record.
-    /// Callers may merge that legacy document on first open, then persist the
-    /// merged result here; retaining the source makes an interrupted
-    /// migration recoverable.
     ///
     /// # Errors
     ///
@@ -463,26 +433,7 @@ impl DocStore {
         Ok(opened)
     }
 
-    /// The old package-global record document path.  Migration code uses this
-    /// only as a read source; it is never deleted or renamed automatically.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when either identifier is invalid.
-    pub fn legacy_record_document_path(
-        package_id: &str,
-        record_key: &str,
-    ) -> Result<PathBuf, StoreError> {
-        validate_package_id(package_id)?;
-        validate_record_key(record_key)?;
-        Ok(cli::standalone_state_dir(package_id)
-            .join(RECORDS_DIR)
-            .join(record_key)
-            .join(DOCUMENT_FILE))
-    }
-
-    /// The old package-global document path, retained as a safe migration
-    /// source when a package document becomes a room index.
+    /// The package-global document path under the standalone state root.
     ///
     /// # Errors
     ///
@@ -490,44 +441,6 @@ impl DocStore {
     pub fn legacy_package_document_path(package_id: &str) -> Result<PathBuf, StoreError> {
         validate_package_id(package_id)?;
         Ok(cli::standalone_state_dir(package_id).join(DOCUMENT_FILE))
-    }
-
-    /// Claim the legacy package-global document for `room_key`.  The claim is
-    /// an atomic create-next-to-source operation: exactly one room can import
-    /// it, while that same room can resume after a crash before its first
-    /// scoped write. `false` means another room already owns the migration.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid identifiers, malformed durable claim
-    /// state, or an I/O failure while publishing the claim.
-    pub fn claim_legacy_package_migration(
-        package_id: &str,
-        room_key: &str,
-    ) -> Result<bool, StoreError> {
-        validate_package_id(package_id)?;
-        validate_record_key(room_key)?;
-        Ok(Self::native_store().claim(&StorageKey::package(package_id), room_key)?)
-    }
-
-    /// The record-level twin of [`Self::claim_legacy_package_migration`].
-    /// Keeping the marker beside the retained legacy record lets recovery
-    /// reason about one source document without any global registry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid identifiers, malformed durable claim
-    /// state, or an I/O failure while publishing the claim.
-    pub fn claim_legacy_record_migration(
-        package_id: &str,
-        room_key: &str,
-        record_key: &str,
-    ) -> Result<bool, StoreError> {
-        validate_record_identity(package_id, room_key, record_key)?;
-        Ok(Self::native_store().claim(
-            &StorageKey::package_record(package_id, record_key),
-            room_key,
-        )?)
     }
 
     /// The existing room-scoped package-primary directory, with explicit custody.
@@ -833,24 +746,6 @@ impl DocStore {
         Ok(self.owner.stored()?.is_some())
     }
 
-    /// Merge the document another key of the same store holds (a retained
-    /// pre-room source) into this one and save the result. The source is
-    /// left untouched. `false` when the source holds nothing.
-    ///
-    /// # Errors
-    /// The source can't be read or decoded, or the merged save fails.
-    pub fn import_from(&mut self, source: &StorageKey) -> Result<bool, StoreError> {
-        let Some(stored) = self.owner.store().read(source)? else {
-            return Ok(false);
-        };
-        let label = self
-            .owner
-            .store()
-            .local_path(source)
-            .unwrap_or_else(|| PathBuf::from(source.to_string()));
-        self.merge_bytes(&stored.bytes, &label)
-    }
-
     /// Submit one write through the owner and wait for its outcome.
     fn commit(&self, op: WriteOp) -> Result<(), StoreError> {
         let store = self.owner.store();
@@ -871,52 +766,6 @@ impl DocStore {
             self.owner.note_writer_stored();
         }
         Ok(())
-    }
-
-    /// Adopt a document an older release wrote elsewhere, merging into the
-    /// store's document (not replacing) so a repeated or later migration can't
-    /// lose data. Returns `true` if anything was imported; leaves the legacy
-    /// file alone.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `legacy` exists but can't be read, its bytes
-    /// aren't a loadable Automerge document, the merge fails, or the
-    /// resulting save fails.
-    pub fn migrate_from(&mut self, legacy: &Path) -> Result<bool, StoreError> {
-        let bytes = match fs::read(legacy) {
-            Ok(b) => b,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
-            Err(e) => return Err(io_err(format!("reading {}", legacy.display()), e)),
-        };
-        self.merge_bytes(&bytes, legacy)
-    }
-
-    fn merge_bytes(&mut self, bytes: &[u8], label: &Path) -> Result<bool, StoreError> {
-        if bytes.is_empty() {
-            return Ok(false);
-        }
-        let mut incoming = AutoCommit::load_with_options(
-            bytes,
-            LoadOptions::new().on_partial_load(OnPartialLoad::Ignore),
-        )
-        .map_err(|source| StoreError::Automerge {
-            path: label.to_path_buf(),
-            source: Box::new(source),
-        })?;
-
-        let mut current = match self.load()? {
-            Some(doc) => doc,
-            None => self.new_document(),
-        };
-        current
-            .merge_incoming(&mut incoming)
-            .map_err(|source| StoreError::Automerge {
-                path: label.to_path_buf(),
-                source: Box::new(source),
-            })?;
-        self.save(&mut current)?;
-        Ok(true)
     }
 
     /// A [`DocWriter`] continuing this document in the background: a burst
@@ -1170,23 +1019,23 @@ fn acquire_gate(path: &Path, exclusive: bool) -> Result<FileLock, StoreError> {
     })
 }
 
-/// Atomically assign a legacy source to one room.  A marker is deliberately
-/// retained forever: deleting it after a successful import would let a later
-/// room re-import the still-preserved source, while deleting it after a crash
-/// would make recovery non-deterministic.
-fn claim_legacy_room_migration(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
+/// Atomically assign a source to one claimant.  A marker is deliberately
+/// retained forever: deleting it after a successful adoption would let a
+/// later claimant adopt the still-preserved source again, while deleting it
+/// after a crash would make recovery non-deterministic.
+fn claim_marker(marker: &Path, claimant: &str) -> Result<bool, StoreError> {
     match read_claim(marker)? {
-        ClaimState::Owner(owner) => return Ok(owner == room_key),
+        ClaimState::Owner(owner) => return Ok(owner == claimant),
         ClaimState::Malformed => {
             // Never overwrite a malformed old marker: a separate recovery
             // name lets one contender claim atomically without a stale reader
             // deleting another contender's valid replacement.
             let recovered = marker.with_extension("recovered");
-            return publish_claim(&recovered, room_key);
+            return publish_claim(&recovered, claimant);
         }
         ClaimState::Absent => {}
     }
-    publish_claim(marker, room_key)
+    publish_claim(marker, claimant)
 }
 
 enum ClaimState {
@@ -1352,6 +1201,7 @@ mod tests {
     use automerge::transaction::Transactable;
     use automerge::{ObjType, ROOT, ReadDoc, ScalarValue};
     use tempfile::TempDir;
+    use tilo_automerge::ApplyIncoming;
 
     /// A scratch data home that `standalone_state_dir` resolves to while it
     /// lives. The environment is restored before the tree is deleted.
@@ -1399,39 +1249,33 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn legacy_package_migration_claims_grant_exactly_one_room() {
-        // Phase `legacy_package_migration_is_claimed_by_one_room_and_resume_is_stable`.
+    fn claim_markers_grant_exactly_one_claimant() {
+        // Phase `a_marker_is_claimed_once_and_resume_is_stable`.
         {
-            let tmp = scratch_home();
-            let package = "so.tilo.legacy-claim";
-            let legacy = DocStore::legacy_package_document_path(package).unwrap();
-            fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-            fs::write(&legacy, b"legacy source remains intact").unwrap();
-
-            assert!(DocStore::claim_legacy_package_migration(package, "room-a").unwrap());
+            let tmp = TempDir::new().unwrap();
+            let marker = tmp.path().join("claim");
+            assert!(claim_marker(&marker, "room-a").unwrap());
             assert!(
-                !DocStore::claim_legacy_package_migration(package, "room-b").unwrap(),
-                "a second room cannot import the same retained source"
+                !claim_marker(&marker, "room-b").unwrap(),
+                "a second claimant cannot adopt the same source"
             );
             assert!(
-                DocStore::claim_legacy_package_migration(package, "room-a").unwrap(),
-                "the original claimant can resume after an interrupted migration"
+                claim_marker(&marker, "room-a").unwrap(),
+                "the original claimant can resume after an interruption"
             );
-            assert!(legacy.is_file(), "claims never remove the recovery source");
-            drop(tmp);
         }
-        // Phase `concurrent_legacy_migration_claims_have_one_winner`.
+        // Phase `concurrent_claims_have_one_winner`.
         {
-            let _tmp = scratch_home();
-            let package = "so.tilo.concurrent-claim";
-            fs::create_dir_all(cli::standalone_state_dir(package)).unwrap();
+            let tmp = TempDir::new().unwrap();
+            let marker = std::sync::Arc::new(tmp.path().join("claim"));
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
             let mut threads = Vec::new();
-            for room in ["room-a", "room-b"] {
+            for claimant in ["room-a", "room-b"] {
                 let barrier = std::sync::Arc::clone(&barrier);
+                let marker = std::sync::Arc::clone(&marker);
                 threads.push(std::thread::spawn(move || {
                     barrier.wait();
-                    DocStore::claim_legacy_package_migration(package, room).unwrap()
+                    claim_marker(&marker, claimant).unwrap()
                 }));
             }
             let wins = threads
@@ -1439,21 +1283,19 @@ mod tests {
                 .map(|thread| thread.join().unwrap())
                 .filter(|won| *won)
                 .count();
-            assert_eq!(wins, 1, "atomic create gives one room the source");
+            assert_eq!(wins, 1, "atomic create gives one claimant the source");
         }
-        // Phase `torn_legacy_claim_recovers_without_granting_two_rooms`.
+        // Phase `a_torn_claim_recovers_without_granting_two_claimants`.
         {
-            let _tmp = scratch_home();
-            let package = "so.tilo.torn-claim";
-            let root = cli::standalone_state_dir(package);
-            fs::create_dir_all(&root).unwrap();
-            // Shape left by the old create-then-write implementation if it died
-            // between those syscalls.  It has no valid owner, so recovery uses a
-            // separate atomic claim rather than replacing this file in place.
-            fs::write(root.join(LEGACY_PACKAGE_ROOM_CLAIM), b"room-a").unwrap();
-            assert!(DocStore::claim_legacy_package_migration(package, "room-a").unwrap());
-            assert!(!DocStore::claim_legacy_package_migration(package, "room-b").unwrap());
-            assert!(DocStore::claim_legacy_package_migration(package, "room-a").unwrap());
+            let tmp = TempDir::new().unwrap();
+            let marker = tmp.path().join("claim");
+            // Shape left by a create-then-write that died between those
+            // syscalls.  It has no valid owner, so recovery uses a separate
+            // atomic claim rather than replacing this file in place.
+            fs::write(&marker, b"room-a").unwrap();
+            assert!(claim_marker(&marker, "room-a").unwrap());
+            assert!(!claim_marker(&marker, "room-b").unwrap());
+            assert!(claim_marker(&marker, "room-a").unwrap());
         }
     }
 
@@ -2002,43 +1844,6 @@ mod tests {
             assert_eq!(schema_version_of(&loaded), 2);
             assert!(loaded.get(ROOT, "legacy").unwrap().is_some());
             assert!(loaded.get(ROOT, "migrated").unwrap().is_some());
-        }
-        // Phase `migration_merges_a_legacy_file_without_losing_new_state`.
-        {
-            let _tmp = scratch_home();
-            // State an old release left behind somewhere else.
-            let legacy_dir = TempDir::new().unwrap();
-            let legacy = legacy_dir.path().join("addressbook.automerge");
-            let mut old = AutoCommit::new();
-            old.put(&ROOT, "from_legacy", ScalarValue::Str("yes".into()))
-                .unwrap();
-            fs::write(&legacy, old.save()).unwrap();
-
-            // State the new store already has.
-            let mut store = DocStore::open_for("so.tilo.migrate").unwrap();
-            let mut doc = store.new_document();
-            doc.put(&ROOT, "from_new", ScalarValue::Str("yes".into()))
-                .unwrap();
-            store.save(&mut doc).unwrap();
-
-            assert!(store.migrate_from(&legacy).unwrap());
-            let mut reopened = DocStore::open_for("so.tilo.migrate").unwrap();
-            let loaded = reopened.load().unwrap().unwrap();
-            assert_eq!(text_of(&loaded, "from_legacy").as_deref(), Some("yes"));
-            assert_eq!(text_of(&loaded, "from_new").as_deref(), Some("yes"));
-
-            // Idempotent: a second run changes nothing and loses nothing.
-            assert!(store.migrate_from(&legacy).unwrap());
-            let mut again = DocStore::open_for("so.tilo.migrate").unwrap();
-            let loaded = again.load().unwrap().unwrap();
-            assert_eq!(text_of(&loaded, "from_legacy").as_deref(), Some("yes"));
-            assert_eq!(text_of(&loaded, "from_new").as_deref(), Some("yes"));
-        }
-        // Phase `migration_of_a_missing_file_is_a_no_op`.
-        {
-            let _tmp = scratch_home();
-            let mut store = DocStore::open_for("so.tilo.nomigrate").unwrap();
-            assert!(!store.migrate_from(Path::new("/nonexistent/nope")).unwrap());
         }
         // Phase `a_new_document_carries_the_schema_version`.
         // Every document this crate creates says which layout it is, from the
