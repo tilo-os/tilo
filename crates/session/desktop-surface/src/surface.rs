@@ -1139,6 +1139,8 @@ fn find_group(
 }
 
 impl Widget for DesktopSurface {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
     fn name(&self) -> &'static str {
         "DesktopSurface"
     }
@@ -1342,14 +1344,6 @@ impl Widget for DesktopSurface {
         row.into_iter().chain(search).collect()
     }
 
-    /// An action row the palette queued outlives the palette closing on it.
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.search
-            .palette_mut()
-            .take_control_invocation()
-            .or_else(|| self.shown_row()?.take_control_invocation())
-    }
-
     fn set_platform_conventions(&mut self, conventions: ui::platform::PlatformConventions) {
         self.platform = conventions;
         for child in self.children_mut() {
@@ -1392,6 +1386,14 @@ impl Widget for DesktopSurface {
 
     fn take_component_close_reports(&mut self) -> Vec<ui::application::ComponentCloseReport> {
         self.each_host(Widget::take_component_close_reports)
+    }
+}
+
+impl ui::widget::controls::ActionControls for DesktopSurface {
+    /// An action row the palette queued outlives the palette closing on it.
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        ui::widget::controls::take_control_invocation(self.search.palette_mut())
+            .or_else(|| ui::widget::controls::take_control_invocation(self.shown_row()?))
     }
 }
 
