@@ -11448,6 +11448,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "registry-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "registry-types",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-app-package",
+ "tilo-net",
+ "workspace-hack",
+ "xdg-paths",
+]
+
+[[package]]
 name = "registry-server"
 version = "0.1.0"
 dependencies = [
@@ -11465,6 +11485,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "registry-client",
  "registry-types",
  "reqwest",
  "serde",
@@ -14567,6 +14588,7 @@ dependencies = [
  "notify",
  "proc-macro2",
  "quote",
+ "registry-client",
  "registry-types",
  "serde_json",
  "syn 2.0.117",
@@ -14608,11 +14630,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "app-registry",
- "blake3",
  "clap",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
+ "registry-client",
  "registry-types",
  "serde",
  "serde_json",

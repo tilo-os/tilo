@@ -123,10 +123,12 @@ impl ProofSource for NetworkProofs {
         let response = client
             .get(parsed)
             .send()
-            .and_then(reqwest::blocking::Response::error_for_status)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.without_url().to_string())?;
         if response.status().is_redirection() {
             return Err("redirects are not followed".into());
+        }
+        if !response.status().is_success() {
+            return Err(format!("HTTP {}", response.status()));
         }
         let mut body = String::new();
         response
@@ -260,34 +262,37 @@ fn check_claim(
             vec![(ProofMethod::Forge, forge_proof_url(&forge, account))]
         }
     };
-    for (method, location) in &candidates {
-        let found = match method {
+    let mut looked_at = Vec::new();
+    for (method, location) in candidates {
+        let outcome = match method {
             ProofMethod::DnsTxt => proofs
-                .txt_records(location)
-                .is_ok_and(|records| records.iter().any(|record| proof_matches(record, token))),
+                .txt_records(&location)
+                .map(|records| records.iter().any(|record| proof_matches(record, token))),
             ProofMethod::WellKnown | ProofMethod::Forge => proofs
-                .https_text(location)
-                .is_ok_and(|text| proof_matches(&text, token)),
+                .https_text(&location)
+                .map(|text| proof_matches(&text, token)),
         };
-        if found {
-            return Ok(VerifiedClaim {
-                namespace,
-                method: *method,
-                location: location.clone(),
-                checked_at_unix: now,
-            });
+        let place = match method {
+            ProofMethod::DnsTxt => format!("DNS TXT {location}"),
+            ProofMethod::WellKnown | ProofMethod::Forge => location.clone(),
+        };
+        match outcome {
+            Ok(true) => {
+                return Ok(VerifiedClaim {
+                    namespace,
+                    method,
+                    location,
+                    checked_at_unix: now,
+                });
+            }
+            Ok(false) => looked_at.push(format!("{place} (not there)")),
+            Err(error) => looked_at.push(format!("{place} ({error})")),
         }
     }
     Err(ApplicationRejection::ProofMissing {
         namespace,
         token: token.to_owned(),
-        looked_at: candidates
-            .into_iter()
-            .map(|(method, location)| match method {
-                ProofMethod::DnsTxt => format!("DNS TXT {location}"),
-                ProofMethod::WellKnown | ProofMethod::Forge => location,
-            })
-            .collect(),
+        looked_at,
     })
 }
 
