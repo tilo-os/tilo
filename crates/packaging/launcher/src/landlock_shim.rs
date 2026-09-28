@@ -183,7 +183,13 @@ pub fn ruleset_spec(args: &ShimArgs) -> RulesetSpec {
         None if args.net_restricted => NetRestriction::DenyAll,
         None => NetRestriction::Unrestricted,
     };
-    RulesetSpec::application(access_plan(&args.ro, &args.rw, TARGET_ABI), net)
+    let mut spec = RulesetSpec::application(access_plan(&args.ro, &args.rw, TARGET_ABI), net);
+    if args.landlock_best_effort {
+        // A kernel without Landlock, or with an older ABI, then reports not
+        // or partially enforced instead of failing to build the ruleset.
+        spec.compat = landlock::CompatLevel::BestEffort;
+    }
+    spec
 }
 
 /// Build + `restrict_self()`. The one function that permanently locks
@@ -651,6 +657,22 @@ mod provider_sandbox_tests {
                 "{outcome:?} best effort"
             );
         }
+    }
+
+    #[test]
+    fn best_effort_builds_the_ruleset_best_effort() {
+        let strict = ShimArgs::parse(&["--".into(), "/app".into()]).unwrap();
+        assert_eq!(
+            ruleset_spec(&strict).compat,
+            landlock::CompatLevel::HardRequirement
+        );
+        let lenient =
+            ShimArgs::parse(&["--landlock-best-effort".into(), "--".into(), "/app".into()])
+                .unwrap();
+        assert_eq!(
+            ruleset_spec(&lenient).compat,
+            landlock::CompatLevel::BestEffort
+        );
     }
 
     #[test]
