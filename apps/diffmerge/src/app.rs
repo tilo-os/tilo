@@ -359,7 +359,7 @@ impl DiffMergeApp {
     /// change, so it replays byte-identically on peers), exactly as the palette
     /// does. The document heads captured just before the first action of the
     /// event are stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]). The in-memory merge model was already
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)). The in-memory merge model was already
     /// updated by the chip handler for immediate feedback and is reconciled from
     /// the document on the next `sync`.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::DiffmergeAction) {
@@ -993,6 +993,8 @@ impl Default for DiffMergeApp {
 }
 
 impl Widget for DiffMergeApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn document_action_applied(
         &mut self,
         action: &tilo_actions::EncodedAction,
@@ -1468,13 +1470,6 @@ impl Widget for DiffMergeApp {
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
-    /// Hand the host the heads captured before an on-panel chip dispatched its
-    /// resolution action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -1516,6 +1511,15 @@ impl Widget for DiffMergeApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::undo::CommittedActions for DiffMergeApp {
+    /// Hand the host the heads captured before an on-panel chip dispatched its
+    /// resolution action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 

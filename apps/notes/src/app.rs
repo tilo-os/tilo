@@ -1976,7 +1976,7 @@ impl NotesApp {
     /// actor + committed change, so it replays byte-identically on peers). The
     /// document heads captured just before the first action of the current event
     /// are stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]). The in-memory workspace is updated by
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)). The in-memory workspace is updated by
     /// the caller for immediate UI feedback and reconciled from the document on
     /// the next `sync`. This app supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &NotesAction) {
@@ -4208,6 +4208,8 @@ impl NotesApp {
 }
 
 impl Widget for NotesApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn has_pending_control_invocation(&self) -> bool {
         !self.adopted
             || self.pending_markdown_source.is_some()
@@ -4493,22 +4495,6 @@ impl Widget for NotesApp {
             return self.pending_import_resource();
         }
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-
-    /// Hand the host the heads captured before a sidebar affordance dispatched
-    /// its page-tree action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        // A body edit dispatches through the page's editor; everything else
-        // through the app's own host. One event does one or the other.
-        let body = self.main.body_editor_mut().take_committed_action();
-        let notes = self.actions.take_committed();
-        body.or(notes)
-    }
-
-    /// Typing a word in a note is one undo step.
-    fn keeps_undo_step_open(&self) -> bool {
-        self.main.keeps_undo_step_open()
     }
 
     /// Fold the notebook into the unified Ctrl+K palette: a snapshot
@@ -5006,6 +4992,23 @@ impl Widget for NotesApp {
     ) {
         // The root rect is the whole window — always paint, never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::undo::CommittedActions for NotesApp {
+    /// Hand the host the heads captured before a sidebar affordance dispatched
+    /// its page-tree action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        // A body edit dispatches through the page's editor; everything else
+        // through the app's own host. One event does one or the other.
+        let body = self.main.body_editor_mut().take_committed_action();
+        let notes = self.actions.take_committed();
+        body.or(notes)
+    }
+    /// Typing a word in a note is one undo step.
+    fn keeps_undo_step_open(&self) -> bool {
+        self.main.keeps_undo_step_open()
     }
 }
 
@@ -5749,7 +5752,7 @@ mod tests {
                     "Imported heading"
                 );
                 assert!(
-                    Widget::take_committed_action(&mut app).is_some(),
+                    ui::undo::take_committed_action(&mut app).is_some(),
                     "import uses canonical action/history path"
                 );
                 app.flush_saves();
@@ -6423,7 +6426,7 @@ mod tests {
                 "attributed to the local user, so their Ctrl+Z can reach it"
             );
             assert!(
-                Widget::take_committed_action(&mut app).is_none(),
+                ui::undo::take_committed_action(&mut app).is_none(),
                 "the boundary is rising-edge — cleared on read"
             );
 
@@ -6543,7 +6546,7 @@ mod tests {
         // host. The real window host drains that edge at the end of the frame;
         // mirror that lifecycle here so subsequent tests bracket only the
         // user action they dispatch.
-        let _ = Widget::take_committed_action(&mut app);
+        let _ = ui::undo::take_committed_action(&mut app);
         (app, state, tmp, welcome)
     }
 
@@ -7453,7 +7456,7 @@ mod tests {
             // the page's own edit.
             app.sync(&mut state.doc, &state.root);
             assert!(
-                Widget::take_committed_action(&mut app).is_some(),
+                ui::undo::take_committed_action(&mut app).is_some(),
                 "the mark-only edit is an undoable Notes action"
             );
             assert_eq!(

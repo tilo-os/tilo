@@ -5177,12 +5177,11 @@ fn history_preview_keeps_session_notifications_on_the_live_owner_exactly_once() 
         !visual_names.iter().any(|name| name == "Live owner"),
         "active History presentation hides the live owner from visual traversal",
     );
-    let session_names = app
-        .root_widget
-        .collaboration_children_mut()
-        .into_iter()
-        .map(|child| child.name().to_string())
-        .collect::<Vec<_>>();
+    let session_names =
+        crate::collaboration::participants::collaboration_children(app.root_widget.as_mut())
+            .into_iter()
+            .map(|child| child.name().to_string())
+            .collect::<Vec<_>>();
     assert_eq!(session_names, ["Live owner"]);
 
     app.apply_collab_event_for_test(CollabEvent::FollowChanged { peer_id: None });

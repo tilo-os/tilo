@@ -468,7 +468,7 @@ impl App {
                     &self.bindings,
                     &self.layout.node_map,
                     node,
-                    |widget| widget.take_undo_request(),
+                    |widget| crate::undo::take_undo_request(widget),
                 )
             }
             .ok()
@@ -542,7 +542,7 @@ impl App {
                     &self.bindings,
                     &self.layout.node_map,
                     node,
-                    |widget| widget.set_undo_status(&mut status),
+                    |widget| crate::undo::set_undo_status(widget, &mut status),
                 )
             };
         }

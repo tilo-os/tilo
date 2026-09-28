@@ -2128,7 +2128,7 @@ impl AppHandler {
             let shift = app.input.modifiers.state().shift_key();
             let history_request = crate::undo::shortcut(c, true, shift);
             if let Some(request) = history_request {
-                if app.root_widget.handle_local_undo_request(request) {
+                if crate::undo::handle_local_undo_request(app.root_widget.as_mut(), request) {
                     app.needs_sync = true;
                     window.request_redraw();
                 } else {

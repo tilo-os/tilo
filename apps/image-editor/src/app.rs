@@ -1170,6 +1170,8 @@ impl ImageEditorApp {
     }
 }
 impl Widget for ImageEditorApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
         ProjectDoc::open_shared(state);
@@ -2873,13 +2875,6 @@ impl Widget for ImageEditorApp {
         bindings
     }
 
-    /// Expose the shared-action boundary to the shell so these edits appear
-    /// in the same undo/history and collaboration stream as palette and agent
-    /// operations.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -2983,6 +2978,15 @@ impl Widget for ImageEditorApp {
             }
         }
         true
+    }
+}
+
+impl ui::undo::CommittedActions for ImageEditorApp {
+    /// Expose the shared-action boundary to the shell so these edits appear
+    /// in the same undo/history and collaboration stream as palette and agent
+    /// operations.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -3177,7 +3181,7 @@ mod portal_tests {
             app.actions.last_dispatched().unwrap().type_id,
             RECONNECT_INPUT_TYPE
         );
-        assert!(app.take_committed_action().is_some());
+        assert!(ui::undo::take_committed_action(&mut *app).is_some());
         assert!(
             app.project
                 .graph
@@ -3221,21 +3225,21 @@ mod portal_tests {
             app.actions.last_dispatched().unwrap().type_id,
             ADD_ADJUSTMENT_TYPE
         );
-        assert!(app.take_committed_action().is_some());
+        assert!(ui::undo::take_committed_action(&mut app).is_some());
 
         assert!(app.set_selected_slider(&mut document, 0.8));
         assert_eq!(
             app.actions.last_dispatched().unwrap().type_id,
             UPDATE_ADJUSTMENT_TYPE
         );
-        assert!(app.take_committed_action().is_some());
+        assert!(ui::undo::take_committed_action(&mut app).is_some());
 
         assert!(app.remove_selected(&mut document));
         assert_eq!(
             app.actions.last_dispatched().unwrap().type_id,
             REMOVE_ADJUSTMENT_TYPE
         );
-        assert!(app.take_committed_action().is_some());
+        assert!(ui::undo::take_committed_action(&mut app).is_some());
     }
 
     fn continuous_adjustment_is_one_undoable_gesture() {
