@@ -4372,7 +4372,6 @@ impl VideoEditorApp {
             VIDEO_EDITOR_ACTION_TYPE,
             &VideoEditorAction::AddEffect {
                 clip: id.to_string(),
-                expected_stack: Vec::new(),
                 ordinal,
                 effect,
             },

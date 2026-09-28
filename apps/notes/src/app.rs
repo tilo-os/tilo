@@ -626,9 +626,6 @@ pub struct NotesApp {
     import_control_emitted: bool,
     /// View/legacy callback intents that must wait for a mutable bound record admission.
     pending_events: Vec<OutEvent>,
-    /// Dispatches the notebook upgrade when it opens. Its undo boundary is
-    /// never handed to the host: a format upgrade is not a person's edit.
-    upgrade_actions: ui::ActionHost,
     /// Last mouse position in logical coords. Used to hit-test
     /// link marks on mouse click without dragging the click event
     /// through every nested widget.
@@ -970,7 +967,6 @@ impl NotesApp {
             pending_import_generation: 0,
             import_control_emitted: false,
             pending_events: Vec::new(),
-            upgrade_actions: ui::ActionHost::new(),
             last_mouse: Point::ZERO,
             started: ui::clock::Instant::now(),
             synced_once: false,
@@ -2127,30 +2123,6 @@ impl NotesApp {
         }
         self.refresh_link_pages();
         Ok(())
-    }
-
-    /// Bring a notebook still holding first-format pages to rich text, once
-    /// it is open. A no-op for a current notebook.
-    fn upgrade_notebook(&mut self, doc: &mut AutoCommit) {
-        if !NotesDoc::needs_upgrade(doc) {
-            return;
-        }
-        let action = NotesAction::UpgradeNotebook;
-        match self.upgrade_actions.try_dispatch_with_context(
-            doc,
-            actions::NOTES_ACTION_TYPE,
-            &action,
-            actions::history_context(&action),
-        ) {
-            Ok(()) => {
-                // Not a person's edit: no undo step for it.
-                let _ = self.upgrade_actions.take_committed();
-                self.bound_page = None;
-                self.canonical_synced = None;
-                self.self_dirty = true;
-            }
-            Err(error) => tracing::error!(%error, "notes: notebook upgrade refused"),
-        }
     }
 
     fn dispatch_canonical_action(
@@ -4430,7 +4402,6 @@ impl Widget for NotesApp {
         }
         self.drain_markdown_transfer(state);
         self.drain_external_link_opens();
-        self.upgrade_notebook(state);
         if self.legacy_fixture_storage.is_none() {
             self.drain_title_rename(state);
             for event in std::mem::take(&mut self.pending_events) {
