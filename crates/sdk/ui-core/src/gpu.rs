@@ -307,7 +307,7 @@ impl RenderContext {
         let surface = self
             .instance
             .create_surface(window.into())
-            .map_err(|_| CreateSurfaceError::Surface)?;
+            .map_err(CreateSurfaceError::Surface)?;
         tilo_startup_metrics::mark("surface-native-create-done");
         tilo_startup_metrics::mark("surface-device-select-start");
         let dev_id = self
@@ -393,8 +393,8 @@ impl RenderContext {
 /// Why a surface could not be made.
 #[derive(Debug, thiserror::Error)]
 pub enum CreateSurfaceError {
-    #[error("could not create a wgpu surface for this window")]
-    Surface,
+    #[error("could not create a wgpu surface for this window: {0}")]
+    Surface(#[source] wgpu::CreateSurfaceError),
     #[error("no GPU adapter can present to this surface")]
     NoCompatibleDevice,
     #[error("this surface offers no format vello can render")]
