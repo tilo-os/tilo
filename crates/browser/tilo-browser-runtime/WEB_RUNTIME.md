@@ -385,6 +385,8 @@ node --test crates/browser/tilo-browser-runtime/web/dylink.test.mjs \
   crates/browser/tilo-browser-runtime/web/open-file.test.mjs \
   crates/browser/tilo-browser-runtime/scripts/web-runtime/bundle-glue.test.mjs
 cargo test --locked -j4 -p tilo-browser-runtime --lib catalog::
+# the wasm32 type check CI runs for every change these builds depend on
+tools/ci/check-wasm.sh
 # after build-web-dev.sh: links every app into the core in Node, checks that
 # each registers and that a module stamped for another ABI is refused
 node crates/browser/tilo-browser-runtime/scripts/web-runtime/smoke.mjs /abs/out

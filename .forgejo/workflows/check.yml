@@ -643,6 +643,12 @@ jobs:
             bash scripts/ci-run.sh "Check (browser crates, wasm32)" -- \
             cargo check --locked $PACKAGES --target wasm32-unknown-unknown
 
+      # The step above checks each crate with its default features. The
+      # browser builds the web core with `dylink` and its app collection, and
+      # the Cloud frontend with `cloud,static-apps`; check those as built.
+      - name: Check the browser's wasm32 builds
+        run: bash tools/ci/check-wasm.sh
+
   pins:
     if: needs.select.outputs.pins_required == 'true'
     needs: [select]
