@@ -43,7 +43,7 @@ pub(super) fn prepare_enrollment(
 fn fixture(owner: &NativeWorkspaceOwner) -> Fixture {
     let (intent, bootstrap, messages, governor, now) = raw_fixture();
     let pending = prepare_enrollment(owner, &intent, now).unwrap();
-    let enrollment = VerifiedNativeEnrollment::finalize(intent, pending, bootstrap).unwrap();
+    let enrollment = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
     Fixture {
         enrollment,
         messages,
@@ -155,7 +155,7 @@ fn native_pending_complete_survives_restart_and_cancellation_preserves_exact_pro
     let cancelled = owner.pending_enrollment(id.room()).unwrap().unwrap();
     assert_eq!(cancelled.intent_bytes(), durable.intent_bytes());
     assert_eq!(cancelled.status(), PendingEnrollmentStatus::Cancelled);
-    let late = VerifiedNativeEnrollment::finalize(intent, id.clone(), bootstrap).unwrap();
+    let late = tilo_joined_room::testing::finalize(intent, id.clone(), bootstrap).unwrap();
     assert!(owner.install(&late, now).is_err());
     assert!(owner.with_current(id.room(), |_| Ok(())).is_err());
     assert!(
@@ -702,7 +702,7 @@ fn native_enrollment_target_slot_publishes_new_room_only_with_actual_owner_barri
         Some(previous),
         "preparation must not join or expose the new room"
     );
-    let enrolled = VerifiedNativeEnrollment::finalize(intent, pending, bootstrap).unwrap();
+    let enrolled = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrolled, now).unwrap();
     let room = RoomId::parse(ROOM).unwrap();
     assert_eq!(tree.read().room_of(local), Some(room));
@@ -726,7 +726,7 @@ fn native_enrollment_target_slot_reassignment_rejects_late_complete_and_keeps_pr
     let pending = owner
         .prepare_enrollment_into(&intent, Some(local), now)
         .unwrap();
-    let enrolled = VerifiedNativeEnrollment::finalize(intent, pending.clone(), bootstrap).unwrap();
+    let enrolled = tilo_joined_room::testing::finalize(intent, pending.clone(), bootstrap).unwrap();
     let replaced = RoomId::new();
     assert!(tree.write().set_room(local, replaced));
     assert!(owner.install(&enrolled, now).is_err());
@@ -752,7 +752,7 @@ fn native_enrollment_target_slot_failed_barrier_preserves_previous_binding() {
     let pending = owner
         .prepare_enrollment_into(&intent, Some(local), now)
         .unwrap();
-    let enrolled = VerifiedNativeEnrollment::finalize(intent, pending.clone(), bootstrap).unwrap();
+    let enrolled = tilo_joined_room::testing::finalize(intent, pending.clone(), bootstrap).unwrap();
     let before = std::fs::read(&path).unwrap();
     assert!(with_failure(Checkpoint::BeforePublish, || owner.install(&enrolled, now)).is_err());
     assert_eq!(tree.read().room_of(local), Some(previous));
@@ -781,7 +781,7 @@ fn native_authenticated_bootstrap_admits_historical_signed_coverage_but_ongoing_
         .iter()
         .map(|message| postcard::to_stdvec(message).unwrap())
         .collect();
-    let complete = VerifiedNativeEnrollment::finalize(intent, pending, bootstrap).unwrap();
+    let complete = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&complete, now).unwrap();
     let room = RoomId::parse(ROOM).unwrap();
     owner
@@ -794,7 +794,7 @@ fn native_authenticated_bootstrap_admits_historical_signed_coverage_but_ongoing_
     let (intent, bootstrap, _, _, _) = raw_fixture_at(historical);
     let separate = open(tree_at(&directory.path().join("ongoing.json"))).unwrap();
     let pending = prepare_enrollment(&separate, &intent, historical).unwrap();
-    let complete = VerifiedNativeEnrollment::finalize(intent, pending, bootstrap).unwrap();
+    let complete = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
     separate.install(&complete, now).unwrap();
     assert!(
         separate
@@ -938,7 +938,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     let id = owner
         .prepare_enrollment_into(&intent, Some(local), now)
         .unwrap();
-    let complete = VerifiedNativeEnrollment::finalize(intent, id, bootstrap).unwrap();
+    let complete = tilo_joined_room::testing::finalize(intent, id, bootstrap).unwrap();
     let stale = tree.read().clone();
     let before = std::fs::read(&path).unwrap();
     std::fs::remove_file(&observed_acl).unwrap();

@@ -1,6 +1,6 @@
 //! The owner over its own file, as the standalone runtime keeps it.
 use crate::testing::{APP, ROOM, raw_fixture};
-use crate::{DocumentRead, NativeWorkspaceOwner, RoomId, VerifiedNativeEnrollment, open_file};
+use crate::{DocumentRead, NativeWorkspaceOwner, RoomId, open_file};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use std::{
@@ -31,7 +31,7 @@ fn enrolled() -> Enrolled {
     let owner = open_file(&path).unwrap();
     let (intent, bootstrap, messages, governor, now) = raw_fixture();
     let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
-    let enrollment = VerifiedNativeEnrollment::finalize(intent, pending, bootstrap).unwrap();
+    let enrollment = crate::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrollment, now).unwrap();
     let room = RoomId::parse(ROOM).unwrap();
     for message in messages.into_iter().skip(1) {
@@ -180,6 +180,22 @@ fn a_pending_enrollment_without_a_slot_survives_restart_and_cancels() {
         .unwrap();
     let owner = open_file(&path).unwrap();
     assert!(owner.contains_room(id.room()));
+    let invitation =
+        tilo_peer_state::join::encode_invitation_text(intent.verified_join().signed_invitation());
+    assert_eq!(
+        owner
+            .pending_enrollment_for_invitation(&invitation)
+            .unwrap()
+            .map(|pending| pending.id().clone()),
+        Some(id.clone()),
+        "a host without slots finds its retained proof by the invitation it redeems"
+    );
+    assert!(
+        owner
+            .pending_enrollment_for_invitation("another invitation")
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(
         owner.prepare_enrollment_into(&intent, None, now).unwrap(),
         id,

@@ -19,13 +19,13 @@ use super::{
 };
 pub use store::NativeStateRuntime;
 pub use tilo_joined_room::NativeAuthorityStorage;
-#[cfg(test)]
-pub(crate) use tilo_joined_room::PendingEnrollmentId;
 use tilo_joined_room::{Change, Store};
 pub(crate) use tilo_joined_room::{
     DocumentRead, NativeBootstrap, NativeCommittedView, NativeFenceSubscription,
-    NativeWorkspaceOwner, PendingEnrollmentStatus,
+    NativeWorkspaceOwner,
 };
+#[cfg(test)]
+pub(crate) use tilo_joined_room::{PendingEnrollmentId, PendingEnrollmentStatus};
 
 /// The owner's record as one field of the state file, written through the
 /// state file's single writer.
