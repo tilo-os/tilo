@@ -165,6 +165,13 @@ impl ActionSink {
         self.local.take_committed()
     }
 
+    /// Compensating `(undo_via, redo_via)` for the last standalone bracket.
+    pub(crate) fn take_action_revert(
+        &mut self,
+    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
+        self.local.take_action_revert()
+    }
+
     #[cfg(test)]
     pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.local.last_dispatched()

@@ -119,12 +119,13 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
     let spec = launch_spec();
     let prepared = spec.prepare_native(args)?;
     let mut waker = None;
-    let app = prepared.build_root(|| {
+    let mut app = prepared.build_root(|| {
         let widget = TerminalWidget::spawn_default()
             .map_err(|error| LaunchError::Operation(error.to_string()))?;
         waker = Some(widget.waker_handle());
         Ok(Box::new(widget))
     })?;
+    terminal::actions::register(app.action_registry_mut());
     let waker = waker.ok_or_else(|| {
         LaunchError::Operation("terminal factory did not retain its PTY waker".into())
     })?;
@@ -328,7 +329,10 @@ fn run_scenario(
                           the sample code's own println! syntax, not a format template here"
             )]
             let lines = [
-                "fn main() {",
+                // Demo entry must not spell the production entry-point name:
+                // the resource/action contract's launch scan treats every
+                // matching `fn` token in this file as a reachable body.
+                "fn run() {",
                 "    // alternate-screen redraw via CSI ?1049h",
                 "    let greeting = \"hello, Tilo\";",
                 "    for i in 0..3 {",

@@ -2951,7 +2951,7 @@ mod record_publisher_integration_tests {
         other.splice_text(&block, 4, 0, "R");
         let other_bytes = other.save();
         merge_recovers_after_history_crash_and_replays_idempotently(
-            "merge.qdoc",
+            "merge.tilo-doc",
             base_bytes,
             current_bytes,
             other_bytes,

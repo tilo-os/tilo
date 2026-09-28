@@ -290,18 +290,6 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         vec![resource]
     }
 
-    // The undo boundary of a surface's immediate actions this event; the
-    // host records one step per event and author.
-
-    fn take_action_revert(
-        &mut self,
-    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
-        self.dispatch.take_action_revert()
-    }
-
-    // A surface's step stays open for the actions that continue it (the
-    // letters of a word), which report no boundary of their own.
-
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.dispatch
             .take()
@@ -352,6 +340,11 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
 impl<R: Resource> ui_core::undo::CommittedActions for ResourceRoot<R> {
     fn take_committed_action(&mut self) -> Option<Vec<ui_core::automerge::ChangeHash>> {
         self.dispatch.take_committed()
+    }
+    fn take_action_revert(
+        &mut self,
+    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
+        self.dispatch.take_action_revert()
     }
     fn keeps_undo_step_open(&self) -> bool {
         self.dispatch.keeps_step_open()

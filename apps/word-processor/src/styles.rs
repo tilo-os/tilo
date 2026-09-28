@@ -243,6 +243,16 @@ impl StyleSheet {
         }
         out
     }
+
+    /// Serialize for the legacy meta-JSON stylesheet blob (pre-container docs).
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// Parse a legacy meta-JSON stylesheet blob.
+    pub fn from_json(s: &str) -> Option<Self> {
+        serde_json::from_str(s).ok()
+    }
 }
 
 /// The localized, user-facing display name for a style. Built-in styles carry

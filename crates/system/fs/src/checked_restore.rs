@@ -115,10 +115,10 @@ impl QuickFS {
         }
         if namespace
             .path_for(ino)
-            .is_some_and(|path| path.to_ascii_lowercase().ends_with(".qdoc"))
+            .is_some_and(|path| path.to_ascii_lowercase().ends_with(".tilo-doc"))
         {
             return Err(Outcome::UnsupportedOwner {
-                mapping: "qdoc: no checked content-owner restore route".into(),
+                mapping: "tilo-doc: no checked content-owner restore route".into(),
             });
         }
         Ok(())
@@ -786,7 +786,8 @@ impl QuickFS {
         Self::restore_codec(&namespace, ino)?;
         if serialized_document {
             return Err(Outcome::UnsupportedOwner {
-                mapping: "serialized qdoc content: no checked content-owner restore route".into(),
+                mapping: "serialized tilo-doc content: no checked content-owner restore route"
+                    .into(),
             });
         }
         let current_review = self.review_locked(ino, &namespace, &history, repository.as_ref())?;

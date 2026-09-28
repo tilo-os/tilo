@@ -159,13 +159,14 @@ pub trait Resource: Sized + 'static {
     /// Named presentations of this resource (editor, reader) with stable ids.
     /// Not an action called `open`: ordinary presentation toggles never become
     /// composable views by accident. Defaults to none.
-    fn views(_state: &Self::State) -> Vec<tilo_actions::ResourceViewSpec> {
-        let _ = _state;
+    fn views(state: &Self::State) -> Vec<tilo_actions::ResourceViewSpec> {
+        let _ = state;
         Vec::new()
     }
 
     /// Entries for the system search index.
-    fn search(_state: &Self::State) -> Vec<SearchEntry> {
+    fn search(state: &Self::State) -> Vec<SearchEntry> {
+        let _ = state;
         Vec::new()
     }
 
