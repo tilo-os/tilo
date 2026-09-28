@@ -5508,6 +5508,8 @@ fn local_dependency(app_dir: &Path, dependency_name: &str) -> Result<Option<Path
 struct DevWatcher {
     inner: RecommendedWatcher,
     watched: HashSet<PathBuf>,
+    /// The OS ran out of watches; the source stamp poll carries on alone.
+    exhausted: bool,
 }
 
 impl DevWatcher {
@@ -5515,16 +5517,29 @@ impl DevWatcher {
         Self {
             inner,
             watched: HashSet::new(),
+            exhausted: false,
         }
     }
 
     fn watch_tree(&mut self, root: &Path) -> Result<()> {
+        if self.exhausted {
+            return Ok(());
+        }
         for directory in source_watch_directories(root)? {
             if !self.watched.insert(directory.clone()) {
                 continue;
             }
             if let Err(error) = self.inner.watch(&directory, RecursiveMode::NonRecursive) {
                 self.watched.remove(&directory);
+                if matches!(error.kind, notify::ErrorKind::MaxFilesWatch) {
+                    self.exhausted = true;
+                    eprintln!(
+                        "[tilo-app] the OS file watch limit is reached (another program holds \
+                         most of fs.inotify.max_user_watches); checking for changes every {} ms instead",
+                        SOURCE_POLL_INTERVAL.as_millis()
+                    );
+                    return Ok(());
+                }
                 return Err(error).with_context(|| format!("watching {}", directory.display()));
             }
         }
