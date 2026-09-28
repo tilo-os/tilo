@@ -51,11 +51,15 @@ pub fn public_config(
             PrivateKeyDer::from_pem_file(key).context("read TILO_ROOMS_TLS_KEY")?,
         )
     } else {
-        eprintln!("tilo-room-service: no TILO_ROOMS_TLS_CERT; serving a self-signed *.{domain} certificate");
-        let generated = rcgen::generate_simple_self_signed(vec![format!("*.{domain}"), domain.into()])?;
+        eprintln!(
+            "tilo-room-service: no TILO_ROOMS_TLS_CERT; serving a self-signed *.{domain} certificate"
+        );
+        let generated =
+            rcgen::generate_simple_self_signed(vec![format!("*.{domain}"), domain.into()])?;
         (
             vec![generated.cert.der().clone()],
-            PrivateKeyDer::try_from(generated.signing_key.serialize_der()).map_err(anyhow::Error::msg)?,
+            PrivateKeyDer::try_from(generated.signing_key.serialize_der())
+                .map_err(anyhow::Error::msg)?,
         )
     };
     let mut config = rustls::ServerConfig::builder_with_provider(provider())
@@ -84,7 +88,9 @@ impl ServerCertVerifier for Pinned {
         if end_entity.as_ref() == self.certificate.as_slice() {
             Ok(ServerCertVerified::assertion())
         } else {
-            Err(rustls::Error::General("room host certificate differs".into()))
+            Err(rustls::Error::General(
+                "room host certificate differs".into(),
+            ))
         }
     }
     fn verify_tls12_signature(
@@ -93,7 +99,12 @@ impl ServerCertVerifier for Pinned {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
     }
     fn verify_tls13_signature(
         &self,
@@ -101,10 +112,17 @@ impl ServerCertVerifier for Pinned {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
     }
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.provider.signature_verification_algorithms.supported_schemes()
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -140,7 +158,8 @@ async fn relay(
     port_of: &(dyn Fn(&str) -> Option<u16> + Send + Sync),
     pinned: Arc<Pinned>,
 ) -> Result<()> {
-    let start = tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), socket).await?;
+    let start =
+        tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), socket).await?;
     let port = start
         .client_hello()
         .server_name()

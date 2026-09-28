@@ -402,7 +402,9 @@ fn operator_lines() -> anyhow::Result<tokio::sync::mpsc::Receiver<Operator>> {
                 let command = match line.trim() {
                     "shutdown" => Operator::Shutdown,
                     other => match other.strip_prefix("admit ") {
-                        Some(code) if !code.trim().is_empty() => Operator::Admit(code.trim().into()),
+                        Some(code) if !code.trim().is_empty() => {
+                            Operator::Admit(code.trim().into())
+                        }
                         _ => continue,
                     },
                 };
@@ -444,7 +446,9 @@ async fn approve_admitted(
                 .await
                 .context("list certification requests")?
             {
-                if agents.iter().any(|agent| agent.request_digest == pending.request_digest)
+                if agents
+                    .iter()
+                    .any(|agent| agent.request_digest == pending.request_digest)
                     || !admitted.remove(&pending.pairing_code)
                 {
                     continue;
@@ -512,7 +516,12 @@ pub async fn room(
     let [root, host, approver_key] = dev_identity(&state)?;
     let user = root.verifying_key().to_bytes();
     let host_cert = enrol(&root, &host, "room host", DeviceCapabilities::host())?;
-    let approver_cert = enrol(&root, &approver_key, "room approver", DeviceCapabilities::primary())?;
+    let approver_cert = enrol(
+        &root,
+        &approver_key,
+        "room approver",
+        DeviceCapabilities::primary(),
+    )?;
     let config = tilo_relay::RelayConfig {
         state_root: state.join("relay"),
         identity_root: state.join("identity"),
