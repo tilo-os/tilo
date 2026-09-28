@@ -51,10 +51,10 @@ use crate::model::{
     Category, LatLon, MapModel, Panel, Place, TransitMode, TransitTimeMode, TravelMode,
 };
 use crate::net::{self, NetMsg};
-use crate::offline_panel::{OfflineAction, OfflineFrame, OfflinePanel};
+use crate::offline_panel::{OFFLINE_AREAS_REFUSED, OfflineAction, OfflineFrame, OfflinePanel};
 use crate::sample::{self, Basemap};
 use crate::search_box::{SearchBox, SearchEffect, SearchHit, SearchKeyEffect, SearchOverlay};
-use crate::tiles::{GeoBounds, TileId, TileLayer, TileStyle};
+use crate::tiles::{GeoBounds, TileFault, TileId, TileLayer, TileStyle};
 use crate::traffic::{Congestion, TrafficData};
 use ui::location::{self, LocationChannel, LocationOutcome};
 
@@ -980,8 +980,8 @@ impl MapsApp {
         Self::build(
             MapModel::default(),
             Basemap::default(),
-            // Style-scoped like the real `new()` — the cache is rooted here and
-            // the active theme's style subdir is chosen on the first draw.
+            // Rooted here like the real `new()`; the active theme's style is
+            // chosen on the first draw.
             TileLayer::live_with_root(cache_dir),
             false,
             true,
@@ -1004,6 +1004,12 @@ impl MapsApp {
     /// i.e. imagery is unreachable (egress blocked / offline).
     pub fn tiles_has_failures(&self) -> bool {
         self.tiles.has_failures()
+    }
+
+    /// Why tile fetches are failing, if they are: a refusing server
+    /// ([`TileFault::Rejected`]) or unreachable imagery.
+    pub fn tiles_failure(&self) -> Option<TileFault> {
+        self.tiles.failure()
     }
 
     /// Whether any tile request is still awaiting the background worker.
@@ -2494,6 +2500,9 @@ impl MapsApp {
         match action {
             OfflineAction::Close => self.offline_panel.close(),
             OfflineAction::ZoomDelta(delta) => self.offline_panel.adjust_zoom(delta),
+            OfflineAction::Download if !self.tiles.allows_prefetch() => {
+                self.model.status = OFFLINE_AREAS_REFUSED.to_string();
+            }
             OfflineAction::Download => {
                 let request = self.offline_panel.download_request(
                     self.viewport_bounds(),
@@ -2621,7 +2630,7 @@ impl MapsApp {
         // Point the raster layer at the basemap style for the active theme (dark
         // tiles under a dark theme, light under light) before any tile is drawn,
         // so imagery and the drawn cartography never mix tones. A no-op on the
-        // steady state; on a theme change it re-points the worker + cache.
+        // steady state; on a theme change it re-points the worker's decode.
         self.tiles.set_style(TileStyle::from_theme(theme));
         let pal = MapPalette::from_theme(theme);
         let proj = self.projection();
@@ -2757,17 +2766,12 @@ impl MapsApp {
             self.draw_panel(scene, t, tr, theme);
         }
 
-        // Scale bar, bottom-right, ending just left of the ⋯ overflow button.
-        // Attribution/licenses moved into that menu, so nothing overlaps it.
-        canvas::draw_scale_bar(
-            scene,
-            t,
-            tr,
-            clip,
-            self.overflow_rect().x0 - GAP,
-            &self.model,
-            theme,
-        );
+        // Scale bar, bottom-right, ending just left of the ⋯ overflow button,
+        // with the tile credit beside it; the full attribution and licenses
+        // live in that menu.
+        let scale_x1 = self.overflow_rect().x0 - GAP;
+        let scale_x0 = canvas::draw_scale_bar(scene, t, tr, clip, scale_x1, &self.model, theme);
+        canvas::draw_attribution(scene, t, tr, clip, scale_x0, scale_x1, theme);
 
         // Loading / offline affordance while the substrate grid is showing —
         // above the map but below the chrome, and skipped once real imagery or
@@ -2811,6 +2815,7 @@ impl MapsApp {
                     viewport_zoom: TileLayer::tile_zoom(self.model.zoom),
                     regions: &self.model.regions,
                     progress: self.tiles.progress(),
+                    downloads_allowed: self.tiles.allows_prefetch(),
                 },
             );
         }
@@ -3345,11 +3350,12 @@ impl MapsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let offline = self.tiles.has_failures() && !self.tiles.has_inflight();
-        let msg = if offline {
-            "Map imagery unavailable offline"
-        } else {
-            "Loading map…"
+        let fault = self.tiles.failure().filter(|_| !self.tiles.has_inflight());
+        let offline = fault.is_some();
+        let msg = match fault {
+            Some(TileFault::Rejected) => "The map tile server refused the request",
+            Some(TileFault::Unreachable) => "Map imagery unavailable offline",
+            None => "Loading map…",
         };
         // Centre within the map area (right of the docked panel when present).
         let area_x0 = if self.panel_docked_expanded() {
@@ -5190,13 +5196,8 @@ impl FloatingSurfaceProvider for MapsApp {
 }
 
 impl Widget for MapsApp {
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
+    ui::provides!(dyn ui::widget::FloatingSurfaceProvider);
 
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "maps.locate",

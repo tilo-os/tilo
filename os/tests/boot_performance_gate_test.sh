@@ -243,8 +243,7 @@ if grep -Fq 'systemctl enable tilo-growfs-sysroot.service' "$repo/os/Containerfi
   exit 1
 fi
 device_key_unit="$repo/os/usr/lib/systemd/system/tilo-device-key-init.service"
-grep -Fqx 'ConditionPathExists=|!/var/lib/tilo/device-private/keypair.bin' "$device_key_unit"
-grep -Fqx 'ConditionPathExists=|/var/lib/tilo/device/keypair.bin' "$device_key_unit"
+grep -Fqx 'ConditionPathExists=!/var/lib/tilo/device-private/keypair.bin' "$device_key_unit"
 identity_unit="$repo/os/usr/lib/systemd/user/tilo-identity.service"
 grep -Fqx 'ConditionPathExists=%E/tilo/identity/primary.json' "$identity_unit"
 grep -Fqx 'ConditionPathExists=!%E/tilo/identity/.chain-v1-repaired' "$identity_unit"

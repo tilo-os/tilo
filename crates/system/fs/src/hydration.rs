@@ -925,16 +925,19 @@ mod tests {
                 .await
                 .unwrap();
             let missing = Hash::from([9u8; 32]);
-            let manifest = crate::content::Manifest::legacy(vec![
-                crate::content::ChunkRef {
-                    hash: *present.as_bytes(),
-                    len: 17,
-                },
-                crate::content::ChunkRef {
-                    hash: *missing.as_bytes(),
-                    len: 42,
-                },
-            ]);
+            let manifest = crate::content::Manifest::new(
+                crate::content::ChunkTier::Small,
+                vec![
+                    crate::content::ChunkRef {
+                        hash: *present.as_bytes(),
+                        len: 17,
+                    },
+                    crate::content::ChunkRef {
+                        hash: *missing.as_bytes(),
+                        len: 42,
+                    },
+                ],
+            );
             let mh = store.ingest(Bytes::from(manifest.encode())).await.unwrap();
             let hyd = Hydrator::new(endpoint, store);
             assert_eq!(

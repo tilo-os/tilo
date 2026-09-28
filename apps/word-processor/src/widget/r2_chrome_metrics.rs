@@ -9,8 +9,9 @@
 //! values as floors, and the toolbar packer states the toolkit's row model
 //! once ([`ToolbarModel`]).
 
-use super::tests::{pipeline_draw, pipeline_draw_themed};
+use super::tests::{mount, mount_themed};
 use super::*;
+use ui::headless::Framed;
 
 fn overlaps(a: Rect, b: Rect) -> bool {
     let i = a.intersect(b);
@@ -43,7 +44,8 @@ fn panel_and_bar_controls_follow_their_measured_labels() {
             wp.sync(&mut state.doc, &state.root);
             wp.model_mut().insert_str(&mut state.doc, "Panel rows");
             wp.set_styles_panel_open(true);
-            pipeline_draw_themed(&mut wp, &mut state, 1400, 900, &theme);
+            let mut framed = mount_themed(state, wp, 1400, 900, &theme);
+            let (wp, _) = Framed::split(&mut framed);
 
             let pm = wp.panel_metrics;
             assert!(
@@ -141,7 +143,8 @@ fn panel_and_bar_controls_follow_their_measured_labels() {
             wp.model_mut()
                 .insert_str(&mut state.doc, "A report about the report");
             wp.stage_find_for_shot(&state.doc, "report");
-            pipeline_draw_themed(&mut wp, &mut state, 1200, 800, &theme);
+            let mut framed = mount_themed(state, wp, 1200, 800, &theme);
+            let (wp, _) = Framed::split(&mut framed);
             let rects = wp.find.button_rects();
             assert_eq!(rects.len(), 10, "find, 3 toggles, replace, 5 actions");
             let bar_h = wp.find.height();
@@ -222,7 +225,8 @@ fn panel_and_bar_controls_follow_their_measured_labels() {
             let mut wp = WordProcessorWidget::new();
             wp.sync(&mut state.doc, &state.root);
             wp.model_mut().insert_str(&mut state.doc, "chips");
-            pipeline_draw_themed(&mut wp, &mut state, 1000, 700, &theme);
+            let mut framed = mount_themed(state, wp, 1000, 700, &theme);
+            let (wp, _) = Framed::split(&mut framed);
             let mut tr = renderer(scale);
             let lh = f64::from(tr.measure("Mg", LAYOUT_BAR_FONT, None).1);
             let tk = wp.tokens;
@@ -300,7 +304,8 @@ fn two_x_chrome_is_reserved_packed_and_never_overlapping() {
             offset: 0,
         });
         wp.set_styles_panel_open(true);
-        pipeline_draw_themed(&mut wp, &mut state, 1400, 900, &theme);
+        let mut framed = mount_themed(state, wp, 1400, 900, &theme);
+        let (wp, _) = Framed::split(&mut framed);
         assert!(
             wp.selected_image_id().is_some(),
             "the image is the selected object"
@@ -410,7 +415,8 @@ fn two_x_chrome_is_reserved_packed_and_never_overlapping() {
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "Large text");
         wp.set_styles_panel_open(true);
-        pipeline_draw_themed(&mut wp, &mut state, 800, 900, &theme);
+        let mut framed = mount_themed(state, wp, 800, 900, &theme);
+        let (wp, _) = Framed::split(&mut framed);
         let tb_h = wp.toolbar_height(wp.rect.width());
         for (_, r) in &wp.toolbar {
             assert!(
@@ -430,7 +436,8 @@ fn two_x_chrome_is_reserved_packed_and_never_overlapping() {
         let mut wp1 = WordProcessorWidget::new();
         let mut state1 = ui::State::new();
         wp1.sync(&mut state1.doc, &state1.root);
-        pipeline_draw(&mut wp1, &mut state1, 800, 900);
+        let mut framed_wp1 = mount(state1, wp1, 800, 900);
+        let (wp1, _) = Framed::split(&mut framed_wp1);
         assert!((wp1.toolbar_row_height - TOOLBAR_H).abs() < 0.01);
         assert!((wp1.layout_bar_height - LAYOUT_BAR_H).abs() < 0.01);
     }

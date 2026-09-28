@@ -497,21 +497,6 @@ impl RecordReplica {
         self.apply_verified(envelope)
     }
 
-    /// Restore one envelope that was previously admitted and durably stored
-    /// by the record repository. Cryptographic, scope, replay and immutable
-    /// collision checks still run; only the historical live grant decision is
-    /// not repeated during restart.
-    pub(crate) fn restore_envelope(
-        &mut self,
-        envelope: &RecordEnvelopeV1,
-    ) -> Result<(), RecordReplicationError> {
-        envelope.verify()?;
-        if envelope.record_id != self.record_id {
-            return Err(RecordReplicationError::WrongRecord);
-        }
-        self.apply_verified(envelope)
-    }
-
     /// [`Self::merge`] for an envelope this process just signed with the
     /// actor's own device key: the signature is not checked again (it is
     /// in debug builds); certification, grant and state checks all run.

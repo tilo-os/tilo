@@ -6,7 +6,6 @@
 
 use std::fs as stdfs;
 
-use collab_types::FileRecordId;
 use fs::eviction::EvictionQueue;
 use fs::{
     AvailabilityRegistry, FileHistoryStore, Namespace, RecordRepository, RecordTransactionJournal,
@@ -123,15 +122,14 @@ fn corrupt_namespaces_stores_and_journals_are_preserved_and_fail_closed() {
     {
         let dir = tempdir().unwrap();
         let repository_root = dir.path().join("records");
-        let workspace = Uuid::new_v4();
-        let record = FileRecordId::new();
-        let record_dir = repository_root.join(workspace.to_string());
-        stdfs::create_dir_all(&record_dir).unwrap();
-        let record_path = record_dir.join(format!("{}.json", record.0));
-        stdfs::write(&record_path, b"{\"schema_version\":1").unwrap();
+        stdfs::create_dir_all(&repository_root).unwrap();
+        let log_path = repository_root.join("records.redb");
+        let damaged_log =
+            b"not a redb database, just damaged bytes padded out to a page".repeat(128);
+        stdfs::write(&log_path, &damaged_log).unwrap();
 
         assert!(RecordRepository::open(&repository_root).is_err());
-        assert_eq!(stdfs::read(&record_path).unwrap(), b"{\"schema_version\":1");
+        assert_eq!(stdfs::read(&log_path).unwrap(), damaged_log);
 
         let journal_root = dir.path().join("transactions");
         stdfs::create_dir_all(&journal_root).unwrap();

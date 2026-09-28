@@ -123,13 +123,13 @@ fn dialog_for(info: MapInfo, close_requested: Rc<Cell<bool>>) -> ModalDialog<Tex
     let (title, body) = match info {
         MapInfo::Attribution => (
             "Attribution",
-            "Map data © OpenStreetMap contributors\nBasemap tiles © CARTO",
+            "Map data and tiles © OpenStreetMap contributors",
         ),
         MapInfo::Licenses => (
             "Licenses",
             "OpenStreetMap data — Open Database License (ODbL)\n\
-             CARTO basemaps — under CARTO's basemap terms\n\
-             © OpenStreetMap contributors · © CARTO",
+             OpenStreetMap Standard tiles — OSMF Tile Usage Policy\n\
+             © OpenStreetMap contributors",
         ),
     };
     let dismiss = Rc::clone(&close_requested);

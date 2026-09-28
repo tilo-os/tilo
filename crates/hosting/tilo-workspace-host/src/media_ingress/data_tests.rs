@@ -189,6 +189,7 @@ impl Harness {
             certificates: vec![certificate],
             key,
             local_enrollment: None,
+            frame_ancestors: Vec::new(),
         };
         let ingress = InstalledIngress::start_bound(
             &mut f.owner,

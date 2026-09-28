@@ -1081,6 +1081,15 @@ impl ChromeState {
         }
     }
 
+    /// Act as `principal` in every room, whatever the machine's identity
+    /// registry selects. A renderer whose output must not depend on the
+    /// machine it runs on pins its identity this way; a live session keeps
+    /// the registry's per-room choice.
+    pub fn act_as(&mut self, principal: crate::shell::state::UserId) {
+        self.local_user_id.clone_from(&principal);
+        self.identity_source = IdentitySource::Explicit(principal);
+    }
+
     /// Person principal this session presents inside `room`.
     pub fn local_user_for_room(
         &self,
@@ -3373,5 +3382,21 @@ mod active_tab_tests {
 
         broker_tree_epoch_invalidates_chrome_exactly_once();
         active_exposure_snapshot_is_sorted_deduplicated_and_edge_triggered();
+    }
+
+    #[test]
+    fn acting_as_a_principal_pins_every_room_to_it() {
+        let tree = tree_with(100);
+        let room = tree.desktop.workspaces[0].room;
+        let chrome = ChromeState::new_with_fixture_handle(
+            tree.shared(),
+            crate::shell::hosted_inputs::HostedTileInputs::fixture()
+                .expect("hosted fixture inputs"),
+        );
+        chrome.borrow_mut().act_as("renderer".into());
+        let state = chrome.borrow();
+        assert_eq!(state.local_user_id, "renderer");
+        assert_eq!(state.local_user_for_room(&room), "renderer");
+        assert_eq!(state.active_local_user(), "renderer");
     }
 }

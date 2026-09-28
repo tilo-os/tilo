@@ -67,9 +67,9 @@ fn out_dir() -> PathBuf {
     p
 }
 
-/// Count `.png` files under `dir` and return the first one's bytes, so a test
-/// can prove the worker persisted REAL PNGs to the on-disk cache.
-fn cached_pngs(dir: &std::path::Path) -> (usize, Option<Vec<u8>>) {
+/// Every `.png` the worker persisted under `dir`, as bytes — exactly what the
+/// production fetch path accepted from the tile server.
+fn cached_pngs(dir: &std::path::Path) -> Vec<Vec<u8>> {
     fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
         let Ok(rd) = std::fs::read_dir(dir) else {
             return;
@@ -85,11 +85,44 @@ fn cached_pngs(dir: &std::path::Path) -> (usize, Option<Vec<u8>>) {
     }
     let mut files = Vec::new();
     walk(dir, &mut files);
-    let first = files.first().and_then(|p| std::fs::read(p).ok());
-    (files.len(), first)
+    files
+        .iter()
+        .map(|p| std::fs::read(p).expect("a cached tile file to read"))
+        .collect()
 }
 
 const PNG_MAGIC: &[u8] = &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+
+/// Fail unless the tiles the worker accepted are real map imagery. A provider
+/// refusing service answers every coordinate with one placeholder image (CARTO's
+/// "API KEY REQUIRED" tile is byte-identical for every z/x/y), which decodes
+/// fine and paints plenty of colours — so decoding alone cannot tell. Distinct
+/// coordinates across a dense city centre must be distinct images.
+fn assert_real_imagery(tiles: &[Vec<u8>]) {
+    assert!(
+        tiles.len() >= 8,
+        "expected a viewport of cached tiles, found {}",
+        tiles.len()
+    );
+    for bytes in tiles {
+        assert!(bytes.starts_with(PNG_MAGIC), "a cached tile is not a PNG");
+        let tile = ui::png::decode_rgba8(bytes).expect("a cached tile decodes");
+        assert_eq!(
+            (tile.width, tile.height),
+            (256, 256),
+            "a cached tile is not a slippy-map tile"
+        );
+    }
+    let distinct: std::collections::HashSet<&[u8]> = tiles.iter().map(Vec::as_slice).collect();
+    assert_eq!(
+        distinct.len(),
+        tiles.len(),
+        "the server answered different city-centre tiles with identical images — a \
+         placeholder, not map imagery ({} distinct of {})",
+        distinct.len(),
+        tiles.len()
+    );
+}
 
 /// (1) FULL-PLUMBING integration test — the thing that was missing.
 ///
@@ -123,15 +156,16 @@ fn live_tiles_fetch_decode_and_cache() {
     );
 
     let mem = app.tiles_mem_len();
-    let (png_count, first) = cached_pngs(app.tiles_cache_dir());
+    let tiles = cached_pngs(app.tiles_cache_dir());
+    let png_count = tiles.len();
     eprintln!(
-        "live plumbing: stopped={} frames={} elapsed={:?} mem_tiles={} disk_pngs={} failures={}",
+        "live plumbing: stopped={} frames={} elapsed={:?} mem_tiles={} disk_pngs={} failure={:?}",
         stats.stopped,
         stats.frames,
         stats.elapsed,
         mem,
         png_count,
-        app.tiles_has_failures()
+        app.tiles_failure()
     );
 
     assert!(
@@ -145,19 +179,17 @@ fn live_tiles_fetch_decode_and_cache() {
         mem > 0,
         "tiles.mem_len() must be > 0 after live load; got {mem}"
     );
-    assert!(
-        !app.tiles_has_failures(),
-        "the negative-cache must be empty — a real fetch failed (egress blocked / decode error)"
+    assert_eq!(
+        app.tiles_failure(),
+        None,
+        "the negative-cache must be empty — a real fetch failed (Rejected: an error status or a \
+         non-PNG answer; Unreachable: egress blocked)"
     );
     assert!(
         png_count > 0,
         "the worker must persist real PNGs to the on-disk cache; found {png_count}"
     );
-    let bytes = first.expect("a cached tile file to read");
-    assert!(
-        bytes.starts_with(PNG_MAGIC),
-        "on-disk cache entry is not a valid PNG (magic bytes wrong)"
-    );
+    assert_real_imagery(&tiles);
 
     std::fs::remove_dir_all(&cache).ok();
 }
@@ -233,23 +265,23 @@ fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
             app.tiles_mem_len() > 0,
             "no decoded tiles resident to render"
         );
-        assert!(
-            !app.tiles_has_failures(),
-            "tile fetch failed — imagery unreachable"
+        assert_eq!(
+            app.tiles_failure(),
+            None,
+            "tile fetch failed — imagery refused or unreachable"
         );
+        // The painted tiles are the server's real imagery, not one placeholder
+        // repeated: pixel variety alone passed CARTO's "API KEY REQUIRED" tile.
+        assert_real_imagery(&cached_pngs(app.tiles_cache_dir()));
 
-        // Pixel outcome: real imagery replaced the placeholder.
+        // Pixel outcome: real imagery replaced the loading substrate.
         //
-        // The base style is CARTO's label-free LIGHT basemap: white ground, pale
-        // parks/water, thin roads and faint building footprints. It is deliberately
-        // low-chroma, so it quantises (5 bits/channel, to ignore AA noise) to far
-        // fewer distinct colours than a labelled raster would — the diversity FLOOR
-        // here is calibrated to that basemap (a flat fill or the loading substrate
-        // would fall well below it), NOT to a dense labelled map. The decisive
-        // placeholder-vs-imagery proof is `changed_fraction`: nearly every sampled
-        // map pixel flips from the dark loading substrate to the light map once
-        // tiles arrive — a wholesale change no palette choice can fake — backed by
-        // the data-path asserts above (tiles resident, zero fetch failures).
+        // The harness renders the dark theme, so this is the OSM Standard
+        // raster re-toned dark: deep land, roads, parks, water and light labels.
+        // It quantises (5 bits/channel, to ignore AA noise) to many distinct
+        // colours; the FLOOR here stays well above what a flat fill or the
+        // loading substrate reaches. `changed_fraction` shows most sampled map
+        // pixels changing from the loading substrate to the map.
         assert!(
             !after.is_uniform(region),
             "map area is a uniform fill — no imagery rendered"
@@ -290,10 +322,12 @@ fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
             |a| a.tiles_mem_len() >= 8 && !a.tiles_has_inflight(),
         );
         assert!(app.tiles_mem_len() > 0, "no base imagery loaded to reuse");
-        assert!(
-            !app.tiles_has_failures(),
-            "base tile fetch failed — imagery unreachable"
+        assert_eq!(
+            app.tiles_failure(),
+            None,
+            "base tile fetch failed — imagery refused or unreachable"
         );
+        assert_real_imagery(&cached_pngs(app.tiles_cache_dir()));
 
         // Zoom OUT one integer level: the target tiles aren't loaded, so the frame
         // must reuse the resident tiles as scaled descendants — never blank.

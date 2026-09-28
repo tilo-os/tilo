@@ -673,10 +673,8 @@ impl LaunchSpec {
         self
     }
 
-    /// Override how the live app opens its persisted state. This is primarily
-    /// for apps importing an older on-disk document through
-    /// [`crate::persist::open_migrating`]; the runner still owns autosave and
-    /// the live event loop.
+    /// Override how the live app opens its persisted state; the runner still
+    /// owns autosave and the live event loop.
     #[must_use]
     pub fn open_state(mut self, open: OpenState) -> Self {
         self.history_app_global_storage = false;
@@ -831,7 +829,6 @@ pub enum LaunchError {
     BindingMismatch,
     MissingComponentHost,
     IncompatibleComponentSetup,
-    RecoveryRequired,
     /// Setup failed after the record became Ready: `recovery` holds its
     /// store (and any close reports) so the caller can reopen or flush it.
     ComponentSetup {
@@ -872,7 +869,6 @@ impl fmt::Display for LaunchError {
                 f.write_str("application definition cannot use legacy setup overrides")
             }
             Self::BindingMismatch => f.write_str("application binding does not match"),
-            Self::RecoveryRequired => f.write_str("legacy state requires explicit recovery"),
             Self::ComponentSetup { source, .. } => write!(f, "application setup failed: {source}"),
             Self::ComponentCapture { source, .. } => write!(f, "{source}"),
             Self::MissingValue(flag) => write!(f, "{flag} requires a value"),
@@ -954,7 +950,6 @@ impl fmt::Debug for LaunchError {
                 f.write_str("application definition cannot use legacy setup overrides")
             }
             Self::BindingMismatch => f.write_str("BindingMismatch"),
-            Self::RecoveryRequired => f.write_str("RecoveryRequired"),
         }
     }
 }
@@ -986,7 +981,6 @@ impl LaunchError {
                 | Self::BindingMismatch
                 | Self::MissingComponentHost
                 | Self::IncompatibleComponentSetup
-                | Self::RecoveryRequired
         ) {
             1
         } else {
@@ -4560,8 +4554,16 @@ mod tests {
         for head in heads {
             assert!(installed.get_change_by_hash(&head).is_some());
         }
-        let local_cache = app_state::DocStore::legacy_record_document_path(
+        let package_document =
+            app_state::DocStore::legacy_package_document_path("so.tilo.launch-fixture").unwrap();
+        let data_home = package_document
+            .parent()
+            .and_then(std::path::Path::parent)
+            .unwrap();
+        let local_cache = app_state::DocStore::room_record_dir_at(
+            data_home,
             "so.tilo.launch-fixture",
+            &room.to_string(),
             &want.id.storage_key(),
         )
         .unwrap();

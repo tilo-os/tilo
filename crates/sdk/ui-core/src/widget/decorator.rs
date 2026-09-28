@@ -71,7 +71,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{AppModel, ModelPath};
+use super::{AppModel, ModelPath, capability};
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -79,11 +79,9 @@ use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 
 use super::{
-    ActionDirectoryInvocationDomain, ActionDirectoryResourcePage, AudiencePresentationProvider,
-    Collaborative, CompleteContentProvider, Continuable, ControlBindingMetadata, EventCtx,
-    FloatingSurfaceProvider, FullscreenProvider, LayoutInfo, ManualPolicy, NativeViewLifecycle,
-    ParticipantPresence, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult,
-    ResourceOperationStart, Widget, WindowCloseAdmission,
+    ActionDirectoryInvocationDomain, ActionDirectoryResourcePage, ControlBindingMetadata, EventCtx,
+    LayoutInfo, ManualPolicy, ParticipantPresence, PrimaryScrollAction, PrimaryScrollRegion,
+    PrimaryScrollResult, ResourceOperationStart, Widget, WindowCloseAdmission,
 };
 use crate::dnd::DragPayload;
 use crate::permissions::PermissionScope;
@@ -251,46 +249,12 @@ pub trait Decorator {
         self.inner_mut().visit_components(request)
     }
 
-    fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
-        self.inner_mut().collaborative_mut()
+    fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>) {
+        self.inner().provide(request);
     }
 
-    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn NativeViewLifecycle> {
-        self.inner_mut().native_view_lifecycle_mut()
-    }
-
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        self.inner().floating_surface_provider()
-    }
-
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        self.inner_mut().floating_surface_provider_mut()
-    }
-
-    fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
-        self.inner().audience_presentation_provider()
-    }
-
-    fn audience_presentation_provider_mut(
-        &mut self,
-    ) -> Option<&mut dyn AudiencePresentationProvider> {
-        self.inner_mut().audience_presentation_provider_mut()
-    }
-
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        self.inner().fullscreen_provider()
-    }
-
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        self.inner_mut().fullscreen_provider_mut()
-    }
-
-    fn complete_content_provider(&self) -> Option<&dyn CompleteContentProvider> {
-        self.inner().complete_content_provider()
-    }
-
-    fn complete_content_provider_mut(&mut self) -> Option<&mut dyn CompleteContentProvider> {
-        self.inner_mut().complete_content_provider_mut()
+    fn provide_mut<'a>(&'a mut self, request: &mut capability::RequestMut<'a, '_>) {
+        self.inner_mut().provide_mut(request);
     }
 
     fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
@@ -306,14 +270,6 @@ pub trait Decorator {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.inner_mut().sync(state, path);
-    }
-
-    fn continuable(&self) -> Option<&dyn Continuable> {
-        self.inner().continuable()
-    }
-
-    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
-        self.inner_mut().continuable_mut()
     }
 
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
@@ -1176,46 +1132,12 @@ impl<T: Decorator> Widget for T {
         Decorator::visit_components(self, request)
     }
 
-    fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
-        Decorator::collaborative_mut(self)
+    fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>) {
+        Decorator::provide(self, request);
     }
 
-    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn NativeViewLifecycle> {
-        Decorator::native_view_lifecycle_mut(self)
-    }
-
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        Decorator::floating_surface_provider(self)
-    }
-
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        Decorator::floating_surface_provider_mut(self)
-    }
-
-    fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
-        Decorator::audience_presentation_provider(self)
-    }
-
-    fn audience_presentation_provider_mut(
-        &mut self,
-    ) -> Option<&mut dyn AudiencePresentationProvider> {
-        Decorator::audience_presentation_provider_mut(self)
-    }
-
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        Decorator::fullscreen_provider(self)
-    }
-
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        Decorator::fullscreen_provider_mut(self)
-    }
-
-    fn complete_content_provider(&self) -> Option<&dyn CompleteContentProvider> {
-        Decorator::complete_content_provider(self)
-    }
-
-    fn complete_content_provider_mut(&mut self) -> Option<&mut dyn CompleteContentProvider> {
-        Decorator::complete_content_provider_mut(self)
+    fn provide_mut<'a>(&'a mut self, request: &mut capability::RequestMut<'a, '_>) {
+        Decorator::provide_mut(self, request);
     }
 
     fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
@@ -1231,14 +1153,6 @@ impl<T: Decorator> Widget for T {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         Decorator::sync(self, state, path);
-    }
-
-    fn continuable(&self) -> Option<&dyn Continuable> {
-        Decorator::continuable(self)
-    }
-
-    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
-        Decorator::continuable_mut(self)
     }
 
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
