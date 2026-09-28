@@ -65,7 +65,6 @@ impl crate::search::SearchProvider for LazyProvider {
 struct Publisher;
 struct ConsumingKeyboardRoot;
 impl Widget for ConsumingKeyboardRoot {
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -107,7 +106,6 @@ impl Widget for ConsumingKeyboardRoot {
     }
 }
 impl Widget for Publisher {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -190,7 +188,6 @@ impl Widget for Publisher {
 struct CountingPublisher(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
 impl Widget for CountingPublisher {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

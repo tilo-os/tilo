@@ -198,7 +198,6 @@ impl ui::widget::Widget for OverlayApp {
         self.leaf.get_rect()
     }
 
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         tree: &mut taffy::TaffyTree<()>,

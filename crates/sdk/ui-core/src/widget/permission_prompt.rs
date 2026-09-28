@@ -340,10 +340,6 @@ fn draw_button(
 }
 
 impl Widget for PermissionPrompt {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
-        // Content is pushed by the host's portal request flow, not pulled from the doc.
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

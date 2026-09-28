@@ -8393,8 +8393,6 @@ mod tests {
             true
         }
 
-        fn sync(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) {}
-
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -10321,7 +10319,6 @@ mod a11y_driver_tests {
     }
 
     impl Widget for Strip {
-        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -10619,8 +10616,6 @@ mod undo_driver_tests {
     }
 
     impl crate::widget::Widget for Typer {
-        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
-
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -10903,8 +10898,6 @@ mod dispatched_action_driver_tests {
     }
 
     impl crate::widget::Widget for ActionEditor {
-        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
-
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,

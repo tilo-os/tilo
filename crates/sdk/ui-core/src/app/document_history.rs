@@ -1595,7 +1595,6 @@ struct FrameworkPresentation<'a> {
     layout_root: taffy::NodeId,
 }
 impl Widget for FrameworkPresentation<'_> {
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         _: &mut taffy::TaffyTree<()>,

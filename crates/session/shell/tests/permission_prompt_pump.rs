@@ -111,7 +111,6 @@ struct StubContent {
     rect: Rect,
 }
 impl ui::widget::Widget for StubContent {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

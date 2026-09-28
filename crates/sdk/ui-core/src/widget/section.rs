@@ -54,10 +54,6 @@ impl Section {
 }
 
 impl Widget for Section {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.inner.sync(state, path);
-    }
-
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
         self.inner.update(state, path)
     }

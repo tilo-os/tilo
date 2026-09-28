@@ -50,11 +50,6 @@ impl TwoButtons {
     }
 }
 impl Widget for TwoButtons {
-    fn sync(&mut self, s: &mut automerge::AutoCommit, p: &automerge::ObjId) {
-        for c in &mut self.kids {
-            c.sync(s, p);
-        }
-    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -213,7 +208,6 @@ impl LiveWidget {
     }
 }
 impl Widget for LiveWidget {
-    fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

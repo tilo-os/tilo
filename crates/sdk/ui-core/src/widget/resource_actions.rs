@@ -380,10 +380,6 @@ pub fn background(
 }
 
 impl Widget for ResourceActionHost {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.root.sync(state, path);
-    }
-
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
         self.root.update(state, path)
     }

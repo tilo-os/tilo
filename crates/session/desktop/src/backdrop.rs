@@ -438,12 +438,6 @@ impl Default for DesktopBackdrop {
 }
 
 impl Widget for DesktopBackdrop {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        if let Some(child) = &mut self.child {
-            child.sync(state, path);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -2843,11 +2843,6 @@ impl ActivityTimeline {
 }
 
 impl Widget for ActivityTimeline {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
-        // Entries arrive via the producer's push API. The widget is a viewer —
-        // it does not pull from a CRDT path.
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

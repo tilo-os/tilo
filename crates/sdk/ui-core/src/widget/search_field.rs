@@ -294,10 +294,6 @@ impl Widget for SearchField {
         self.input.set_platform_conventions(conventions);
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.input.sync(state, path);
-    }
-
     #[allow(
         clippy::cast_possible_truncation,
         reason = "these are widget-geometry constants — small, bounded pixel values — so \

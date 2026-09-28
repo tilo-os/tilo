@@ -255,7 +255,6 @@ impl NotificationLayer {
 }
 
 impl Widget for NotificationLayer {
-    fn sync(&mut self, _doc: &mut automerge::AutoCommit, _path: &automerge::ObjId) {}
     fn name(&self) -> &str {
         "DesktopNotifications"
     }

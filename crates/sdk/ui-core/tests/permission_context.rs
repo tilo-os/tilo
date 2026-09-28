@@ -155,7 +155,6 @@ fn roles_and_scoped_shares_decide_each_permission_check() {
 
 struct NoOpWidget;
 impl tilo_ui::widget::Widget for NoOpWidget {
-    fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
     #[allow(
         clippy::unimplemented,
         reason = "test-only Widget stub; build_layout is never invoked by these tests (they \
@@ -244,7 +243,6 @@ struct GatedButton {
 }
 
 impl tilo_ui::widget::Widget for GatedButton {
-    fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
     #[allow(
         clippy::unimplemented,
         reason = "test-only Widget stub; build_layout is never invoked by these tests (they \

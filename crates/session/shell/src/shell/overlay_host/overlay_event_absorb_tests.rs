@@ -34,8 +34,6 @@ impl RecordingContent {
 }
 
 impl Widget for RecordingContent {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -269,11 +269,6 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
 }
 
 impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.left.sync(state, path);
-        self.right.sync(state, path);
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -632,8 +627,6 @@ mod tests {
     }
 
     impl Widget for TestLeaf {
-        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,

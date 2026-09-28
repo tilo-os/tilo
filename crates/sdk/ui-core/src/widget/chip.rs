@@ -540,8 +540,6 @@ impl Widget for Chip {
         self.interaction = environment;
     }
 
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     #[allow(
         clippy::cast_possible_truncation,
         reason = "approx/HEIGHT are small pixel dimensions well within f32's \

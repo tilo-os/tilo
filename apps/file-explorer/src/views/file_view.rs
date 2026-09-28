@@ -1341,8 +1341,6 @@ impl Widget for FileView {
         false
     }
 
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn is_layout_dirty(&self) -> bool {
         // Entries, mode and zoom are construction inputs: the host replaces
         // this view when they change. Pointer/selection/thumbnail updates do

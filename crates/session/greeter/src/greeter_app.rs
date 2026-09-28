@@ -219,12 +219,6 @@ impl VStack {
 }
 
 impl Widget for VStack {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        for child in &mut self.children {
-            child.sync(state, root);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

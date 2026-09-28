@@ -389,7 +389,7 @@ mod tests {
     use crate::record::{RecordCheckout, RecordId, RecordKind};
     use crate::state::State;
     use crate::widget::Widget;
-    use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, transaction::Transactable};
+    use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
     use std::collections::HashMap;
     use taffy::TaffyTree;
     use vello::Scene;
@@ -423,7 +423,6 @@ mod tests {
     }
 
     impl Widget for DocRoot {
-        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,

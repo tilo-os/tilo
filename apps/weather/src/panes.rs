@@ -102,8 +102,6 @@ fn store_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
 }
 
 impl Widget for OverviewPane {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -217,8 +215,6 @@ impl Widget for OverviewPane {
 }
 
 impl Widget for DetailPane {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

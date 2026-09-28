@@ -62,12 +62,6 @@ impl Stack {
 }
 
 impl Widget for Stack {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        for child in &mut self.children {
-            child.sync(state, path);
-        }
-    }
-
     /// Not short-circuited — a child that skipped its pass would miss a
     /// frame of state.
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {

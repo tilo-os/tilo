@@ -933,9 +933,6 @@ impl Widget for DesktopSurface {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
-        self.root.sync(doc, path);
-    }
     fn update(&mut self, doc: &mut AutoCommit, path: &ObjId) -> bool {
         let wake = self.take_component_wake();
         self.root.update(doc, path) || wake

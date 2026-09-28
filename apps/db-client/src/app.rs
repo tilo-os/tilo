@@ -212,8 +212,6 @@ impl DerefMut for QueryEditorChild {
 }
 
 impl Widget for QueryEditorChild {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -418,8 +416,6 @@ impl QueryDivider {
 }
 
 impl Widget for QueryDivider {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -611,8 +607,6 @@ impl QueryResizeMenu {
 }
 
 impl Widget for QueryResizeMenu {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -4552,7 +4552,6 @@ impl CaptureStudio {
 }
 
 impl Widget for CaptureStudio {
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
     fn build_layout(
         &mut self,
         t: &mut TaffyTree<()>,
