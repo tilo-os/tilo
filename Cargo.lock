@@ -14122,6 +14122,7 @@ name = "system-extension"
 version = "0.1.0"
 dependencies = [
  "atomic-file",
+ "bounded-command",
  "ed25519-dalek 3.0.0",
  "hex",
  "libc",
@@ -15462,6 +15463,7 @@ dependencies = [
 name = "tilo-projector"
 version = "0.1.0"
 dependencies = [
+ "bounded-command",
  "fcast-sender-sdk",
  "futures-util",
  "getrandom 0.4.3",
