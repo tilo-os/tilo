@@ -67,6 +67,8 @@ missing native library, which Rust otherwise reports as `pkg-config exited with 
 inside a `-sys` crate. How those libraries get there is per-machine and `DEVELOPMENT.md`'s
 business, not this file's.
 
+Functions take usually ≤5 params, never more than 8: clippy denies it and no `allow` may excuse it.
+
 **Never set `CARGO_TARGET_DIR`, and never point two worktrees at one target directory.** The
 first is hashed into sccache's cache key, so it costs every hit even when set to the path
 cargo would have picked anyway; the second collides silently and hands you the other
