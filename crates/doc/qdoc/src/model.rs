@@ -1328,11 +1328,6 @@ pub fn blob_meta(doc: &AutoCommit, c: &Containers, hash: &str) -> Option<Content
                 h: u32::try_from(int_at(BLOB_H).max(0)).unwrap_or(u32::MAX),
             })
         }
-        // A document authored before the bytes moved out still describes itself inline (length + format known).
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Bytes(b) => Some(tilo_content::sniff(b)),
-            _ => None,
-        },
         _ => None,
     }
 }
@@ -1343,31 +1338,6 @@ pub fn blob_hashes(doc: &AutoCommit, c: &Containers) -> Vec<String> {
         Some(b) => doc.keys(&b).collect(),
         None => Vec::new(),
     }
-}
-
-/// Content an older document carried inline under its hash (before binary inputs moved out of the
-/// document), or `None`. A reader falls back to this when its content store lacks the hash.
-pub fn inline_content(doc: &AutoCommit, c: &Containers, hash: &str) -> Option<Vec<u8>> {
-    let blobs = blobs_obj(doc, c)?;
-    match doc.get(&blobs, hash) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Bytes(b) => Some(b.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Every piece of content this document still carries inline, for the caller to move into its
-/// content store (after which nothing reads it from the document again).
-pub fn inline_contents(doc: &AutoCommit, c: &Containers) -> ContentInputs {
-    let mut inputs = ContentInputs::new();
-    for hash in blob_hashes(doc, c) {
-        if let Some(bytes) = inline_content(doc, c, &hash) {
-            inputs.add(bytes);
-        }
-    }
-    inputs
 }
 
 /// Every content address the document refers to, in any of its versions: image descriptors and
