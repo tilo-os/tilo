@@ -1272,7 +1272,8 @@ impl FrameHarness {
         }
         let control_domain = crate::control_custody::ControlDomain::outer();
         let mut root = root;
-        root.install_control_custody(
+        crate::widget::controls::install_control_custody(
+            root.as_mut(),
             &control_domain,
             crate::control_custody::CustodyAttachment::Initial,
         );
@@ -4293,7 +4294,7 @@ impl FrameHarness {
         self.drain_component_wakes();
 
         let resources = self.resources();
-        let bindings = self.root.control_action_bindings();
+        let bindings = crate::widget::controls::control_action_bindings(self.root.as_ref());
         let inventoried_controls = bindings
             .iter()
             .map(|binding| binding.control_id.clone())
@@ -5640,7 +5641,7 @@ impl FrameHarness {
         while let Some(intent) = registered
             .outer
             .pop_front()
-            .or_else(|| self.root.take_control_invocation())
+            .or_else(|| crate::widget::controls::take_control_invocation(self.root.as_mut()))
         {
             // The remaining controls originated in the outer document. Never
             // reselect a matching component or legacy owner from their address.
@@ -5713,8 +5714,11 @@ impl FrameHarness {
                 }
                 Ok::<_, tilo_actions::DoorError>(started)
             })();
-            self.root
-                .on_control_invocation_result(&intent.address, &result);
+            crate::widget::controls::on_control_invocation_result(
+                self.root.as_mut(),
+                &intent.address,
+                &result,
+            );
             match result {
                 Ok(crate::widget::ResourceOperationStart::Accepted) => {
                     self.pending_control_invocations.insert(invocation);
@@ -7249,7 +7253,7 @@ fn drive_spec_actions(
     // Native idle frames admit queued local controls even without input. Use
     // the same host tick here, including fresh permissions and undo recording.
     if !driver.wait_until(crate::time::Duration::from_secs(10), |driver| {
-        !driver.root.has_pending_control_invocation()
+        !crate::widget::controls::has_pending_control_invocation(driver.root.as_ref())
             && driver.pending_control_invocations.is_empty()
             && driver.bound_invocations.is_empty()
     }) {
@@ -9703,6 +9707,8 @@ mod tests {
         checkout: crate::record::RecordCheckout,
     }
     impl Widget for RecordRootProbe {
+        crate::provides!(dyn crate::resources::PublishesResources);
+
         crate::testing::inert_widget_methods!(
             leaf_layout,
             apply_layout,
@@ -9713,6 +9719,9 @@ mod tests {
         fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
             Some(self.checkout.clone())
         }
+    }
+
+    impl crate::resources::PublishesResources for RecordRootProbe {
         fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
             vec![tilo_actions::Resource::new(
                 "probe.document:1",
@@ -11773,6 +11782,11 @@ pub(crate) mod legacy_control_feedback_tests {
         descendants: Column,
     }
     impl Widget for ImportProbe {
+        crate::provides!(
+            dyn crate::widget::controls::ActionControls,
+            dyn crate::resources::PublishesResources
+        );
+
         crate::testing::delegate_widget_methods!(
             descendants: sync,
             build_layout,
@@ -11789,6 +11803,64 @@ pub(crate) mod legacy_control_feedback_tests {
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
             vec![&mut self.descendants]
         }
+        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+            &["feedback.begin"]
+        }
+        fn start_operation(
+            &mut self,
+            op: &crate::widget::ResourceOperation<'_>,
+            _: &mut automerge::AutoCommit,
+            _: &automerge::ObjId,
+        ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+            let Some(request) = op
+                .unscoped()
+                .filter(|request| request.type_id == "feedback.begin")
+            else {
+                return Ok(None);
+            };
+            self.observed.original.set(Some(request.invocation));
+            self.observed
+                .pending
+                .borrow_mut()
+                .push_back(tilo_actions::ControlInvocation {
+                    address: tilo_actions::ActionAddress::new("feedback:import", "finalize"),
+                    arguments: serde_json::Map::new(),
+                });
+            Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+        }
+        fn poll_resource_operation(
+            &mut self,
+            invocation: tilo_actions::InvocationId,
+            _: bool,
+            _: &automerge::AutoCommit,
+            _: &automerge::ObjId,
+        ) -> Option<tilo_actions::InvocationUpdate> {
+            if self.observed.original.get() != Some(invocation) {
+                return None;
+            }
+            let succeeded = self.observed.terminal.take()?;
+            self.observed.original.set(None);
+            self.observed.receipts.set(self.observed.receipts.get() + 1);
+            Some(if succeeded {
+                tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                }
+            } else {
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "finalize_failed".into(),
+                        message: "Canonical import finalizer failed".into(),
+                        details: None,
+                        retryable: false,
+                    },
+                }
+            })
+        }
+    }
+
+    impl crate::resources::PublishesResources for ImportProbe {
         fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
             let contract = tilo_actions::ActionContract {
                 execution: tilo_actions::ExecutionMode::Background { cancellable: false },
@@ -11824,36 +11896,11 @@ pub(crate) mod legacy_control_feedback_tests {
                     .with_action(finalize),
             ]
         }
-        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-            &["feedback.begin"]
-        }
+    }
+
+    impl crate::widget::controls::ActionControls for ImportProbe {
         fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
             self.observed.pending.borrow_mut().pop_front()
-        }
-        fn has_pending_control_invocation(&self) -> bool {
-            !self.observed.pending.borrow().is_empty()
-        }
-        fn start_operation(
-            &mut self,
-            op: &crate::widget::ResourceOperation<'_>,
-            _: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-        ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-            let Some(request) = op
-                .unscoped()
-                .filter(|request| request.type_id == "feedback.begin")
-            else {
-                return Ok(None);
-            };
-            self.observed.original.set(Some(request.invocation));
-            self.observed
-                .pending
-                .borrow_mut()
-                .push_back(tilo_actions::ControlInvocation {
-                    address: tilo_actions::ActionAddress::new("feedback:import", "finalize"),
-                    arguments: serde_json::Map::new(),
-                });
-            Ok(Some(crate::widget::ResourceOperationStart::Accepted))
         }
         fn on_control_invocation_result(
             &mut self,
@@ -11871,35 +11918,8 @@ pub(crate) mod legacy_control_feedback_tests {
             self.descendants
                 .on_control_invocation_result(address, result);
         }
-        fn poll_resource_operation(
-            &mut self,
-            invocation: tilo_actions::InvocationId,
-            _: bool,
-            _: &automerge::AutoCommit,
-            _: &automerge::ObjId,
-        ) -> Option<tilo_actions::InvocationUpdate> {
-            if self.observed.original.get() != Some(invocation) {
-                return None;
-            }
-            let succeeded = self.observed.terminal.take()?;
-            self.observed.original.set(None);
-            self.observed.receipts.set(self.observed.receipts.get() + 1);
-            Some(if succeeded {
-                tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                }
-            } else {
-                tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "finalize_failed".into(),
-                        message: "Canonical import finalizer failed".into(),
-                        details: None,
-                        retryable: false,
-                    },
-                }
-            })
+        fn has_pending_control_invocation(&self) -> bool {
+            !self.observed.pending.borrow().is_empty()
         }
     }
     crate::testing::test_app_widget!(

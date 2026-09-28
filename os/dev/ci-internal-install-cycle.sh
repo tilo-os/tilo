@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# CI entry point for the USB-free installation VM round trip, shared by
-# .forgejo/workflows/internal-install-cycle.yml (manual runs) and the
+# CI entry point for the USB-free installation VM round trip, run by the
 # installer lane of .forgejo/workflows/release-imager.yml.
 #
 #   ./os/dev/ci-internal-install-cycle.sh INSTALLER_DISK OUT_DIR

@@ -3887,6 +3887,8 @@ impl Drop for TextInput {
 }
 
 impl Widget for TextInput {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
@@ -4271,56 +4273,6 @@ impl Widget for TextInput {
         "TextInput"
     }
 
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-    }
-
-    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let control_id = self.test_id().unwrap_or("text_input");
-        if let Some(action) = &self.action {
-            vec![action.metadata(control_id)]
-        } else if self.crdt_bound || self.bound_text.is_some() {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::CollaborativeDocument(
-                    if self.on_change_path.is_empty() {
-                        "<nested-text>".to_string()
-                    } else {
-                        self.on_change_path.clone()
-                    },
-                ),
-            }]
-        } else if self.on_change.is_some() {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyCallback,
-            }]
-        } else {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
-            }]
-        }
-    }
-
     fn test_id(&self) -> Option<&str> {
         if self.id.is_empty() {
             Some("text_input")
@@ -4700,6 +4652,56 @@ impl Widget for TextInput {
                 theme,
                 presence,
             );
+        }
+    }
+}
+
+impl crate::widget::controls::ActionControls for TextInput {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action.as_mut().and_then(ActionEmitter::take)
+    }
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let control_id = self.test_id().unwrap_or("text_input");
+        if let Some(action) = &self.action {
+            vec![action.metadata(control_id)]
+        } else if self.crdt_bound || self.bound_text.is_some() {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::CollaborativeDocument(
+                    if self.on_change_path.is_empty() {
+                        "<nested-text>".to_string()
+                    } else {
+                        self.on_change_path.clone()
+                    },
+                ),
+            }]
+        } else if self.on_change.is_some() {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::LegacyCallback,
+            }]
+        } else {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
+            }]
+        }
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
         }
     }
 }

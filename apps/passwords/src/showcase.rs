@@ -3045,9 +3045,7 @@ impl PasswordsSurface {
                 None,
             );
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_secs());
+        let now = tilo_clock::unix_now();
         let updated = ui::format::relative(
             i64::try_from(now.saturating_sub(item.updated_unix)).unwrap_or(i64::MAX),
         );
@@ -3767,6 +3765,8 @@ impl PasswordsSurface {
 }
 
 impl Widget for PasswordsSurface {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.transfer_poll_deadline.set(None);
         self.poll_transfers();
@@ -3780,11 +3780,6 @@ impl Widget for PasswordsSurface {
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["tilo.passwords.operation"]
-    }
-    fn resources(&self, _doc: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
-        let mut out = vec![actions::vault_resource(self.mode == ShowcaseMode::Editor)];
-        out.extend(self.items.iter().map(actions::item_resource));
-        out
     }
     fn start_operation(
         &mut self,
@@ -5369,6 +5364,14 @@ impl Widget for PasswordsSurface {
     }
 }
 
+impl ui::resources::PublishesResources for PasswordsSurface {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
+        let mut out = vec![actions::vault_resource(self.mode == ShowcaseMode::Editor)];
+        out.extend(self.items.iter().map(actions::item_resource));
+        out
+    }
+}
+
 fn origins_match(item: &SecretItem, candidate: &str) -> bool {
     if candidate.trim().is_empty() {
         return item.origins.is_empty();
@@ -5876,7 +5879,7 @@ mod tests {
             assert!(app.items[0].password.is_empty());
             assert!(app.items[0].notes.is_empty());
             assert!(app.items[0].fields.is_empty());
-            let resources = Widget::resources(&app, &AutoCommit::new());
+            let resources = ui::resources::resources(&app, &AutoCommit::new());
             let public = resources
                 .iter()
                 .map(|resource| {

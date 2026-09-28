@@ -1449,7 +1449,10 @@ fn selected_on(ground: Color) -> (Color, Color) {
 }
 
 impl Widget for FirewallApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
@@ -1801,68 +1804,6 @@ impl Widget for FirewallApp {
         self.rail.is_animating()
     }
 
-    /// Publish the open configuration + its zones/rules so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    #[allow(
-        clippy::expect_used,
-        reason = "the empty string operation payload is always serializable"
-    )]
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if !self.available {
-            return vec![
-                tilo_actions::Resource::new(
-                    "firewall.recovery",
-                    "firewall.recovery",
-                    "Firewall service recovery",
-                )
-                .with_action(
-                    tilo_actions::ActionSpec::operation(
-                        "retry",
-                        "Retry firewalld connection",
-                        tilo_actions::OperationKind::Effect,
-                        "firewall.retry",
-                        &"",
-                    )
-                    .expect("firewall retry payload is serializable")
-                    .with_contract(tilo_actions::ActionContract {
-                        retry: tilo_actions::RetryPolicy::Idempotent,
-                        discovery: tilo_actions::DiscoveryScope::Launchable,
-                        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                        result: tilo_actions::ResultSpec::Job,
-                        tags: vec!["security".into(), "firewall".into(), "recovery".into()],
-                        ..tilo_actions::ActionContract::default()
-                    }),
-                ),
-            ];
-        }
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
-        if let Some(root) = resources.first_mut() {
-            root.actions.push(
-                tilo_actions::ActionSpec::operation(
-                    "apply",
-                    "Apply firewall configuration",
-                    tilo_actions::OperationKind::Effect,
-                    "firewall.apply",
-                    &"",
-                )
-                .expect("firewall apply payload is serializable")
-                .with_contract(tilo_actions::ActionContract {
-                    permission: tilo_actions::PermissionRequirement::Admin,
-                    risk: tilo_actions::RiskLevel::Privileged,
-                    confirmation: tilo_actions::ConfirmationPolicy::Confirm,
-                    retry: tilo_actions::RetryPolicy::Idempotent,
-                    discovery: tilo_actions::DiscoveryScope::Launchable,
-                    execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                    result: tilo_actions::ResultSpec::Job,
-                    ..tilo_actions::ActionContract::default()
-                }),
-            );
-        }
-        resources
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -2000,6 +1941,70 @@ impl Widget for FirewallApp {
             return true;
         }
         false
+    }
+}
+
+impl ui::resources::PublishesResources for FirewallApp {
+    /// Publish the open configuration + its zones/rules so the host's Ctrl+K
+    /// action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    #[allow(
+        clippy::expect_used,
+        reason = "the empty string operation payload is always serializable"
+    )]
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if !self.available {
+            return vec![
+                tilo_actions::Resource::new(
+                    "firewall.recovery",
+                    "firewall.recovery",
+                    "Firewall service recovery",
+                )
+                .with_action(
+                    tilo_actions::ActionSpec::operation(
+                        "retry",
+                        "Retry firewalld connection",
+                        tilo_actions::OperationKind::Effect,
+                        "firewall.retry",
+                        &"",
+                    )
+                    .expect("firewall retry payload is serializable")
+                    .with_contract(tilo_actions::ActionContract {
+                        retry: tilo_actions::RetryPolicy::Idempotent,
+                        discovery: tilo_actions::DiscoveryScope::Launchable,
+                        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+                        result: tilo_actions::ResultSpec::Job,
+                        tags: vec!["security".into(), "firewall".into(), "recovery".into()],
+                        ..tilo_actions::ActionContract::default()
+                    }),
+                ),
+            ];
+        }
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        if let Some(root) = resources.first_mut() {
+            root.actions.push(
+                tilo_actions::ActionSpec::operation(
+                    "apply",
+                    "Apply firewall configuration",
+                    tilo_actions::OperationKind::Effect,
+                    "firewall.apply",
+                    &"",
+                )
+                .expect("firewall apply payload is serializable")
+                .with_contract(tilo_actions::ActionContract {
+                    permission: tilo_actions::PermissionRequirement::Admin,
+                    risk: tilo_actions::RiskLevel::Privileged,
+                    confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+                    retry: tilo_actions::RetryPolicy::Idempotent,
+                    discovery: tilo_actions::DiscoveryScope::Launchable,
+                    execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+                    result: tilo_actions::ResultSpec::Job,
+                    ..tilo_actions::ActionContract::default()
+                }),
+            );
+        }
+        resources
     }
 }
 
@@ -4141,7 +4146,7 @@ mod tests {
                 child.action_target.as_deref() == Some("firewall.retry")
                     && child.name.as_deref() == Some("Retry connection to firewalld")
             }));
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources[0].kind, "firewall.recovery");
             assert!(
                 resources[0]
@@ -4756,7 +4761,7 @@ mod tests {
             let id = a.selected_zone_ref().unwrap().rules[0].id;
 
             // The palette's delete spec for this exact rule.
-            let resources = Widget::resources(&a, &doc);
+            let resources = ui::resources::resources(&a, &doc);
             let spec_encoded = resources[0]
                 .children
                 .iter()

@@ -148,9 +148,7 @@ pub enum RecordStatus {
 }
 
 fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+    tilo_clock::unix_now()
 }
 
 /// Operation IDs become file names; allow only a UUID-like identifier.

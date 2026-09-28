@@ -2868,8 +2868,9 @@ fn resource_and_view_actions_target_exact_entities() {
             .find(|h| h.action_address() == Some(crate::actions::reveal_clip_address(clip.id)))
             .expect("the exact clip is findable by source name");
         let address = hit.action_address().expect("canonical search address");
-        let encoded = tilo_actions::door::encode(&app.resources(&doc), &address, None)
-            .expect("the address resolves through the live resource tree");
+        let encoded =
+            tilo_actions::door::encode(&ui::resources::resources(&app, &doc), &address, None)
+                .expect("the address resolves through the live resource tree");
 
         app.playback.playing = true;
         app.playhead = 0.0;

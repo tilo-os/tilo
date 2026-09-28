@@ -356,6 +356,8 @@ impl DiskUsageApp {
 }
 
 impl Widget for DiskUsageApp {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
         if !self.shot_mode {
@@ -835,52 +837,6 @@ impl Widget for DiskUsageApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[OPERATION_TYPE]
     }
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("disk-usage:root", "disk-usage", "Disk Usage Analyzer");
-        for place in &self.places {
-            if let Some(action) = operation_action(
-                &format!("analyze:{}", place.path.display()),
-                &format!("Analyze {}", place.label),
-                &DiskUsageOperation::Analyze {
-                    path: place.path.clone(),
-                },
-            ) {
-                root.actions.push(action);
-            }
-        }
-        if let Some(action) =
-            operation_action("choose", "Choose folder", &DiskUsageOperation::Choose)
-        {
-            root.actions.push(action);
-        }
-        if !matches!(self.view, View::Home)
-            && let Some(action) =
-                operation_action("home", "Show locations", &DiskUsageOperation::Home)
-        {
-            root.actions.push(action);
-        }
-        if !matches!(self.view, View::Home)
-            && let Some(action) = operation_action("back", "Go back", &DiskUsageOperation::Back)
-        {
-            root.actions.push(action);
-        }
-        if let View::Analysis(result) = &self.view {
-            for entry in &result.entries {
-                if entry.path.file_name().is_some_and(|name| name != ".")
-                    && let Some(action) = operation_action(
-                        &format!("analyze:{}", entry.path.display()),
-                        &format!("Analyze {}", entry.name),
-                        &DiskUsageOperation::Analyze {
-                            path: entry.path.clone(),
-                        },
-                    )
-                {
-                    root.actions.push(action);
-                }
-            }
-        }
-        vec![root]
-    }
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -927,6 +883,55 @@ impl Widget for DiskUsageApp {
     }
 }
 
+impl ui::resources::PublishesResources for DiskUsageApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let mut root = Resource::new("disk-usage:root", "disk-usage", "Disk Usage Analyzer");
+        for place in &self.places {
+            if let Some(action) = operation_action(
+                &format!("analyze:{}", place.path.display()),
+                &format!("Analyze {}", place.label),
+                &DiskUsageOperation::Analyze {
+                    path: place.path.clone(),
+                },
+            ) {
+                root.actions.push(action);
+            }
+        }
+        if let Some(action) =
+            operation_action("choose", "Choose folder", &DiskUsageOperation::Choose)
+        {
+            root.actions.push(action);
+        }
+        if !matches!(self.view, View::Home)
+            && let Some(action) =
+                operation_action("home", "Show locations", &DiskUsageOperation::Home)
+        {
+            root.actions.push(action);
+        }
+        if !matches!(self.view, View::Home)
+            && let Some(action) = operation_action("back", "Go back", &DiskUsageOperation::Back)
+        {
+            root.actions.push(action);
+        }
+        if let View::Analysis(result) = &self.view {
+            for entry in &result.entries {
+                if entry.path.file_name().is_some_and(|name| name != ".")
+                    && let Some(action) = operation_action(
+                        &format!("analyze:{}", entry.path.display()),
+                        &format!("Analyze {}", entry.name),
+                        &DiskUsageOperation::Analyze {
+                            path: entry.path.clone(),
+                        },
+                    )
+                {
+                    root.actions.push(action);
+                }
+            }
+        }
+        vec![root]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -936,7 +941,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: AutoCommit::new(),
         registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| DiskUsageApp::sample().resources(doc),
+        resources: |doc| ui::resources::resources(&DiskUsageApp::sample(), doc),
         palette: ["Analyze Projects", "Choose folder", "Go back"],
     }
 
@@ -946,7 +951,7 @@ mod tests {
         // --- phase: resource_surface_exposes_common_locations ---
         {
             let app = DiskUsageApp::new();
-            let resources = app.resources(&AutoCommit::new());
+            let resources = ui::resources::resources(&app, &AutoCommit::new());
             assert_eq!(resources.len(), 1);
             assert!(resources[0].actions.len() >= 3);
             assert_eq!(app.local_resource_operation_handlers(), &[OPERATION_TYPE]);

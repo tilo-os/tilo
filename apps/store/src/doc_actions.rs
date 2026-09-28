@@ -117,7 +117,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: seeded_doc(),
         registry: registry(),
-        resources: |doc| synced_app(&mut doc.clone()).resources(doc),
+        resources: |doc| ui::resources::resources(&synced_app(&mut doc.clone()), doc),
         palette: ["Create report draft", "Set report concern", "Refresh catalog", "Search apps"],
         replay: [
             draft_report => |_| encode(&StoreDocumentAction::CreateReportDraft {

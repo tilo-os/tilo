@@ -12,7 +12,7 @@ fn existing_projection_and_repeated_sync_do_not_author_changes() {
         widget.sync(&mut doc, &ROOT);
     }
     assert_eq!((doc.base_heads(), doc.pending_ops()), before);
-    assert!(!widget.resources(&doc).is_empty());
+    assert!(!ui::resources::resources(&widget, &doc).is_empty());
 }
 
 #[test]

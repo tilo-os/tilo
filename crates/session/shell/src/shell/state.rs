@@ -11,12 +11,7 @@ use super::fs_authority::wait_for_fs_authority_publication_idle;
 pub use local_app_records::LocalAppRecord;
 
 fn now_unix_nanos() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .try_into()
-        .unwrap_or(u64::MAX)
+    tilo_clock::unix_now_ns()
 }
 
 pub use collab_types::caps::{
@@ -2943,11 +2938,7 @@ impl WorkspaceTree {
             return None;
         }
         let actor = actor.into();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| i64::try_from(duration.as_secs()).ok())
-            .unwrap_or_default();
+        let now = tilo_clock::unix_now_i64();
         let id = format!("task:{}", uuid::Uuid::new_v4());
         let task = WorkspaceTask {
             id: id.clone(),
@@ -2983,11 +2974,7 @@ impl WorkspaceTree {
         status: WorkspaceTaskStatus,
         actor: &str,
     ) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| i64::try_from(duration.as_secs()).ok())
-            .unwrap_or_default();
+        let now = tilo_clock::unix_now_i64();
         let Some(task) = self
             .desktop
             .workspaces
@@ -3013,11 +3000,7 @@ impl WorkspaceTree {
         actor: &str,
         summary: impl Into<String>,
     ) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| i64::try_from(duration.as_secs()).ok())
-            .unwrap_or_default();
+        let now = tilo_clock::unix_now_i64();
         let Some(task) = self
             .desktop
             .workspaces
