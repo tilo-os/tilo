@@ -105,6 +105,7 @@ on:
       - "crates/media/thumbnail/**"
       - "crates/packaging/launcher/**"
       - "crates/runtime/runtime-fs/**"
+      - "crates/runtime/runtime-identity/**"
       - "crates/runtime/runtime-portal/**"
       - "crates/sdk/font-catalog/**"
       - "crates/sdk/rt/**"
