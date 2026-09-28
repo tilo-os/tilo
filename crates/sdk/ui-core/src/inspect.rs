@@ -249,7 +249,7 @@ mod tests {
         let map = layout(&mut root);
         let mut tree = SemanticTree::new();
         let base = vello::kurbo::Affine::scale(2.0);
-        crate::transient::begin_frame();
+        let frame = crate::transient::Frame::begin();
         let mut scene = vello::Scene::new();
         let mut text = crate::text_render::TextRenderer::new();
         let pill = Rect::new(300.0, 250.0, 380.0, 280.0);
@@ -262,7 +262,7 @@ mod tests {
             "Saved",
             12.0,
         );
-        tree.set_transient(crate::transient::end_frame(base));
+        tree.set_transient(frame.finish(base));
         tree.refresh(&root, &map, None, &[]);
         let reply = tree.inspect(&InspectRequest::new(
             InspectQuery::Subtree {
