@@ -62,7 +62,7 @@ pub trait EffectGate: Send + 'static {
 }
 
 use std::fs::File;
-#[cfg(any(unix, windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -859,7 +859,7 @@ pub fn map_uris(uris: &[url::Url]) -> MultiOutcome {
 /// Turn an already validated portal URI into a descriptor-retaining outcome.
 /// This runs on the portal worker, immediately after the picker returns, so
 /// no UI-frame delay can turn an accepted path into a later reopen.
-#[cfg(any(unix, windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) fn open_selected_uri(uri: &url::Url) -> OpenFileOutcome {
     let Some(path) = to_local_path(uri) else {
         return OpenFileOutcome::Failed(format!("not a local file: {uri}"));
@@ -873,7 +873,7 @@ pub(crate) fn open_selected_uri(uri: &url::Url) -> OpenFileOutcome {
     }
 }
 
-#[cfg(any(unix, windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn display_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -885,7 +885,7 @@ fn display_name(path: &Path) -> String {
 /// the resulting descriptor is a regular file. Checking metadata on the open
 /// descriptor, rather than the path, keeps the type check bound to exactly
 /// what is handed to the caller.
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn open_regular_file(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -1229,6 +1229,7 @@ mod tests {
         assert_eq!(PortalOutcome::Failed("x".into()).path(), None);
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn descriptor_open_retains_the_opened_file_and_a_separate_display_name() {
         use std::io::{Read, Write};
@@ -1257,7 +1258,7 @@ mod tests {
         assert_eq!(contents, "installer bytes");
     }
 
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn descriptor_open_refuses_a_symlink() {
         use std::os::unix::fs::symlink;
@@ -1275,6 +1276,7 @@ mod tests {
         ));
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn descriptor_open_refuses_a_non_regular_file() {
         let dir = tempfile::tempdir().unwrap();

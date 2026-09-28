@@ -519,22 +519,19 @@ mod tests {
                 );
             }
             let raw = [
+                (keysyms::XF86_KbdBrightnessUp, MediaKey::KeyboardBacklightUp),
                 (
-                    keysyms::KEY_XF86KbdBrightnessUp,
-                    MediaKey::KeyboardBacklightUp,
-                ),
-                (
-                    keysyms::KEY_XF86KbdBrightnessDown,
+                    keysyms::XF86_KbdBrightnessDown,
                     MediaKey::KeyboardBacklightDown,
                 ),
                 (
-                    keysyms::KEY_XF86KbdLightOnOff,
+                    keysyms::XF86_KbdLightOnOff,
                     MediaKey::KeyboardBacklightToggle,
                 ),
-                (keysyms::KEY_XF86WLAN, MediaKey::Wireless),
+                (keysyms::XF86_WLAN, MediaKey::Wireless),
                 (KEY_XF86_RFKILL, MediaKey::Wireless),
-                (keysyms::KEY_XF86Display, MediaKey::DisplayMode),
-                (keysyms::KEY_XF86TouchpadToggle, MediaKey::TouchpadToggle),
+                (keysyms::XF86_Display, MediaKey::DisplayMode),
+                (keysyms::XF86_TouchpadToggle, MediaKey::TouchpadToggle),
             ];
             for (keysym, want) in raw {
                 assert_eq!(
