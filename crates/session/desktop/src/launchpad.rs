@@ -528,11 +528,13 @@ impl Widget for CollaborationLaunchpad {
         );
         let (_, subtitle_h) = text.measure(&subtitle, small, None);
         if f64::from(title_h + subtitle_h) + 9.0 <= HEADING_BAND {
+            // On the bare wallpaper, like the hint under the cards: the dim
+            // tier's contrast holds only on the theme's own surfaces.
             text.draw_text(
                 scene,
                 &subtitle,
                 small,
-                theme.text_dim,
+                theme.text_primary,
                 transform * Affine::translate((content_left, heading_y + f64::from(title_h) + 3.0)),
                 None,
             );
