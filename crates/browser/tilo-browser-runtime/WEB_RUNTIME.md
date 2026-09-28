@@ -41,7 +41,7 @@ The Cloud frontend's monolithic module is unchanged in behaviour:
 
 | feature | adds |
 |---|---|
-| (none, the default) | the toolkit core: toolkit, page host, catalogue; no apps, no peer |
+| (none, the default) | the toolkit core: toolkit, page host, catalogue, the canonical desktop over page-owned rooms (`local`); no apps, no peer |
 | `dylink` | links the cdylib as a dynamic-linking main module (see below) |
 | `static-apps` | compiles Writer, Chat, Notes, Calculator and Books into the module |
 | `cloud` | the certified peer, iroh transport, delivery, onboarding, MoQ media, the canonical desktop |
@@ -266,7 +266,8 @@ phone.invokeAction(phone.opened.resource, 'highlight-selection');
   `take_open_file` and reports the resource that now holds it
   (`OpenFile::report_opened`), which the page reads as `mount.opened` and as
   an `{opened}` status before `gpu-pending`.
-- Every standalone mount of one profile/device also shares a content store
+- Every standalone mount of one profile/device (and every window of a local
+  desktop of it) also shares a content store
   (`HostContext::content`, a `tilo_content::ContentStore`) for the page's
   lifetime, as it shares records. Books puts an opened EPUB there and records
   it in its library row by content hash, exactly as it records an imported
@@ -288,6 +289,40 @@ phone.invokeAction(phone.opened.resource, 'highlight-selection');
 `open.html` in the dev output exercises this with two mounts (see
 [Building](#building)); put an EPUB next to it as `odyssey.epub`, or pass
 `?open=URL`, or pick a file.
+
+## The page's own desktop
+
+`mountDesktop(element, {app: 'desktop', local})` runs the canonical desktop
+(`tilo_desktop::composition::DesktopSurface` and its chrome, as the Cloud
+frontend does) without a peer. `src/local_desktop.rs` builds one room document
+per seeded workspace (the first is the mount's `room`, the others derived from
+it) and is their only topology owner: a command the shell binds is reduced
+with `tilo_desktop_model::commands::apply_command`, projected with
+`project_owned_contents`/`bind_tab_record` as the workspace host does, and
+handed to the desktop as its next admission in the same frame, instead of
+being queued for a peer. Nothing is replicated or persisted but the apps'
+records, which go to the profile's storage like a standalone mount's.
+
+- Windows are resolved through the same catalogue and resolver as standalone
+  mounts: the host links every seeded app (and `local.apps`) before mounting,
+  and an app `openApp`/`{kind: 'open'}` names before opening it. The
+  launcher, search and palette offer the linked apps.
+- A window with `record` opens that record (it must exist in the mount's room,
+  as a standalone mount's `record` does). Every other window is one the owner
+  created: its app makes a new record when the window first mounts
+  (`HostContext::prepare_new_record`, the app's own initialiser); no other
+  missing record is ever created.
+- The page's mounts of one record re-sync each other, standalone or desktop
+  window, so a Books library opened on a "phone" mount shows its book and
+  annotations live in the desktop's window.
+- `actions`/`invokeAction` take `{window}` (a tab id; the focused window by
+  default) and go through that window's action door.
+- Permissions are the page author's, as for a standalone mount (`Owner`).
+  A workspace's seeded `members` and `grants` become its
+  `Workspace::capabilities`, which the workspace settings (People, Agents,
+  Privacy) render read-only; nothing enforces them in this peer.
+- The desktop's tile catalogue follows the page's installs, so an app linked
+  after the mount opens in a window like one linked before it.
 
 ## Loading from a registry
 
@@ -326,6 +361,12 @@ path, with size and SHA-256 (`font-loader.mjs` verifies both). The five
 fetched only when text demands it, or during idle prewarm within its budget.
 
 ## Sizes
+
+The canonical desktop over page-owned rooms (`local`) costs the core
+1.23 MiB raw and 311 KiB brotli (`-Oz`: 18.27 MiB / 4.09 MiB before, 19.50
+MiB / 4.40 MiB after, measured 2026-09-28): the shell itself
+(`tilo_desktop`, 358 KiB linked; `tilo_desktop_model`, `tilo_automation`,
+`collab_types`), which the core linked but dead-stripped before.
 
 `build-web-dev.sh` writes `build/sizes.md`. Measured 2026-09-27 on main with
 the Cloud stack merged (collection Books + Writer, no `cloud`):

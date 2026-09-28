@@ -57,6 +57,41 @@ impl DesktopOverlays {
         }
     }
 
+    /// Open the workspace settings on `tab`, as its top-bar control and
+    /// tab row do.
+    pub(crate) fn open_settings(&mut self, tab: WsTab) {
+        self.changed = true;
+        self.collaborators = None;
+        match &mut self.settings {
+            Some(lens) => {
+                lens.open = true;
+                lens.tab = tab;
+            }
+            None => {
+                self.settings = Some(SettingsLens {
+                    overlay: WorkspaceSettingsOverlay::default(),
+                    tab,
+                    open: true,
+                });
+            }
+        }
+    }
+
+    pub(crate) fn close_settings(&mut self) {
+        if let Some(lens) = self.settings.as_mut().filter(|lens| lens.open) {
+            lens.open = false;
+            self.changed = true;
+        }
+    }
+
+    /// The tab the workspace settings show, while they are open.
+    pub(crate) fn settings_tab(&self) -> Option<WsTab> {
+        self.settings
+            .as_ref()
+            .filter(|lens| lens.open)
+            .map(|lens| lens.tab)
+    }
+
     pub(crate) fn toggle_collaborators(&mut self) {
         self.changed = true;
         if self.collaborators.take().is_none() {

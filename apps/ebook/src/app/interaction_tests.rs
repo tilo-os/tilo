@@ -4759,3 +4759,23 @@ fn reader_controls_fit_their_labels() {
         );
     }
 }
+
+#[test]
+fn a_rail_shorter_than_the_minimum_scrollbar_thumb_still_draws() {
+    let theme = ui::Theme::dark();
+    let mut scene = Scene::new();
+    for (y0, y1) in [(0.0, 1.0), (10.0, 30.0), (0.0, 400.0)] {
+        BooksApp::draw_rail_scrollbar(
+            &mut scene,
+            Affine::IDENTITY,
+            &theme.tokens.colors,
+            0.0,
+            y0,
+            y1,
+            40.0,
+            200.0,
+            100.0,
+            300.0,
+        );
+    }
+}
