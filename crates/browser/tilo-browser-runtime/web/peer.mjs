@@ -15,6 +15,8 @@
  * The page holds one device key (`device-custody.mjs`) and no user root.
  * `getSnapshot()` returns `PeerSnapshot` with `SessionHealth` v1.
  */
+import {createActions} from './actions.mjs';
+import {createAgents} from './agents.mjs';
 import {createPresencePublisher, createRemotePresence} from './live-presence.mjs';
 import {createFallbackTransport, createLiveCarriers} from './live-fallback.mjs';
 import {createSpeakers} from './live-speakers.mjs';
@@ -465,8 +467,17 @@ export async function connectPeer({
   let ready;
   const resetReady = () => { ready = new Promise(resolve => { admitted = resolve; }); };
   resetReady();
+  let agents;
+  let actions;
   let disposed = false;
   let snapshot = {phase: 'authenticating', records: []};
+  // The session's remote-action events are taken once per change and read
+  // by every consumer: agents' and the room's actions share the path.
+  let remoteEvents = '[]';
+  const remote = {
+    sendRemoteAction: (...args) => peer.sendRemoteAction(...args),
+    takeRemoteActionEvents: () => remoteEvents,
+  };
   // Desktop surfaces mounted through this peer, by surface id: their failures
   // are reported into SessionHealth and recovered through `recover`.
   const surfaces = new Map();
@@ -480,6 +491,10 @@ export async function connectPeer({
       const events = JSON.parse(peer.takeDurableEvents());
       for (const layer of layers()) layer.pump(events);
     }
+    remoteEvents = peer.takeRemoteActionEvents();
+    agents?.pump();
+    actions?.pump();
+    remoteEvents = '[]';
     for (const listener of [...listeners]) listener(snapshot);
     onStatus?.(snapshot);
   };
@@ -605,6 +620,13 @@ export async function connectPeer({
           kind: 'person', label: (displayName || label).slice(0, 32), color: colorOf(custodyKeyHex()), activity: null,
         }});
       }
+      agents?.dispose();
+      actions?.dispose();
+      const hostDevice = hexKey(host.hostCert?.device_public_key);
+      agents = hostDevice ? createAgents({peer: remote, runtime, room, live, userPublicKey, hostDevice}) : undefined;
+      actions = hostDevice
+        ? createActions({peer: remote, room, hostDevice, device: custodyKeyHex(), userPublicKey, store})
+        : undefined;
     }
     publish();
   }
@@ -654,6 +676,8 @@ export async function connectPeer({
     disposed = true;
     for (const entry of [...surfaces.values()]) dropSurface(entry);
     unsubscribeStorage?.();
+    agents?.dispose();
+    actions?.dispose();
     stopLive();
     peer?.dispose();
     listeners.clear();
@@ -669,6 +693,12 @@ export async function connectPeer({
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     /** The live layer of the joined room, or `undefined` without a room. */
     get live() { return live; },
+    /** The room's agents (`agents.mjs`), or `undefined` without a room. */
+    get agents() { return agents; },
+    /** The room's app actions (`actions.mjs`), or `undefined` without a room. */
+    get actions() { return actions; },
+    /** `actions` in the frozen qOS `actionsV1` contract. */
+    get actionsV1() { return actions?.v1; },
     /** This peer in the wasm runtime, for mounts that replicate through it. */
     get runtimeId() { return peer?.id; },
     /** The desktop mount (`host.mjs`) in this peer's profile and room.
