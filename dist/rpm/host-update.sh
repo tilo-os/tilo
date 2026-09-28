@@ -6,6 +6,7 @@
 #   dist/rpm/host-update.sh --no-cargo     repackage binaries already in target/release
 #   dist/rpm/host-update.sh --no-build     install RPMs already built for HEAD
 #   dist/rpm/host-update.sh --apply-live   also make it the running /usr (no reboot)
+#   dist/rpm/host-update.sh --stage-only   leave the deployment for shutdown to write
 #   dist/rpm/host-update.sh --dry-run      print what would run
 #
 # The packages are released as 0.<commit time>.git<commit>, so `rpm -q
@@ -23,21 +24,37 @@
 # and choosing "Tilo" at the greeter starts the new build. Do not apply live
 # while a Tilo session is running on this machine: its binary is replaced
 # underneath it.
+#
+# rpm-ostree only stages the deployment; ostree writes it at a clean shutdown,
+# so a hard reset or a hang discards it and boots the old packages. The helper
+# therefore finalizes the deployment at once (`ostree admin finalize-staged`),
+# which merges /etc as it is now. --stage-only keeps rpm-ostree's behaviour and
+# says loudly that the install is not yet durable.
+#
+# The runtime bundle's trusted publisher lives in /etc and changes with every
+# local build. /etc is merged three ways, so a copy that was ever changed stays
+# as it is and the launcher refuses the new runtime; the helper copies the
+# packaged key into both the running /etc (with --apply-live) and the new
+# deployment's /etc.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 rpm_ostree=${TILO_RPM_OSTREE:-rpm-ostree}
+ostree=${TILO_OSTREE:-ostree}
+sysroot=${TILO_SYSROOT:-}
+trust=etc/tilo/runtime-bundle-trusted-publishers.txt
 build_rpm=${TILO_BUILD_RPM:-$repo_root/dist/rpm/build-rpm.sh}
 out=${TILO_PACKAGE_OUT:-$repo_root/dist/rpm/build}
 version=$(<"$repo_root/dist/VERSION")
 
-build=cargo apply_live=0 dry_run=0 devel=auto allow_dirty=0
-usage() { sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+build=cargo apply_live=0 dry_run=0 devel=auto allow_dirty=0 finalize=1
+usage() { sed -n '2,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 while (( $# )); do
     case $1 in
         --no-cargo) build=repackage ;;
         --no-build) build=none ;;
         --apply-live) apply_live=1 ;;
+        --stage-only) finalize=0 ;;
         --dry-run) dry_run=1 ;;
         --devel) devel=yes ;;
         --no-devel) devel=no ;;
@@ -143,12 +160,53 @@ else
     as_root "$rpm_ostree" install "${install[@]}"
 fi
 
+copy_trust() {
+    local root=$1
+    as_root install -m 0644 "$root/usr/$trust" "$root/$trust"
+    if [[ -z $sysroot ]] && command -v restorecon >/dev/null 2>&1; then
+        as_root restorecon "$root/$trust"
+    fi
+}
+
 if (( apply_live )); then
     say "applying the new deployment to the running system"
     as_root "$rpm_ostree" apply-live --allow-replacement
-    echo
+    copy_trust "$sysroot"
+fi
+
+# The pending deployment: whether it is still staged, and where it lives.
+pending() {
+    "$rpm_ostree" status --json | python3 -c '
+import json, sys
+dep = json.load(sys.stdin)["deployments"][0]
+print("staged" if dep.get("staged") else "written",
+      "/ostree/deploy/%s/deploy/%s.%d" % (dep["osname"], dep["checksum"], dep["serial"]))
+'
+}
+
+if (( finalize )); then
+    say "writing the deployment now rather than at shutdown"
+    as_root "$ostree" admin finalize-staged || true
+fi
+(( ! dry_run )) || exit 0
+read -r state deployment < <(pending)
+if [[ $state == staged ]]; then
+    cat >&2 <<'WARN'
+
+!! host-update: the new deployment is only STAGED. ostree writes it at a clean
+!! shutdown; a hard reset, a crash or a hung suspend discards it and the machine
+!! boots the previous packages. Write it now with
+!!     sudo ostree admin finalize-staged
+!! then copy the new deployment's usr/etc/tilo/runtime-bundle-trusted-publishers.txt
+!! over its etc/ copy.
+WARN
+    exit 1
+fi
+copy_trust "$sysroot$deployment"
+
+echo
+if (( apply_live )); then
     echo "Installed. Log out and choose \"Tilo\" at the greeter."
 else
-    echo
-    echo "Staged. Reboot, then choose \"Tilo\" at the greeter (or rerun with --apply-live)."
+    echo "Installed for the next boot. Reboot, then choose \"Tilo\" at the greeter (or rerun with --apply-live)."
 fi
