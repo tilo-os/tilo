@@ -6,7 +6,7 @@ name: Snapshot / kernel
 #
 # Every build dependency and the Fedora SRPM come from the signed native kernel
 # buildroot pinned in os/kernel-buildroot-snapshot.env
-# (snapshot-kernel-buildroot.yml). Kernel provenance binds that buildroot, not
+# (build-buildroots.yml). Kernel provenance binds that buildroot, not
 # the OS frozen RPM snapshot, so only kernel inputs trigger a rebuild here.
 # tilo-crypto is filtered to the signing sources the kernel Containerfile
 # copies; TLS fixture code stays behind the default tls-fixture feature and
@@ -172,7 +172,7 @@ jobs:
             aarch64) ref="$KERNEL_BUILDROOT_AARCH64_REF"; expected_arch=arm64 ;;
           esac
           [[ "$ref" =~ ^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]] || {
-            printf 'no digest-pinned native kernel buildroot for %s; run snapshot-kernel-buildroot\n' '${{ matrix.arch }}' >&2
+            printf 'no digest-pinned native kernel buildroot for %s; run build-buildroots\n' '${{ matrix.arch }}' >&2
             exit 1
           }
           cosign verify --key keys/cosign.pub "$ref" >/dev/null
