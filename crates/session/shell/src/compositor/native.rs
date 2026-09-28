@@ -1365,12 +1365,27 @@ fn spawn_agent_mcp(
     };
     let computer =
         std::sync::Arc::new(tilo_runtime::computer::Computer::new(agent_socket, scratch));
-    let endpoint = tilo_runtime::mcp_http::Endpoint::new(
+    // Viewer invitations keep their ledger with the session's durable state.
+    let viewer_state = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+        .map(|state| state.join("tilo"))
+        .filter(|path| std::fs::create_dir_all(path).is_ok());
+    let viewer = match viewer_state.map(|state| tilo_runtime::viewer::start_from_env(&state)) {
+        Some(Ok(viewer)) => viewer,
+        Some(Err(error)) => {
+            eprintln!("tilo compositor: viewer invitations unavailable: {error}");
+            None
+        }
+        None => None,
+    };
+    let endpoint = tilo_runtime::mcp_http::Endpoint::with_viewer(
         crate::shell::remote_actions::BrokerActionHost::new(action_broker),
         room,
         actor,
         config.token.clone(),
         Some(computer),
+        viewer,
     );
     match tilo_runtime::mcp_http::spawn(&config, endpoint) {
         Ok(bound) => eprintln!("tilo compositor agent MCP endpoint listening on {bound}"),
@@ -4878,6 +4893,7 @@ fn install_session_peer_sync(
     let _ = handle.join_default_workspace();
     tracing::info!("peer-sync: actor spawned, default workspace joined");
     let net = Arc::new(handle);
+    net.join_at_boot();
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
     crate::network_secrets::store::RoamingWifiSlot::global().set(Arc::clone(&net) as _);
     install_device_fabric_bridge(
