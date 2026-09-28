@@ -3709,23 +3709,14 @@ impl Widget for VpnApp {
         if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
             return Ok(Some(started));
         }
-        if let Some(started) = self.admit_resource_operation(
+        self.admit_resource_operation(
             request.invocation,
             request.kind,
             request.type_id,
             request.payload,
             doc,
             path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
+        )
     }
 
     fn poll_resource_operation(
@@ -4052,28 +4043,6 @@ impl Widget for VpnApp {
 }
 
 impl VpnApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        _payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind != tilo_actions::OperationKind::Effect
-            || !matches!(
-                type_id,
-                "vpn.toggle-tunnel"
-                    | actions::VPN_IMPORT_TYPE
-                    | actions::VPN_DELETE_TYPE
-                    | actions::VPN_PROVISION_TYPE
-            )
-        {
-            return Ok(false);
-        }
-        Err("VPN machine changes require the lifecycle-capable operation host".into())
-    }
-
     fn admit_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
