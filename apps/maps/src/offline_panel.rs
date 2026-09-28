@@ -184,14 +184,16 @@ impl OfflinePanel {
         let mut focus_target: Option<NodeId> = None;
         self.input.handle_event(
             event,
-            scale,
-            &modifiers,
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: scale,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         self.reconcile_field();
         handled

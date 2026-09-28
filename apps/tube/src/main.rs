@@ -1647,14 +1647,16 @@ fn run_bench_scroll(
             let mut focus_target = None;
             widget.handle_event(
                 &wheel,
-                1.0,
-                &mods,
-                &mut state.doc,
-                &state.root,
-                &mut handled,
-                &mut focus_target,
-                child,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut state.doc,
+                    path: &state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: child,
+                    taffy: &taffy,
+                },
             );
 
             // The fast path skips the solve when nothing needs re-measuring.

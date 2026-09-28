@@ -14,12 +14,10 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::Color;
-use winit::event::WindowEvent;
 
 /// See module docs for variant semantics.
 #[derive(Clone, Debug)]
@@ -338,21 +336,6 @@ impl Widget for Badge {
     }
     fn is_layout_dirty(&self) -> bool {
         self.cache_rect == Rect::ZERO
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        // Badges are purely informational — no input handling.
     }
 
     fn name(&self) -> &'static str {

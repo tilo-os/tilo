@@ -614,23 +614,13 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         self.editor.sync(state, path);
     }
 
-    fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         if let Some(outcome) = self.outcome_of(event, *ctx.modifiers) {
             self.outcome = Some(outcome);
             *ctx.handled = true;
             return;
         }
-        self.editor.handle_event(
-            event,
-            ctx.scale_factor,
-            ctx.modifiers,
-            ctx.state,
-            ctx.path,
-            ctx.handled,
-            ctx.focus_target,
-            ctx.node_id,
-            ctx.taffy,
-        );
+        self.editor.handle_event(event, ctx);
         self.commit(ctx.state);
     }
 

@@ -1497,32 +1497,12 @@ impl Widget for LiveUi {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if let Ok(children) = taffy.children(node_id)
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(child) = children.first()
         {
-            self.child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                *child,
-                taffy,
-            );
+            self.child
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
         }
     }
 
@@ -3203,32 +3183,12 @@ impl Widget for UiGraphEditor {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if let Ok(children) = taffy.children(node_id)
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(child) = children.first()
         {
-            self.child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                *child,
-                taffy,
-            );
+            self.child
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
         }
     }
 

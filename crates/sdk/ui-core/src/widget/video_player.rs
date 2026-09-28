@@ -2476,27 +2476,17 @@ impl Widget for VideoPlayer {
         clippy::too_many_lines,
         reason = "one widget event boundary must coordinate pointer, keyboard, transport, scrub, volume, settings, and overlay interaction without splitting event ordering"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let logical =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = logical;
                 if self.scrubbing {
                     self.seek_from_cursor();
                     self.show_controls();
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if self.rect.contains(logical) {
                     self.show_controls();
                     self.dirty = true;
@@ -2510,11 +2500,11 @@ impl Widget for VideoPlayer {
                 if !self.rect.contains(self.last_cursor) {
                     return;
                 }
-                *focus_target = Some(node_id);
+                *ctx.focus_target = Some(ctx.node_id);
                 // Control hit regions are ZERO while hidden, so this naturally
                 // falls through to the surface play/pause toggle.
                 if self.press_at_cursor() {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 self.show_controls();
             }
@@ -2525,13 +2515,13 @@ impl Widget for VideoPlayer {
             } => {
                 if self.scrubbing {
                     self.scrubbing = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if self.handle_key_input(&key_event.logical_key, key_event.state) => {
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -3309,14 +3299,16 @@ mod tests {
         let node = NodeId::new(0);
         vp.handle_event(
             ev,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

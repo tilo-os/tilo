@@ -57,14 +57,16 @@ fn local_textinput_reports_typing_but_not_programmatic_text() {
         let typing = WindowEvent::Ime(Ime::Commit("!".to_string()));
         (&mut input as &mut dyn Widget).handle_event(
             &typing,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &automerge::ObjId::Root,
-            &mut handled,
-            &mut focus_target,
-            root_node,
-            &taffy,
+            &mut tilo_ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &automerge::ObjId::Root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: root_node,
+                taffy: &taffy,
+            },
         );
 
         let dirty = input.take_dirty();

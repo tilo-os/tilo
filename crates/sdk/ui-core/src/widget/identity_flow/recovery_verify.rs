@@ -241,41 +241,16 @@ impl RecoveryVerifyScreen {
     /// press only on the hovered one — while a release, a right-click or a
     /// pointer move reaches the field it belongs to even after focus has
     /// moved on, so a drag ends and a menu opens where the pointer is.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the Widget::handle_event parameter list to the embedded fields"
-    )]
-    fn forward_all(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn forward_all(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         for slot in 0..self.editors.len() {
             let node = self
                 .slot_nodes
                 .get(slot)
                 .copied()
                 .flatten()
-                .unwrap_or(node_id);
+                .unwrap_or(ctx.node_id);
             if let Some(editor) = self.editors.get_mut(slot) {
-                editor.handle_event(
-                    event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node,
-                    taffy,
-                );
+                editor.handle_event(event, &mut ctx.reborrow(ctx.path, node));
             }
         }
     }
@@ -297,35 +272,25 @@ impl RecoveryVerifyScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The recovery screen forwards the Widget event context, CRDT path, handled/focus outputs, node, and layout to its verification fields."
-    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) -> ScreenOutcome {
         // What the screen claims for itself; `None` hands the event to the
         // fields. A press on a blank is both: the screen focuses it, the
         // field places its caret, the screen restates the focus.
         let (claimed, pressed_slot) = match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 (None, None)
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.left_press(handled, focus_target),
+            } => self.left_press(ctx.handled, ctx.focus_target),
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -335,12 +300,12 @@ impl RecoveryVerifyScreen {
                     },
                 ..
             } => (
-                self.key_press(logical_key, *modifiers, handled, focus_target),
+                self.key_press(logical_key, *ctx.modifiers, ctx.handled, ctx.focus_target),
                 None,
             ),
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.scroll.wheel(delta) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 (Some(ScreenOutcome::Stay), None)
             }
@@ -349,20 +314,10 @@ impl RecoveryVerifyScreen {
         let outcome = if let Some(outcome) = claimed {
             outcome
         } else {
-            self.forward_all(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.forward_all(event, ctx);
             if let Some(slot) = pressed_slot {
-                self.focus_slot(slot, focus_target);
-                *handled = true;
+                self.focus_slot(slot, ctx.focus_target);
+                *ctx.handled = true;
             }
             ScreenOutcome::Stay
         };
@@ -811,20 +766,6 @@ impl Widget for RecoveryVerifyScreen {
         }
         scene.pop_layer();
         sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

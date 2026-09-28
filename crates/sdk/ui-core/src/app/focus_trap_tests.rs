@@ -46,7 +46,6 @@ impl Widget for TwoKids {
         _p: &PresenceCtx,
     ) {
     }
-    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {}
     fn children(&self) -> Vec<&dyn Widget> {
         self.kids.iter().map(Box::as_ref).collect()
     }
@@ -120,7 +119,6 @@ impl Widget for ModalHost {
         _p: &PresenceCtx,
     ) {
     }
-    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {}
     fn children(&self) -> Vec<&dyn Widget> {
         let mut v: Vec<&dyn Widget> = self.outer.iter().map(Box::as_ref).collect();
         v.push(&self.modal);

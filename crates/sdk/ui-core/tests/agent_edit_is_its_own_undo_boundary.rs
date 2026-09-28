@@ -88,33 +88,12 @@ impl Widget for AgentTarget {
         self.inner
             .draw(scene, transform, text_renderer, theme, presence);
     }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the test widget implements the framework event contract"
-    )]
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<taffy::NodeId>,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
+        ctx: &mut tilo_ui::widget::EventCtx<'_>,
     ) {
-        self.inner.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+        self.inner.handle_event(event, ctx);
     }
     fn name(&self) -> &'static str {
         "AgentTarget"

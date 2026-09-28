@@ -160,14 +160,16 @@ mod tests {
         let mut focus_target = None;
         button.handle_event(
             &press(key),
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert!(handled);
         assert_eq!(
@@ -380,28 +382,18 @@ impl Widget for ActionButton {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.disabled {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let logical =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let hover = self.rect.contains(logical);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -413,17 +405,17 @@ impl Widget for ActionButton {
                     let pressed = *element_state == ElementState::Pressed;
                     if pressed != self.is_pressed {
                         self.is_pressed = pressed;
-                        *handled = true;
+                        *ctx.handled = true;
                         if pressed {
-                            *focus_target = Some(node_id);
+                            *ctx.focus_target = Some(ctx.node_id);
                         } else {
                             // Fire on release (matches ui::Button).
-                            self.fire(state, root);
+                            self.fire(ctx.state, ctx.path);
                         }
                     }
                 } else if self.is_pressed {
                     self.is_pressed = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -435,8 +427,8 @@ impl Widget for ActionButton {
                     },
                 ..
             } if self.is_focused => {
-                self.fire(state, root);
-                *handled = true;
+                self.fire(ctx.state, ctx.path);
+                *ctx.handled = true;
             }
             _ => {}
         }

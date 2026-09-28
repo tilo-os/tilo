@@ -358,19 +358,6 @@ impl Widget for Artwork {
             }
         }
     }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-    }
     fn accessibility(&self) -> Option<AccessNode> {
         Some(
             AccessNode::new(Role::Image)

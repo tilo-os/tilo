@@ -2418,18 +2418,7 @@ impl Widget for OskWidget {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // A hidden keyboard occupies no area and draws nothing, so it should
         // not consume or react to pointer events meant for the app behind it.
         if !self.visible {
@@ -2437,17 +2426,17 @@ impl Widget for OskWidget {
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = Some(Point::new(
-                position.x / scale_factor,
-                position.y / scale_factor,
+                position.x / ctx.scale_factor,
+                position.y / ctx.scale_factor,
             ));
         }
-        if self.handle_panel_event(event, scale_factor, handled) {
+        if self.handle_panel_event(event, ctx.scale_factor, ctx.handled) {
             return;
         }
         match event {
-            WindowEvent::Touch(touch) => self.handle_touch(touch, scale_factor, handled),
+            WindowEvent::Touch(touch) => self.handle_touch(touch, ctx.scale_factor, ctx.handled),
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.pointer = Some(p);
                 // While the button is held over the keys, accumulate the
                 // gesture path for swipe decoding.
@@ -2467,7 +2456,7 @@ impl Widget for OskWidget {
                 }
                 let k = self.key_at(p);
                 if self.pressed_key.is_some() && self.track_hold(None, p, k) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 let s = if k.is_some() { None } else { self.sugg_at(p) };
                 let t = if k.is_some() || s.is_some() {
@@ -2479,7 +2468,7 @@ impl Widget for OskWidget {
                     self.hovered_key = k;
                     self.hovered_tool = t;
                     self.hovered_sugg = s;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -2503,13 +2492,13 @@ impl Widget for OskWidget {
                     if let Some(p) = self.pointer {
                         self.begin_cursor_drag(id, None, p.x);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if let Some(i) = self.hovered_sugg {
                     self.pressed_sugg = Some(i);
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if let Some(i) = self.hovered_tool {
                     self.pressed_tool = Some(i);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -2517,7 +2506,7 @@ impl Widget for OskWidget {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.pointer_released(handled);
+                self.pointer_released(ctx.handled);
             }
             _ => {}
         }
@@ -3262,14 +3251,16 @@ mod tests {
                 let mut focus = None;
                 osk.handle_event(
                     &ev,
-                    1.0,
-                    &mods,
-                    &mut doc,
-                    &root,
-                    &mut handled,
-                    &mut focus,
-                    NodeId::new(0),
-                    &TaffyTree::new(),
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &mods,
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: NodeId::new(0),
+                        taffy: &TaffyTree::new(),
+                    },
                 );
             };
 
@@ -3365,14 +3356,16 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                NodeId::new(0),
-                &TaffyTree::new(),
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: NodeId::new(0),
+                    taffy: &TaffyTree::new(),
+                },
             );
             assert!(!handled, "a hidden keyboard does not consume pointer input");
             assert_eq!(osk.pending_text(), "");
@@ -3701,14 +3694,16 @@ mod tests {
                 let mut focus = None;
                 osk.handle_event(
                     &ev,
-                    1.0,
-                    &mods,
-                    &mut doc,
-                    &root,
-                    &mut handled,
-                    &mut focus,
-                    NodeId::new(0),
-                    &TaffyTree::new(),
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &mods,
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: NodeId::new(0),
+                        taffy: &TaffyTree::new(),
+                    },
                 );
             };
 
@@ -3769,14 +3764,16 @@ mod tests {
                 let mut focus = None;
                 osk.handle_event(
                     &ev,
-                    1.0,
-                    &mods,
-                    &mut doc,
-                    &root,
-                    &mut handled,
-                    &mut focus,
-                    NodeId::new(0),
-                    &TaffyTree::new(),
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &mods,
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: NodeId::new(0),
+                        taffy: &TaffyTree::new(),
+                    },
                 );
             };
 

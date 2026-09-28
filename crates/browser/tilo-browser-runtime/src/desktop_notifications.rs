@@ -338,20 +338,9 @@ impl Widget for NotificationLayer {
         self.drawn_revision.set(Some(host.revision.get()));
         self.dirty = false;
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        _modifiers: &winit::event::Modifiers,
-        _doc: &mut automerge::AutoCommit,
-        _path: &automerge::ObjId,
-        handled: &mut bool,
-        _focus: &mut Option<NodeId>,
-        _node: NodeId,
-        _tree: &TaffyTree<()>,
-    ) {
-        if !*handled && self.route(event, scale) {
-            *handled = true;
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if !*ctx.handled && self.route(event, ctx.scale_factor) {
+            *ctx.handled = true;
         }
     }
     /// The live region announcing banners, holding the centre's dialog

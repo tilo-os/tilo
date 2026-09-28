@@ -1929,29 +1929,12 @@ impl Widget for SettingsApp {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<taffy::NodeId>,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        if let (Ok(children), Some(shell)) = (taffy.children(node_id), &mut self.shell)
+        if let (Ok(children), Some(shell)) = (ctx.taffy.children(ctx.node_id), &mut self.shell)
             && let Some(&shell_node) = children.first()
         {
-            shell.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                shell_node,
-                taffy,
-            );
+            shell.handle_event(event, &mut ctx.reborrow(ctx.path, shell_node));
         }
     }
 

@@ -3260,33 +3260,12 @@ impl Widget for CameraApp {
         clippy::too_many_lines,
         reason = "the root event router keeps pointer, touch, keyboard, crop, modal, and drawer precedence together so painted and semantic hit-testing cannot diverge"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, TouchPhase};
         use winit::keyboard::{Key, NamedKey};
 
         if self.document_popover.is_open() {
-            self.document_popover.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.document_popover.handle_event(event, ctx);
             if let Some(index) = self.document_popover.take_selection() {
                 self.apply_document_choice(index);
             }
@@ -3294,14 +3273,15 @@ impl Widget for CameraApp {
             return;
         }
         if let Some(editor) = self.document_crop_editor.as_mut()
-            && editor.handle_event_at(event, scale_factor)
+            && editor.handle_event_at(event, ctx.scale_factor)
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_mouse =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.dirty = true;
             }
             WindowEvent::MouseInput {
@@ -3309,14 +3289,14 @@ impl Widget for CameraApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.hit(self.last_mouse, state, path) {
-                    *handled = true;
+                if self.hit(self.last_mouse, ctx.state, ctx.path) {
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::Touch(touch) => {
                 let point = Point::new(
-                    touch.location.x / scale_factor,
-                    touch.location.y / scale_factor,
+                    touch.location.x / ctx.scale_factor,
+                    touch.location.y / ctx.scale_factor,
                 );
                 match touch.phase {
                     TouchPhase::Started if self.active_touch.is_none() => {
@@ -3333,7 +3313,7 @@ impl Widget for CameraApp {
                                 action,
                                 cancelled: false,
                             });
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                     TouchPhase::Moved => {
@@ -3343,7 +3323,7 @@ impl Widget for CameraApp {
                             if !target.rect.contains(point) {
                                 target.cancelled = true;
                             }
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                     TouchPhase::Ended => {
@@ -3357,9 +3337,9 @@ impl Widget for CameraApp {
                                 && !target.cancelled
                                 && target.rect.contains(point)
                             {
-                                self.apply(target.action, state, path);
+                                self.apply(target.action, ctx.state, ctx.path);
                             }
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                     TouchPhase::Cancelled
@@ -3369,7 +3349,7 @@ impl Widget for CameraApp {
                             .is_some_and(|target| target.id == touch.id) =>
                     {
                         self.active_touch = None;
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     TouchPhase::Cancelled | TouchPhase::Started => {}
                 }
@@ -3377,13 +3357,13 @@ impl Widget for CameraApp {
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
-                    MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(pos) => pos.y / ctx.scale_factor,
                 };
                 // Wheel up (dy > 0) scrolls toward the top of the content.
                 if self.screen == Screen::Settings {
                     self.settings_scroll = (self.settings_scroll - dy).max(0.0);
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -3431,8 +3411,8 @@ impl Widget for CameraApp {
                     _ => None,
                 };
                 if let Some(a) = act {
-                    self.apply(a, state, path);
-                    *handled = true;
+                    self.apply(a, ctx.state, ctx.path);
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -6777,14 +6757,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &mods,
-            doc,
-            root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: doc,
+                path: root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -7478,14 +7460,16 @@ mod tests {
             let mut focus = None;
             app.handle_event(
                 &event,
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(handled, "space should be handled on the camera screen");
 
@@ -7998,14 +7982,16 @@ mod tests {
                 let mut focus = None;
                 app.handle_event(
                     event,
-                    1.0,
-                    &winit::event::Modifiers::default(),
-                    doc,
-                    &automerge::ROOT,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    tree,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: doc,
+                        path: &automerge::ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: tree,
+                    },
                 );
                 assert!(handled);
             }

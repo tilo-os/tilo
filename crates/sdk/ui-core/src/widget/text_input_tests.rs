@@ -991,14 +991,16 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
         let event = char_key_event("x");
         ti.handle_event(
             &event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert!(!handled, "disabled input must not consume the keypress");
         assert_eq!(ti.value(), "", "disabled input must not insert text");
@@ -1011,14 +1013,16 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
         let mut handled = false;
         on.handle_event(
             &char_key_event("x"),
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert!(handled);
         assert_eq!(on.value(), "x");
@@ -1043,14 +1047,16 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
         };
         ti.handle_event(
             &moved,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         let press = WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
@@ -1059,14 +1065,16 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
         };
         ti.handle_event(
             &press,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
 
         assert!(!handled, "disabled input must not consume the click");
@@ -1136,14 +1144,16 @@ fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool
     };
     ti.handle_event(
         &moved,
-        1.0,
-        &Modifiers::default(),
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus_target,
-        node,
-        &taffy,
+        &mut crate::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     let press = WindowEvent::MouseInput {
         device_id: unsafe { std::mem::zeroed() },
@@ -1152,14 +1162,16 @@ fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool
     };
     ti.handle_event(
         &press,
-        1.0,
-        &Modifiers::default(),
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus_target,
-        node,
-        &taffy,
+        &mut crate::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     handled
 }
@@ -1266,14 +1278,16 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
         };
         ti.handle_event(
             &moved,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         let press = WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
@@ -1282,14 +1296,16 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
         };
         ti.handle_event(
             &press,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert!(handled, "click consumed while menu open");
         assert!(
@@ -2089,14 +2105,16 @@ fn drive(ti: &mut TextInput, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifier
     let (taffy, node) = test_node();
     ti.handle_event(
         ev,
-        1.0,
-        &m,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus_target,
-        node,
-        &taffy,
+        &mut crate::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &m,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     handled
 }
@@ -3518,14 +3536,16 @@ fn attributed_single_line_preedit_preserves_utf8_marks_and_commit_route() {
         let mut send = |line: &mut crate::widget::RichTextLine, event: WindowEvent| {
             line.handle_event(
                 &event,
-                1.0,
-                &Modifiers::default(),
-                &mut doc,
-                &automerge::ROOT,
-                &mut false,
-                &mut None,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &Modifiers::default(),
+                    state: &mut doc,
+                    path: &automerge::ROOT,
+                    handled: &mut false,
+                    focus_target: &mut None,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
         };
         send(

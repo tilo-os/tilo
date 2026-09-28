@@ -3171,14 +3171,16 @@ impl Pane {
         if let Some(view) = self.html_view.as_mut() {
             view.handle_event(
                 event,
-                ctx.scale_factor,
-                &ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                ctx.handled,
-                ctx.focus_target,
-                ctx.node_id,
-                ctx.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: &ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             );
         }
     }
@@ -3198,14 +3200,16 @@ impl Pane {
             if let Some(inp) = self.search_input.as_mut() {
                 inp.handle_event(
                     event,
-                    ctx.scale_factor,
-                    &ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.handled,
-                    ctx.focus_target,
-                    ctx.node_id,
-                    ctx.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: &ctx.modifiers,
+                        state: ctx.state,
+                        path: ctx.path,
+                        handled: ctx.handled,
+                        focus_target: ctx.focus_target,
+                        node_id: ctx.node_id,
+                        taffy: ctx.taffy,
+                    },
                 );
             }
             // Reflect the field into the query + first-row selection.
@@ -3419,19 +3423,8 @@ impl Widget for Pane {
             })
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if *handled {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if *ctx.handled {
             return;
         }
         self.rebuild_hits();
@@ -3439,31 +3432,31 @@ impl Widget for Pane {
         self.forward_html_view_event(
             event,
             &mut EventContext {
-                scale_factor,
-                modifiers: *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                scale_factor: ctx.scale_factor,
+                modifiers: *ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
+                handled: ctx.handled,
+                focus_target: ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
             },
         );
-        if *handled {
+        if *ctx.handled {
             return;
         }
 
         if self.handle_search_keyboard(
             event,
             &mut EventContext {
-                scale_factor,
-                modifiers: *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                scale_factor: ctx.scale_factor,
+                modifiers: *ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
+                handled: ctx.handled,
+                focus_target: ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
             },
         ) {
             return;
@@ -3481,7 +3474,7 @@ impl Widget for Pane {
                         self.shared
                             .borrow_mut()
                             .push_intent(Intent::ContextMenu(id, pt));
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
             }
@@ -3491,7 +3484,7 @@ impl Widget for Pane {
                 ..
             } => {
                 let pt = self.shared.borrow().last_mouse;
-                self.on_left_press(state, pt, handled);
+                self.on_left_press(ctx.state, pt, ctx.handled);
             }
             WindowEvent::CursorMoved { .. } => {
                 if self.role == Role::List
@@ -3513,18 +3506,18 @@ impl Widget for Pane {
                 if let Some(s) = self.swipe.take() {
                     if s.dx <= -SWIPE_THRESHOLD {
                         self.shared.borrow_mut().apply_message_action(
-                            state,
+                            ctx.state,
                             s.id,
                             CtxAction::Archive,
                         );
                     } else if s.dx >= SWIPE_THRESHOLD {
                         self.shared.borrow_mut().apply_message_action(
-                            state,
+                            ctx.state,
                             s.id,
                             CtxAction::Delete,
                         );
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 self.mouse_down_row = None;
             }
@@ -3677,14 +3670,16 @@ mod tests {
         let mut focus = None;
         p.handle_event(
             ev,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

@@ -6075,29 +6075,18 @@ impl Widget for SheetsApp {
         vec![Box::new(self.search_provider.clone())]
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, event_ctx: &mut ui::widget::EventCtx<'_>) {
         if self.route_inline_editor(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            handled,
+            event_ctx.scale_factor,
+            *event_ctx.modifiers,
+            event_ctx.state,
+            event_ctx.handled,
             &mut PaletteRouteCtx {
-                path,
-                focus_target,
-                node_id,
-                taffy,
+                path: event_ctx.path,
+                focus_target: event_ctx.focus_target,
+                node_id: event_ctx.node_id,
+                taffy: event_ctx.taffy,
             },
         ) {
             return;
@@ -6108,7 +6097,12 @@ impl Widget for SheetsApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_press(*modifiers, state, path, handled);
+                self.handle_left_press(
+                    *event_ctx.modifiers,
+                    event_ctx.state,
+                    event_ctx.path,
+                    event_ctx.handled,
+                );
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -6117,37 +6111,42 @@ impl Widget for SheetsApp {
             } => {
                 self.grid.pointer_up();
                 // A completed fill-handle drag commits its expansion here.
-                self.run_pending_fill(state);
+                self.run_pending_fill(event_ctx.state);
                 self.formula_bar_selecting = false;
                 self.pending.redraw = true;
-                *handled = true;
+                *event_ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
             } => {
-                self.handle_right_press(handled);
+                self.handle_right_press(event_ctx.handled);
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position.x, position.y, scale_factor, handled);
+                self.handle_cursor_moved(
+                    position.x,
+                    position.y,
+                    event_ctx.scale_factor,
+                    event_ctx.handled,
+                );
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_mouse_wheel(delta, scale_factor, handled);
+                self.handle_mouse_wheel(delta, event_ctx.scale_factor, event_ctx.handled);
             }
             WindowEvent::KeyboardInput { .. } => {
                 let mut ctx = PaletteRouteCtx {
-                    path,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    path: event_ctx.path,
+                    focus_target: event_ctx.focus_target,
+                    node_id: event_ctx.node_id,
+                    taffy: event_ctx.taffy,
                 };
                 self.handle_keyboard_input(
                     event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    handled,
+                    event_ctx.scale_factor,
+                    *event_ctx.modifiers,
+                    event_ctx.state,
+                    event_ctx.handled,
                     &mut ctx,
                 );
             }
@@ -6586,14 +6585,16 @@ impl SheetsApp {
                 rename.editor.apply_layout_external(rename.rect);
                 rename.editor.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    ctx.path,
-                    handled,
-                    ctx.focus_target,
-                    ctx.node_id,
-                    ctx.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor,
+                        modifiers: &modifiers,
+                        state,
+                        path: ctx.path,
+                        handled,
+                        focus_target: ctx.focus_target,
+                        node_id: ctx.node_id,
+                        taffy: ctx.taffy,
+                    },
                 );
                 rename.editor.take_outcome()
             };
@@ -6642,14 +6643,16 @@ impl SheetsApp {
                 ));
                 input.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    ctx.path,
-                    handled,
-                    ctx.focus_target,
-                    ctx.node_id,
-                    ctx.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor,
+                        modifiers: &modifiers,
+                        state,
+                        path: ctx.path,
+                        handled,
+                        focus_target: ctx.focus_target,
+                        node_id: ctx.node_id,
+                        taffy: ctx.taffy,
+                    },
                 );
                 input.take_submit()
             };
@@ -7173,14 +7176,16 @@ impl SheetsApp {
         if self.palette.is_open() {
             self.palette.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                ctx.path,
-                handled,
-                ctx.focus_target,
-                ctx.node_id,
-                ctx.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor,
+                    modifiers: &modifiers,
+                    state,
+                    path: ctx.path,
+                    handled,
+                    focus_target: ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             );
             self.pending.redraw = true;
             *handled = true;
@@ -9949,14 +9954,16 @@ mod tests {
         let node = taffy.new_leaf(Style::default()).unwrap();
         app.handle_event(
             ev,
-            1.0,
-            &mods,
-            doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

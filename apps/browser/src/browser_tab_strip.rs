@@ -608,18 +608,7 @@ impl Widget for BrowserTabStrip {
         }
         self.draw_overflow_controls(scene, transform, theme);
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        tree: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.is_focused()
             && let WindowEvent::KeyboardInput { event, .. } = event
             && event.state == ElementState::Pressed
@@ -628,12 +617,12 @@ impl Widget for BrowserTabStrip {
             let target = match &event.logical_key {
                 Key::Named(NamedKey::ArrowLeft) => {
                     self.overflow_step(false);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::ArrowRight) => {
                     self.overflow_step(true);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::Home) => self.tabs.first().map(|tab| tab.id),
@@ -642,12 +631,12 @@ impl Widget for BrowserTabStrip {
             };
             if let Some(id) = target {
                 self.set_active(id);
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / scale, position.y / scale);
+            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
@@ -658,12 +647,12 @@ impl Widget for BrowserTabStrip {
             let (left, right) = self.overflow_rects();
             if left.contains(self.cursor) && self.has_hidden_before() {
                 self.overflow_step(false);
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if right.contains(self.cursor) && self.has_hidden_after() {
                 self.overflow_step(true);
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             for (index, id) in self.visible_ids.iter().copied().enumerate() {
@@ -674,7 +663,7 @@ impl Widget for BrowserTabStrip {
                     && self.media_rect(index).contains(self.cursor)
                 {
                     self.pending_toggle_mute = Some(id);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
             }
@@ -691,12 +680,10 @@ impl Widget for BrowserTabStrip {
                 }
             };
             self.overflow_step(forward);
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
-        self.inner.handle_event(
-            event, scale, modifiers, state, path, handled, focus, node, tree,
-        );
+        self.inner.handle_event(event, ctx);
     }
     fn perform_semantic_action(
         &mut self,
@@ -838,14 +825,16 @@ mod interaction_tests {
     ) {
         strip.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-            &mut false,
-            &mut None,
-            node,
-            tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut AutoCommit::new(),
+                path: &automerge::ROOT,
+                handled: &mut false,
+                focus_target: &mut None,
+                node_id: node,
+                taffy: tree,
+            },
         );
     }
 

@@ -14,7 +14,6 @@
 //! animation driver — so tests stay deterministic.
 
 use crate::time::Duration;
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -905,21 +904,11 @@ impl Widget for ToastStack {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 // Hover-pause: expiry halts while the pointer is over the stack.
                 let now_hover = !self.toasts.is_empty() && self.card_at(self.last_cursor).is_some();
                 if now_hover != self.hovered {
@@ -934,7 +923,7 @@ impl Widget for ToastStack {
                 if let Some(idx) = self.card_at(self.last_cursor) {
                     self.dismiss(idx);
                     self.hovered = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -968,6 +957,7 @@ impl Widget for ToastStack {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::collections::HashMap;
     use winit::event::{DeviceId, ElementState, MouseButton};
 
@@ -1000,14 +990,16 @@ mod tests {
         let root = automerge::ROOT;
         s.handle_event(
             ev,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

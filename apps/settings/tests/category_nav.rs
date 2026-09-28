@@ -211,14 +211,16 @@ fn click_navigates_to(target: Category) {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
@@ -365,14 +367,16 @@ fn two_consecutive_clicks_navigate() {
             let mut focus = None;
             app.handle_event(
                 ev,
-                1.0,
-                &mods,
-                doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy,
+                },
             );
         }
         app.sync(doc, &root);

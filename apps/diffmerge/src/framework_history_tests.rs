@@ -110,19 +110,8 @@ impl ui::widget::Widget for ResourceHarness {
         clippy::many_single_char_names,
         reason = "test adapter forwards the existing Widget event signature"
     )]
-    fn handle_event(
-        &mut self,
-        e: &winit::event::WindowEvent,
-        s: f64,
-        m: &winit::event::Modifiers,
-        d: &mut AutoCommit,
-        p: &automerge::ObjId,
-        h: &mut bool,
-        f: &mut Option<taffy::NodeId>,
-        n: taffy::NodeId,
-        t: &taffy::TaffyTree<()>,
-    ) {
-        self.app.handle_event(e, s, m, d, p, h, f, n, t);
+    fn handle_event(&mut self, e: &winit::event::WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.app.handle_event(e, ctx);
     }
     fn name(&self) -> &'static str {
         "DiffMerge resource test"

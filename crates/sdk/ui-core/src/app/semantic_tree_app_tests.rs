@@ -377,7 +377,6 @@ impl Widget for CounterCard {
         _p: &PresenceCtx,
     ) {
     }
-    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {}
     fn children(&self) -> Vec<&dyn Widget> {
         vec![&self.button]
     }

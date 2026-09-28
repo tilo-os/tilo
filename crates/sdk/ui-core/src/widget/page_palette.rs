@@ -666,19 +666,6 @@ impl Widget for PageJumpPalette {
         _presence: &PresenceCtx,
     ) {
     }
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "PageJumpPalette"
     }

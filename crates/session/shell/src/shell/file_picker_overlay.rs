@@ -135,14 +135,16 @@ impl FilePickerOverlay {
         };
         active.widget.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers: &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         *handled = true;
         true

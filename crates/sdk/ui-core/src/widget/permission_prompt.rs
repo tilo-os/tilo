@@ -488,21 +488,10 @@ impl Widget for PermissionPrompt {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = p;
                 let new_idx = if self.allow_rect.contains(p) {
                     Some(0)
@@ -518,7 +507,7 @@ impl Widget for PermissionPrompt {
                 };
                 if new_idx != self.hover_idx {
                     self.hover_idx = new_idx;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -530,26 +519,26 @@ impl Widget for PermissionPrompt {
                 if self.allow_rect.contains(p) {
                     self.focused_choice = Some(PromptChoice::Allow);
                     self.choose(PromptChoice::Allow);
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 } else if self.session_rect.contains(p) {
                     self.focused_choice = Some(PromptChoice::Session);
                     self.choose(PromptChoice::Session);
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 } else if self.always_rect.contains(p) {
                     if self.is_owner {
                         self.focused_choice = Some(PromptChoice::Always);
                         self.choose(PromptChoice::Always);
-                        *focus_target = Some(node_id);
-                        *handled = true;
+                        *ctx.focus_target = Some(ctx.node_id);
+                        *ctx.handled = true;
                     }
                     // Dropped for a non-owner: `pending_choice` stays untouched.
                 } else if self.deny_rect.contains(p) {
                     self.focused_choice = Some(PromptChoice::Deny);
                     self.choose(PromptChoice::Deny);
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -563,20 +552,20 @@ impl Widget for PermissionPrompt {
             } if self.has_keyboard_focus => match logical_key {
                 Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) => {
                     self.move_focus(false);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) => {
                     self.move_focus(true);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 Key::Named(NamedKey::Enter | NamedKey::Space) => {
                     if let Some(choice) = self.focused_choice {
-                        *handled = self.choose(choice);
+                        *ctx.handled = self.choose(choice);
                     }
                 }
                 Key::Named(NamedKey::Escape) => {
                     self.focused_choice = Some(PromptChoice::Deny);
-                    *handled = self.choose(PromptChoice::Deny);
+                    *ctx.handled = self.choose(PromptChoice::Deny);
                 }
                 _ => {}
             },
@@ -847,14 +836,16 @@ mod tests {
         let root = automerge::ROOT;
         p.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

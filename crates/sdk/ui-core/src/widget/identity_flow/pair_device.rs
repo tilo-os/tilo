@@ -261,50 +261,21 @@ impl PairDeviceScreen {
 
     /// Hand `event` to every field; each answers for its own node and only
     /// a focused (or hovered) one acts on it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the Widget::handle_event parameter list to the embedded fields"
-    )]
-    fn forward_all(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn forward_all(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         for i in 0..CODE_LEN {
-            let node = self.cell_nodes.get(i).copied().flatten().unwrap_or(node_id);
+            let node = self
+                .cell_nodes
+                .get(i)
+                .copied()
+                .flatten()
+                .unwrap_or(ctx.node_id);
             if let Some(cell) = self.cells.get_mut(i) {
-                cell.handle_event(
-                    event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node,
-                    taffy,
-                );
+                cell.handle_event(event, &mut ctx.reborrow(ctx.path, node));
             }
         }
-        let node = self.payload_node.unwrap_or(node_id);
-        self.payload.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node,
-            taffy,
-        );
+        let node = self.payload_node.unwrap_or(ctx.node_id);
+        self.payload
+            .handle_event(event, &mut ctx.reborrow(ctx.path, node));
     }
 
     /// After any input. Digits that landed in a cell — one typed, or
@@ -575,42 +546,21 @@ impl PairDeviceScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "pairing screen routing forwards the Widget event, CRDT state, focus outputs and layout to its input fields"
-    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) -> ScreenOutcome {
         let outcome = match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = p;
                 let h = self.submit_rect.contains(p);
                 if h != self.submit_hovered {
                     self.submit_hovered = h;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
-                self.forward_all(
-                    event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                self.forward_all(event, ctx);
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseInput {
@@ -618,18 +568,8 @@ impl PairDeviceScreen {
                 button: MouseButton::Left,
                 ..
             } => {
-                let outcome = self.handle_mouse_press(handled, focus_target);
-                self.forward_all(
-                    event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                let outcome = self.handle_mouse_press(ctx.handled, ctx.focus_target);
+                self.forward_all(event, ctx);
                 outcome
             }
             WindowEvent::KeyboardInput {
@@ -642,47 +582,27 @@ impl PairDeviceScreen {
                 ..
             } => {
                 if self.scroll.key(logical_key, self.body_height)
-                    || self.backspace_steps_back(logical_key, focus_target)
+                    || self.backspace_steps_back(logical_key, ctx.focus_target)
                 {
-                    *handled = true;
+                    *ctx.handled = true;
                 } else {
-                    self.forward_all(
-                        event,
-                        scale_factor,
-                        *modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        node_id,
-                        taffy,
-                    );
+                    self.forward_all(event, ctx);
                 }
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.scroll.wheel(delta) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
             }
             // Key releases, IME preedit/commit, modifiers: the fields'.
             _ => {
-                self.forward_all(
-                    event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                self.forward_all(event, ctx);
                 ScreenOutcome::Stay
             }
         };
-        self.settle(Some(focus_target));
+        self.settle(Some(ctx.focus_target));
         outcome
     }
 
@@ -1024,20 +944,6 @@ impl Widget for PairDeviceScreen {
         sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
     }
 
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "PairDeviceScreen"
     }
@@ -1163,14 +1069,16 @@ mod tests {
                 let mut target = None;
                 s.handle_event_screen(
                     event,
-                    1.0,
-                    &winit::event::Modifiers::default(),
-                    doc,
-                    &automerge::ROOT,
-                    &mut handled,
-                    &mut target,
-                    node,
-                    taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: doc,
+                        path: &automerge::ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut target,
+                        node_id: node,
+                        taffy,
+                    },
                 );
             }
             let (taffy, node) = ev::scratch_node();

@@ -162,14 +162,16 @@ impl Participant {
         let taffy = TaffyTree::<()>::new();
         self.app.handle_event(
             &event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut self.doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            NodeId::new(0),
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut self.doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+            },
         );
     }
 

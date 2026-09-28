@@ -4,13 +4,11 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
-use winit::event::WindowEvent;
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -139,19 +137,6 @@ impl Widget for PagePreview {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        _: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "PagePreview"
     }

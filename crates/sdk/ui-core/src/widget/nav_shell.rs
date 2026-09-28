@@ -1328,21 +1328,11 @@ impl Widget for NavShell {
         self.draw_chrome_no_scrim(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -1356,12 +1346,12 @@ impl Widget for NavShell {
                 // Dismiss the overlay drawer, else pop the pushed detail.
                 if self.is_sidebar_open() && self.sidebar_split_layout() == SplitLayout::Overlay {
                     self.close_sidebar();
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if self.content_layout() == ContentLayout::Push && self.pane == NavPane::Detail {
                     self.show_overview();
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
             }
@@ -1379,7 +1369,7 @@ impl Widget for NavShell {
                         Affordance::Back => self.show_overview(),
                         Affordance::None => {}
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // 2. A scrim click dismisses the overlay drawer.
@@ -1390,7 +1380,7 @@ impl Widget for NavShell {
                     && !self.sidebar_rect.contains(self.last_cursor)
                 {
                     self.close_sidebar();
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // 3. Record which content pane the user engaged (a press over
@@ -1410,18 +1400,10 @@ impl Widget for NavShell {
             }
             _ => {}
         }
-        if *handled {
+        if *ctx.handled {
             return;
         }
-        self.route_event_to_children(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-        );
+        self.route_event_to_children(event, ctx);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1549,20 +1531,10 @@ impl NavShell {
     /// for a sidebar-plus-content shell but must not stop the sidebar/
     /// overview panes from being routed to. Split out of `handle_event` to
     /// keep that under the line cap.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards Widget::handle_event's own parameter list to route to the right \
-                  child pane; bundling it would mean bundling the trait method too"
-    )]
     fn route_event_to_children(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
         enum Which {
             Sidebar,
@@ -1599,7 +1571,7 @@ impl NavShell {
         }
 
         for (which, child_node) in order {
-            if *handled {
+            if *ctx.handled {
                 break;
             }
             let target: &mut dyn Widget = match which {
@@ -1615,14 +1587,10 @@ impl NavShell {
             };
             target.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
+                &mut crate::widget::EventCtx {
+                    taffy,
+                    ..ctx.reborrow(ctx.path, child_node)
+                },
             );
         }
     }
@@ -1735,18 +1703,7 @@ mod tests {
         ) {
         }
 
-        fn handle_event(
-            &mut self,
-            _event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &winit::event::Modifiers,
-            _state: &mut AutoCommit,
-            _path: &ObjId,
-            _handled: &mut bool,
-            _focus_target: &mut Option<NodeId>,
-            _node_id: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
             self.events.set(self.events.get().saturating_add(1));
         }
 
@@ -3089,14 +3046,16 @@ mod tests {
         let root = automerge::ROOT;
         ns.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 

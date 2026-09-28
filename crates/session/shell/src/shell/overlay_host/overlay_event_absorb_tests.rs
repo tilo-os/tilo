@@ -72,18 +72,7 @@ impl Widget for RecordingContent {
     ) {
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, _ctx: &mut ui::widget::EventCtx<'_>) {
         let label = match event {
             WindowEvent::CursorMoved { .. } => "CursorMoved",
             WindowEvent::MouseInput {
@@ -460,14 +449,16 @@ fn pump_with_modifiers(
     let mut handled = false;
     h.host.handle_event(
         event,
-        1.0,
-        &modifiers,
-        &mut doc,
-        &root,
-        &mut handled,
-        &mut focus,
-        h.root_node,
-        &h.taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: &mut doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: h.root_node,
+            taffy: &h.taffy,
+        },
     );
     handled
 }

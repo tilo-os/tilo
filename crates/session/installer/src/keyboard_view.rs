@@ -25,7 +25,6 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
-use winit::event::WindowEvent;
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -230,20 +229,6 @@ impl Widget for KeyboardView {
         let sb_y0 = y_base + 4.0 * row_pitch;
         let sb = Rect::new(sb_x0, sb_y0, sb_x0 + sb_w, sb_y0 + key_h);
         Self::draw_key(scene, transform, text_renderer, theme, sb, "", None);
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

@@ -43,21 +43,6 @@ impl Widget for LocalEffectProbe {
     ) {
     }
 
-    #[allow(clippy::too_many_arguments, reason = "Widget callback signature")]
-    fn handle_event(
-        &mut self,
-        _: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "local-effect-probe"
     }

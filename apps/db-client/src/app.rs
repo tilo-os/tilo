@@ -258,29 +258,8 @@ impl Widget for QueryEditorChild {
     ) {
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.editor.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.editor.handle_event(event, ctx);
     }
 
     fn name(&self) -> &'static str {
@@ -476,18 +455,7 @@ impl Widget for QueryDivider {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -499,7 +467,7 @@ impl Widget for QueryDivider {
         } = event
             && self.handle_key(logical_key)
         {
-            *handled = true;
+            *ctx.handled = true;
         }
     }
 
@@ -632,29 +600,8 @@ impl Widget for QueryResizeMenu {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.menu.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.menu.handle_event(event, ctx);
     }
 
     fn name(&self) -> &'static str {
@@ -2365,38 +2312,18 @@ impl Widget for DbClientApp {
         clippy::too_many_lines,
         reason = "one window-event dispatcher; each arm is a short hand-off to the owning pane"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Modal swallows events while open.
         if self.modal.is_open() {
             let mut act = None;
-            self.modal.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                node_id,
-                taffy,
-                handled,
-                &mut act,
-            );
+            self.modal.handle_event(event, ctx, &mut act);
             if let Some(profile) = act {
-                self.save_connection(profile, state);
+                self.save_connection(profile, ctx.state);
                 self.dirty = true;
             }
             return;
         }
+        let state = &mut *ctx.state;
 
         // The first-run action is a real child widget. Give it first refusal
         // while it is visible, then translate its drained semantic action into
@@ -2406,14 +2333,16 @@ impl Widget for DbClientApp {
         {
             self.empty_state.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                empty_state_node,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state,
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: empty_state_node,
+                    taffy: ctx.taffy,
+                },
             );
             if self.empty_state.take_action() {
                 self.modal.open_new();
@@ -2432,59 +2361,64 @@ impl Widget for DbClientApp {
                     },
                 ..
             } = event
-            && self.handle_reserved_shortcut(logical_key, *modifiers)
+            && self.handle_reserved_shortcut(logical_key, *ctx.modifiers)
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
         if self.query_resize_menu.is_open() {
             self.query_resize_menu.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                self.query_resize_menu_node.unwrap_or(node_id),
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state,
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: self.query_resize_menu_node.unwrap_or(ctx.node_id),
+                    taffy: ctx.taffy,
+                },
             );
             self.drain_query_resize_actions();
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
 
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.on_cursor_moved(position.x, position.y, scale_factor);
+            self.on_cursor_moved(position.x, position.y, ctx.scale_factor);
         }
         if self.route_to_schema_tree(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state,
+                path: ctx.path,
+                handled: &mut *ctx.handled,
+                focus_target: &mut *ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
         ) {
             return;
         }
-        if self.handle_query_divider_pointer(event, handled, focus_target) {
+        if self.handle_query_divider_pointer(event, ctx.handled, ctx.focus_target) {
             return;
         }
 
         match event {
             WindowEvent::MouseWheel { delta, .. } => {
-                self.on_mouse_wheel(delta, *modifiers, handled);
+                self.on_mouse_wheel(delta, *ctx.modifiers, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_click(state, handled);
+                self.on_click(state, ctx.handled);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -2495,7 +2429,7 @@ impl Widget for DbClientApp {
                     },
                 ..
             } => {
-                self.on_key_pressed(logical_key, *modifiers, handled);
+                self.on_key_pressed(logical_key, *ctx.modifiers, ctx.handled);
             }
             _ => {}
         }
@@ -2504,17 +2438,22 @@ impl Widget for DbClientApp {
         // Skip anything the app already consumed — e.g. a sidebar / scrim /
         // toggle click, or an Esc that dismissed the overlay flap — so an open
         // sidebar doesn't leak clicks into the editor behind it.
-        if !self.session.connections.is_empty() && self.session.tab == MainTab::Query && !*handled {
+        if !self.session.connections.is_empty()
+            && self.session.tab == MainTab::Query
+            && !*ctx.handled
+        {
             self.editor.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                self.editor_node.unwrap_or(node_id),
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state,
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: self.editor_node.unwrap_or(ctx.node_id),
+                    taffy: ctx.taffy,
+                },
             );
             if self.editor.take_dirty().is_some() {
                 self.dirty = true;
@@ -2945,20 +2884,10 @@ impl DbClientApp {
     /// while the sidebar is interactive (so a closed overlay flap lets taps
     /// through); keys reach it only while it holds focus. Returns whether it
     /// consumed the event, after applying any rows it activated.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards one WindowEvent's decoded fields to the child's Widget::handle_event, whose signature this crate does not own"
-    )]
     fn route_to_schema_tree(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let Some(node) = self.tree_node else {
             return false;
@@ -2970,26 +2899,17 @@ impl DbClientApp {
         if pointer && !self.sidebar_interactive() && !self.tree.wants_pointer_capture() {
             return false;
         }
-        self.tree.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node,
-            taffy,
-        );
-        if *focus_target == Some(node) {
+        self.tree
+            .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        if *ctx.focus_target == Some(node) {
             self.editor.set_focused(false);
             self.query_divider.set_focus(false);
         }
         self.drain_schema_activations();
-        if *handled {
+        if *ctx.handled {
             self.dirty = true;
         }
-        *handled
+        *ctx.handled
     }
 
     /// Apply the rows the browser activated: open a table (a column opens its
@@ -4558,14 +4478,16 @@ mod behavior_tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &mods,
-            doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            NodeId::new(0),
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+            },
         );
         handled
     }

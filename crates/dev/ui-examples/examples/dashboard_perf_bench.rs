@@ -976,14 +976,16 @@ fn dispatch(state: &mut BenchState<'_>, doc: &mut AutoCommit, event: &WindowEven
     let modifiers = Modifiers::default();
     state.root.handle_event(
         event,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ObjId::Root,
-        &mut handled,
-        &mut focus_target,
-        state.root_node,
-        state.taffy,
+        &mut tilo_ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ObjId::Root,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: state.root_node,
+            taffy: state.taffy,
+        },
     );
 }
 

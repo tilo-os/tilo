@@ -145,14 +145,16 @@ fn maximize_and_resize_harvests_flush_layout_changes_to_disk() {
         };
         g.handle_event(
             &moved,
-            1.0,
-            &Modifiers::default(),
-            &mut state,
-            &root_id,
-            &mut handled,
-            &mut focus_target,
-            group_node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut state,
+                path: &root_id,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: group_node,
+                taffy: &taffy,
+            },
         );
         assert!(g.maximized, "drain must flip maximized true");
 

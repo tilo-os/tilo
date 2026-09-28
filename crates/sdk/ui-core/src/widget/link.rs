@@ -254,28 +254,17 @@ impl Widget for Link {
         self.rect == Rect::ZERO
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.enabled {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let hover = self.rect.contains(p);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -287,9 +276,9 @@ impl Widget for Link {
                     let pressed = *element_state == ElementState::Pressed;
                     if pressed != self.is_pressed {
                         self.is_pressed = pressed;
-                        *handled = true;
+                        *ctx.handled = true;
                         if self.is_pressed {
-                            *focus_target = Some(node_id);
+                            *ctx.focus_target = Some(ctx.node_id);
                         } else {
                             // Release over the link → open it.
                             self.activate();
@@ -297,7 +286,7 @@ impl Widget for Link {
                     }
                 } else if self.is_pressed {
                     self.is_pressed = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -402,14 +391,16 @@ mod tests {
                 let mut focus = None;
                 link.handle_event(
                     &ev,
-                    1.0,
-                    &mods,
-                    &mut doc,
-                    &root,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &tree,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &mods,
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &tree,
+                    },
                 );
             };
 

@@ -1122,18 +1122,7 @@ impl Widget for ColorPicker {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Embedded hex input gets the event first. It isn't registered in
         // the parent's taffy/node_map, though, so its own
         // `*focus_target = Some(id)` would set *our* node id — the App
@@ -1141,19 +1130,10 @@ impl Widget for ColorPicker {
         // keystrokes would silently no-op behind its focus guard. Snapshot
         // the proposal and redirect locally if it fired while the cursor
         // was inside the input's rect.
-        let prev_focus = *focus_target;
-        self.hex_input.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            root,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
-        if *focus_target != prev_focus && self.hex_input_rect.contains(self.last_cursor) {
+        let prev_focus = *ctx.focus_target;
+        self.hex_input
+            .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
+        if *ctx.focus_target != prev_focus && self.hex_input_rect.contains(self.last_cursor) {
             // Keep focus_target = Some(node_id) so the App's blur-then-
             // focus path runs, then redirect in set_focus via this flag.
             self.hex_input_focus_pending = true;
@@ -1161,12 +1141,12 @@ impl Widget for ColorPicker {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = p;
                 if self.drag_target.is_some() {
                     self.apply_drag(p);
                     self.sync_input();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -1188,18 +1168,18 @@ impl Widget for ColorPicker {
                             self.hex_input.set_focus(false);
                         }
                         self.choose_swatch(index);
-                        *focus_target = Some(node_id);
-                        *handled = true;
+                        *ctx.focus_target = Some(ctx.node_id);
+                        *ctx.handled = true;
                     } else if self.confirm_title.is_some()
                         && self.done_rect.contains(self.last_cursor)
                     {
                         self.confirm();
-                        *handled = true;
+                        *ctx.handled = true;
                     } else if self.confirm_title.is_some()
                         && self.cancel_rect.contains(self.last_cursor)
                     {
                         self.cancel();
-                        *handled = true;
+                        *ctx.handled = true;
                     } else if !in_input {
                         // Click outside: release any focus the input
                         // held so keystrokes stop landing in it.
@@ -1208,8 +1188,8 @@ impl Widget for ColorPicker {
                         }
                         if let Some(target) = self.target_at(self.last_cursor) {
                             self.drag_target = Some(target);
-                            *focus_target = Some(node_id);
-                            *handled = true;
+                            *ctx.focus_target = Some(ctx.node_id);
+                            *ctx.handled = true;
                             // Jump-on-press: apply the current cursor position
                             // immediately so a single click commits the value
                             // without requiring a follow-up `CursorMoved`.
@@ -1219,7 +1199,7 @@ impl Widget for ColorPicker {
                     }
                 } else if *el_state == ElementState::Released && self.drag_target.is_some() {
                     self.drag_target = None;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -1231,7 +1211,7 @@ impl Widget for ColorPicker {
                     },
                 ..
             } if self.confirm_title.is_some()
-                && !*handled
+                && !*ctx.handled
                 && (self.is_focused || self.hex_input.is_focused()) =>
             {
                 if *key == NamedKey::Enter {
@@ -1239,7 +1219,7 @@ impl Widget for ColorPicker {
                 } else {
                     self.cancel();
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -1511,14 +1491,16 @@ mod tests {
         let root = automerge::ROOT;
         p.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

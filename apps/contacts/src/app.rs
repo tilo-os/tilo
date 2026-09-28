@@ -7020,25 +7020,11 @@ impl Widget for ContactsApp {
     /// Route one window event. Split into per-concern helpers purely for
     /// length; the guard order (which layer consumes the event) is
     /// unchanged from one flat function.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Widget::handle_event's arity is fixed by the trait (ui::widget::Widget); every parameter is independently meaningful, as the trait's own allow in crates/sdk/ui-core/src/widget/mod.rs explains"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Track logical cursor position.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_mouse =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             // Update the website hyperlink's hover so its underline thickens as
             // the pointer passes over it (view mode only).
             if self.mode == Mode::View {
@@ -7055,43 +7041,16 @@ impl Widget for ContactsApp {
         }
 
         // Modal layers consume input first.
-        if self.handle_event_modals(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            node_id,
-            taffy,
-        ) {
+        if self.handle_event_modals(event, ctx) {
             return;
         }
 
-        if self.handle_event_dispatch(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            node_id,
-            taffy,
-        ) {
+        if self.handle_event_dispatch(event, ctx) {
             return;
         }
 
         // Forward pointer-move to focused inputs so hover/drag-select tracks.
-        self.forward_event_to_inputs(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            node_id,
-            taffy,
-        );
+        self.forward_event_to_inputs(event, ctx);
     }
 
     fn name(&self) -> &'static str {
@@ -8516,52 +8475,49 @@ impl ContactsApp {
     /// underneath can see it. Each dialog owns its own keyboard model (rather
     /// than letting global shortcuts leak through the scrim). Returns `true`
     /// when this method has fully consumed the event.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors handle_event's own event-routing signature; splitting further would need a context struct for a one-call-site helper"
-    )]
     fn handle_event_modals(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if self.duplicate_review.is_some() {
-            self.route_duplicate_review_event(event, state, handled);
+            self.route_duplicate_review_event(event, ctx.state, ctx.handled);
             return true;
         }
         if !self.import_conflicts.is_empty() {
             self.route_import_conflict_dialog_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.handled,
             );
             return true;
         }
         if self.export_dialog.is_open() {
-            self.handle_export(event, modifiers, handled);
+            self.handle_export(event, *ctx.modifiers, ctx.handled);
             return true;
         }
         if self.pending_switch.is_some() {
-            self.handle_unsaved(event, modifiers, state, handled);
+            self.handle_unsaved(event, *ctx.modifiers, ctx.state, ctx.handled);
             return true;
         }
         if self.confirm_delete.is_some() {
-            self.route_delete_dialog_event(event, scale_factor, modifiers, state, path, handled);
+            self.route_delete_dialog_event(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.handled,
+            );
             return true;
         }
         if self.popup.is_some() {
-            self.handle_popup(event, state, handled);
+            self.handle_popup(event, ctx.state, ctx.handled);
             // Popups consume clicks; let hover fall through harmlessly.
-            if *handled {
+            if *ctx.handled {
                 return true;
             }
         }
@@ -8724,20 +8680,10 @@ impl ContactsApp {
     /// `true` if `event` was consumed here (the caller then returns without
     /// forwarding to inputs); `false` for a variant this function doesn't
     /// own, so the caller still forwards it as a pointer-move.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors handle_event's own event-routing signature; splitting further would need a context struct for a one-call-site helper"
-    )]
     fn handle_event_dispatch(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         match event {
             WindowEvent::CursorMoved { .. } => {
@@ -8749,7 +8695,7 @@ impl ContactsApp {
                     self.split_pos = rel.clamp(0.18, 0.6);
                     self.relayout = true;
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
             }
@@ -8760,10 +8706,17 @@ impl ContactsApp {
             } => {
                 if self.divider_hover {
                     self.divider_drag = true;
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
-                self.handle_click(state, handled, node_id, taffy, modifiers, path);
+                self.handle_click(
+                    ctx.state,
+                    ctx.handled,
+                    ctx.node_id,
+                    ctx.taffy,
+                    *ctx.modifiers,
+                    ctx.path,
+                );
                 return true;
             }
             WindowEvent::MouseInput {
@@ -8774,7 +8727,7 @@ impl ContactsApp {
                 // Right-click a contact row → per-contact context menu
                 // (Edit / Export / Delete). `MouseInput` carries no position,
                 // so we use the cursor cached on `CursorMoved`.
-                self.handle_right_click(self.last_mouse, handled);
+                self.handle_right_click(self.last_mouse, ctx.handled);
                 return true;
             }
             WindowEvent::MouseInput {
@@ -8784,7 +8737,7 @@ impl ContactsApp {
             } => {
                 if self.divider_drag {
                     self.divider_drag = false;
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
             }
@@ -8801,21 +8754,11 @@ impl ContactsApp {
                 }
                 self.relayout = true;
                 self.dirty = true;
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
             WindowEvent::KeyboardInput { event: ke, .. } => {
-                self.handle_key(
-                    ke,
-                    state,
-                    path,
-                    handled,
-                    node_id,
-                    taffy,
-                    modifiers,
-                    scale_factor,
-                    event,
-                );
+                self.handle_key(event, ctx, ke);
                 return true;
             }
             _ => {}
@@ -8843,47 +8786,25 @@ impl ContactsApp {
         self.search.is_focused() || self.form.as_ref().is_some_and(EditForm::any_focused)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "input forwarding preserves the widget event, scale, modifiers, CRDT location, handled flag and layout context"
-    )]
-    fn forward_event_to_inputs(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn forward_event_to_inputs(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let mut sink: Option<NodeId> = None;
         // Search box.
         self.search.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            handled,
-            &mut sink,
-            node_id,
-            taffy,
+            &mut ui::widget::EventCtx {
+                focus_target: &mut sink,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
         );
         if let Some(form) = &mut self.form {
             for f in &mut form.inputs {
                 let mut s2: Option<NodeId> = None;
                 f.ti.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    &mut s2,
-                    node_id,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        focus_target: &mut s2,
+                        ..ctx.reborrow(ctx.path, ctx.node_id)
+                    },
                 );
             }
         }
@@ -9420,7 +9341,17 @@ impl ContactsApp {
         let mut sink = None;
         if self.search.is_focused() {
             self.search.handle_event(
-                &press, 1.0, &modifiers, state, path, &mut h, &mut sink, node_id, taffy,
+                &press,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state,
+                    path,
+                    handled: &mut h,
+                    focus_target: &mut sink,
+                    node_id,
+                    taffy,
+                },
             );
         }
         if let Some(form) = &mut self.form {
@@ -9428,7 +9359,17 @@ impl ContactsApp {
                 if f.ti.is_focused() {
                     let mut s2 = None;
                     f.ti.handle_event(
-                        &press, 1.0, &modifiers, state, path, &mut h, &mut s2, node_id, taffy,
+                        &press,
+                        &mut ui::widget::EventCtx {
+                            scale_factor: 1.0,
+                            modifiers: &modifiers,
+                            state,
+                            path,
+                            handled: &mut h,
+                            focus_target: &mut s2,
+                            node_id,
+                            taffy,
+                        },
                     );
                 }
             }
@@ -9929,44 +9870,25 @@ impl ContactsApp {
     /// Route a keypress. Split into per-concern helpers purely for length;
     /// the guard order (which chord wins) is unchanged from one flat
     /// function.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "key routing needs the full widget event context to dispatch shortcuts and forward unconsumed events to text inputs"
-    )]
     fn handle_key(
         &mut self,
-        ke: &KeyEvent,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-        modifiers: winit::event::Modifiers,
-        scale_factor: f64,
         full_event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+        ke: &KeyEvent,
     ) {
         if ke.state != ElementState::Pressed {
             // Route key-release to inputs too (harmless) then return.
-            self.forward_event_to_inputs(
-                full_event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                node_id,
-                taffy,
-            );
+            self.forward_event_to_inputs(full_event, ctx);
             return;
         }
-        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+        let ctrl = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
 
         // Ctrl/Cmd+K and Ctrl/Cmd+/ focus the list's search field — the
         // familiar "jump to search" chord, wired to this app's real search box
         // (bare `/` does the same in the no-field-focused branch below).
         if is_focus_search_chord(ctrl, &ke.logical_key) {
             self.set_only_focus_search();
-            *handled = true;
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
@@ -9975,7 +9897,7 @@ impl ContactsApp {
         // narrow pushed detail to the list / clears search focus.
         if matches!(ke.logical_key, Key::Named(NamedKey::Escape)) {
             self.handle_key_escape();
-            *handled = true;
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
@@ -9986,8 +9908,8 @@ impl ContactsApp {
             && c.eq_ignore_ascii_case("s")
             && self.mode == Mode::Edit
         {
-            self.save_edit(state);
-            *handled = true;
+            self.save_edit(ctx.state);
+            *ctx.handled = true;
             return;
         }
 
@@ -9995,8 +9917,8 @@ impl ContactsApp {
         // are local presentation/draft controls, but keyboard selection must
         // reach the exact same handlers as pointer selection.  This comes
         // before form navigation so an open calendar owns its arrow keys.
-        if self.popup.is_some() && self.handle_key_popup(ke, state, modifiers) {
-            *handled = true;
+        if self.popup.is_some() && self.handle_key_popup(ke, ctx.state, *ctx.modifiers) {
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
@@ -10013,9 +9935,9 @@ impl ContactsApp {
         // the focused input moves its caret as usual.
         if self.mode == Mode::Edit
             && self.form.is_some()
-            && self.handle_key_edit_form_nav(ke, state, modifiers)
+            && self.handle_key_edit_form_nav(ke, ctx.state, *ctx.modifiers)
         {
-            *handled = true;
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
@@ -10025,16 +9947,7 @@ impl ContactsApp {
         // draft is folded into the store + CRDT solely by Save, so Cancel can
         // genuinely discard and the unsaved-changes guard can see real dirt.
         if self.any_text_focused() {
-            self.forward_event_to_inputs(
-                full_event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                node_id,
-                taffy,
-            );
+            self.forward_event_to_inputs(full_event, ctx);
             self.dirty = true;
             return;
         }
@@ -10048,7 +9961,7 @@ impl ContactsApp {
         if self.mode != Mode::View || self.popup.is_some() {
             return;
         }
-        self.handle_key_list_shortcuts(ke, modifiers.state(), handled);
+        self.handle_key_list_shortcuts(ke, ctx.modifiers.state(), ctx.handled);
     }
 
     /// The Escape-key state transition: closes whichever dialog/popup/edit is

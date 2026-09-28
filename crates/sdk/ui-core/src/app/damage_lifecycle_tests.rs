@@ -1,6 +1,5 @@
 use super::*;
 use crate::widget::TaffyTreeExt;
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 
 struct DrawUpdatedDamage {
@@ -31,20 +30,6 @@ impl Widget for DrawUpdatedDamage {
         _presence: &PresenceCtx,
     ) {
         self.damage = KurboRect::new(80.0, 0.0, 100.0, 8.0);
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

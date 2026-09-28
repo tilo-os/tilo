@@ -147,14 +147,16 @@ fn shoot(theme: &Theme, out: &Path, case: Case) -> Result<(), String> {
             let mut ft = None;
             row.handle_event(
                 &cursor_at(first.center()),
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state.doc,
-                &state.root,
-                &mut handled,
-                &mut ft,
-                node,
-                &taffy,
+                &mut tilo_ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state.doc,
+                    path: &state.root,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
         }
         // Keyboard focus on the labelled Undo, which is equally available.

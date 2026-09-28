@@ -354,14 +354,16 @@ impl NumberControls {
             let mut focus_target = None;
             control.input.handle_event(
                 ctx.event,
-                ctx.scale_factor,
-                &ctx.modifiers,
-                ctx.state,
-                ctx.root,
-                &mut local_handled,
-                &mut focus_target,
-                ctx.node_id,
-                ctx.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: &ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.root,
+                    handled: &mut local_handled,
+                    focus_target: &mut focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             );
             if focus_target.is_some() {
                 control.input.set_focus(true);
@@ -1054,14 +1056,16 @@ impl SchemeColorSheet {
             let mut local_handled = false;
             picker.handle_event(
                 ctx.event,
-                ctx.scale_factor,
-                &ctx.modifiers,
-                ctx.state,
-                ctx.root,
-                &mut local_handled,
-                &mut focus_target,
-                ctx.node_id,
-                ctx.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: &ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.root,
+                    handled: &mut local_handled,
+                    focus_target: &mut focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             );
             if focus_target.is_some() {
                 picker.set_focus(true);

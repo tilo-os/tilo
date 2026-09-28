@@ -163,14 +163,16 @@ impl Driver {
         let mut focus = None;
         self.app.handle_event(
             event,
-            1.0,
-            &modifiers,
-            &mut self.doc,
-            &self.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut self.doc,
+                path: &self.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 

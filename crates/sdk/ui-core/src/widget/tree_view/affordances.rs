@@ -257,21 +257,10 @@ impl<T, M: TreeModel> TreeView<T, M> {
 
     /// Route input to an open context menu. Returns whether the menu
     /// consumed it; a click outside closes the menu and falls through.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the Widget event contract to the owned menu"
-    )]
     pub(super) fn route_context_menu(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<taffy::NodeId>,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) -> bool {
         if !self.menu.is_open() {
             return false;
@@ -279,21 +268,17 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let mut consumed = false;
         self.menu.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut consumed,
-            focus_target,
-            node_id,
-            taffy,
+            &mut crate::widget::EventCtx {
+                handled: &mut consumed,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
         );
         self.drain_menu_selection();
         if !self.menu.is_open() {
             self.menu_target = None;
         }
         if consumed {
-            *handled = true;
+            *ctx.handled = true;
         }
         consumed
     }

@@ -89,14 +89,16 @@ fn dispatch(widget: &mut dyn Widget, event: &WindowEvent) {
     let mut focus = None;
     widget.handle_event(
         event,
-        1.0,
-        &Modifiers::default(),
-        &mut doc,
-        &ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut tilo_ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut doc,
+            path: &ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 

@@ -188,14 +188,16 @@ impl Harness {
         let mut focus: Option<NodeId> = None;
         self.host.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut self.doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            self.root,
-            &self.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut self.doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: self.root,
+                taffy: &self.taffy,
+            },
         );
         handled
     }

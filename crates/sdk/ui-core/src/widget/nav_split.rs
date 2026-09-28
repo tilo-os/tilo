@@ -943,21 +943,11 @@ impl Widget for NavSplit {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -971,12 +961,12 @@ impl Widget for NavSplit {
                 // Esc dismisses the overlay flap (or returns Push to master).
                 if self.mode == SplitMode::Push && self.push.pane() == PushPane::Detail {
                     self.show_master();
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if self.layout_mode() == SplitLayout::Overlay && self.is_sidebar_open() {
                     self.close_sidebar();
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
             }
@@ -994,13 +984,13 @@ impl Widget for NavSplit {
                     && !self.sidebar_rect.contains(self.last_cursor)
                 {
                     self.close_sidebar();
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
             }
             _ => {}
         }
-        if *handled {
+        if *ctx.handled {
             return;
         }
         // Route to children via the inner tree. Sidebar first when it's an
@@ -1023,14 +1013,10 @@ impl Widget for NavSplit {
             // remaining events belong exclusively to the drawer.
             self.sidebar.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                s_node,
-                taffy,
+                &mut crate::widget::EventCtx {
+                    taffy,
+                    ..ctx.reborrow(ctx.path, s_node)
+                },
             );
             return;
         }
@@ -1040,7 +1026,7 @@ impl Widget for NavSplit {
             [(false, c_node), (true, s_node)]
         };
         for (is_sidebar, child_node) in order {
-            if *handled {
+            if *ctx.handled {
                 break;
             }
             let target: &mut dyn Widget = if is_sidebar {
@@ -1050,14 +1036,10 @@ impl Widget for NavSplit {
             };
             target.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
+                &mut crate::widget::EventCtx {
+                    taffy,
+                    ..ctx.reborrow(ctx.path, child_node)
+                },
             );
         }
     }
@@ -1220,18 +1202,7 @@ mod tests {
             _p: &PresenceCtx,
         ) {
         }
-        fn handle_event(
-            &mut self,
-            _e: &WindowEvent,
-            _sf: f64,
-            _m: &winit::event::Modifiers,
-            _s: &mut AutoCommit,
-            _p: &ObjId,
-            _h: &mut bool,
-            _ft: &mut Option<NodeId>,
-            _n: NodeId,
-            _t: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, _e: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
             self.events.set(self.events.get().saturating_add(1));
         }
         fn is_layout_dirty(&self) -> bool {
@@ -1835,14 +1806,16 @@ mod tests {
         let root = automerge::ROOT;
         ns.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 

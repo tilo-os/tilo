@@ -11,13 +11,11 @@
 //! [`Divider::on`], which derives the colour so the line stays visible on
 //! the dark preset; [`Divider::with_color`] is the explicit override.
 
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -157,20 +155,6 @@ impl Widget for Divider {
             None,
             &self.rect,
         );
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

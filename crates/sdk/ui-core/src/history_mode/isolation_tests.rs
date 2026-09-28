@@ -251,18 +251,7 @@ impl Widget for LiveOwner {
     fn get_rect(&self) -> Rect {
         self.text.get_rect()
     }
-    fn handle_event(
-        &mut self,
-        _: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, _: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
         self.local_events.set(self.local_events.get() + 1);
     }
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {

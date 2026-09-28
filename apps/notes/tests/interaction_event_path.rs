@@ -745,14 +745,16 @@ fn block_event(
 ) {
     editor.handle_event(
         &event,
-        1.0,
-        &Modifiers::default(),
-        &mut automerge::AutoCommit::new(),
-        &automerge::ROOT,
-        &mut false,
-        &mut None,
-        node,
-        tree,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut automerge::AutoCommit::new(),
+            path: &automerge::ROOT,
+            handled: &mut false,
+            focus_target: &mut None,
+            node_id: node,
+            taffy: tree,
+        },
     );
 }
 

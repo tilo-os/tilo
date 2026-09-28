@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_ui::ColorCompat;
 use tilo_ui::offscreen::OffscreenRenderer;
@@ -184,20 +183,6 @@ impl Widget for Preview {
                 );
             }
         }
-    }
-
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

@@ -1159,12 +1159,6 @@ mod tests {
             _p: &crate::presence::PresenceCtx,
         ) {
         }
-        fn handle_event_ctx(
-            &mut self,
-            _event: &winit::event::WindowEvent,
-            _ctx: &mut crate::widget::EventCtx<'_>,
-        ) {
-        }
         fn children(&self) -> Vec<&dyn Widget> {
             self.kids.iter().map(Box::as_ref).collect()
         }

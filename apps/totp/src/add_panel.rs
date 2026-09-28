@@ -1909,14 +1909,16 @@ impl AddAccountPanel {
             let mut throwaway = None;
             self.field_mut(f).handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                &mut throwaway,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target: &mut throwaway,
+                    node_id,
+                    taffy,
+                },
             );
         }
     }
@@ -1954,14 +1956,16 @@ impl AddAccountPanel {
             let mut throwaway = None;
             self.field_mut(field).handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                &mut throwaway,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor,
+                    modifiers: &modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target: &mut throwaway,
+                    node_id,
+                    taffy,
+                },
             );
         }
     }
@@ -2073,14 +2077,16 @@ impl AddAccountPanel {
                 self.set_focus(Some(field));
                 self.field_mut(field).handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    &mut None,
-                    node_id,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor,
+                        modifiers: &modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target: &mut None,
+                        node_id,
+                        taffy,
+                    },
                 );
                 return;
             }

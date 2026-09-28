@@ -773,14 +773,16 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
                 delta: 0.2,
                 phase: TouchPhase::Moved,
             },
-            1.0,
-            &no_modifiers,
-            &mut doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &no_modifiers,
+                state: &mut doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
         assert!(handled);
         let after_pinch = app.timeline_density;
@@ -793,14 +795,16 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
                 delta: MouseScrollDelta::LineDelta(0.0, -1.0),
                 phase: TouchPhase::Moved,
             },
-            1.0,
-            &ctrl,
-            &mut doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &ctrl,
+                state: &mut doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
         assert!(handled);
         assert_eq!(app.timeline_density, after_pinch + 1);
@@ -2385,14 +2389,16 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
             let mut handled = false;
             app.handle_event(
                 &event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &ROOT,
-                &mut handled,
-                &mut focus,
-                node,
-                &tree,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
         }
         let invocation = Widget::take_control_invocation(&mut app)

@@ -113,14 +113,16 @@ impl Fixture {
         self.editor.begin_action_intercept();
         self.editor.handle_event(
             &event,
-            1.0,
-            &Modifiers::from(modifiers),
-            &mut self.doc,
-            &automerge::ROOT,
-            &mut false,
-            &mut None,
-            self.node,
-            &self.tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::from(modifiers),
+                state: &mut self.doc,
+                path: &automerge::ROOT,
+                handled: &mut false,
+                focus_target: &mut None,
+                node_id: self.node,
+                taffy: &self.tree,
+            },
         );
         let ops = self.editor.take_intercepted_ops();
         self.paint();
@@ -257,14 +259,16 @@ impl Bound {
         let node = self.node;
         self.panel.body_editor_mut().handle_event(
             &event,
-            1.0,
-            &Modifiers::default(),
-            &mut state.doc,
-            &automerge::ROOT,
-            &mut false,
-            &mut None,
-            node,
-            &self.tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut state.doc,
+                path: &automerge::ROOT,
+                handled: &mut false,
+                focus_target: &mut None,
+                node_id: node,
+                taffy: &self.tree,
+            },
         );
         self.sync(state);
     }
@@ -507,14 +511,16 @@ fn table_focus_is_exclusive_and_survives_shape_changes() {
                 event: shift,
                 is_synthetic: false,
             },
-            1.0,
-            &Modifiers::from(ModifiersState::SHIFT),
-            &mut state.doc,
-            &automerge::ROOT,
-            &mut false,
-            &mut None,
-            node,
-            &b.tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::from(ModifiersState::SHIFT),
+                state: &mut state.doc,
+                path: &automerge::ROOT,
+                handled: &mut false,
+                focus_target: &mut None,
+                node_id: node,
+                taffy: &b.tree,
+            },
         );
         b.sync(&mut state);
         let current = b.editor().blocks()[0].text().to_owned();

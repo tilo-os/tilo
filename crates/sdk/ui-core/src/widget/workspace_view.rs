@@ -155,18 +155,7 @@ impl Widget for WorkspaceView {
             );
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        _sf: f64,
-        modifiers: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        handled: &mut bool,
-        _f: &mut Option<NodeId>,
-        _n: NodeId,
-        _t: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::KeyboardInput {
             event:
                 winit::event::KeyEvent {
@@ -176,18 +165,18 @@ impl Widget for WorkspaceView {
                 },
             ..
         } = event
-            && (modifiers.state().super_key() || modifiers.state().control_key())
+            && (ctx.modifiers.state().super_key() || ctx.modifiers.state().control_key())
         {
             match k {
                 winit::keyboard::NamedKey::ArrowUp => {
                     if self.switch(WorkspaceSwitchDirection::Up) {
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
                 winit::keyboard::NamedKey::ArrowDown
                     if self.switch(WorkspaceSwitchDirection::Down) =>
                 {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 _ => {}
             }
