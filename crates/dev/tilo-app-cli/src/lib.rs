@@ -22,6 +22,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Result, bail};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
+pub mod ci;
 mod json;
 mod pack;
 pub mod portability;
@@ -4992,7 +4993,18 @@ fn signing_identity(
     path: Option<&Path>,
 ) -> Result<tilo_app_package::SigningIdentity> {
     let Some(path) = path else {
-        eprintln!("[tilo-app] no --identity supplied; signing with an ephemeral key");
+        if let Some(key) = registry_client::key::discover()? {
+            eprintln!(
+                "[tilo-app] signing with publisher key {}",
+                registry_client::key::public_hex(&key)
+            );
+            return Ok(tilo_app_package::SigningIdentity::from_seed(
+                &key.to_bytes(),
+            ));
+        }
+        eprintln!(
+            "[tilo-app] no --identity or publisher key; signing with an ephemeral key the registry will not accept"
+        );
         return Ok(tilo_app_package::SigningIdentity::generate());
     };
     pack::load_identity(&absolute_from(app_dir, path))
