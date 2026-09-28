@@ -2641,14 +2641,11 @@ pub(crate) fn with_owned_record_action<R>(
 
 impl CallbackBinding {
     pub(crate) fn broker_route(&self) -> Option<crate::collaboration::RouteSpec> {
-        let (_, app, room) = self.records.route_namespace()?;
+        let (_, app, _) = self.records.canonical_namespace()?;
         if app != self.app_id {
             return None;
         }
-        let mut route = self.records.route(&self.checkout).ok()?;
-        // A record view's routes travel in the room it was replayed into.
-        route.cluster_id = uuid::Uuid::parse_str(&room).ok()?;
-        Some(route)
+        self.records.route(&self.checkout).ok()
     }
     /// [`Self::broker_route`], or a live New reservation's route before its
     /// factory writes the record. Only native component admission uses it.
