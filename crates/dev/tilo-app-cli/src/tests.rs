@@ -11,6 +11,7 @@ fn request(dir: PathBuf) -> NewAppRequest {
         ui_path: None,
         sdk_git: None,
         sdk_rev: None,
+        sdk_version: None,
         dry_run: false,
     }
 }
@@ -4696,9 +4697,9 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         .unwrap();
     let workspace: toml::Table = toml::from_str(&read(&checkout.join("Cargo.toml"))).unwrap();
     let workspace_patches = workspace["patch"]["crates-io"].as_table().unwrap();
-    // winit and vello are not patched: the SDK depends on its forks by path,
-    // as `tilo-winit` and `tilo-vello`.
-    let forks = ["automerge", "wayland-backend", "rustls-native-certs"];
+    // winit, vello and automerge are not patched: the SDK depends on its forks
+    // by path, as `tilo-winit`, `tilo-vello` and `tilo-automerge-fork`.
+    let forks = ["wayland-backend", "rustls-native-certs"];
     // Forks pinned in public git repositories reach the app exactly as the workspace pins them.
     let git_forks = ["accesskit", "atspi", "rustypipe"];
     let pinned_as_workspace = |patches: &toml::Table| {
@@ -4749,7 +4750,7 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         let profile = &manifest["profile"];
         assert_eq!(profile["dev"]["debug"].as_str(), Some("line-tables-only"));
         assert_eq!(
-            profile["dev"]["package"]["automerge"]["opt-level"].as_integer(),
+            profile["dev"]["package"]["tilo-automerge-fork"]["opt-level"].as_integer(),
             Some(3)
         );
         assert_eq!(profile["thin-app"]["panic"].as_str(), Some("unwind"));
@@ -4836,6 +4837,45 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         let report = doctor_app(&app).unwrap();
         assert!(report.is_ready(), "{}", report.summary());
         assert!(report.summary().contains(rev), "{}", report.summary());
+    }
+
+    // Phase: on the published SDK the app names tilo-app by version, alone.
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("reading-list");
+        let mut req = request(app.clone());
+        req.sdk_version = Some(String::new());
+        let outcome = create_app_from(temp.path(), req).unwrap();
+        let version = standalone::Baseline::embedded()
+            .unwrap()
+            .sdk_version()
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            outcome.sdk,
+            Some(standalone::SdkSource::Registry {
+                version: version.clone()
+            })
+        );
+        let manifest: toml::Table = toml::from_str(&read(&app.join("Cargo.toml"))).unwrap();
+        let dependencies = manifest["dependencies"].as_table().unwrap();
+        assert_eq!(dependencies.keys().collect::<Vec<_>>(), ["ui"]);
+        assert_eq!(dependencies["ui"]["package"].as_str(), Some("tilo-app"));
+        assert_eq!(dependencies["ui"]["version"].as_str(), Some(&*version));
+        assert!(dependencies["ui"].get("path").is_none());
+        assert!(manifest.get("patch").is_none());
+        assert!(manifest.get("features").is_none());
+        assert!(manifest.get("profile").is_some());
+        assert!(!app.join("Cargo.lock").exists());
+        assert!(app.join("rust-toolchain.toml").exists());
+        assert!(!read(&app.join("src/main.rs")).contains("runtime_dylib"));
+        let report = doctor_app(&app).unwrap();
+        assert!(report.is_ready(), "{}", report.summary());
+        assert!(
+            report.summary().contains("from the registry"),
+            "{}",
+            report.summary()
+        );
     }
 
     // Phase: Cargo's caches are never mistaken for a checkout to build against.
