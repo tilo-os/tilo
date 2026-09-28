@@ -5593,7 +5593,8 @@ impl AudiencePresentationProvider for SlidesApp {
 impl Widget for SlidesApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
-        dyn ui::widget::AudiencePresentationProvider
+        dyn ui::widget::AudiencePresentationProvider,
+        dyn ui::undo::CommittedActions
     );
 
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
@@ -6317,6 +6318,15 @@ impl Widget for SlidesApp {
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
+    /// Fold the deck's slides, elements, text and notes into the unified Ctrl+K
+    /// palette. Every row addresses an exported resource `View` operation, so
+    /// search uses the same brokered navigation route as agents and a11y.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl ui::undo::CommittedActions for SlidesApp {
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its slides action, so it records one undo boundary for it (see
     /// `Self::perform_action`). Rising-edge: cleared on read.
@@ -6327,19 +6337,11 @@ impl Widget for SlidesApp {
             .and_then(|editor| editor.host.widget_mut().take_committed_action());
         typed.or_else(|| self.actions.take_committed())
     }
-
     /// Typing a word into a text box is one undo step, open until the word ends.
     fn keeps_undo_step_open(&self) -> bool {
         self.text_editor
             .as_ref()
             .is_some_and(|editor| editor.host.widget().keeps_undo_step_open())
-    }
-
-    /// Fold the deck's slides, elements, text and notes into the unified Ctrl+K
-    /// palette. Every row addresses an exported resource `View` operation, so
-    /// search uses the same brokered navigation route as agents and a11y.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
     }
 }
 

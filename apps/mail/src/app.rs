@@ -4851,6 +4851,8 @@ impl MailApp {
 }
 
 impl Widget for MailApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::MAIL_OPERATION_TYPE]
     }
@@ -5001,23 +5003,6 @@ impl Widget for MailApp {
         } else {
             None
         }
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its mail action, so it records one undo boundary bracketing it (the same
-    /// `record_committed_action` path a Ctrl+K dispatch takes). Rising-edge:
-    /// cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        // A body edit dispatches through the composer; everything else through
-        // Mail's own host. One event does one or the other.
-        let body = self.compose.take_committed_action();
-        let mail = self.shared.borrow_mut().take_committed_action();
-        body.or(mail)
-    }
-
-    /// Typing a word in the draft body is one undo step.
-    fn keeps_undo_step_open(&self) -> bool {
-        self.compose.keeps_undo_step_open()
     }
 
     /// Fold the mailbox into the unified Ctrl+K palette: a snapshot
@@ -5469,6 +5454,24 @@ impl Widget for MailApp {
         for i in &mut self.setup_inputs {
             i.mark_drawn();
         }
+    }
+}
+
+impl ui::undo::CommittedActions for MailApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its mail action, so it records one undo boundary bracketing it (the same
+    /// `record_committed_action` path a Ctrl+K dispatch takes). Rising-edge:
+    /// cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        // A body edit dispatches through the composer; everything else through
+        // Mail's own host. One event does one or the other.
+        let body = self.compose.take_committed_action();
+        let mail = self.shared.borrow_mut().take_committed_action();
+        body.or(mail)
+    }
+    /// Typing a word in the draft body is one undo step.
+    fn keeps_undo_step_open(&self) -> bool {
+        self.compose.keeps_undo_step_open()
     }
 }
 
@@ -6979,7 +6982,7 @@ mod tests {
                 "Open records no selection, folder, search, mode, or compose presentation state"
             );
             assert!(
-                app.take_committed_action().is_some(),
+                ui::undo::take_committed_action(&mut app).is_some(),
                 "mark-read remains a replayable collaborative action"
             );
         }
@@ -7132,7 +7135,7 @@ mod tests {
                 "unlike Open message, explicit preview never queues mark-read"
             );
             assert!(
-                app.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut app).is_none(),
                 "a read-state-neutral preview creates no collaborative action"
             );
             let semantics = app.accessibility().expect("reader accessibility");
@@ -7179,7 +7182,7 @@ mod tests {
                     .is_some_and(|mail| mail.read),
                 "Enter uses the normal Open boundary, rather than silently previewing"
             );
-            assert!(app.take_committed_action().is_some());
+            assert!(ui::undo::take_committed_action(&mut app).is_some());
             assert_ne!(app.shared.borrow().inspection, Some(unread));
         }
 
@@ -8271,7 +8274,7 @@ mod tests {
                 before + 1,
                 "'e' archived the selection"
             );
-            assert!(app.take_committed_action().is_some());
+            assert!(ui::undo::take_committed_action(&mut app).is_some());
         }
 
         // Phase `reader_shortcuts_reply_star_and_mark_unread_through_visible_paths`.
@@ -8290,11 +8293,11 @@ mod tests {
                 app.shared.borrow().mailbox.get(id).unwrap().starred,
                 !was_starred
             );
-            assert!(app.take_committed_action().is_some());
+            assert!(ui::undo::take_committed_action(&mut app).is_some());
 
             assert!(dispatch(&mut app, &char_key("u"), &mut doc));
             assert!(!app.shared.borrow().mailbox.get(id).unwrap().read);
-            assert!(app.take_committed_action().is_some());
+            assert!(ui::undo::take_committed_action(&mut app).is_some());
         }
 
         // Phase `shortcut_arrow_down_moves_selection`.
@@ -8321,7 +8324,7 @@ mod tests {
                 before + 1,
                 "Delete moved the selection to Trash"
             );
-            assert!(app.take_committed_action().is_some());
+            assert!(ui::undo::take_committed_action(&mut app).is_some());
         }
     }
 

@@ -2729,12 +2729,12 @@ impl CallbackBinding {
         widget: &mut dyn Widget,
         doc: &mut AutoCommit,
     ) -> Result<bool, BoundDispatchError> {
-        let bracket = widget.take_committed_action();
+        let bracket = crate::undo::take_committed_action(widget);
         let commit = widget.needs_commit();
         if bracket.is_none() && !commit {
             return Ok(false);
         }
-        let keep_open = widget.keeps_undo_step_open();
+        let keep_open = crate::undo::keeps_undo_step_open(widget);
         let context = widget.take_commit_context();
         let metadata = widget.get_state();
         let handle = ACTIVE
@@ -3610,7 +3610,7 @@ pub(crate) unsafe fn invoke_bound_semantic_node<R>(
             let before = (doc.base_heads(), doc.pending_ops());
             let widget = unsafe { &mut *pointer };
             let result = callback(widget, doc, &ROOT);
-            let _ = widget.take_committed_action();
+            let _ = crate::undo::take_committed_action(widget);
             let changed = (doc.base_heads(), doc.pending_ops()) != before
                 && history.commit_action_authored_with_message(
                     doc,
@@ -3735,7 +3735,7 @@ pub(crate) unsafe fn drain_legacy_node_action(
                 .and_then(|generation| generation.checked_add(1))
                 .ok_or("document generation exhausted")?;
             let widget = unsafe { &mut *pointer };
-            let bracket = widget.take_committed_action();
+            let bracket = crate::undo::take_committed_action(widget);
             let requested = widget.needs_commit();
             if bracket.is_none() && !requested {
                 return Ok(false);

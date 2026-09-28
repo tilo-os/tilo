@@ -10191,6 +10191,12 @@ impl WordProcessorWidget {
 }
 
 impl Widget for WordProcessorWidget {
+    ui::provides!(
+        dyn ui::collaboration::participants::Participants,
+        dyn ui::undo::CommittedActions,
+        dyn ui::undo::LocalUndo
+    );
+
     fn action_directory_invocation_domain(
         &self,
         _doc: &AutoCommit,
@@ -10624,15 +10630,6 @@ impl Widget for WordProcessorWidget {
         // Status is persistent bottom chrome, so it has no independent fade
         // lifecycle to animate while the editor is otherwise idle.
         false
-    }
-
-    fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
-        // The host resolves Undo before dispatching keyboard events to us.
-        // An open menu must capture that path as well as ordinary editing keys.
-        self.context_menu.is_open()
-            || self.style_menu.is_open()
-            || self.template_picker.is_open()
-            || self.pending_replacement.is_some()
     }
 
     fn wants_tab_input(&self) -> bool {
@@ -11433,14 +11430,6 @@ impl Widget for WordProcessorWidget {
         self.lifecycle.needs_commit = false;
         self.save_status = DocumentSaveStatus::Modified;
     }
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// a [`RichTextAction`](crate::actions) through
-    /// `Self::perform_action`, so it records one undo boundary bracketing the
-    /// affordance's change (the button-driven twin of the Ctrl+K palette).
-    /// Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
     fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
         self.action_palette_request.take()
     }
@@ -11505,6 +11494,43 @@ impl Widget for WordProcessorWidget {
         };
         find(self.participant_resources(Some(participant), doc), id)
     }
+    fn needs_redraw(&self) -> bool {
+        self.lifecycle.dirty
+    }
+    fn mark_drawn(&mut self) {
+        self.lifecycle.dirty = false;
+    }
+    /// One self-drawn taffy leaf filling its tile: its size follows the
+    /// parent alone, so only the first layout is a size change. Pages,
+    /// toolbars and panels are positioned inside `self.rect` by hand.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+}
+
+impl ui::undo::LocalUndo for WordProcessorWidget {
+    fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
+        // The host resolves Undo before dispatching keyboard events to us.
+        // An open menu must capture that path as well as ordinary editing keys.
+        self.context_menu.is_open()
+            || self.style_menu.is_open()
+            || self.template_picker.is_open()
+            || self.pending_replacement.is_some()
+    }
+}
+
+impl ui::undo::CommittedActions for WordProcessorWidget {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// a [`RichTextAction`](crate::actions) through
+    /// `Self::perform_action`, so it records one undo boundary bracketing the
+    /// affordance's change (the button-driven twin of the Ctrl+K palette).
+    /// Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl ui::collaboration::participants::Participants for WordProcessorWidget {
     /// An agent task joined: its view is placed at the document end on the
     /// next sync (no document here) and published as presence from then on.
     fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
@@ -11518,26 +11544,14 @@ impl Widget for WordProcessorWidget {
         self.participants.remove(participant);
         self.lifecycle.dirty = true;
     }
-    fn set_participant_host(&mut self, host: bool) {
-        self.participant_host = host;
-    }
     fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
         WordProcessorWidget::set_participant_label(self, participant, label);
     }
     fn participant_presence(&self, doc: &AutoCommit) -> Vec<ui::ParticipantPresence> {
         WordProcessorWidget::participant_presence(self, doc)
     }
-    fn needs_redraw(&self) -> bool {
-        self.lifecycle.dirty
-    }
-    fn mark_drawn(&mut self) {
-        self.lifecycle.dirty = false;
-    }
-    /// One self-drawn taffy leaf filling its tile: its size follows the
-    /// parent alone, so only the first layout is a size change. Pages,
-    /// toolbars and panels are positioned inside `self.rect` by hand.
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+    fn set_participant_host(&mut self, host: bool) {
+        self.participant_host = host;
     }
 }
 

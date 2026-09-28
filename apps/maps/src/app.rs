@@ -5172,7 +5172,10 @@ impl FloatingSurfaceProvider for MapsApp {
 }
 
 impl Widget for MapsApp {
-    ui::provides!(dyn ui::widget::FloatingSurfaceProvider);
+    ui::provides!(
+        dyn ui::widget::FloatingSurfaceProvider,
+        dyn ui::undo::CommittedActions
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
@@ -5725,13 +5728,6 @@ impl Widget for MapsApp {
         Some(terminal)
     }
 
-    /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
-    /// this event so the shell records exactly one undo point per dispatched
-    /// action — the same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn test_id(&self) -> Option<&str> {
         Some("maps_app")
     }
@@ -5908,6 +5904,15 @@ impl Widget for MapsApp {
     ) {
         // Root fills the window — never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::undo::CommittedActions for MapsApp {
+    /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
+    /// this event so the shell records exactly one undo point per dispatched
+    /// action — the same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 

@@ -209,7 +209,12 @@ impl crate::widget::Collaborative for LiveOwner {
 }
 
 impl Widget for LiveOwner {
-    crate::provides!(dyn crate::widget::Collaborative);
+    crate::provides!(
+        dyn crate::widget::Collaborative,
+        dyn crate::undo::CommittedActions,
+        dyn crate::undo::UndoControl,
+        dyn crate::undo::LocalUndo
+    );
 
     fn name(&self) -> &str {
         "Live owner"
@@ -252,16 +257,6 @@ impl Widget for LiveOwner {
     }
     fn handle_event(&mut self, _: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
         self.local_events.set(self.local_events.get() + 1);
-    }
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.bracket.borrow_mut().take()
-    }
-    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
-        self.undo_request.take()
-    }
-    fn handle_local_undo_request(&mut self, _: crate::undo::UndoRequest) -> bool {
-        self.local_events.set(self.local_events.get() + 1);
-        true
     }
     fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
         if let Some(identity) = &self.mutable_identity {
@@ -321,6 +316,25 @@ impl Widget for LiveOwner {
             invocation,
             output: tilo_actions::ActionOutput::default(),
         })
+    }
+}
+
+impl crate::undo::LocalUndo for LiveOwner {
+    fn handle_local_undo_request(&mut self, _: crate::undo::UndoRequest) -> bool {
+        self.local_events.set(self.local_events.get() + 1);
+        true
+    }
+}
+
+impl crate::undo::UndoControl for LiveOwner {
+    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
+        self.undo_request.take()
+    }
+}
+
+impl crate::undo::CommittedActions for LiveOwner {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.bracket.borrow_mut().take()
     }
 }
 #[test]

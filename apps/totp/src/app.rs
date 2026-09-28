@@ -314,7 +314,7 @@ impl AuthenticatorApp {
     /// replays byte-identically on peers), exactly as the palette does. The
     /// document heads captured just before the first action of the event are
     /// stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]). Callers reload the in-memory vault
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)). Callers reload the in-memory vault
     /// from the document afterward for immediate feedback; `sync` reconciles it
     /// again each frame (so a palette dispatch shows up the same way). This app
     /// supplies only its domain: the action and its type.
@@ -1162,6 +1162,8 @@ impl AuthenticatorApp {
 }
 
 impl Widget for AuthenticatorApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::TOTP_OPERATION_TYPE]
     }
@@ -1497,13 +1499,6 @@ impl Widget for AuthenticatorApp {
             }))
     }
 
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its account action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     /// Fold the vault into the unified Ctrl+K palette through an O(1) handle to
     /// the retained
     /// [`TotpSearchProvider`](crate::search_provider::TotpSearchProvider), which
@@ -1734,6 +1729,15 @@ impl Widget for AuthenticatorApp {
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.reduce_motion = reduced;
+    }
+}
+
+impl ui::undo::CommittedActions for AuthenticatorApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its account action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -2259,7 +2263,7 @@ mod tests {
             );
             // And the host has one undo boundary to record for it.
             assert!(
-                Widget::take_committed_action(&mut app).is_some(),
+                ui::undo::take_committed_action(&mut app).is_some(),
                 "the add action registered exactly one undo boundary for the host"
             );
         }

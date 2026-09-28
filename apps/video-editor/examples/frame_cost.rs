@@ -64,7 +64,7 @@ fn phases(
     let t = Instant::now();
     widget.sync(&mut state.doc, &state.root);
     let status = state.undo_status(None);
-    widget.set_undo_status(&mut || status.clone());
+    ui::undo::set_undo_status(widget, &mut || status.clone());
     let sync_us = t.elapsed().as_micros();
 
     let t = Instant::now();

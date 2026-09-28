@@ -2402,7 +2402,10 @@ impl FloatingSurfaceProvider for GroupRow {
 }
 
 impl Widget for GroupRow {
-    crate::provides!(dyn crate::widget::FloatingSurfaceProvider);
+    crate::provides!(
+        dyn crate::widget::FloatingSurfaceProvider,
+        dyn crate::collaboration::participants::CollaborationTopology
+    );
 
     // Modal capture and presentation polling follow visible content, never inactive tabs.
     fn modal_capture(&self) -> Option<Rect> {
@@ -2509,12 +2512,6 @@ impl Widget for GroupRow {
             reports.extend(child.take_component_close_reports());
         }
         reports
-    }
-    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.groups
-            .iter_mut()
-            .map(|group| group as &mut dyn Widget)
-            .collect()
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -3224,6 +3221,15 @@ impl Widget for GroupRow {
             .map(super::Widget::take_structure_dirty)
             .fold(false, |acc, d| acc || d);
         own || children
+    }
+}
+
+impl crate::collaboration::participants::CollaborationTopology for GroupRow {
+    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.groups
+            .iter_mut()
+            .map(|group| group as &mut dyn Widget)
+            .collect()
     }
 }
 

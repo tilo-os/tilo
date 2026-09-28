@@ -197,6 +197,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for ShortcutPane {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         if self.needs_seed {
@@ -374,14 +376,17 @@ impl Widget for ShortcutPane {
             "Change keyboard shortcuts",
         )
     }
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
     fn name(&self) -> &'static str {
         "ShortcutPane"
     }
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::CommittedActions for ShortcutPane {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 

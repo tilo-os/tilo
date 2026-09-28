@@ -1268,7 +1268,7 @@ impl CameraApp {
     /// replays byte-identically on peers), exactly as the palette does. The doc
     /// heads captured just before the first action of the event are stashed so the
     /// host records **one** undo boundary bracketing it
-    /// ([`ui::widget::Widget::take_committed_action`]).
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)).
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::CameraAction) {
         if let Err(error) = self.try_perform_action(doc, action) {
             self.toast = Some(format!("Couldn't save change: {error}"));
@@ -2549,6 +2549,8 @@ fn sample_recent_capture() -> Capture {
 }
 
 impl Widget for CameraApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::CAMERA_OPERATION_TYPE]
     }
@@ -2653,13 +2655,6 @@ impl Widget for CameraApp {
                     ui::tilo_actions::ActionOutput::default(),
                 )
             }))
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its metadata action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.take_committed()
     }
 
     fn poll_resource_operation(
@@ -3469,6 +3464,15 @@ impl Widget for CameraApp {
         _permissions: &ui::permissions::PermissionContext,
     ) {
         self.draw(scene, t, tr, theme, presence);
+    }
+}
+
+impl ui::undo::CommittedActions for CameraApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its metadata action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -8059,7 +8063,7 @@ mod tests {
             app.apply(Action::Nav(Screen::Settings), &mut doc, &root);
             assert_eq!(app.screen, Screen::Settings);
             assert_eq!(doc.get_heads(), before);
-            assert!(app.take_committed_action().is_none());
+            assert!(ui::undo::take_committed_action(&mut app).is_none());
         }
         // Phase `cycle_facing_and_persist`.
         {

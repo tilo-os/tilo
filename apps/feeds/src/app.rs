@@ -1017,7 +1017,7 @@ impl FeedsApp {
     /// (a pinned actor + committed change, so it replays byte-identically on
     /// peers), exactly as the palette does. The document heads captured just
     /// before the first action of the event are stashed so the host records
-    /// **one** undo boundary bracketing it ([`Widget::take_committed_action`]).
+    /// **one** undo boundary bracketing it ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)).
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &FeedsAction) {
         self.actions.dispatch_with_context(
             doc,
@@ -4505,9 +4505,7 @@ fn chrono_date(published: i64, now: i64) -> String {
 // ---------------------------------------------------------------------
 
 impl Widget for FeedsApp {
-    fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
-        self.feed_menu.is_open()
-    }
+    ui::provides!(dyn ui::undo::CommittedActions, dyn ui::undo::LocalUndo);
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::FEEDS_OPERATION_TYPE]
@@ -4635,13 +4633,6 @@ impl Widget for FeedsApp {
         } else {
             None
         }
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 
     /// Fold the reader's articles and subscriptions into the unified Ctrl+K
@@ -5418,6 +5409,21 @@ impl Widget for FeedsApp {
                 .toast
                 .as_ref()
                 .is_some_and(|(_, since)| since.elapsed().as_secs_f32() < 4.0)
+    }
+}
+
+impl ui::undo::LocalUndo for FeedsApp {
+    fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
+        self.feed_menu.is_open()
+    }
+}
+
+impl ui::undo::CommittedActions for FeedsApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -6561,7 +6567,7 @@ mod tests {
                 "the exact folder is persisted through FeedsAction::AddFolder"
             );
             assert!(
-                a.take_committed_action().is_some(),
+                ui::undo::take_committed_action(&mut a).is_some(),
                 "folder creation creates one undo boundary"
             );
         }
@@ -7482,8 +7488,14 @@ mod tests {
             let mut a = app();
             lay_out(&mut a, 640.0, 480.0);
             a.open_feed_menu(a.store.feeds[0].id, Point::new(100.0, 200.0));
-            assert!(a.handle_local_undo_request(ui::undo::UndoRequest::Undo));
-            assert!(a.handle_local_undo_request(ui::undo::UndoRequest::Redo));
+            assert!(ui::undo::handle_local_undo_request(
+                &mut a,
+                ui::undo::UndoRequest::Undo
+            ));
+            assert!(ui::undo::handle_local_undo_request(
+                &mut a,
+                ui::undo::UndoRequest::Redo
+            ));
         }
 
         // --- phase: feed_menu_stays_within_tiny_viewport ---
