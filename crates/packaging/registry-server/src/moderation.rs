@@ -904,7 +904,9 @@ fn validate_bound_version(
                     "aarch64" | "aarch64-v8.2" | "aarch64-v8.4" | "aarch64-v9"
                 )
         ),
-        registry_types::WEB_PLATFORM => target.validate().is_ok(),
+        registry_types::WEB_PLATFORM
+        | registry_types::WINDOWS_PLATFORM
+        | registry_types::MACOS_PLATFORM => target.validate().is_ok(),
         _ => false,
     };
     let canonical_url = artifacts.allows(&version.tapp_url);

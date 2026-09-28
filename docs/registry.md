@@ -315,19 +315,29 @@ the same fallback rule and distinguish `icon`, `screenshot`, and `banner`.
 
 Each signed version binds the package root, exact final-file BLAKE3 and size,
 platform family, architecture, minimum ISA and runtime ABI. The schema can add
-future platform families without changing the signed entry shape. Two families
-are accepted (`registry_types::target`):
+future platform families without changing the signed entry shape. Four
+families are accepted (`registry_types::target`):
 
 | `platform` | `architecture` | `isa` | `runtime` |
 |---|---|---|---|
 | `tilo-os` | `x86_64`, `aarch64` | `x86_64`, `x86_64-v2`…`v4`, `aarch64`, `aarch64-v8.2`/`v8.4`/`v9` | optional, `tilo-runtime/<version>` |
 | `web` | `wasm32` | canonical wasm feature set, see below | **required**, `tilo-runtime/<version>+wasm.<32 hex>` |
+| `windows` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
+| `macos` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
 
 A native release must publish a distinct `.tapp` for both architectures. Pass
-each tapp's target with `tilo-app-package entry --arch`; generic Linux, macOS,
-and Windows builds do not belong in the Tilo OS app channel. Web versions sit
-beside native versions in the same entry: version identity is
-`(version, platform, architecture)`.
+each tapp's target with `tilo-app-package entry --arch`. Web, Windows and macOS
+versions sit beside Tilo OS versions in the same entry: version identity is
+`(version, platform, architecture)`, and a Tilo OS client installs only
+`tilo-os` versions. Generic Linux builds do not belong in the registry.
+
+**Windows and macOS.** Those systems ship no Tilo toolkit, so the package is one
+self-contained executable with the toolkit linked in. Its signed `[target]`
+names the executable as `module` (the GUI entrypoint must name the same path)
+and the linked release as `runtime`, equal to `[package].runtime`
+(`tilo_app_package::desktop::desktop_manifest`). Such a build may be up to
+`MAX_DESKTOP_APP_TAPP_BYTES` (64 MiB), a distribution policy rather than a
+design target; `tilo-app-package entry --platform windows|macos` binds it.
 
 **Web `isa`.** `wasm32-mvp` followed by zero or more `+<feature>`, where each
 feature is one of `atomics`, `bulk-memory`, `bulk-memory-opt`,
