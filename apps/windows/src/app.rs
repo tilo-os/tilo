@@ -15,6 +15,7 @@ use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Politenes
 use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, PickRequest};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Button, ButtonStyle, ModalAction, ModalFrame, ModalHit, ModalLayout, ModalSpec, Widget,
 };
@@ -1441,7 +1442,8 @@ impl Widget for WindowsApp {
         ]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         self.project_shared_route_policy(state);
         self.drain_portal();
         self.drain_document_portal();
@@ -2845,8 +2847,8 @@ impl Widget for WindowsApp {
         &mut self,
         target: &str,
         action: &AccessibilityAction,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(
             action,

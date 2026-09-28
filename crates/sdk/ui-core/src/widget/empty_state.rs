@@ -18,6 +18,7 @@
 //! CRDT-native input model used by [`super::ContextMenu`] /
 //! [`super::TriStateControl`].
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
@@ -772,9 +773,10 @@ impl Widget for EmptyState {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = crate::doc::document(state, path);
         if self.is_enabled()
             && self.action_label.is_some()
             && matches!(action, crate::a11y::Action::Activate)
@@ -790,8 +792,8 @@ impl Widget for EmptyState {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.action_id.as_deref() == Some(target) && self.perform_action(action, state, path)
     }

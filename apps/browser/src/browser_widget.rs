@@ -19,6 +19,7 @@
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::widget::{AppModel, ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -5490,7 +5491,8 @@ impl Widget for BrowserWidget {
         clippy::too_many_lines,
         reason = "Browser's frame-level input routing remains ordered in one place."
     )]
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         if self.private_window_request.get() {
             self.private_window_request.set(false);
             self.private_window_notice = crate::private_window::launch().err();
@@ -6234,8 +6236,8 @@ impl Widget for BrowserWidget {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if self
             .suggestions

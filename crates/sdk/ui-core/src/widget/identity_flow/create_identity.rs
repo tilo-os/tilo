@@ -36,6 +36,7 @@
 //! screen's layout node as a child of its own so the host's focus order,
 //! the accessibility tree and the headless driver all reach it by name.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
@@ -531,7 +532,7 @@ impl CreateIdentityScreen {
 }
 
 impl Widget for CreateIdentityScreen {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
 
     fn build_layout(
         &mut self,

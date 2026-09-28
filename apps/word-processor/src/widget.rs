@@ -9,6 +9,7 @@ mod resource_file_jobs;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, ReadDoc};
@@ -10319,9 +10320,10 @@ impl Widget for WordProcessorWidget {
 
     fn native_input_snapshot(
         &self,
-        state: &AutoCommit,
-        _path: &ObjId,
+        state: &AppModel,
+        path: &ModelPath,
     ) -> Option<serde_json::Value> {
+        let (state, _) = ui::doc::document_ref(state, path);
         let caret = self.inner.caret();
         let region = self.inner.region();
         // Body text reads only the caret block. Running-region text would
@@ -10464,7 +10466,8 @@ impl Widget for WordProcessorWidget {
         Ok(())
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.expire_file_jobs();
         if self.canonical {
             self.inner.reconcile(state);
@@ -11226,9 +11229,10 @@ impl Widget for WordProcessorWidget {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = ui::doc::document(state, path);
         if let Some(offer) = &mut self.file_choice {
             offer.accessible_action(action, key_path);
             self.lifecycle.dirty = true;

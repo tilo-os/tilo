@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use ui::doc::read_bool;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use desktop_policy::{CleanupPreview, StorageCategory, StorageRoots, StorageSnapshot};
@@ -345,7 +346,8 @@ impl Widget for StoragePane {
         clippy::too_many_lines,
         reason = "one pass deliberately coordinates the storage snapshot and each independent command latch"
     )]
-    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
+        let (shared, _) = ui::doc::document(shared, root);
         let isolated = self.isolate_document;
         let mut state = if isolated {
             std::mem::take(&mut self.local_doc)

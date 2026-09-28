@@ -29,6 +29,7 @@
 //! [`TextInput`]: crate::widget::TextInput
 
 use crate::time::{Duration, Instant};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
@@ -848,7 +849,8 @@ fn char_to_byte(text: &str, char_idx: usize) -> usize {
 }
 
 impl Widget for RichTextEditor {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document(state, path);
         let Some(field) = Self::ensure_map(state, path, &self.key) else {
             return;
         };
@@ -1193,10 +1195,11 @@ impl Widget for RichTextEditor {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, _) = crate::doc::document(state, path);
 
         match action {
             Action::SetValue(value) => {

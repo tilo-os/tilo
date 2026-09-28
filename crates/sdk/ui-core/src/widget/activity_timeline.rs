@@ -16,6 +16,7 @@
 //! the reader.
 
 use crate::time::SystemTime;
+use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 
 use automerge::{AutoCommit, ObjId};
@@ -3088,8 +3089,8 @@ impl Widget for ActivityTimeline {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         let row = if let Some(key) = target.strip_prefix("timeline-group:") {

@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -6856,7 +6857,8 @@ impl Widget for ContactsApp {
         &[crate::actions::CONTACTS_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         // Legacy rows receive deterministic read identities, then this small
         // canonical migration persists them before UI edits/actions can target
         // a row. It only touches missing row ids and is idempotent.
@@ -7812,10 +7814,11 @@ impl Widget for ContactsApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let (state, _) = ui::doc::document(state, path);
 
         // List rows are hand-painted, but their standard AT-SPI context-menu
         // action opens precisely the same menu as a secondary pointer click.

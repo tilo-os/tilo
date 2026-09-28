@@ -23,6 +23,7 @@
 //! next cell, a paste spreads across the cells, Backspace in an empty cell
 //! steps back and clears the one before it.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
@@ -807,7 +808,7 @@ impl PairDeviceScreen {
 }
 
 impl Widget for PairDeviceScreen {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
 
     fn build_layout(
         &mut self,

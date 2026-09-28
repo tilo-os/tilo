@@ -1,3 +1,4 @@
+use ui::widget::{AppModel, ModelPath};
 include!("../../../crates/sdk/ui-core/tests/support/history_adapter_conformance.rs");
 fn test_root() -> Box<dyn ui::widget::Widget> {
     crate::app_root()
@@ -697,7 +698,7 @@ struct ResourceHarness {
     queue: std::rc::Rc<std::cell::RefCell<Vec<tilo_actions::ControlInvocation>>>,
 }
 impl ui::widget::Widget for ResourceHarness {
-    fn sync(&mut self, d: &mut AutoCommit, p: &automerge::ObjId) {
+    fn sync(&mut self, d: &mut AppModel, p: &ModelPath) {
         self.app.sync(d, p);
     }
     fn resources(&self, d: &AutoCommit) -> Vec<tilo_actions::Resource> {

@@ -16,6 +16,7 @@
 )]
 
 use crate::time::{Duration, Instant};
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -1335,8 +1336,8 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if target == "floating-window.close"
             && matches!(action, crate::a11y::Action::Activate)

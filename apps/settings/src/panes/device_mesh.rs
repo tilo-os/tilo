@@ -9,6 +9,7 @@ use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 use tilo_clock::unix_now;
 use ui::doc::{read_bool, read_str};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
@@ -1813,7 +1814,8 @@ impl Widget for DeviceMeshPane {
         clippy::too_many_lines,
         reason = "one synchronization pass consumes the pane's related role, replication, pairing, device-revocation, and server-management controls atomically"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.poll_background_tasks();
         if let Some(command_state) = &self.command_state
             && let Some(operation) = command_state.get()

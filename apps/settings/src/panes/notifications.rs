@@ -19,6 +19,7 @@
 use std::collections::{BTreeMap, HashMap};
 use tilo_clock::unix_now_i64;
 use ui::doc::{read_bool, read_str};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
@@ -854,7 +855,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for NotificationsPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.seed_if_needed(state, root);
 
         let mut changed = self.reconcile_dnd_and_focus_days(state, root);

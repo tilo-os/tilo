@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use ui::doc::read_str;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use desktop_policy::{AppCandidate, DefaultAppResolver, PersonalDefaults, ResourceKind};
@@ -223,7 +224,8 @@ pub fn installed_candidates() -> Vec<AppCandidate> {
 }
 
 impl Widget for PersonalAppsPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if self.needs_seed {
             let initial_values = {
                 let resolver = DefaultAppResolver::new(&self.candidates);

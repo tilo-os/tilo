@@ -10,6 +10,7 @@
 //! owned by [`crate::overlay::popover::Popover`] (a tiny positioning hint,
 //! not a `Widget`). Don't collide.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
@@ -335,7 +336,7 @@ impl<C: Widget> PopoverWidget<C> {
 }
 
 impl<C: Widget + 'static> Widget for PopoverWidget<C> {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         // Pass through even when closed — otherwise re-opening reveals a stale frame.
         self.content.sync(state, path);
     }

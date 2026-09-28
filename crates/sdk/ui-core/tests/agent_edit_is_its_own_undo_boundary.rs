@@ -22,6 +22,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc};
+use tilo_ui::widget::{AppModel, ModelPath};
 
 use crate::support::typed_collab::TypedBroker;
 use tilo_ui::app::App;
@@ -58,7 +59,7 @@ impl Widget for AgentTarget {
         true
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.inner.sync(state, path);
     }
     fn build_layout(

@@ -8,6 +8,7 @@
 //! variant, placed by this layer rather than by the workspace column.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
@@ -111,13 +112,13 @@ impl Widget for DisplayBars {
         Some(self)
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         for (_, bar) in &mut self.bars {
             bar.sync(state, root);
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, root: &ModelPath) -> bool {
         let mut changed = false;
         for (_, bar) in &mut self.bars {
             changed |= bar.update(state, root);

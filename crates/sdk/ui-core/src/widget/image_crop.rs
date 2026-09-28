@@ -1,5 +1,6 @@
 //! Shared direct-manipulation crop editor for scanner, Photos, and image tools.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -425,8 +426,8 @@ impl Widget for ImageCropEditor {
         &mut self,
         target: &str,
         action: &Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         match action {
             Action::Increment => self.adjust_boundary(target, 0.01),

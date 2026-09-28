@@ -14,6 +14,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -170,9 +171,10 @@ impl Widget for OverviewPane {
         &mut self,
         action: &Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = ui::doc::document(state, path);
         let search_key = ui::a11y::hash_key(&"weather.city_search");
         if let Some(index) = key_path.iter().position(|key| *key == search_key) {
             #[expect(
@@ -267,8 +269,8 @@ impl Widget for DetailPane {
         &mut self,
         action: &Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, Action::Activate) {
             return false;

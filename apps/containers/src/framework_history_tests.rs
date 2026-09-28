@@ -5,6 +5,7 @@ use tilo_automerge::ApplyIncoming as _;
 use ui::headless::test_support::{a11y_node_labelled, find_semantic};
 use ui::history_mode::pending_controls::PendingControlStatus;
 use ui::widget::Widget;
+use ui::widget::{AppModel, ModelPath};
 
 type ArmedReplacement = (
     std::sync::mpsc::Receiver<crate::app::ControlledRuntimeRequest>,
@@ -564,7 +565,7 @@ impl Widget for CustodyDeniedContainersRoot {
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         self.child.document_history_definition()
     }
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         self.child.sync(doc, path);
     }
     fn build_layout(

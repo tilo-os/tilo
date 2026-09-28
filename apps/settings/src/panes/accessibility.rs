@@ -22,6 +22,7 @@
 use settings_store::magnifier;
 use std::collections::HashMap;
 use ui::doc::{read_bool, read_str_or_text};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
@@ -781,7 +782,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for AccessibilityPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.seed_if_needed(state, root);
 
         let mut changed = self.fold_vision(state, root);

@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::prelude::*;
@@ -1127,7 +1128,7 @@ impl Widget for DiffMergeApp {
             .flatten()
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if let Some((invocation, left, right)) = self.pending_resource_paths.take() {
             let result = self.load_paths(&left, &right);
             self.resource_result = Some(match result {
@@ -1419,9 +1420,10 @@ impl Widget for DiffMergeApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         self.merge.reconcile_content(state);
         if !matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus) {
             return false;

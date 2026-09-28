@@ -15,6 +15,7 @@
 //! while becoming fully navigable.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -421,13 +422,18 @@ impl Widget for NavRow {
         &mut self,
         target: &str,
         action: &Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         target == self.id && self.perform_action(action, state, path)
     }
 
-    fn perform_action(&mut self, action: &Action, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn perform_action(
+        &mut self,
+        action: &Action,
+        _state: &mut AppModel,
+        _path: &ModelPath,
+    ) -> bool {
         if let Some(adjust) = &mut self.on_adjust {
             match action {
                 Action::Increment => {

@@ -13,6 +13,7 @@
 //! [`ViewportState::screen_to_content`].
 
 use crate::time::Instant;
+use crate::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
@@ -955,7 +956,7 @@ impl DocumentViewport {
 }
 
 impl Widget for DocumentViewport {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if let Content::Widget(c) = &mut self.content {
             c.sync(state, path);
         }

@@ -7,6 +7,7 @@ use crate::time::{Duration, Instant};
 use crate::widget::Spinner;
 use crate::widget::TaffyTreeExt;
 use crate::widget::app_widget::AppWidget;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
     AudiencePresentationProvider, AudiencePresentationWidgetExt, CompleteContentWidgetExt as _,
     Continuable, FloatingSurfaceProvider, FloatingSurfaceWidgetExt, FullscreenProvider,
@@ -1789,7 +1790,7 @@ impl Widget for TileHost {
             TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
         }
     }
-    fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {
+    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
         if let TileContent::App(app) = &mut self.content {
             app.on_external_event(payload, state, root);
         }
@@ -1823,7 +1824,7 @@ impl Widget for TileHost {
             _ => Vec::new(),
         }
     }
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, path: &ObjId) {
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
         if let TileContent::App(app) = &mut self.content {
             app.activate_search_result(action_id, doc, path);
         }
@@ -2096,7 +2097,7 @@ impl Widget for TileHost {
         children
     }
 
-    fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
+    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
         if !self.history_lifetime.active.get()
             || crate::history_mode::frame::FrameworkInputFrame::active()
         {
@@ -2126,7 +2127,7 @@ impl Widget for TileHost {
         }
     }
 
-    fn update(&mut self, s: &mut AutoCommit, p: &ObjId) -> bool {
+    fn update(&mut self, s: &mut AppModel, p: &ModelPath) -> bool {
         // This custody is independent of the outer App State and remains
         // durable while History hides the live widget.
         if let Some(binding) = &self.binding {
@@ -3229,8 +3230,9 @@ mod tests {
     }
 
     impl Widget for Scribe {
-        fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
             use automerge::transaction::Transactable;
+            let (state, path) = crate::doc::document(state, path);
             let _ = state.put(path, "body", self.text.as_str());
         }
         fn build_layout(

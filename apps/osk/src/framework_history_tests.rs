@@ -1,5 +1,6 @@
 use super::*;
 use tilo_automerge::ApplyIncoming as _;
+use ui::widget::{AppModel, ModelPath};
 
 fn keyboard() -> OskWidget {
     OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()))
@@ -110,10 +111,11 @@ impl Widget for LiveFixture {
     fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
         self.keyboard.borrow().history_restore_readiness(scope)
     }
-    fn sync(&mut self, d: &mut AutoCommit, p: &ObjId) {
+    fn sync(&mut self, d: &mut AppModel, p: &ModelPath) {
         self.keyboard.borrow_mut().sync(d, p);
     }
-    fn update(&mut self, d: &mut AutoCommit, p: &ObjId) -> bool {
+    fn update(&mut self, d: &mut AppModel, p: &ModelPath) -> bool {
+        let (d, p) = ui::doc::document(d, p);
         while let Some(event) = self.events.borrow_mut().pop_front() {
             self.keyboard.borrow_mut().on_external_event(&event, d, p);
             self.event_count.set(self.event_count.get() + 1);

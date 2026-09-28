@@ -15,6 +15,7 @@
 //! search panel can never come from two different definitions of a match.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
@@ -488,7 +489,7 @@ const REPLACE_ONE_W: f64 = 80.0;
 const REPLACE_ALL_W: f64 = 48.0;
 
 impl Widget for FindBar {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.find.sync(state, path);
         self.replace.sync(state, path);
         // A field reports its own edits (including its clear button) here, so

@@ -16,6 +16,7 @@
 
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use std::cell::Cell;
@@ -2308,7 +2309,8 @@ impl Widget for ContainersApp {
         Ok(true)
     }
 
-    fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = ui::doc::document(doc, path);
         #[cfg(test)]
         if self
             .history_runtime_replacement
@@ -2880,9 +2882,10 @@ impl Widget for ContainersApp {
         &mut self,
         target: &str,
         action: &AccessibilityAction,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if self.palette_open {
             return self
                 .palette

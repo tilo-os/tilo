@@ -98,14 +98,18 @@ macro_rules! retained_parts {
                 path,
             )
         }
-        fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        fn update(
+            &mut self,
+            state: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
+        ) -> bool {
             let mut changed = false;
             for child in &mut self.parts.children {
                 changed |= child.update(state, path);
             }
             changed
         }
-        fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
             for child in &mut self.parts.children {
                 child.sync(state, path);
             }

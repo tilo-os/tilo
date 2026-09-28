@@ -43,6 +43,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use ui::doc::{read_bool, read_text};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
 use taffy::style_helpers::{length, percent};
@@ -3945,7 +3946,8 @@ fn args_none() -> serde_json::Map<String, serde_json::Value> {
 }
 
 impl Widget for InstallerApp {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if !self.bootstrap_done {
             self.bootstrap_crdt(state, root);
             self.bootstrap_done = true;
@@ -4093,7 +4095,8 @@ impl Widget for InstallerApp {
         }
     }
 
-    fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {
+    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if payload == CONSOLE_WAKE {
             self.serve_console(state, root);
         } else if payload == NETWORK_WAKE_EVENT {

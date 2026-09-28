@@ -4,10 +4,10 @@
 //! `impl AppWidget`) so a probe only spells out the methods it observes.
 
 /// No-op implementations of required [`Widget`](crate::widget::Widget)
-/// methods. Without arguments it emits `sync`, `apply_layout`, `draw` and a
-/// zero `get_rect`; with a list it emits exactly the named pieces:
+/// methods. Without arguments it emits `apply_layout`, `draw` and a zero
+/// `get_rect`; with a list it emits exactly the named pieces:
 ///
-/// - `sync`, `apply_layout`, `draw`: do nothing
+/// - `apply_layout`, `draw`: do nothing
 /// - `get_rect`: [`Rect::ZERO`](vello::kurbo::Rect::ZERO)
 /// - `leaf_layout`: a default-styled leaf registered for this widget
 /// - `unregistered_leaf_layout`: a default-styled leaf left out of the node map
@@ -17,10 +17,7 @@
 /// `handle_event` needs no stub: the trait default ignores every event.
 macro_rules! inert_widget_methods {
     () => {
-        $crate::testing::inert_widget_methods!(sync, apply_layout, draw, get_rect);
-    };
-    (@ sync) => {
-        fn sync(&mut self, _: &mut ::automerge::AutoCommit, _: &::automerge::ObjId) {}
+        $crate::testing::inert_widget_methods!(apply_layout, draw, get_rect);
     };
     (@ apply_layout) => {
         fn apply_layout(
@@ -93,7 +90,7 @@ macro_rules! inert_widget_methods {
 /// handle_event, get_rect)`.
 macro_rules! delegate_widget_methods {
     (@ $field:tt sync) => {
-        fn sync(&mut self, doc: &mut ::automerge::AutoCommit, path: &::automerge::ObjId) {
+        fn sync(&mut self, doc: &mut $crate::widget::AppModel, path: &$crate::widget::ModelPath) {
             self.$field.sync(doc, path);
         }
     };

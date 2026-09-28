@@ -4,6 +4,7 @@
 //! of the underlying layout mode, while retaining `Column` traversal,
 //! focus, accessibility, actions, and document sync.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
@@ -54,7 +55,7 @@ impl Section {
 }
 
 impl Widget for Section {
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.inner.update(state, path)
     }
 

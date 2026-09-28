@@ -7,6 +7,7 @@
 //! and Activity paths used everywhere else.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ObjId, ReadDoc as _, ScalarValue, Value};
@@ -696,9 +697,10 @@ impl Widget for CollaborationLaunchpad {
         &mut self,
         target: &str,
         action: &Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = ui::doc::document(state, path);
         if target == EMPTY_WORKSPACE_OPEN_APP && matches!(action, Action::Activate) {
             let _ = state.put(path, EMPTY_WORKSPACE_OPEN_APP, true);
             return true;

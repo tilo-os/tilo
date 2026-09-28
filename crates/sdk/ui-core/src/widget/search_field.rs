@@ -12,6 +12,7 @@
 //! and opens its own `CommandPalette`. Search UI and ranking thus live in
 //! one shared toolkit widget, not in every app's bespoke search bar.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
@@ -538,9 +539,10 @@ impl Widget for SearchField {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = crate::doc::document(state, path);
         if self.opens_palette {
             return matches!(action, crate::a11y::Action::Activate) && self.request_palette();
         }

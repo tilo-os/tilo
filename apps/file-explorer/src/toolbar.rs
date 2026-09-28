@@ -28,6 +28,7 @@
 //! body shell), and its stateless button children are rebuilt each layout.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use taffy::{
     AlignItems, Dimension, Display, FlexDirection, LengthPercentage, NodeId, Rect as TaffyRect,
@@ -342,7 +343,7 @@ impl FileToolbar {
 }
 
 impl Widget for FileToolbar {
-    fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.path_bar.sync(state, path);
     }
 
