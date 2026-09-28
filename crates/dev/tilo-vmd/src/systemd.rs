@@ -68,6 +68,44 @@ fn systemctl(verb: &str, unit: &str) -> Result<(), DaemonError> {
     .map(drop)
 }
 
+/// How long the compositor may take to paint and encode a snapshot after
+/// acknowledging it: the reply comes before the frame that writes the file.
+const SNAPSHOT_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The PNG at `path`, once it is there in full.
+fn await_png(path: &Path, timeout: std::time::Duration) -> Result<Vec<u8>, DaemonError> {
+    let started = std::time::Instant::now();
+    loop {
+        match fs::read(path) {
+            Ok(bytes) if png_complete(&bytes) => return Ok(bytes),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(DaemonError::io("read snapshot")(error)),
+        }
+        if started.elapsed() >= timeout {
+            return Err(DaemonError::Apply {
+                step: "read snapshot".into(),
+                detail: format!(
+                    "the compositor acknowledged the snapshot but wrote no complete PNG to {} \
+                     within {}s; its journal says why",
+                    path.display(),
+                    timeout.as_secs()
+                ),
+            });
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// Whether `bytes` is a whole PNG: the signature, and the `IEND` chunk last.
+fn png_complete(bytes: &[u8]) -> bool {
+    const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+    const IEND: &[u8] = b"\0\0\0\0IEND\xae\x42\x60\x82";
+    bytes.len() >= SIGNATURE.len() + IEND.len()
+        && bytes.starts_with(SIGNATURE)
+        && bytes.ends_with(IEND)
+}
+
 fn uid_of(user: &str) -> Option<u32> {
     let output = Command::new("getent")
         .args(["passwd", user])
@@ -382,6 +420,13 @@ impl Apply for SystemdApply {
             .filter(|p| *p > 0)
     }
 
+    fn session_environment(&mut self, slot: &str) -> Vec<(String, String)> {
+        self.session_pid(slot)
+            .and_then(|pid| fs::read(format!("/proc/{pid}/environ")).ok())
+            .map(|environ| crate::exec::session_env(&environ))
+            .unwrap_or_default()
+    }
+
     fn session_process(&mut self, slot: &str) -> Option<SessionProcess> {
         let main = self.session_pid(slot)?;
         // Type=simple returns once forked; wait for the switch to the slot user.
@@ -442,7 +487,7 @@ impl Apply for SystemdApply {
                 detail: result.stderr,
             });
         }
-        let bytes = fs::read(&path).map_err(DaemonError::io("read snapshot"));
+        let bytes = await_png(&path, SNAPSHOT_WRITE_TIMEOUT);
         let _ = fs::remove_file(&path);
         bytes
     }
@@ -675,4 +720,46 @@ fn vkms_card(seat: &str) -> Option<PathBuf> {
                 .and_then(|n| n.strip_prefix("card"))
                 .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_snapshot_is_read_once_the_compositor_has_written_all_of_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(b"\0\0\0\x0dIHDR-and-pixels");
+        png.extend_from_slice(b"\0\0\0\0IEND\xae\x42\x60\x82");
+        // Phase `only_a_whole_png_counts`.
+        {
+            assert!(png_complete(&png));
+            assert!(!png_complete(&png[..png.len() - 1]));
+            assert!(!png_complete(&png[..20]));
+            assert!(!png_complete(b""));
+        }
+        // Phase `the_read_waits_for_the_frame_that_writes_the_file`.
+        {
+            let writer = {
+                let (path, png) = (path.clone(), png.clone());
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    fs::write(&path, &png[..20]).unwrap();
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    fs::write(&path, &png).unwrap();
+                })
+            };
+            let read = await_png(&path, std::time::Duration::from_secs(10)).unwrap();
+            writer.join().unwrap();
+            assert_eq!(read, png);
+        }
+        // Phase `a_snapshot_that_never_lands_is_an_error_not_a_hang`.
+        {
+            fs::write(&path, &png[..20]).unwrap();
+            let error = await_png(&path, std::time::Duration::from_millis(200)).unwrap_err();
+            assert!(error.to_string().contains("no complete PNG"), "{error}");
+        }
+    }
 }
