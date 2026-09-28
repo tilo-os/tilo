@@ -3849,7 +3849,6 @@ it	before	6340
 long	before	6340
 one	with	6340
 or	three	6340
-s	a	6340
 since	you	6340
 that	kind	6340
 the	deep	6340
@@ -5627,7 +5626,6 @@ still	there	6182
 the	post	6182
 the	rules	6182
 where	there	6182
-d	been	6181
 few	times	6181
 from	being	6181
 here	was	6181
@@ -5919,7 +5917,6 @@ her	eye	6162
 join	the	6162
 know	her	6162
 oh	my	6162
-s	not	6162
 the	change	6162
 the	reader	6162
 the	stream	6162
@@ -5935,7 +5932,6 @@ into	your	6161
 meet	the	6161
 not	love	6161
 pain	in	6161
-s	the	6161
 so	fast	6161
 that	sort	6161
 the	keys	6161
@@ -7024,7 +7020,6 @@ hear	what	6090
 hoped	to	6090
 i	stared	6090
 is	how	6090
-m	not	6090
 of	going	6090
 or	do	6090
 out	all	6090
@@ -7557,7 +7552,6 @@ in	great	6057
 inside	his	6057
 not	show	6057
 struggling	to	6057
-t	he	6057
 the	arms	6057
 there	could	6057
 a	key	6056
@@ -9077,7 +9071,6 @@ not	respond	5978
 of	children	5978
 right	after	5978
 right	out	5978
-s	face	5978
 so	how	5978
 the	grounds	5978
 things	she	5978
@@ -9954,7 +9947,6 @@ is	already	5942
 me	is	5942
 next	year	5942
 on	these	5942
-s	eyes	5942
 she	now	5942
 straight	into	5942
 the	notion	5942
@@ -9983,7 +9975,6 @@ to	drag	5941
 trouble	with	5941
 wanted	was	5941
 a	grand	5940
-d	be	5940
 doors	and	5940
 enough	time	5940
 for	breakfast	5940
@@ -12678,7 +12669,6 @@ forward	in	5835
 gestured	to	5835
 good	of	5835
 library	of	5835
-m	going	5835
 not	cry	5835
 of	american	5835
 other	girls	5835
@@ -13984,7 +13974,6 @@ only	after	5791
 opposite	direction	5791
 place	as	5791
 promise	me	5791
-s	house	5791
 said	my	5791
 taken	it	5791
 the	affair	5791
@@ -14116,7 +14105,6 @@ method	of	5787
 of	character	5787
 off	that	5787
 only	time	5787
-s	all	5787
 sat	next	5787
 she	drove	5787
 shoved	the	5787
@@ -14304,7 +14292,6 @@ plan	for	5782
 questions	and	5782
 raised	in	5782
 real	name	5782
-she	shivered	5782
 so	is	5782
 that	things	5782
 the	net	5782
@@ -14571,7 +14558,6 @@ of	texas	5774
 poor	little	5774
 really	are	5774
 returned	home	5774
-s	what	5774
 several	hours	5774
 she	insisted	5774
 short	stories	5774
@@ -14645,7 +14631,6 @@ now	let	5772
 out	so	5772
 peered	at	5772
 putting	it	5772
-s	voice	5772
 separated	from	5772
 stand	it	5772
 the	bull	5772
@@ -14698,7 +14683,6 @@ yet	you	5771
 your	home	5771
 a	christian	5770
 a	successful	5770
-a	t	5770
 am	here	5770
 an	indian	5770
 and	kill	5770
@@ -14907,8 +14891,6 @@ not	doubt	5764
 of	six	5764
 pray	for	5764
 pull	it	5764
-s	going	5764
-s	hand	5764
 she	arrived	5764
 she	seems	5764
 talking	and	5764
@@ -15336,7 +15318,6 @@ me	around	5752
 new	england	5752
 not	spoken	5752
 of	flesh	5752
-s	been	5752
 say	goodbye	5752
 see	for	5752
 shrugged	his	5752
@@ -15444,7 +15425,6 @@ and	might	5748
 be	leaving	5748
 broke	up	5748
 chapter	thirty	5748
-d	never	5748
 first	she	5748
 from	head	5748
 had	insisted	5748
@@ -15750,7 +15730,6 @@ lined	the	5739
 mom	was	5739
 of	panic	5739
 read	by	5739
-s	just	5739
 the	freedom	5739
 the	plot	5739
 touch	him	5739
@@ -15863,7 +15842,6 @@ be	necessary	5735
 bottle	and	5735
 change	her	5735
 cigarette	and	5735
-d	have	5735
 do	no	5735
 doubt	about	5735
 has	some	5735
@@ -17360,8 +17338,6 @@ of	deep	5695
 on	end	5695
 out	after	5695
 out	why	5695
-s	head	5695
-s	no	5695
 so	high	5695
 standing	next	5695
 suppose	we	5695
@@ -17398,7 +17374,6 @@ into	what	5694
 is	by	5694
 left	you	5694
 living	on	5694
-m	sure	5694
 nodded	her	5694
 own	mind	5694
 people	could	5694
@@ -17999,7 +17974,6 @@ go	from	5678
 if	possible	5678
 in	contrast	5678
 kept	them	5678
-m	sorry	5678
 milk	and	5678
 not	wear	5678
 of	summer	5678
@@ -18355,7 +18329,6 @@ much	at	5670
 not	leaving	5670
 passed	in	5670
 photographs	of	5670
-s	office	5670
 scene	in	5670
 seen	and	5670
 so	deep	5670
@@ -19510,7 +19483,6 @@ books	on	5641
 breathed	a	5641
 chapter	nine	5641
 child	who	5641
-d	like	5641
 ever	come	5641
 had	nearly	5641
 her	gown	5641
@@ -21632,7 +21604,6 @@ to	cheer	5593
 to	soothe	5593
 too	dangerous	5593
 understand	me	5593
-used	fictitiously	5593
 voice	low	5593
 was	interrupted	5593
 we	first	5593
@@ -21966,7 +21937,6 @@ for	christ	5586
 go	outside	5586
 got	more	5586
 grateful	that	5586
-he	grunted	5586
 her	fist	5586
 his	helmet	5586
 horses	were	5586
@@ -21985,7 +21955,6 @@ reading	of	5586
 really	thought	5586
 reason	you	5586
 say	for	5586
-scowled	at	5586
 speak	in	5586
 spread	her	5586
 started	talking	5586
@@ -22104,7 +22073,6 @@ brought	into	5583
 by	in	5583
 caring	for	5583
 certain	she	5583
-d	had	5583
 distance	away	5583
 else	can	5583
 floating	in	5583
@@ -22346,7 +22314,6 @@ power	that	5579
 provide	the	5579
 provided	a	5579
 provided	the	5579
-s	in	5579
 set	me	5579
 she	changed	5579
 silver	and	5579
@@ -22557,7 +22524,6 @@ on	several	5575
 pay	me	5575
 plates	and	5575
 show	off	5575
-squinted	at	5575
 stayed	there	5575
 stepped	through	5575
 still	looked	5575
@@ -23872,7 +23838,6 @@ mistress	of	5551
 money	he	5551
 my	real	5551
 now	here	5551
-s	and	5551
 she	so	5551
 she	tilted	5551
 she	to	5551
@@ -24278,7 +24243,6 @@ people	for	5543
 push	her	5543
 removed	a	5543
 resumed	his	5543
-s	death	5543
 sense	the	5543
 south	america	5543
 stage	and	5543
@@ -24791,7 +24755,6 @@ to	dine	5533
 upon	your	5533
 watch	them	5533
 which	looked	5533
-whirled	around	5533
 a	fuss	5532
 a	painting	5532
 a	peaceful	5532
@@ -25364,7 +25327,6 @@ paper	on	5522
 pay	him	5522
 performance	of	5522
 result	was	5522
-s	life	5522
 same	room	5522
 seat	to	5522
 she	forgot	5522
@@ -25447,7 +25409,6 @@ to	restrain	5521
 to	speed	5521
 touch	his	5521
 town	with	5521
-welled	up	5521
 with	food	5521
 woman	as	5521
 a	feather	5520
@@ -25471,7 +25432,6 @@ has	this	5520
 he	nods	5520
 her	walk	5520
 hoping	the	5520
-i	t	5520
 kept	looking	5520
 kiss	to	5520
 knocked	out	5520
@@ -25482,7 +25442,6 @@ of	soft	5520
 of	using	5520
 office	with	5520
 or	me	5520
-pursed	her	5520
 push	it	5520
 rain	was	5520
 relate	to	5520
@@ -25647,7 +25606,6 @@ painted	on	5517
 police	force	5517
 popped	up	5517
 room	table	5517
-s	body	5517
 school	to	5517
 setting	sun	5517
 so	like	5517
@@ -25670,7 +25628,6 @@ to	launch	5517
 top	floor	5517
 tucked	her	5517
 twisted	the	5517
-u	of	5517
 was	against	5517
 was	complete	5517
 what	lay	5517
@@ -25927,7 +25884,6 @@ his	visit	5512
 house	when	5512
 large	number	5512
 lifted	my	5512
-m	a	5512
 more	fun	5512
 nod	of	5512
 of	henry	5512
@@ -26294,7 +26250,6 @@ pressed	it	5506
 representative	of	5506
 right	as	5506
 rode	up	5506
-s	heart	5506
 sooner	had	5506
 ten	seconds	5506
 that	although	5506
@@ -26677,7 +26632,6 @@ really	needed	5499
 remained	of	5499
 rest	for	5499
 roots	of	5499
-s	name	5499
 serious	and	5499
 slid	it	5499
 slow	to	5499
@@ -26727,7 +26681,6 @@ or	bad	5498
 or	heard	5498
 pool	and	5498
 press	the	5498
-s	mother	5498
 seen	any	5498
 skin	on	5498
 step	on	5498
@@ -26782,7 +26735,6 @@ no	mistake	5497
 of	use	5497
 point	on	5497
 ride	home	5497
-s	got	5497
 some	serious	5497
 stood	outside	5497
 support	for	5497
@@ -27223,7 +27175,6 @@ the	cotton	5490
 the	cracks	5490
 the	ex	5490
 the	keyboard	5490
-the	t	5490
 their	car	5490
 their	power	5490
 thing	or	5490
@@ -27426,7 +27377,6 @@ dark	with	5486
 drive	away	5486
 early	the	5486
 else	who	5486
-eyes	sparkled	5486
 for	young	5486
 freedom	and	5486
 he	fired	5486
@@ -27447,7 +27397,6 @@ relied	on	5486
 revealed	the	5486
 room	she	5486
 round	him	5486
-said	dryly	5486
 sarah	had	5486
 saying	is	5486
 snapped	back	5486
@@ -28235,7 +28184,6 @@ jumped	off	5472
 light	blue	5472
 papers	in	5472
 place	by	5472
-pursed	his	5472
 replaced	with	5472
 so	of	5472
 the	immense	5472
@@ -28340,7 +28288,6 @@ of	national	5470
 pray	that	5470
 put	aside	5470
 regarded	the	5470
-s	room	5470
 seen	my	5470
 so	after	5470
 the	fishing	5470
@@ -28550,7 +28497,6 @@ deep	sleep	5466
 drink	from	5466
 face	again	5466
 forced	his	5466
-gaped	at	5466
 generation	of	5466
 grasp	the	5466
 grasped	her	5466
@@ -28926,7 +28872,6 @@ or	die	5460
 parallel	to	5460
 passenger	side	5460
 retrieve	the	5460
-s	right	5460
 she	noted	5460
 shouting	and	5460
 showing	a	5460
@@ -29003,7 +28948,6 @@ smoking	a	5459
 some	friends	5459
 strong	arms	5459
 the	dreadful	5459
-the	firelight	5459
 the	interests	5459
 time	like	5459
 to	high	5459
@@ -29184,7 +29128,6 @@ of	communication	5456
 of	keys	5456
 other	direction	5456
 paid	him	5456
-s	father	5456
 save	my	5456
 save	them	5456
 scene	was	5456
@@ -29630,7 +29573,6 @@ are	pretty	5448
 at	seeing	5448
 beat	her	5448
 been	aware	5448
-c	h	5448
 country	was	5448
 done	well	5448
 fish	in	5448
@@ -29959,7 +29901,6 @@ old	fellow	5443
 on	sundays	5443
 over	twenty	5443
 round	a	5443
-s	go	5443
 said	john	5443
 something	other	5443
 step	to	5443
@@ -29992,7 +29933,6 @@ another	matter	5442
 been	alone	5442
 can	smell	5442
 corridor	and	5442
-d	seen	5442
 did	make	5442
 earlier	and	5442
 feelings	about	5442
@@ -30065,7 +30005,6 @@ her	insides	5441
 her	partner	5441
 him	closer	5441
 his	green	5441
-his	t	5441
 i	doubted	5441
 i	lose	5441
 in	beside	5441
@@ -30196,7 +30135,6 @@ end	with	5439
 excess	of	5439
 exploded	in	5439
 grinning	at	5439
-h	a	5439
 had	abandoned	5439
 had	someone	5439
 hate	that	5439
@@ -30862,7 +30800,6 @@ before	christmas	5429
 certain	to	5429
 connect	with	5429
 could	learn	5429
-d	just	5429
 directions	to	5429
 door	again	5429
 even	greater	5429
@@ -30932,7 +30869,6 @@ can	learn	5428
 car	accident	5428
 confusion	of	5428
 conversation	in	5428
-fiddled	with	5428
 flick	of	5428
 for	old	5428
 get	much	5428
@@ -30962,7 +30898,6 @@ pulling	away	5428
 really	liked	5428
 really	were	5428
 restored	to	5428
-s	mind	5428
 standing	around	5428
 still	love	5428
 stool	and	5428
@@ -31286,7 +31221,6 @@ payment	for	5423
 pipe	and	5423
 pity	on	5423
 ran	after	5423
-s	why	5423
 she	in	5423
 she	pleaded	5423
 shining	in	5423
@@ -31417,7 +31351,6 @@ hatred	of	5421
 have	discovered	5421
 he	begins	5421
 he	roared	5421
-he	winced	5421
 heard	before	5421
 hearing	this	5421
 her	sense	5421
@@ -31842,7 +31775,6 @@ peter	said	5415
 physical	and	5415
 put	us	5415
 questions	for	5415
-s	my	5415
 she	ended	5415
 shocked	and	5415
 snapped	her	5415
@@ -32119,7 +32051,6 @@ of	footsteps	5411
 of	stones	5411
 of	strangers	5411
 outside	my	5411
-s	wife	5411
 say	was	5411
 shook	with	5411
 shooting	at	5411
@@ -32168,7 +32099,6 @@ from	nowhere	5410
 had	climbed	5410
 have	agreed	5410
 he	acted	5410
-he	grimaced	5410
 his	handkerchief	5410
 his	request	5410
 how	difficult	5410
@@ -32254,7 +32184,6 @@ pierced	the	5409
 read	your	5409
 red	eyes	5409
 riding	on	5409
-s	only	5409
 save	us	5409
 see	much	5409
 she	once	5409
@@ -32364,7 +32293,6 @@ buy	her	5407
 can	pick	5407
 collided	with	5407
 could	write	5407
-d	better	5407
 date	and	5407
 dear	boy	5407
 everyone	and	5407
@@ -32723,7 +32651,6 @@ glanced	out	5402
 going	from	5402
 grandfather	was	5402
 have	meant	5402
-he	squinted	5402
 hell	to	5402
 here	than	5402
 his	things	5402
@@ -32746,7 +32673,6 @@ pushing	him	5402
 rattle	of	5402
 really	mean	5402
 rooms	were	5402
-s	your	5402
 she	starts	5402
 shoulders	of	5402
 sometimes	in	5402
@@ -32847,7 +32773,6 @@ a	reference	5400
 an	exception	5400
 an	ill	5400
 and	dashed	5400
-and	forefinger	5400
 and	hang	5400
 and	outside	5400
 and	seven	5400
@@ -33339,7 +33264,6 @@ controlled	by	5393
 days	are	5393
 drawn	into	5393
 dull	and	5393
-e	r	5393
 each	in	5393
 empty	glass	5393
 ever	more	5393
@@ -33370,7 +33294,6 @@ plan	is	5393
 position	at	5393
 reach	a	5393
 rubbed	my	5393
-s	that	5393
 she	holds	5393
 sighed	heavily	5393
 some	thought	5393
@@ -33956,7 +33879,6 @@ forehead	against	5385
 formation	of	5385
 frustration	and	5385
 fun	with	5385
-h	e	5385
 had	great	5385
 had	hired	5385
 her	surroundings	5385
@@ -34451,7 +34373,6 @@ containing	a	5378
 convince	me	5378
 criminal	justice	5378
 curtain	of	5378
-d	ever	5378
 especially	now	5378
 eyes	focused	5378
 eyes	so	5378
@@ -34675,7 +34596,6 @@ fill	her	5375
 fool	to	5375
 for	trouble	5375
 friend	from	5375
-grunted	and	5375
 he	desired	5375
 her	buttocks	5375
 home	or	5375
@@ -34755,7 +34675,6 @@ still	it	5374
 studies	in	5374
 submitted	to	5374
 surely	be	5374
-t	was	5374
 taste	and	5374
 the	aliens	5374
 the	load	5374
@@ -34979,7 +34898,6 @@ order	the	5371
 own	private	5371
 really	in	5371
 response	from	5371
-s	time	5371
 save	that	5371
 she	trusted	5371
 shots	of	5371
@@ -35081,7 +34999,6 @@ grinned	as	5369
 had	half	5369
 hardly	have	5369
 he	counted	5369
-he	scowled	5369
 headed	up	5369
 hearing	about	5369
 hurried	away	5369
@@ -35175,7 +35092,6 @@ it	dawned	5368
 like	if	5368
 live	like	5368
 lose	you	5368
-m	afraid	5368
 maybe	just	5368
 name	had	5368
 native	american	5368
@@ -35257,7 +35173,6 @@ rolled	on	5367
 said	out	5367
 sandwiches	and	5367
 saw	at	5367
-she	winced	5367
 slide	down	5367
 so	clear	5367
 straight	on	5367
@@ -35390,7 +35305,6 @@ pressed	my	5365
 quickly	that	5365
 rolled	my	5365
 rose	on	5365
-s	own	5365
 she	blurted	5365
 shell	of	5365
 shot	me	5365
@@ -35782,7 +35696,6 @@ presented	itself	5360
 received	an	5360
 reminding	her	5360
 room	a	5360
-s	arm	5360
 should	all	5360
 sixty	years	5360
 stared	straight	5360
@@ -35924,7 +35837,6 @@ his	curiosity	5358
 his	ground	5358
 hung	it	5358
 i	merely	5358
-i	n	5358
 in	broad	5358
 in	midair	5358
 is	empty	5358
@@ -36025,7 +35937,6 @@ present	for	5357
 problem	in	5357
 ride	out	5357
 round	here	5357
-s	hands	5357
 said	not	5357
 saved	from	5357
 separate	from	5357
@@ -36632,7 +36543,6 @@ represented	the	5349
 reproduced	or	5349
 richard	and	5349
 ruler	of	5349
-s	so	5349
 some	business	5349
 spent	her	5349
 started	working	5349
@@ -36708,8 +36618,6 @@ some	idea	5348
 some	trouble	5348
 songs	of	5348
 struck	out	5348
-the	b	5348
-the	briefest	5348
 the	cheap	5348
 the	chickens	5348
 the	cleaning	5348
@@ -36959,7 +36867,6 @@ a	barn	5344
 a	medium	5344
 a	tourist	5344
 about	women	5344
-ached	for	5344
 and	cross	5344
 and	report	5344
 awkward	silence	5344
@@ -37148,7 +37055,6 @@ same	name	5342
 shore	and	5342
 tasted	the	5342
 the	dread	5342
-the	e	5342
 their	deaths	5342
 then	called	5342
 to	caress	5342
@@ -37297,7 +37203,6 @@ name	from	5340
 off	any	5340
 owners	of	5340
 passed	for	5340
-perked	up	5340
 pull	my	5340
 quiet	voice	5340
 regained	his	5340
@@ -37352,7 +37257,6 @@ dragged	me	5339
 dragging	the	5339
 drive	up	5339
 eat	them	5339
-eyes	twinkled	5339
 first	things	5339
 for	saving	5339
 for	sex	5339
@@ -37471,7 +37375,6 @@ season	of	5338
 share	my	5338
 sink	in	5338
 started	crying	5338
-t	know	5338
 tasted	like	5338
 the	asphalt	5338
 the	kitten	5338
@@ -37635,7 +37538,6 @@ the	headboard	5336
 the	lessons	5336
 the	pants	5336
 the	skipper	5336
-the	x	5336
 them	across	5336
 them	no	5336
 themselves	for	5336
@@ -37647,7 +37549,6 @@ united	nations	5336
 walk	toward	5336
 was	dreaming	5336
 was	ordered	5336
-winced	at	5336
 with	happiness	5336
 your	questions	5336
 a	greeting	5335
@@ -37706,7 +37607,6 @@ our	enemies	5335
 proportion	of	5335
 qualities	of	5335
 reckon	i	5335
-s	first	5335
 seven	months	5335
 she	spread	5335
 show	in	5335
@@ -37832,7 +37732,6 @@ and	baby	5333
 and	runs	5333
 and	shared	5333
 and	spotted	5333
-and	t	5333
 are	but	5333
 be	playing	5333
 beat	a	5333
@@ -37843,7 +37742,6 @@ charles	and	5333
 cheeks	as	5333
 closed	up	5333
 condemned	to	5333
-coursed	through	5333
 dance	of	5333
 do	right	5333
 finished	eating	5333
@@ -38135,7 +38033,6 @@ outside	on	5330
 pay	to	5330
 pursue	the	5330
 rising	sun	5330
-s	an	5330
 secret	from	5330
 several	feet	5330
 she	swept	5330
@@ -38291,7 +38188,6 @@ of	protection	5328
 on	he	5328
 once	at	5328
 one	particular	5328
-s	words	5328
 satisfaction	in	5328
 say	things	5328
 silk	and	5328
@@ -38326,7 +38222,6 @@ a	scientist	5327
 a	serial	5327
 age	as	5327
 alive	to	5327
-and	squinted	5327
 assurance	that	5327
 be	sleeping	5327
 broken	in	5327
@@ -38412,7 +38307,6 @@ but	certainly	5326
 come	looking	5326
 confirm	that	5326
 could	hide	5326
-d	come	5326
 declined	to	5326
 from	down	5326
 had	completed	5326
@@ -38701,7 +38595,6 @@ slammed	shut	5323
 so	instead	5323
 so	nervous	5323
 stirred	in	5323
-tears	welled	5323
 telephone	and	5323
 term	of	5323
 that	purpose	5323
@@ -38791,7 +38684,6 @@ was	innocent	5322
 were	around	5322
 written	about	5322
 a	hideous	5321
-a	rueful	5321
 a	sex	5321
 a	teenage	5321
 a	tragic	5321
@@ -38841,11 +38733,9 @@ parked	at	5321
 plane	to	5321
 really	love	5321
 right	mind	5321
-s	nothing	5321
 searched	her	5321
 seize	the	5321
 sex	in	5321
-shivered	and	5321
 show	on	5321
 slid	back	5321
 slowly	from	5321
@@ -38888,7 +38778,6 @@ everything	with	5320
 execution	of	5320
 first	century	5320
 gasp	of	5320
-he	shivered	5320
 her	golden	5320
 himself	before	5320
 his	spear	5320
@@ -39015,7 +38904,6 @@ price	to	5319
 really	meant	5319
 rear	door	5319
 rice	and	5319
-s	side	5319
 servant	of	5319
 shown	him	5319
 so	obvious	5319
@@ -39098,7 +38986,6 @@ persuaded	to	5318
 put	himself	5318
 rare	and	5318
 rental	car	5318
-s	shoulder	5318
 service	for	5318
 she	smoothed	5318
 ship	that	5318
@@ -39177,7 +39064,6 @@ says	and	5317
 seen	of	5317
 servants	and	5317
 she	possessed	5317
-she	whirled	5317
 shoes	were	5317
 sir	charles	5317
 soon	have	5317
@@ -39347,7 +39233,6 @@ of	richard	5315
 produce	the	5315
 provides	a	5315
 running	over	5315
-s	arms	5315
 second	was	5315
 some	unknown	5315
 someone	that	5315
@@ -39399,7 +39284,6 @@ his	report	5314
 his	success	5314
 his	tiny	5314
 imagine	her	5314
-including	photocopying	5314
 it	rang	5314
 know	by	5314
 lean	and	5314
@@ -39695,7 +39579,6 @@ one	now	5311
 post	and	5311
 pushed	out	5311
 reason	they	5311
-s	back	5311
 sex	is	5311
 she	shakes	5311
 shouts	and	5311
@@ -39837,7 +39720,6 @@ cycle	of	5309
 feeling	and	5309
 for	is	5309
 for	safety	5309
-glowered	at	5309
 he	dressed	5309
 he	prepared	5309
 hear	something	5309
@@ -39865,7 +39747,6 @@ prayer	for	5309
 reaches	the	5309
 reason	was	5309
 rolled	away	5309
-s	one	5309
 said	bitterly	5309
 seen	anyone	5309
 she	flashed	5309
@@ -39922,7 +39803,6 @@ had	departed	5308
 handle	a	5308
 having	my	5308
 he	strolled	5308
-heart	ached	5308
 help	herself	5308
 him	smile	5308
 his	end	5308
@@ -39963,38 +39843,158 @@ were	raised	5308
 which	their	5308
 woke	to	5308
 a	la	5307
+a	palace	5307
+a	trickle	5307
+about	right	5307
+am	on	5307
+and	burn	5307
+and	golden	5307
 and	thereby	5307
 as	god	5307
 asking	a	5307
 back	or	5307
+be	after	5307
+begins	with	5307
+blame	the	5307
+ceiling	of	5307
 creature	was	5307
 crowd	to	5307
+dawn	of	5307
 drawing	of	5307
 explained	it	5307
+explained	what	5307
 explaining	the	5307
+eyes	against	5307
+feels	a	5307
+fifteen	feet	5307
+flames	of	5307
+further	on	5307
+gone	mad	5307
 he	give	5307
+him	forward	5307
+in	waves	5307
+lifted	off	5307
 met	before	5307
+moments	ago	5307
 moving	with	5307
 near	future	5307
+not	daring	5307
+not	present	5307
+of	dealing	5307
+of	spending	5307
 often	wondered	5307
 one	wants	5307
 peeked	out	5307
+please	her	5307
+popped	open	5307
 prepare	a	5307
 preserve	the	5307
+probably	going	5307
+release	her	5307
 ripped	through	5307
+ruled	by	5307
+senses	and	5307
 she	flicked	5307
+she	remembers	5307
 she	thrust	5307
 sky	is	5307
+snorted	and	5307
 so	strongly	5307
 sounds	and	5307
 still	seemed	5307
+stopped	walking	5307
+story	as	5307
 suddenly	stopped	5307
+than	either	5307
+than	necessary	5307
 that	mary	5307
+the	antique	5307
 the	applause	5307
+the	interstate	5307
 the	measure	5307
+the	semi	5307
 the	siren	5307
 then	laughed	5307
+then	slid	5307
+thinking	you	5307
+this	money	5307
+town	had	5307
+union	of	5307
 upset	with	5307
+very	powerful	5307
 village	to	5307
 voices	were	5307
+was	gazing	5307
+was	raining	5307
+waves	and	5307
+wear	them	5307
+well	if	5307
 would	in	5307
+year	when	5307
+a	motor	5306
+a	scratch	5306
+absolutely	necessary	5306
+always	came	5306
+and	bread	5306
+and	secured	5306
+and	special	5306
+any	point	5306
+at	table	5306
+awoke	to	5306
+bad	time	5306
+bill	said	5306
+cut	them	5306
+different	and	5306
+dropping	to	5306
+ears	to	5306
+even	bigger	5306
+finally	stopped	5306
+friend	the	5306
+had	considered	5306
+had	retired	5306
+him	sitting	5306
+however	much	5306
+ignored	his	5306
+in	western	5306
+its	end	5306
+joke	about	5306
+land	rover	5306
+laws	and	5306
+lay	her	5306
+lied	about	5306
+married	woman	5306
+me	wonder	5306
+memory	was	5306
+more	if	5306
+mostly	because	5306
+must	stay	5306
+my	wrists	5306
+my	youth	5306
+not	perfect	5306
+of	disbelief	5306
+offered	no	5306
+out	slowly	5306
+played	it	5306
+prey	to	5306
+read	as	5306
+realizes	that	5306
+settle	the	5306
+share	your	5306
+small	to	5306
+sofa	in	5306
+storm	had	5306
+taking	any	5306
+the	electricity	5306
+the	locked	5306
+the	temples	5306
+the	throbbing	5306
+the	witches	5306
+they	disappeared	5306
+thin	line	5306
+through	here	5306
+to	permit	5306
+took	our	5306
+tree	was	5306
+was	horrified	5306
+weapon	in	5306
+you	accept	5306
