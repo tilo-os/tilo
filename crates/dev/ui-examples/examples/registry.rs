@@ -284,6 +284,7 @@ mod tests {
         "manual_composition_shots.rs",
         "native_file_picker.rs",
         "native_input_probe.rs",
+        "search_latency.rs",
         "windows_host.rs",
     ];
 
