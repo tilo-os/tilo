@@ -106,11 +106,10 @@ impl DrmBackend {
         })
     }
 
-    /// Collect the current public [`Output`] list from the runtime's dispatch state, sorted by `OutputId.0` for deterministic output indices.
+    /// Collect the current public [`Output`] list from the runtime's dispatch state, primary first
+    /// (see `DrmDispatchState::output_table`).
     fn refresh_outputs(inner: &runtime::DrmRuntime) -> Vec<Output> {
-        let mut outs: Vec<Output> = inner.dispatch.output_meta.values().cloned().collect();
-        outs.sort_by_key(|o| o.id.0);
-        outs
+        inner.dispatch.output_table()
     }
 
     /// The cadence to pace to: the fastest connected mode. Read from the loop thread's record of
