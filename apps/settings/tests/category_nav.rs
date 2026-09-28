@@ -24,12 +24,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::collections::HashMap;
-
-use automerge::AutoCommit;
 use settings::SettingsApp;
 use settings::categories::Category;
-use taffy::{NodeId, TaffyTree};
+use ui::headless::{Framed, viewport};
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -45,46 +42,45 @@ const W: f32 = 1200.0;
 // activation and must click visible rows rather than coordinates below clip.
 const H: f32 = 1800.0;
 
-/// Run the full `build_layout → compute_layout(measure) → apply_layout` cycle
-/// the host runs each frame, returning the app's root taffy node + the live
-/// tree so events can be routed exactly as production does.
-fn lay_out(app: &mut SettingsApp) -> (TaffyTree<()>, NodeId) {
-    let theme = ui::Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = app.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::length(W),
-                    height: taffy::Dimension::length(H),
-                },
-                ..Default::default()
-            },
-            &[node],
-        )
-        .unwrap();
-    let measure_map = node_map.clone();
-    let mut tr = TextRenderer::new();
-    taffy
-        .compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(W),
-                height: taffy::AvailableSpace::Definite(H),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .unwrap();
-    app.apply_layout(&taffy, node, Point::ORIGIN);
-    (taffy, node)
+/// Mount `app` in the production frame host at the fixture viewport and run
+/// its first frame, so events can be routed exactly as production does.
+fn lay_out(app: SettingsApp) -> Framed<SettingsApp> {
+    Framed::new(ui::State::new(), app, viewport((W, H)), ui::Theme::dark())
+}
+
+/// Rebuild and re-lay-out exactly as the host does on structure-dirty.
+fn rebuild(app: &mut Framed<SettingsApp>) {
+    Framed::harness_mut(app)
+        .relayout_themed(viewport((W, H)), ui::Theme::dark())
+        .expect("settings frame lays out");
+}
+
+/// Drive a real pointer click at `center` through the production event path.
+fn click_at(app: &mut Framed<SettingsApp>, center: Point) {
+    let cursor = winit::event::WindowEvent::CursorMoved {
+        device_id: unsafe { std::mem::zeroed() },
+        position: winit::dpi::PhysicalPosition::new(center.x, center.y),
+    };
+    let press = winit::event::WindowEvent::MouseInput {
+        device_id: unsafe { std::mem::zeroed() },
+        state: winit::event::ElementState::Pressed,
+        button: winit::event::MouseButton::Left,
+    };
+    let release = winit::event::WindowEvent::MouseInput {
+        device_id: unsafe { std::mem::zeroed() },
+        state: winit::event::ElementState::Released,
+        button: winit::event::MouseButton::Left,
+    };
+    let mods = winit::event::Modifiers::default();
+    for ev in [&cursor, &press, &release] {
+        Framed::harness_mut(app).dispatch_to_root_with(ev, &mods);
+    }
+}
+
+/// The host's `sync` against the live document.
+fn sync(app: &mut Framed<SettingsApp>) {
+    let (app, state) = Framed::split(app);
+    app.sync(&mut state.doc, &state.root);
 }
 
 /// Walk the live tree for the `SidebarRow` carrying `label`, returning its
@@ -160,8 +156,7 @@ fn active_row_count(app: &SettingsApp) -> usize {
 /// assert navigation reached it.
 fn click_navigates_to(target: Category) {
     let config = crate::support::ScratchConfig::new();
-    let mut app = config.app();
-    let (taffy, node) = lay_out(&mut app);
+    let mut app = lay_out(config.app());
 
     assert_eq!(
         app.selected(),
@@ -174,7 +169,6 @@ fn click_navigates_to(target: Category) {
         return;
     }
 
-    let mut doc = AutoCommit::new();
     let rect =
         row_rect(&app, target.label()).unwrap_or_else(|| panic!("no sidebar row for {target:?}"));
     assert!(
@@ -182,51 +176,18 @@ fn click_navigates_to(target: Category) {
         "row {target:?} has a real rect"
     );
 
-    let root = automerge::ROOT;
-    let mods = winit::event::Modifiers::default();
     let center = rect.center();
     assert!(
         rect.y0 >= 0.0 && rect.y1 <= f64::from(H),
         "navigation fixture must show {target:?}: {rect:?}"
     );
 
-    let cursor = winit::event::WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: winit::dpi::PhysicalPosition::new(center.x, center.y),
-    };
-    let press = winit::event::WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: winit::event::ElementState::Pressed,
-        button: winit::event::MouseButton::Left,
-    };
-    let release = winit::event::WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: winit::event::ElementState::Released,
-        button: winit::event::MouseButton::Left,
-    };
-
     // Drive the real pointer click through the production event path.
-    for ev in [&cursor, &press, &release] {
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: &mut doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-    }
+    click_at(&mut app, center);
 
     // The host then runs `sync` (reads the select key written by the row) and
     // polls the structure-dirty flag to decide whether to rebuild.
-    app.sync(&mut doc, &root);
+    sync(&mut app);
     assert_eq!(
         app.selected(),
         target,
@@ -238,7 +199,7 @@ fn click_navigates_to(target: Category) {
     );
 
     // Rebuild exactly as the host does on structure-dirty, then re-lay-out.
-    let _ = lay_out(&mut app);
+    rebuild(&mut app);
 
     // The rebuilt sidebar highlights the clicked category and ONLY it.
     assert!(
@@ -331,65 +292,26 @@ fn clicking_permissions_updates_or_about_navigates_to_its_pane() {
 #[test]
 fn two_consecutive_clicks_navigate() {
     let config = crate::support::ScratchConfig::new();
-    let mut app = config.app();
-    let (taffy, node) = lay_out(&mut app);
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    let mods = winit::event::Modifiers::default();
+    let mut app = lay_out(config.app());
 
-    let click = |app: &mut SettingsApp,
-                 taffy: &TaffyTree<()>,
-                 node,
-                 doc: &mut AutoCommit,
-                 target: Category| {
+    let click = |app: &mut Framed<SettingsApp>, target: Category| {
         let rect = row_rect(app, target.label()).expect("row exists");
         assert!(
             rect.y0 >= 0.0 && rect.y1 <= f64::from(H),
             "navigation fixture must show {target:?}: {rect:?}"
         );
-        let center = rect.center();
-        let cursor = winit::event::WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(center.x, center.y),
-        };
-        let press = winit::event::WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: winit::event::ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        };
-        let release = winit::event::WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: winit::event::ElementState::Released,
-            button: winit::event::MouseButton::Left,
-        };
-        for ev in [&cursor, &press, &release] {
-            let mut handled = false;
-            let mut focus = None;
-            app.handle_event(
-                ev,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: doc,
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy,
-                },
-            );
-        }
-        app.sync(doc, &root);
+        click_at(app, rect.center());
+        sync(app);
         assert!(app.take_structure_dirty());
     };
 
-    click(&mut app, &taffy, node, &mut doc, Category::Displays);
+    click(&mut app, Category::Displays);
     assert_eq!(app.selected(), Category::Displays);
-    let (taffy, node) = lay_out(&mut app);
+    rebuild(&mut app);
 
-    click(&mut app, &taffy, node, &mut doc, Category::Permissions);
+    click(&mut app, Category::Permissions);
     assert_eq!(app.selected(), Category::Permissions);
-    let _ = lay_out(&mut app);
+    rebuild(&mut app);
     assert!(row_is_active(&app, Category::Permissions.label()));
     assert!(!row_is_active(&app, Category::Displays.label()));
 }
