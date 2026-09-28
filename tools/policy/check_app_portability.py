@@ -665,10 +665,18 @@ def manifest_findings(
         and not matches_any(path.relative_to(root).as_posix(), allowed)
     ):
         predicates = r1.get("predicates", [])
-        for target in manifest.get("target", {}) or {}:
+        build_only = set(r1.get("build-only-target-dependencies", []))
+        for target, tables in (manifest.get("target", {}) or {}).items():
             if target.startswith("cfg(") and not any(
                 re.search(rf"\b{re.escape(p)}\b", target) for p in predicates
             ):
+                continue
+            named = {
+                alias
+                for kind in ("dependencies", "dev-dependencies", "build-dependencies")
+                for alias in (tables or {}).get(kind, {})
+            }
+            if named and named <= build_only:
                 continue
             hits.append(("R1", header_line(text, target), f"`[target.{target}]` section"))
 
