@@ -500,6 +500,15 @@ mod tests {
         {
             let mut doc = AutoCommit::load(&owner.peer().document(app, record).unwrap()).unwrap();
             if *app == "so.tilo.chat" {
+                // The member who wrote the saved message, with a profile to recover.
+                chat::doc::ChatDoc::ensure_user(
+                    &mut doc,
+                    "native",
+                    "Ada Okafor",
+                    "AO",
+                    0,
+                    chat::model::Presence::Online,
+                );
                 chat::doc::ChatDoc::push_message_with_id(
                     &mut doc,
                     "c_general",
