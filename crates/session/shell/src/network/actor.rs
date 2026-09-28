@@ -3516,11 +3516,15 @@ impl HostRouteScheduler<'_> {
                 .map_err(|_| "workspace host connection timed out".to_string())
                 .and_then(|result| result.map_err(|error| error.to_string()))
                 .and_then(|client| {
-                    RelayCoeditSession::join(
-                        client,
-                        ws,
-                        identity.device_signing_key.verifying_key().to_bytes(),
-                    )
+                    // A public room's host admits a newcomer by the standing
+                    // invitation it redeems as it joins.
+                    let author = identity.device_signing_key.verifying_key().to_bytes();
+                    match redemption {
+                        Some(invite_id) => {
+                            RelayCoeditSession::join_redeeming(client, ws, author, invite_id)
+                        }
+                        None => RelayCoeditSession::join(client, ws, author),
+                    }
                     .map_err(|error| error.to_string())
                 });
                 let _ = tx
@@ -3565,13 +3569,12 @@ impl HostRouteScheduler<'_> {
             .map_err(|_| "workspace host connection timed out".to_string())
             .and_then(|result| result.map_err(|error| error.to_string()))
             .and_then(|client| {
-                let author = identity.device_signing_key.verifying_key().to_bytes();
-                match redemption {
-                    Some(invite_id) => {
-                        RelayCoeditSession::join_redeeming(client, ws, author, invite_id)
-                    }
-                    None => RelayCoeditSession::join(client, ws, author),
-                }
+                // An enrolled home peer already knows its own devices.
+                RelayCoeditSession::join(
+                    client,
+                    ws,
+                    identity.device_signing_key.verifying_key().to_bytes(),
+                )
                 .map_err(|error| error.to_string())
             });
             let _ = tx
