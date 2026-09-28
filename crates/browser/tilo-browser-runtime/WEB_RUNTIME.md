@@ -359,6 +359,25 @@ records, which go to the profile's storage like a standalone mount's.
 - The page's mounts of one record re-sync each other, standalone or desktop
   window, so a Books library opened on a "phone" mount shows its book and
   annotations live in the desktop's window.
+- Each window's app and record are in the navigation snapshot's `entries`
+  (`{route, label, app, record}`; `record` is null for a package-primary
+  app), and `openApp(app, {record})` (`{kind: 'open', app, record}`) opens a
+  new window on an existing record. So a page can mount another author on a
+  window's document, say an agent's hidden Writer mount on the notes the
+  desktop's Writer shows:
+
+  ```js
+  await desktop.openApp('so.tilo.word-processor');
+  const notes = desktop.navigation.getSnapshot().entries.at(-1).record;
+  const agent = await mountDesktop(hidden, {app: 'so.tilo.word-processor', record: notes, author: 'Reading agent', ...shared});
+  ```
+- Activity names every change: each mount of the page notes its record
+  writer and its author, so edits another mount made (the phone's Books, the
+  agent's Writer) show under that mount's `author`, as an agent when the
+  mount is an agent mount (`agent`) or the author is one of the
+  workspace's agent `members`. Room changes carry the time the owner made
+  them; a record's genesis (made by an actor derived from its identity, at
+  time zero) is not listed, like a schema genesis.
 - `actions`/`invokeAction` take `{window}` (a tab id; the focused window by
   default) and go through that window's action door.
 - Permissions are the page author's, as for a standalone mount (`Owner`).

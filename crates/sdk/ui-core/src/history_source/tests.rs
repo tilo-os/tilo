@@ -783,3 +783,32 @@ fn an_action_context_names_its_change_before_any_field_fallback() {
     assert_eq!(Some(last.summary.clone()), context.summary());
     assert!(!last.summary.contains("title"), "{}", last.summary);
 }
+
+#[test]
+fn a_records_genesis_is_not_a_revision_of_anyone_at_the_epoch() {
+    use crate::record::{RecordCheckout, RecordId, RecordKind, RecordOwners, genesis_actor};
+    let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
+    let store = RecordOwners::portable(cache).open("test", "room").unwrap();
+    let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
+    store.create_record(&checkout).unwrap();
+    let mut doc = store.read(&checkout.id, AutoCommit::clone).unwrap();
+    let genesis = genesis_actor(&doc).expect("a record names its genesis actor");
+    assert!(
+        tilo_resource::history::versions(&mut doc)
+            .iter()
+            .any(|v| v.actor == genesis.to_hex_string() && v.time_ms == 0),
+        "the genesis is made by the record's derived actor at time zero"
+    );
+    assert!(HistorySource::new().entries(&mut doc).is_empty());
+
+    doc.put(ROOT, "title", "Notes").unwrap();
+    tilo_resource::history::commit_stamped_at(&mut doc, T0);
+    let entries = HistorySource::new().entries(&mut doc);
+    assert_eq!(entries.len(), 1, "only the edit someone made");
+    assert_eq!(entries[0].timestamp, at(T0));
+    assert_eq!(
+        entries[0].author.identity_short,
+        short_id(&doc.get_actor().to_hex_string())
+    );
+    assert_eq!(genesis_actor(&AutoCommit::new()), None);
+}
