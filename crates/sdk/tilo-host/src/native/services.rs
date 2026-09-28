@@ -17,8 +17,6 @@
 
 use std::sync::Arc;
 
-#[cfg(target_os = "android")]
-use crate::host::HostServices;
 #[cfg(not(target_os = "android"))]
 use crate::host::{HostServices, MediaSession, MediaSessionFactory, SpeechFactory};
 #[cfg(not(target_os = "android"))]

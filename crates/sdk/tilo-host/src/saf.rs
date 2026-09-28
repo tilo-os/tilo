@@ -74,7 +74,7 @@ pub(crate) fn save_mime_type(
         .or_else(|| {
             filters
                 .iter()
-                .flat_map(|filter| filter.mimetypes())
+                .flat_map(FileFilter::mimetypes)
                 .find(|mime| !mime.contains('*'))
                 .cloned()
         })
