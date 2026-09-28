@@ -4663,7 +4663,9 @@ async fn handle_delta(
 /// Handle an inbound `Commit`: admit it exactly like a `Delta` (the reply
 /// waits until the host persisted it), then tell the author its host order.
 /// A commit the host cannot admit is refused to the author without closing
-/// the session.
+/// the session. A resent commit the host already admitted is answered with
+/// its original order from the workspace's commit ledger and neither
+/// persisted nor fanned out again.
 async fn handle_commit(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -4703,6 +4705,31 @@ async fn handle_commit(
     let Some(source) = authorized_state_source(&ws, peer, session).await? else {
         return refused("workspace membership changed");
     };
+    let digest = *blake3::hash(&delta).as_bytes();
+    let gate = ws.lock().await.commit_gate.clone();
+    // Held until the commit is in the ledger (after it is durable, in the
+    // acknowledging task), so a resend in between is answered from the
+    // ledger instead of admitted twice.
+    let admitting = gate.lock_owned().await;
+    let admitted = ws
+        .lock()
+        .await
+        .admitted_commit(&author_device_public_key, &op);
+    if let Some(admitted) = admitted {
+        if admitted.digest != digest {
+            return refused("operation id already committed with different content");
+        }
+        tracing::debug!(
+            workspace_id,
+            seq = admitted.seq,
+            "resent commit answered from the ledger"
+        );
+        return Ok(Some(Envelope::Committed {
+            workspace_id,
+            op,
+            seq: admitted.seq,
+        }));
+    }
     let delta = Envelope::Delta {
         workspace_id,
         author_device_public_key,
@@ -4733,10 +4760,26 @@ async fn handle_commit(
             // resends its outbox.
             return;
         }
-        let seq = match admitted.sequence.load(std::sync::atomic::Ordering::SeqCst) {
-            0 => ws.lock().await.next_seq(unix_now_ns()),
-            seq => seq,
+        let (seq, ledger, store) = {
+            let mut runtime = ws.lock().await;
+            let seq = match admitted.sequence.load(std::sync::atomic::Ordering::SeqCst) {
+                0 => runtime.next_seq(unix_now_ns()),
+                seq => seq,
+            };
+            let ledger = runtime.remember_commit(crate::store::CommitRecord {
+                author: author_device_public_key,
+                op,
+                seq,
+                digest,
+            });
+            (seq, ledger, runtime.store.clone())
         };
+        let persisted = tokio::task::spawn_blocking(move || ledger.persist(&store)).await;
+        drop(admitting);
+        if persisted.is_err() {
+            let _ = author.disconnect.try_send(());
+            return;
+        }
         let committed = Envelope::Committed {
             workspace_id,
             op,
