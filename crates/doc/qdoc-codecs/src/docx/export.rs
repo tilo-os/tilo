@@ -677,6 +677,9 @@ fn merge_styles_xml(
         if let Some(lang) = doc_lang {
             s.push_str(&doc_defaults_lang_xml(lang));
         }
+        if !refs.contains(NORMAL_STYLE_ID) {
+            s.push_str(NORMAL_STYLE_XML);
+        }
         for id in refs {
             if let Some(def) = style_def_xml(id, styles) {
                 s.push_str(&def);
@@ -686,6 +689,11 @@ fn merge_styles_xml(
         s.into_bytes()
     }
 }
+
+const NORMAL_STYLE_ID: &str = "Normal";
+/// The default paragraph style a new styles part names, so a paragraph without
+/// a `w:pStyle` has one in every reader.
+const NORMAL_STYLE_XML: &str = r#"<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>"#;
 
 /// The definition for a referenced style id: the document's own style, else Word's built-in
 /// heading for a `HeadingN` a heading block references, so other readers see a heading.
@@ -2094,6 +2102,10 @@ mod tests {
                 "{styles}"
             );
             assert!(styles.contains(r#"<w:outlineLvl w:val="1"/>"#), "{styles}");
+            assert!(
+                styles.contains(r#"w:default="1" w:styleId="Normal""#),
+                "a new styles part names the default paragraph style: {styles}"
+            );
             let content_types = c.get("[Content_Types].xml").unwrap();
             assert!(
                 String::from_utf8_lossy(content_types).contains("/word/styles.xml"),
