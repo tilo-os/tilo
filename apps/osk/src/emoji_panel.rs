@@ -625,7 +625,7 @@ impl EmojiPanel {
                     &i18n::t("osk-emoji-letters"),
                     crate::presentation::CellState {
                         pressed: self.pressed == Some(PanelHit::Letters),
-                        accent: true,
+                        tone: crate::presentation::CellTone::Modifier,
                         ..Default::default()
                     },
                     0.30,
@@ -640,7 +640,7 @@ impl EmojiPanel {
                     "",
                     crate::presentation::CellState {
                         pressed: self.pressed == Some(PanelHit::Delete),
-                        accent: true,
+                        tone: crate::presentation::CellTone::Modifier,
                         ..Default::default()
                     },
                     0.30,
