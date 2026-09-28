@@ -8,7 +8,7 @@ trap 'rm -rf -- "$work"' EXIT
 
 crypto="${TILO_CRYPTO_BIN:-$repo/target/debug/tilo-crypto}"
 if [ ! -x "$crypto" ]; then
-  RUSTC_WRAPPER= cargo build --manifest-path "$repo/Cargo.toml" -p tilo-crypto
+  cargo build --manifest-path "$repo/Cargo.toml" -p tilo-crypto
 fi
 
 cc -c "$repo/os/tests/fixtures/minimal-module.c" -o "$work/unsigned.ko"
