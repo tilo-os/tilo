@@ -848,7 +848,7 @@ mod tests {
         MinimalManifest {
             package_id: "com.example.notes".to_string(),
             name: Some("Notes".to_string()),
-            localized_names: Default::default(),
+            localized_names: BTreeMap::default(),
             category: Some("Office".to_string()),
             icon: None,
             version: "0.1.0".to_string(),

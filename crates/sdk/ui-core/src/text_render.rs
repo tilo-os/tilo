@@ -147,7 +147,7 @@ thread_local! {
 pub fn with_layout_renderer<R>(text_scale: f32, f: impl FnOnce(&mut TextRenderer) -> R) -> R {
     let mut renderer = LAYOUT_RENDERERS
         .with(|pool| pool.borrow_mut().pop())
-        .unwrap_or_else(TextRenderer::new);
+        .unwrap_or_default();
     renderer.set_text_scale(text_scale);
     let out = f(&mut renderer);
     LAYOUT_RENDERERS.with(|pool| pool.borrow_mut().push(renderer));
