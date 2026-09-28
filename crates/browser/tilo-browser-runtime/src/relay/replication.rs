@@ -59,7 +59,12 @@ pub(crate) struct Room {
 ///
 /// # Errors
 /// The room is not a uuid.
-pub(crate) fn open(id: u32, peer: PeerHandle, events: PeerEvents, room: &str) -> Result<(), String> {
+pub(crate) fn open(
+    id: u32,
+    peer: PeerHandle,
+    events: PeerEvents,
+    room: &str,
+) -> Result<(), String> {
     let workspace =
         tilo_relay_protocol::room_workspace_id(room).map_err(|_| "room must be a uuid")?;
     let room = Room {
@@ -101,7 +106,9 @@ pub(crate) fn attach_cache(id: u32, room_id: &str, cache: &PortableStorage) -> R
         if room.cache.is_none() {
             room.cache = Some(cache.clone());
             for ((app, record), mut doc) in std::mem::take(&mut room.early) {
-                if let Err(error) = room.store_unopened(&app, &record, DocumentMutation::Snapshot(doc.save())) {
+                if let Err(error) =
+                    room.store_unopened(&app, &record, DocumentMutation::Snapshot(doc.save()))
+                {
                     warn(&format!("{app}/{record}: {error}"));
                 }
             }
@@ -115,9 +122,35 @@ pub(crate) fn attach_cache(id: u32, room_id: &str, cache: &PortableStorage) -> R
 pub(crate) fn has_record(id: u32, app: &str, record: &str) -> bool {
     room(id).is_some_and(|room| {
         let room = room.borrow();
-        room.early.contains_key(&(app.to_owned(), record.to_owned()))
-            || room.cache.as_ref().is_some_and(|cache| cache.get(&record_key(app, &room.uuid, record)).is_some())
+        room.early
+            .contains_key(&(app.to_owned(), record.to_owned()))
+            || room
+                .cache
+                .as_ref()
+                .is_some_and(|cache| cache.get(&record_key(app, &room.uuid, record)).is_some())
     })
+}
+
+/// The room's records this page holds, open in a mount or arrived early, as
+/// `(app, record)`.
+pub(crate) fn records(id: u32) -> Vec<(String, String)> {
+    let Some(room) = room(id) else {
+        return Vec::new();
+    };
+    let room = room.borrow();
+    let mut records: Vec<(String, String)> = room.early.keys().cloned().collect();
+    for store in room.stores() {
+        let (app, _) = store.package_and_home();
+        records.extend(
+            store
+                .open_records()
+                .into_iter()
+                .map(|checkout| (app.clone(), checkout.id.as_str().to_owned())),
+        );
+    }
+    records.sort();
+    records.dedup();
+    records
 }
 
 /// Apply everything the host delivered since the last call, then send what
@@ -215,7 +248,7 @@ impl Room {
         let app = document.route.app_id.clone();
         let record = document.route.record.clone();
         if self.cache.is_none() {
-            let doc = self.early.entry((app, record)).or_insert_with(AutoCommit::new);
+            let doc = self.early.entry((app, record)).or_default();
             merge_into(doc, mutation)?;
             return Ok(false);
         }
@@ -246,7 +279,12 @@ impl Room {
     }
 
     /// Merge into the record's cached document for whoever opens it next.
-    fn store_unopened(&self, app: &str, record: &str, mutation: DocumentMutation) -> Result<(), String> {
+    fn store_unopened(
+        &self,
+        app: &str,
+        record: &str,
+        mutation: DocumentMutation,
+    ) -> Result<(), String> {
         let cache = self.cache.as_ref().ok_or("no cache")?;
         let key = record_key(app, &self.uuid, record);
         let stored = cache.get(&key);
@@ -261,8 +299,13 @@ impl Room {
         if doc.get_heads() == before {
             return Ok(());
         }
-        let actor = stored.and_then(|stored| stored.actor);
-        cache.put_document(key, &mut doc, actor)
+        // A record this device first receives gets its own actor, as a record
+        // it creates does; one it already holds keeps its actor.
+        let actor = stored
+            .and_then(|stored| stored.actor)
+            .filter(|actor| !actor.is_empty())
+            .unwrap_or_else(|| ui::automerge::ActorId::random().to_bytes().to_vec());
+        cache.put_document(key, &mut doc, Some(actor))
     }
 
     fn send(&mut self) {
