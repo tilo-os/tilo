@@ -984,6 +984,11 @@ impl CapnpBrokerState {
                 });
             }
             if let Some(peer_id) = self.ready_publisher(app_id, &room, address) {
+                if !completer.begin() {
+                    return Err(ActionHostError::Unavailable {
+                        reason: "the caller stopped waiting for admission".into(),
+                    });
+                }
                 let mut delivered = request.clone();
                 delivered.target.provider = peer_id.to_string();
                 return self.start_for(caller, None, None, None, &delivered);
@@ -1190,12 +1195,13 @@ impl CapnpBrokerState {
         resolved.then(move |reply| {
             // A caller that stopped waiting (its admission deadline passed)
             // has already been told the action did not start; keep it so.
-            let started = if completer.is_abandoned() {
+            // Beginning settles it: from here the caller hears the outcome.
+            let started = if completer.begin() {
+                state.start_resolved(&caller, &root, &request, argument.as_deref(), reply)
+            } else {
                 Err(ActionHostError::Unavailable {
                     reason: "the caller stopped waiting for admission".into(),
                 })
-            } else {
-                state.start_resolved(&caller, &root, &request, argument.as_deref(), reply)
             };
             let result = match state.remote_invocations.lock() {
                 Ok(mut ledger) => match started {
