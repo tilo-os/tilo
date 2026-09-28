@@ -541,9 +541,6 @@ pub enum Effect {
 /// are all just a `CapOverride` with a different scope/subject; there is
 /// no second sharing system. `Restrict { verb }` caps authority at "no
 /// more than `verb`": any required verb it doesn't imply is removed.
-///
-/// The added fields carry `#[serde(default)]` so records persisted
-/// before they existed still load.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CapOverride {
@@ -558,15 +555,12 @@ pub struct CapOverride {
     /// Stable id, so a specific capability can be revoked by name even after
     /// replicating to peers that never saw it granted. Empty means unnamed —
     /// revocable only by matching content.
-    #[serde(default)]
     pub id: String,
     /// When this capability dies. An expired capability is invisible to
     /// [`decide_actor`] — not "denied", simply not there.
-    #[serde(default)]
     pub expiry: Expiry,
     /// Who granted this, for the share-list UI and audit. Advisory: grant
     /// authority is enforced where the grant is *made*, not here.
-    #[serde(default)]
     pub granted_by: Option<Principal>,
 }
 

@@ -72,13 +72,8 @@ impl FullscreenProvider for PlayerHost {
 }
 
 impl Widget for PlayerHost {
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        Some(self)
-    }
+    ui::provides!(dyn ui::widget::FullscreenProvider);
 
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        Some(self)
-    }
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         // Pumps the engine (pulls the freshest decoded frame + playhead).
         self.player.borrow_mut().sync(state, path);

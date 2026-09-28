@@ -118,6 +118,9 @@ pub mod agent_reads;
 pub mod committed_desktop;
 
 #[cfg(any(target_arch = "wasm32", test))]
+mod mount_agent;
+
+#[cfg(any(target_arch = "wasm32", test))]
 mod storage_key;
 
 #[cfg(any(target_arch = "wasm32", test))]

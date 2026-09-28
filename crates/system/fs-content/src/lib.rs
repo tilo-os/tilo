@@ -25,21 +25,15 @@
 //! content id with a `RangeSpecSeq` then fetches exactly the missing chunks,
 //! or byte ranges within them ([`Manifest::child_offset`]), BAO-verified on
 //! one stream; the header and length entries are never requested.
-//!
-//! Manifests written before this format (postcard lists of 8 KiB gear-hash
-//! chunks) remain readable: [`Manifest::decode`] accepts both, and
-//! [`legacy`] keeps the old chunker for tests and fixtures. Nothing new is
-//! written in the legacy format.
 
 mod chunker;
-pub mod legacy;
 mod manifest;
 pub mod ranges;
 mod tier;
 
 pub use chunker::{ChunkStats, Cutter, build, build_in_tier, build_reader, rebuild};
 pub use manifest::{
-    ChunkRef, DecodeError, FORMAT, Format, HEADER_MAGIC, MAX_CHUNK_LEN, Manifest, is_manifest_v2,
+    ChunkRef, DecodeError, FORMAT, HEADER_MAGIC, MAX_CHUNK_LEN, Manifest, is_manifest,
 };
 pub use ranges::RangeSet;
 pub use tier::ChunkTier;

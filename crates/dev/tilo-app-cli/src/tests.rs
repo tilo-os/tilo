@@ -72,7 +72,7 @@ fn minimal_generated_graph_app(root: &Path) {
     .unwrap();
     std::fs::write(
         root.join("src/lib.rs"),
-        format!("pub mod screens;\n\n{}", legacy_graph_app_template()),
+        format!("pub mod screens;\n\n{GRAPH_APP_TEMPLATE}"),
     )
     .unwrap();
 }
@@ -802,7 +802,6 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         minimal_generated_graph_app(&app);
         let custom_root =
             "fn custom() { let _ = crate::screens::router(\"main\", &Theme::default()); }\n";
-        assert_eq!(migrate_generated_graph_context(custom_root), custom_root);
         std::fs::write(
             app.join("src/lib.rs"),
             format!("pub mod screens;\n{custom_root}"),
@@ -827,7 +826,7 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         assert!(!app.join("src/components/profile_card.rs").exists());
         std::fs::write(
             app.join("src/lib.rs"),
-            format!("pub mod screens;\n\n{}", legacy_graph_app_template()),
+            format!("pub mod screens;\n\n{GRAPH_APP_TEMPLATE}"),
         )
         .unwrap();
 
@@ -929,7 +928,7 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         assert!(library.contains("crate::screens::router_with("));
         assert!(library.contains("crate::components::ui_graph_context()"));
         assert!(!library.contains("crate::screens::router(\"main\""));
-        syn::parse_file(&library).expect("migrated generated root is valid Rust");
+        syn::parse_file(&library).expect("generated root is valid Rust");
     }
 
     // Phase: component_template_replacement_requires_compatible_graph_props.
@@ -2059,40 +2058,12 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         );
     }
 
-    // Phase: add_locale_migrates_only_the_previous_generated_setup.
+    // Phase: add_locale_refuses_an_app_without_the_generated_registry.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
         create_app(request(app.clone())).unwrap();
         let library_path = app.join("src/lib.rs");
-        let current = std::fs::read_to_string(&library_path).unwrap();
-        assert_eq!(current.matches(GENERATED_LOCALE_SETUP).count(), 1);
-        std::fs::write(
-            &library_path,
-            current.replacen(GENERATED_LOCALE_SETUP, LEGACY_GENERATED_LOCALE_SETUP, 1),
-        )
-        .unwrap();
-        std::fs::remove_file(app.join("src/locales.rs")).unwrap();
-
-        let migrated = add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::Locale {
-                locale: "it-IT".into(),
-            },
-            force: false,
-            dry_run: false,
-        })
-        .unwrap();
-        assert_eq!(migrated.files.len(), 3);
-        let library = std::fs::read_to_string(&library_path).unwrap();
-        assert!(library.contains(GENERATED_LOCALE_SETUP));
-        assert!(!library.contains("SOURCE_CATALOG"));
-        assert_eq!(
-            parse_locale_registry(&std::fs::read_to_string(app.join("src/locales.rs")).unwrap())
-                .unwrap(),
-            ["en-US", "it-IT"]
-        );
-
         std::fs::remove_file(app.join("src/locales.rs")).unwrap();
         let before = std::fs::read_to_string(&library_path).unwrap();
         let error = add_app_artifact(AddRequest {
@@ -2993,8 +2964,7 @@ fn doctor_reports_actionable_failures_in_app_manifests() {
 }
 
 /// Doctor validates generated screens, locales and scenarios, preflights graph component factories
-/// and typed props, marks app-owned component contexts unverifiable, and keeps the generated form v1
-/// props contract readable.
+/// and typed props, and marks app-owned component contexts unverifiable.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -3176,18 +3146,6 @@ fn doctor_validates_generated_screens_components_and_contracts() {
         assert!(!report.checks.iter().any(|check| {
             check.label == "component registry" && check.status == DoctorStatus::Fail
         }));
-    }
-
-    // Phase: doctor_keeps_the_generated_form_v1_props_contract_readable.
-    {
-        let contract = graph_props_contract(
-            "legacy-form",
-            "// tilo-app:graph-props=form-v1\npub fn register_ui_graph() {}\n",
-        )
-        .unwrap();
-        assert_eq!(contract, GraphPropsContract::FormV1);
-        let props = serde_json::json!({"value": "Ada", "enabled": true});
-        assert!(contract.invalid_props(props.as_object().unwrap()).is_none());
     }
 }
 
@@ -3562,8 +3520,8 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
     }
 }
 
-/// Every template uses the toolkit resource action host and generates valid Rust and actions, a
-/// legacy graph app still migrates, and generated README commands work in a workspace or standalone.
+/// Every template uses the toolkit resource action host and generates valid Rust and actions, and
+/// generated README commands work in a workspace or standalone.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -3614,18 +3572,6 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
             assert!(test.contains("TestApp::<"), "{template:?}");
             assert!(!test.contains("app_root"), "{template:?}");
         }
-    }
-
-    // Phase: a_legacy_generated_graph_app_still_migrates_to_the_component_context.
-    {
-        let legacy = legacy_graph_app_template();
-        assert!(legacy.contains(LEGACY_GRAPH_ROUTER_CALL));
-        let source = format!("pub mod screens;\n\n{legacy}");
-        let migrated = migrate_generated_graph_context(&source);
-        assert!(migrated.contains(GENERATED_GRAPH_ROUTER_CALL));
-        assert!(!migrated.contains(LEGACY_GRAPH_ROUTER_CALL));
-        let current = format!("pub mod screens;\n\n{GRAPH_APP_TEMPLATE}");
-        assert_eq!(migrate_generated_graph_context(&current), current);
     }
 
     // Phase: generated_readme_commands_work_inside_workspace_or_standalone.

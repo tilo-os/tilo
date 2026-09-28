@@ -49,6 +49,9 @@ use crate::onboarding::{
 use crate::shell::i18n::{t, t_args};
 use os_actions::codec_pack::{CodecAction, CodecPackStatus, PackState};
 
+/// How often setup looks for news from its background work (codec install,
+/// nearby pairing) while that work runs.
+const BACKGROUND_POLL: Duration = Duration::from_millis(250);
 const PANEL_MAX_WIDTH: f32 = 760.0;
 // Longer translated/large-text pages scroll inside this limit. Short pages
 // retain their intrinsic height so setup never becomes a mostly empty modal.
@@ -598,6 +601,8 @@ pub struct OnboardingView {
     /// re-reads the status.
     codec_changed: Arc<AtomicBool>,
     codec_watching: bool,
+    /// When `sync` last looked at the background work above.
+    synced_at: Instant,
 }
 
 impl OnboardingView {
@@ -821,6 +826,7 @@ impl OnboardingView {
             codec_error: None,
             codec_changed: Arc::new(AtomicBool::new(false)),
             codec_watching: false,
+            synced_at: Instant::now(),
         }
     }
 
@@ -2706,6 +2712,7 @@ impl Widget for OnboardingView {
         let tour_before = self.tour_page;
         let ready_before = self.identity_ready_page;
         let codec_page_before = self.codec_page;
+        self.synced_at = Instant::now();
         self.refresh_codec_state();
 
         // Pull widget-local edits (notably passphrases) into their process-local
@@ -3509,6 +3516,25 @@ impl Widget for OnboardingView {
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty());
         own || child
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        // The codecs worker and status watcher only raise `codec_changed`,
+        // and nearby pairing reports through its child and a status file;
+        // nothing wakes the compositor for them, so look while they run.
+        let polling =
+            self.codec_running.is_some() || self.codec_watching || self.nearby_child.is_some();
+        let mut earliest = if polling {
+            self.synced_at.checked_add(BACKGROUND_POLL)
+        } else {
+            None
+        };
+        self.for_each_child(&mut |child| {
+            if let Some(deadline) = child.next_wake_deadline() {
+                earliest = Some(earliest.map_or(deadline, |old: Instant| old.min(deadline)));
+            }
+        });
+        earliest
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -5017,6 +5043,13 @@ mod tests {
         walk_to_codecs(&mut view, &mut doc);
         press(&mut doc, KEY_CODECS_INSTALL);
         view.sync(&mut doc, &automerge::ROOT);
+        // Nothing wakes the compositor for the worker, so the view does.
+        let limit = Instant::now().checked_add(BACKGROUND_POLL).unwrap();
+        assert!(
+            view.next_wake_deadline()
+                .is_some_and(|deadline| deadline <= limit),
+            "a running install keeps looking for its result"
+        );
         // The helper reports progress through its status file.
         started.recv().unwrap();
         view.codec_changed.store(true, Ordering::Release);

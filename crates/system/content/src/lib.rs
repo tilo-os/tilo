@@ -39,7 +39,7 @@ mod memory;
 mod sniff;
 
 #[cfg(all(unix, feature = "device"))]
-pub use device::{DeviceBackend, LegacyImport};
+pub use device::DeviceBackend;
 #[cfg(feature = "dir")]
 pub use dir::DirBackend;
 pub use memory::MemoryBackend;

@@ -3,7 +3,7 @@
 # in one directory a static server can serve, with apps.html as index.html.
 # resolveApp is satisfied from ./apps/ (app-directory.mjs); no registry.
 #
-#   build-web-dev.sh OUTPUT [PACKAGE...]     (default: ebook word-processor)
+#   build-web-dev.sh OUTPUT [PACKAGE...]     (default: ebook word-processor chat)
 #
 # Then e.g. `python3 -m http.server -d OUTPUT` and open it in a browser with
 # WebGPU. Sizes of every module are in OUTPUT/build/sizes.md. registry.html
@@ -13,7 +13,7 @@ scripts=$(cd "$(dirname "$0")" && pwd)
 out=${1:?usage: build-web-dev.sh OUTPUT [PACKAGE...]}
 shift
 packages=("$@")
-[[ ${#packages[@]} -gt 0 ]] || packages=(ebook word-processor)
+[[ ${#packages[@]} -gt 0 ]] || packages=(ebook word-processor chat)
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 rm -rf "$out/apps" "$out/build/apps"
@@ -26,6 +26,8 @@ cp "$scripts/../web/apps.html" "$out/index.html"
 cp "$scripts/../web/open.html" "$out/open.html"
 # desktop.html: MountOptions.local, a Books record expanding into the desktop.
 cp "$scripts/../web/desktop.html" "$out/desktop.html"
+# chat.html: two Chat mounts of one room, one of them an agent.
+cp "$scripts/../web/chat.html" "$out/chat.html"
 node "$scripts/web-runtime/smoke.mjs" "$out" >"$out/build/smoke.json"
 # registry.html loads the same core and apps from a local signed registry
 # (tools/web/local-registry.sh OUTPUT writes its registry.json).

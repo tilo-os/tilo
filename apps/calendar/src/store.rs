@@ -12,34 +12,6 @@ use std::path::{Path, PathBuf};
 
 use automerge::AutoCommit;
 
-/// Open Calendar through the shared host persistence lifecycle, preserving
-/// documents written by the former widget-owned store. The source is retained;
-/// merging its unchanged history again cannot resurrect a subsequently deleted
-/// event or replace a newer edit.
-pub fn open_state(app_id: &'static str) -> (ui::State, ui::persist::DocWriter) {
-    match default_path() {
-        Some(legacy) => ui::persist::open_migrating(app_id, &legacy),
-        None => ui::persist::open(app_id),
-    }
-}
-
-/// Where the legacy calendar document is stored. Honors `TILO_CALENDAR_DATA` (used
-/// by tests and by callers who want an explicit location), then
-/// `XDG_DATA_HOME`, then `$HOME/.local/share`. Returns `None` only when no
-/// home can be resolved, in which case the app simply runs without
-/// legacy migration. New writes use the shared host store on every platform.
-pub fn default_path() -> Option<PathBuf> {
-    if let Some(over) = std::env::var_os("TILO_CALENDAR_DATA") {
-        return Some(PathBuf::from(over));
-    }
-    let base = xdg_paths::xdg::data_home()?;
-    Some(
-        base.join("tilo")
-            .join("calendar")
-            .join("calendar.automerge"),
-    )
-}
-
 /// Load a previously-saved calendar document. Returns `None` when the file
 /// does not exist yet (first launch) or cannot be parsed.
 pub fn load(path: &Path) -> Option<AutoCommit> {

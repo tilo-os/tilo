@@ -19,6 +19,8 @@ struct LocalEffectProbe {
 }
 
 impl Widget for LocalEffectProbe {
+    crate::provides!(dyn crate::widget::Continuable);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -101,14 +103,6 @@ impl Widget for LocalEffectProbe {
         Ok(Some(crate::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
-    }
-
-    fn continuable(&self) -> Option<&dyn crate::widget::Continuable> {
-        Some(self)
-    }
-
-    fn continuable_mut(&mut self) -> Option<&mut dyn crate::widget::Continuable> {
-        Some(self)
     }
 }
 

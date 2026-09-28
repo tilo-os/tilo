@@ -71,6 +71,10 @@ enum Command {
     Snapshot {
         path: String,
     },
+    /// Attach (`on`) or detach (`off`) a viewer of a headless session.
+    Watch {
+        watching: bool,
+    },
     StateDump {
         pretty: bool,
     },
@@ -138,6 +142,14 @@ fn parse_global_flags(argv: &[String]) -> Result<(Option<PathBuf>, Vec<String>),
         }
     }
     Ok((socket, positional))
+}
+
+fn parse_watch(arg: Option<&String>) -> Result<Command, ParseError> {
+    match arg.map(String::as_str) {
+        Some("on") => Ok(Command::Watch { watching: true }),
+        Some("off") => Ok(Command::Watch { watching: false }),
+        _ => Err(ParseError::Usage("watch requires on or off".to_string())),
+    }
 }
 
 fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
@@ -208,6 +220,7 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
                 .ok_or_else(|| ParseError::Usage("snapshot PATH requires a path".to_string()))?;
             Command::Snapshot { path: path.clone() }
         }
+        "watch" => parse_watch(iter.next())?,
         "state-dump" => {
             let mut pretty = false;
             for rest in iter.by_ref() {
@@ -415,6 +428,7 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             "logo": logo,
         }),
         Command::Snapshot { path } => json!({ "op": "snapshot", "path": path }),
+        Command::Watch { watching } => json!({ "op": "watch", "watching": watching }),
         Command::StateDump { .. } => json!({ "op": "state_dump" }),
         Command::ActionsList { query, .. } => {
             json!({ "op": "actions_enumerate", "query": query })
@@ -599,7 +613,8 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
         | Command::Drag { .. }
         | Command::Key { .. }
         | Command::Type { .. }
-        | Command::Modifiers { .. } => {
+        | Command::Modifiers { .. }
+        | Command::Watch { .. } => {
             // Plain Ok response — emit the canonical "ok" string.
             println!("ok");
         }
@@ -635,6 +650,7 @@ fn print_usage() {
          \x20 modifiers FLAGS               comma-separated subset of ctrl,shift,alt,logo\n\
          \x20                               (empty string clears all)\n\
          \x20 snapshot PATH                 snapshot — write PNG to PATH\n\
+         \x20 watch on|off                  headless: rasterize every frame for a viewer, or stop\n\
          \x20 state-dump [--pretty]         dump workspace_tree + chrome as JSON\n\
          \x20 actions list [QUERY] [--json] list exported actions as `PROVIDER:ID  KIND  TITLE`\n\
          \x20                               (read-only; empty QUERY lists everything)\n\
@@ -792,6 +808,8 @@ mod tests {
                     path: "/tmp/x.png".to_string(),
                 },
             ),
+            (&["watch", "on"], Command::Watch { watching: true }),
+            (&["watch", "off"], Command::Watch { watching: false }),
             (&["state-dump"], Command::StateDump { pretty: false }),
             (
                 &["state-dump", "--pretty"],

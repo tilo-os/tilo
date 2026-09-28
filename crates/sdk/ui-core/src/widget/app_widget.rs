@@ -274,7 +274,7 @@ mod component_adapter {
             binding
                 .read_document(state, |document, record_root| {
                     let root = self.component.root.as_deref()?;
-                    root.continuable()?
+                    crate::widget::capability::capability::<dyn Continuable>(root)?
                         .continuation_metadata(document, record_root)
                 })
                 .unwrap_or(None)
@@ -292,7 +292,9 @@ mod component_adapter {
                     let Some(root) = self.component.root.as_deref_mut() else {
                         return false;
                     };
-                    let Some(continuable) = root.continuable_mut() else {
+                    let Some(continuable) =
+                        crate::widget::capability::capability_mut::<dyn Continuable>(&mut *root)
+                    else {
                         return false;
                     };
                     continuable.restore_continuation_metadata(metadata, document, record_root)
@@ -542,47 +544,13 @@ mod component_adapter {
     }
 
     impl Widget for BoundAppWidget {
-        fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-            Some(self)
-        }
-
-        fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-            Some(self)
-        }
-
-        fn complete_content_provider(&self) -> Option<&dyn CompleteContentProvider> {
-            Some(self)
-        }
-
-        fn complete_content_provider_mut(&mut self) -> Option<&mut dyn CompleteContentProvider> {
-            Some(self)
-        }
-
-        fn continuable(&self) -> Option<&dyn Continuable> {
-            Some(self)
-        }
-
-        fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
-            Some(self)
-        }
-
-        fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-            Some(self)
-        }
-
-        fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-            Some(self)
-        }
-
-        fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
-            Some(self)
-        }
-
-        fn audience_presentation_provider_mut(
-            &mut self,
-        ) -> Option<&mut dyn AudiencePresentationProvider> {
-            Some(self)
-        }
+        crate::provides!(
+            dyn crate::widget::FullscreenProvider,
+            dyn crate::widget::CompleteContentProvider,
+            dyn crate::widget::Continuable,
+            dyn crate::widget::FloatingSurfaceProvider,
+            dyn crate::widget::AudiencePresentationProvider
+        );
 
         // A component's diagnostic probe observes its own record, the
         // document its widgets actually render, not the runner's outer one.
