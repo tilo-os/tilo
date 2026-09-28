@@ -4170,42 +4170,37 @@ impl WorkspaceTree {
     /// now connected, primary first (see [`OutputPartition::reconcile`]).
     /// A partition is kept once a second display has been seen; a device
     /// that only ever had one display carries none. Returns whether the
-    /// partition or any strip order changed.
+    /// partition changed. The partition is this device's alone: it never
+    /// touches the strips' shared order.
     pub fn reconcile_displays(&mut self, displays: &[Display]) -> bool {
         if displays.len() < 2 && self.desktop.outputs.is_empty() {
             return false;
         }
         let before = self.desktop.outputs.clone();
         let desktop = &mut self.desktop;
-        let reordered = desktop.outputs.reconcile(&mut desktop.workspaces, displays);
+        desktop.outputs.reconcile(&desktop.workspaces, displays);
         desktop.outputs.place_unhomed(&desktop.workspaces);
-        self.mirror_partition_reorder(&reordered);
-        let changed = !reordered.is_empty() || self.desktop.outputs != before;
+        let changed = self.desktop.outputs != before;
         if changed {
             self.flush_to_disk();
         }
         changed
     }
 
-    /// Show `group_id` on display `display` from now on (see
-    /// [`OutputPartition::move_group`]). `false` when there is no such
-    /// display or the group is already there.
+    /// Show `group_id` on display `display` from now on, at its place in
+    /// the strip's shared order (see [`OutputPartition::move_group`]).
+    /// `false` when there is no such display or the group is already there.
     pub fn move_group_to_display(&mut self, group_id: GroupId, display: u32) -> bool {
-        if self.desktop.outputs.display_of(group_id) == Some(display)
-            || !self
-                .desktop
-                .outputs
-                .displays
-                .iter()
-                .any(|d| d.id == display)
-        {
+        if self.desktop.outputs.display_of(group_id) == Some(display) {
             return false;
         }
         let desktop = &mut self.desktop;
-        let reordered = desktop
+        if !desktop
             .outputs
-            .move_group(&mut desktop.workspaces, group_id, display);
-        self.mirror_partition_reorder(reordered.as_slice());
+            .move_group(&desktop.workspaces, group_id, display)
+        {
+            return false;
+        }
         self.flush_to_disk();
         true
     }
@@ -4222,23 +4217,6 @@ impl WorkspaceTree {
         }
         self.flush_to_disk();
         true
-    }
-
-    /// Mirror strips a partition change reordered into the collaboration
-    /// document, the same as any other group reorder.
-    fn mirror_partition_reorder(&mut self, strips: &[StripId]) {
-        for &strip_id in strips {
-            let groups = self
-                .desktop
-                .workspaces
-                .iter()
-                .flat_map(|w| &w.strips)
-                .find(|s| s.id == strip_id)
-                .map(|s| s.window_groups.clone());
-            if let Some(groups) = groups {
-                self.doc_rewrite_strip_groups(strip_id, &groups);
-            }
-        }
     }
 
     /// Commit `command` as this device's topology owner: the shared
