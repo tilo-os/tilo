@@ -367,19 +367,6 @@ fn sanitize_diagnostic(bytes: &[u8]) -> String {
 }
 
 #[cfg(unix)]
-fn terminate_process_group(child: &mut Child) {
-    if let Ok(pid) = i32::try_from(child.id())
-        && let Some(group) = pid.checked_neg()
-    {
-        // SAFETY: every child passed here is spawned into its own pid-named
-        // process group, so the negative pid targets only that session.
-        unsafe { libc::kill(group, libc::SIGKILL) };
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-#[cfg(unix)]
 impl AudioRuntimeControl for RealAudioRuntime {
     fn capabilities(&self) -> RuntimeCapabilities {
         let pulse = command_works("pactl", &["info"]);
@@ -474,11 +461,11 @@ impl AudioRuntimeControl for RealAudioRuntime {
         // test never waits for real-time playback on the UI thread.
         let pcm = channel_test_pcm(left, 48_000, Duration::from_millis(280));
         let Some(mut input) = child.stdin.take() else {
-            terminate_process_group(&mut child);
+            bounded_command::terminate_tree(&mut child, std::time::Duration::ZERO);
             return Err("pw-play did not open its audio input".into());
         };
         if let Err(e) = input.write_all(&pcm) {
-            terminate_process_group(&mut child);
+            bounded_command::terminate_tree(&mut child, std::time::Duration::ZERO);
             return Err(format!("could not send the channel test: {e}"));
         }
         drop(input);
@@ -519,7 +506,7 @@ impl AudioRuntimeControl for RealAudioRuntime {
             .spawn()
             .map_err(|e| format!("pw-record is unavailable: {e}"))?;
         let Some(mut output) = child.stdout.take() else {
-            terminate_process_group(&mut child);
+            bounded_command::terminate_tree(&mut child, std::time::Duration::ZERO);
             return Err("pw-record did not expose captured samples".into());
         };
         let (tx, rx) = mpsc::channel();
@@ -696,7 +683,7 @@ impl BoundedSession for ChildSession {
     }
     fn stop(&mut self) {
         if let Some(mut child) = self.child.take() {
-            terminate_process_group(&mut child);
+            bounded_command::terminate_tree(&mut child, std::time::Duration::ZERO);
         }
     }
 }
@@ -755,7 +742,7 @@ impl BoundedSession for MicSession {
     }
     fn stop(&mut self) {
         if let Some(mut child) = self.child.take() {
-            terminate_process_group(&mut child);
+            bounded_command::terminate_tree(&mut child, std::time::Duration::ZERO);
         }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
