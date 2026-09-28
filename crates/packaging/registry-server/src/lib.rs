@@ -39,6 +39,7 @@ use tokio::net::TcpListener;
 use tracing::{error, info};
 
 pub mod allowlist;
+pub mod applications;
 pub mod bundle_review;
 pub mod moderation;
 pub mod moderation_api;

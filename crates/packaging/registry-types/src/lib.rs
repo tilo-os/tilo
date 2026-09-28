@@ -59,6 +59,7 @@
     )
 )]
 
+pub mod application;
 pub mod change;
 pub mod entry;
 pub mod handshake;
