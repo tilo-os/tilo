@@ -785,7 +785,7 @@ fn an_action_context_names_its_change_before_any_field_fallback() {
 }
 
 #[test]
-fn a_records_genesis_is_not_a_revision_of_anyone_at_the_epoch() {
+fn a_records_genesis_can_be_left_out_of_a_feed_of_what_people_did() {
     use crate::record::{RecordCheckout, RecordId, RecordKind, RecordOwners, genesis_actor};
     let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
     let store = RecordOwners::portable(cache).open("test", "room").unwrap();
@@ -799,11 +799,23 @@ fn a_records_genesis_is_not_a_revision_of_anyone_at_the_epoch() {
             .any(|v| v.actor == genesis.to_hex_string() && v.time_ms == 0),
         "the genesis is made by the record's derived actor at time zero"
     );
-    assert!(HistorySource::new().entries(&mut doc).is_empty());
+    assert_eq!(
+        HistorySource::new().entries(&mut doc).len(),
+        1,
+        "a document's history keeps the version it was created as"
+    );
+    assert!(
+        HistorySource::new()
+            .without_record_genesis()
+            .entries(&mut doc)
+            .is_empty()
+    );
 
     doc.put(ROOT, "title", "Notes").unwrap();
     tilo_resource::history::commit_stamped_at(&mut doc, T0);
-    let entries = HistorySource::new().entries(&mut doc);
+    let entries = HistorySource::new()
+        .without_record_genesis()
+        .entries(&mut doc);
     assert_eq!(entries.len(), 1, "only the edit someone made");
     assert_eq!(entries[0].timestamp, at(T0));
     assert_eq!(

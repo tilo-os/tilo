@@ -377,7 +377,8 @@ records, which go to the profile's storage like a standalone mount's.
   mount is an agent mount (`agent`) or the author is one of the
   workspace's agent `members`. Room changes carry the time the owner made
   them; a record's genesis (made by an actor derived from its identity, at
-  time zero) is not listed, like a schema genesis.
+  time zero) is left out of Activity, as nobody made it (the document's own
+  history keeps it as the version to restore to).
 - `actions`/`invokeAction` take `{window}` (a tab id; the focused window by
   default) and go through that window's action door.
 - Permissions are the page author's, as for a standalone mount (`Owner`).
