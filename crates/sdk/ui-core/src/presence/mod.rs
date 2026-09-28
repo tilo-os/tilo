@@ -441,6 +441,16 @@ pub enum RemotePresenceEffect {
     InteractionAdvanced,
 }
 
+/// How long a peer's pointer stays painted after it was last heard about.
+/// Comfortably past the ~1s restate interval a live peer keeps, so this
+/// notices a peer gone quiet rather than blinking one whose keepalive was
+/// briefly delayed. See [`PresenceCtx::prune_pointers`].
+pub const POINTER_IDLE: Duration = Duration::from_secs(5);
+
+/// How long a quiet peer's pointer takes to fade out, ending at
+/// [`POINTER_IDLE`]. See [`PresenceCtx::pointer_opacity`].
+pub const POINTER_FADE: Duration = Duration::from_millis(400);
+
 /// A pointer's last-known `(x, y)` per user, at each [`PresenceKey`].
 pub type PointerPositions = HashMap<PresenceKey, Vec<(UserId, (f32, f32))>>;
 
@@ -740,6 +750,37 @@ impl PresenceCtx {
             seen.retain(|_, t| now.saturating_duration_since(*t) < horizon);
         }
         retired
+    }
+
+    /// How opaque to paint `user`'s pointer at `key`: fully until the last
+    /// `fade` before it goes quiet for `horizon`, then falling to zero as
+    /// [`Self::prune_pointers`] is about to retire it. A zero `fade` (reduced
+    /// motion) keeps it opaque until it is retired.
+    pub fn pointer_opacity(
+        &self,
+        key: &PresenceKey,
+        user: &UserId,
+        now: Instant,
+        horizon: Duration,
+        fade: Duration,
+    ) -> f32 {
+        let Some(seen) = self.pointer_seen.get(&(key.clone(), user.clone())) else {
+            return 1.0;
+        };
+        let left = horizon.saturating_sub(now.saturating_duration_since(*seen));
+        if fade.is_zero() || left >= fade {
+            return 1.0;
+        }
+        (left.as_secs_f32() / fade.as_secs_f32()).clamp(0.0, 1.0)
+    }
+
+    /// Whether any pointer is fading out at `now` (see
+    /// [`Self::pointer_opacity`]) — a reason to paint the next frame too.
+    pub fn pointers_fading(&self, now: Instant, horizon: Duration, fade: Duration) -> bool {
+        self.pointer_seen.values().any(|seen| {
+            let age = now.saturating_duration_since(*seen);
+            age < horizon && horizon.saturating_sub(age) < fade
+        })
     }
 
     pub fn set_caret(&mut self, key: &PresenceKey, user: UserId, pos: usize) {
@@ -2404,6 +2445,41 @@ mod own_identity_tests {
             assert!(ctx.is_own_identity(&me.0));
             assert!(ctx.is_own_identity("so.tilo.chat"));
         }
+    }
+
+    #[test]
+    fn a_quiet_pointer_fades_out_just_before_it_is_retired() {
+        let t0 = crate::time::now();
+        let room = PresenceKey::Workspace { id: "r".into() };
+        let peer = UserId("peer@7".into());
+        let mut ctx = PresenceCtx::default();
+        ctx.set_pointer_at(&room, peer.clone(), (10.0, 20.0), t0);
+        let opacity = |ctx: &PresenceCtx, after: Duration, fade: Duration| {
+            ctx.pointer_opacity(&room, &peer, t0 + after, POINTER_IDLE, fade)
+        };
+
+        let fade_starts = POINTER_IDLE.saturating_sub(POINTER_FADE);
+        assert!((opacity(&ctx, fade_starts, POINTER_FADE) - 1.0).abs() < f32::EPSILON);
+        assert!(!ctx.pointers_fading(t0 + fade_starts, POINTER_IDLE, POINTER_FADE));
+        let midway = fade_starts + POINTER_FADE / 2;
+        let half = opacity(&ctx, midway, POINTER_FADE);
+        assert!((half - 0.5).abs() < 0.01, "half-faded midway: {half}");
+        assert!(ctx.pointers_fading(t0 + midway, POINTER_IDLE, POINTER_FADE));
+        assert!(
+            (opacity(&ctx, midway, Duration::ZERO) - 1.0).abs() < f32::EPSILON,
+            "reduced motion: opaque until retired",
+        );
+        assert!(ctx.prune_pointers(t0 + POINTER_IDLE, POINTER_IDLE));
+        assert_eq!(ctx.pointer_for(&room, &peer), None);
+        assert!(!ctx.pointers_fading(t0 + POINTER_IDLE, POINTER_IDLE, POINTER_FADE));
+
+        // Heard from again: opaque once more.
+        let t1 = t0 + POINTER_IDLE + Duration::from_secs(1);
+        ctx.set_pointer_at(&room, peer.clone(), (10.0, 20.0), t1);
+        assert!(
+            (ctx.pointer_opacity(&room, &peer, t1, POINTER_IDLE, POINTER_FADE) - 1.0).abs()
+                < f32::EPSILON
+        );
     }
 
     #[test]
