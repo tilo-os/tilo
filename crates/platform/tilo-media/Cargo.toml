@@ -75,6 +75,9 @@ rustfft.workspace = true
 # The playhead clock and the handoff freshness checks: `std::time::Instant`
 # panics in the browser.
 tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
+# Config, data and cache homes for the echo-cancel client, sound themes and
+# the extensions stamp: the same XDG resolution every other platform crate uses.
+tilo-paths = { version = "0.1.0", path = "../tilo-paths" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Decode stack — only linked under `--features decode`. Same pins as

@@ -111,7 +111,7 @@ pub fn needs_rescan(
 
 /// The per-user file recording the stamp the registry cache reflects.
 pub fn default_stamp_path() -> Option<PathBuf> {
-    let cache = xdg_paths::xdg::cache_home()?;
+    let cache = tilo_paths::xdg::cache_home()?;
     Some(cache.join("tilo").join("media-extensions.stamp"))
 }
 

@@ -160,7 +160,7 @@ GLOBAL_PREFIXES = (
 HEAVY_PACKAGES = {
     "browser",
     "ebook",
-    "media",
+    "tilo-media",
     "qdoc-pdf",
     "shell",
     "slides",
