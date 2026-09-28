@@ -186,6 +186,7 @@ pub fn read_from_env() -> Result<Vec<InstalledApp>, CatalogError> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fmt::Write as _;
 
     use super::*;
@@ -276,7 +277,7 @@ mod tests {
             InstalledApp {
                 package_id: "so.tilo.notes".into(),
                 display_name: "Notes".into(),
-                localized_names: Default::default(),
+                localized_names: BTreeMap::default(),
                 category: None,
                 version: "1.0.0".into(),
                 manifest_path: path,

@@ -45,7 +45,7 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> Mi
     MinimalManifest {
         package_id: "com.example.hello".to_string(),
         name: None,
-        localized_names: Default::default(),
+        localized_names: BTreeMap::default(),
         category: None,
         icon: None,
         version: "0.0.0".to_string(),
@@ -429,7 +429,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         let mut m = MinimalManifest {
             package_id: "com.example.hello".to_string(),
             name: None,
-            localized_names: Default::default(),
+            localized_names: BTreeMap::default(),
             category: None,
             icon: None,
             version: "0.0.0".to_string(),
@@ -553,7 +553,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         let m = MinimalManifest {
             package_id: "so.tilo.thin".to_string(),
             name: None,
-            localized_names: Default::default(),
+            localized_names: BTreeMap::default(),
             category: None,
             icon: None,
             version: "0.1.0".to_string(),
