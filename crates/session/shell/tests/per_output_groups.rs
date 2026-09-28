@@ -1258,3 +1258,47 @@ fn a_mirrored_pair_beside_a_monitor_is_two_displays() {
         "each monitor keeps its own windows"
     );
 }
+
+/// A desktop-wide overlay opens on the display in use rather than centred
+/// on the seam between two: the palette and toasts on the focused display,
+/// Quick Settings under the tray on the primary's full top bar.
+#[test]
+fn overlays_open_on_the_focused_display() {
+    let mut desk = Desk::fixture("docked-laptop");
+    let primary = desk.display(0);
+    let second = desk.display(1);
+    let within = |outer: Rect, inner: Rect| {
+        inner.width() > 0.0
+            && inner.x0 >= outer.x0 - 0.5
+            && inner.x1 <= outer.x1 + 0.5
+            && inner.y0 >= outer.y0 - 0.5
+            && inner.y1 <= outer.y1 + 0.5
+    };
+    for (group, display) in [(ON_SECOND[0], second), (ON_PRIMARY[0], primary)] {
+        desk.focus(group);
+        let area = desk.fb.host().overlay_area();
+        assert!(
+            (area.x0 - display.x0).abs() < 0.5 && (area.x1 - display.x1).abs() < 0.5,
+            "overlays follow focus to {display:?}: {area:?}"
+        );
+        desk.fb.host_mut().set_palette_visible(true);
+        desk.fb.host_mut().force_palette_settled();
+        desk.settle();
+        let card = desk.fb.host().palette_rect_for_tests();
+        assert!(
+            within(display, card),
+            "the palette {card:?} is on the focused display {display:?}"
+        );
+        assert!(
+            (card.center().x - display.center().x).abs() < 1.0,
+            "the palette {card:?} centres on {display:?}"
+        );
+        desk.fb.host_mut().set_palette_visible(false);
+        desk.settle();
+        let quick_settings = desk.fb.host().quick_settings_rect_for_tests();
+        assert!(
+            within(primary, quick_settings),
+            "Quick Settings {quick_settings:?} hangs from the tray on {primary:?}"
+        );
+    }
+}

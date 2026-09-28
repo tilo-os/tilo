@@ -173,6 +173,38 @@ impl ShellOverlayHost {
             .map(|o| (*o).clone())
     }
 
+    /// The focused display, while the desktop is partitioned; the primary
+    /// when focus names no display that is still connected.
+    pub(super) fn focused_output(&self) -> Option<OutputGeometry> {
+        if !self.is_partitioned() {
+            return None;
+        }
+        let focused = {
+            let state = self.chrome.as_ref()?.borrow();
+            let tree = state.tree();
+            tree.desktop.outputs.focused_display()
+        };
+        let outputs = distinct_outputs(&self.outputs);
+        focused
+            .and_then(|id| outputs.iter().find(|o| o.id == id))
+            .or_else(|| outputs.first())
+            .map(|o| (*o).clone())
+    }
+
+    /// Where a desktop-wide overlay opens — palette, toasts, prompts,
+    /// help: the focused display, or the whole desktop when there is one.
+    pub fn overlay_area(&self) -> Rect {
+        self.focused_output().map_or(self.rect, |o| o.rect())
+    }
+
+    /// The display holding the full top bar, which the tray's popovers
+    /// hang from.
+    pub fn tray_area(&self) -> Rect {
+        self.primary_output()
+            .filter(|_| self.is_partitioned())
+            .map_or(self.rect, |p| p.rect())
+    }
+
     /// Wheel-disc slot plus its gap, sized for the display it sits on.
     pub(super) fn wheel_clearance(&self) -> f64 {
         if self.sidebar.is_none() {
@@ -386,9 +418,20 @@ impl ShellOverlayHost {
         } else {
             Vec::new()
         };
+        let presenting = self.focused_output();
+        let beside_rail = presenting
+            .as_ref()
+            .is_some_and(|o| primary.as_ref().is_some_and(|p| p.id == o.id));
         if let Some(surface) = self.desktop_surface_mut() {
             if let Some(bar) = surface.topbar_mut() {
                 bar.set_placement(primary.map(|p| p.rect()));
+            }
+            if let Some(launchpad) = surface
+                .empty_workspace_mut()
+                .and_then(ui::widget::Widget::as_any_mut)
+                .and_then(|w| w.downcast_mut::<tilo_desktop::launchpad::CollaborationLaunchpad>())
+            {
+                launchpad.set_presentation_area(presenting.map(|o| o.rect()), beside_rail);
             }
             if let Some(bars) = surface
                 .display_chrome_mut()
