@@ -80,10 +80,11 @@ pub struct DiskUsageApp {
 
 impl DiskUsageApp {
     pub fn new() -> Self {
-        let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+        let home = tilo_paths::home().unwrap_or_else(|| PathBuf::from("/"));
         let workspace = std::env::var_os("TILO_WORKSPACE_ROOTS")
             .and_then(|s| s.to_string_lossy().split(':').next().map(PathBuf::from))
-            .unwrap_or_else(|| PathBuf::from("/var/workspace"));
+            .or_else(tilo_paths::workspace_root)
+            .unwrap_or_else(|| PathBuf::from(tilo_paths::WORKSPACE_MOUNT));
         let places = vec![
             Place {
                 label: "Home".into(),
@@ -164,7 +165,7 @@ impl DiskUsageApp {
         app.shot_mode = true;
         app.recent = vec![
             PathBuf::from("/home/you/Projects/tilo"),
-            PathBuf::from("/var/workspace/design-system"),
+            PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
         ];
         app
     }

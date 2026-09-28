@@ -1567,7 +1567,7 @@ impl RemoteApp {
                     Err(e) => return LiveSession::Error(e.to_string()),
                 };
                 let user = if c.user.is_empty() {
-                    std::env::var("USER").unwrap_or_else(|_| "root".into())
+                    tilo_paths::session::user_name().unwrap_or_else(|| "root".into())
                 } else {
                     c.user.clone()
                 };
