@@ -876,7 +876,7 @@ fn worker(
 /// Load a tile's RGBA pixels: disk cache → network. Writes fetched bytes to
 /// disk so re-views and zoom are instant.
 fn load_tile(
-    client: Option<&reqwest::blocking::Client>,
+    client: Option<&tilo_net::http::BlockingClient>,
     cache_dir: &std::path::Path,
     base_url: &str,
     id: TileId,
@@ -898,7 +898,7 @@ fn load_tile(
 
 /// Fetch a tile to the on-disk cache only (no decode) — for bulk downloads.
 fn fetch_to_disk(
-    client: Option<&reqwest::blocking::Client>,
+    client: Option<&tilo_net::http::BlockingClient>,
     cache_dir: &std::path::Path,
     base_url: &str,
     id: TileId,
@@ -915,7 +915,7 @@ fn fetch_to_disk(
 /// GET one tile's bytes, accepting only a successful `image/png` answer: an
 /// error status or an HTML/JSON error page is the server refusing imagery.
 fn fetch_tile(
-    client: Option<&reqwest::blocking::Client>,
+    client: Option<&tilo_net::http::BlockingClient>,
     base_url: &str,
     id: TileId,
 ) -> Result<Vec<u8>, TileFault> {
@@ -931,7 +931,7 @@ fn fetch_tile(
     }
     let content_type = resp
         .headers()
-        .get(reqwest::header::CONTENT_TYPE)
+        .get(tilo_net::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default()
         .to_owned();
