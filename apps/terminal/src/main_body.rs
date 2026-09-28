@@ -2323,6 +2323,111 @@ impl TerminalWidget {
     }
 }
 
+impl TerminalWidget {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        match type_id {
+            "terminal.send" => {
+                if kind != OperationKind::Effect {
+                    return Ok(false);
+                }
+                if value.is_empty() {
+                    return Err("text to send cannot be empty".to_string());
+                }
+                if value.len() > MAX_RESOURCE_SEND_BYTES {
+                    return Err(format!(
+                        "text to send exceeds the {} KiB reviewed-command limit",
+                        MAX_RESOURCE_SEND_BYTES / 1024
+                    ));
+                }
+                if !is_reviewable_terminal_text(&value) {
+                    return Err(
+                        "text to send may not contain terminal control characters".to_string()
+                    );
+                }
+                self.try_write_input(value.as_bytes())?;
+            }
+            "terminal.run" => {
+                if kind != OperationKind::Effect {
+                    return Ok(false);
+                }
+                if value.trim().is_empty() {
+                    return Err("command to run cannot be empty".to_string());
+                }
+                if value.len() > MAX_RESOURCE_SEND_BYTES {
+                    return Err(format!(
+                        "command exceeds the {} KiB reviewed-command limit",
+                        MAX_RESOURCE_SEND_BYTES / 1024
+                    ));
+                }
+                if !is_reviewable_terminal_text(&value) {
+                    return Err(
+                        "command must be one line and may not contain terminal control characters"
+                            .to_string(),
+                    );
+                }
+                let mut command = value.into_bytes();
+                command.push(b'\r');
+                self.try_write_input(&command)?;
+            }
+            "terminal.paste" => {
+                if kind != OperationKind::Effect {
+                    return Ok(false);
+                }
+                self.try_paste(&value)?;
+            }
+            "terminal.control" => match (kind, value.as_str()) {
+                (OperationKind::Effect, "interrupt") => self.try_write_input(&[0x03])?,
+                (OperationKind::Effect, "clear") => self.try_write_input(&[0x0c])?,
+                (OperationKind::Effect, "copy-selection") => {
+                    let text = self
+                        .selected_text()
+                        .filter(|text| !text.is_empty())
+                        .ok_or("there is no selected terminal output to copy")?;
+                    if !ui::text_selection::try_clipboard_copy(&text) {
+                        return Err(
+                            "the system clipboard did not accept selected terminal output".into(),
+                        );
+                    }
+                }
+                (OperationKind::Effect, "select-all") => self.select_all_output(),
+                (OperationKind::Effect, "copy-visible") => {
+                    let visible = self.current_visible_text();
+                    if visible.trim().is_empty() {
+                        return Err("there is no visible terminal output to copy".to_string());
+                    }
+                    if !ui::text_selection::try_clipboard_copy(&visible) {
+                        return Err("the system clipboard did not accept terminal output".into());
+                    }
+                }
+                (OperationKind::View, "history-top") => self.scroll_to_top(),
+                (OperationKind::View, "history-live") => self.scroll_to_bottom(),
+                _ => return Ok(false),
+            },
+            "terminal.open-link" => {
+                if kind != OperationKind::Effect {
+                    return Ok(false);
+                }
+                if safe_osc_text(value.as_bytes(), MAX_OSC_LINK_BYTES).is_none()
+                    || !is_public_web_link(&value)
+                {
+                    return Err("link target is not a safe public web URL".to_string());
+                }
+                open_url(&value);
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+}
+
 impl Widget for TerminalWidget {
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.gesture_effects.pop_front().or_else(|| {
@@ -2427,107 +2532,25 @@ impl Widget for TerminalWidget {
             .map(|url| self.link_resource(link_id, url))
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        match type_id {
-            "terminal.send" => {
-                if kind != OperationKind::Effect {
-                    return Ok(false);
-                }
-                if value.is_empty() {
-                    return Err("text to send cannot be empty".to_string());
-                }
-                if value.len() > MAX_RESOURCE_SEND_BYTES {
-                    return Err(format!(
-                        "text to send exceeds the {} KiB reviewed-command limit",
-                        MAX_RESOURCE_SEND_BYTES / 1024
-                    ));
-                }
-                if !is_reviewable_terminal_text(&value) {
-                    return Err(
-                        "text to send may not contain terminal control characters".to_string()
-                    );
-                }
-                self.try_write_input(value.as_bytes())?;
-            }
-            "terminal.run" => {
-                if kind != OperationKind::Effect {
-                    return Ok(false);
-                }
-                if value.trim().is_empty() {
-                    return Err("command to run cannot be empty".to_string());
-                }
-                if value.len() > MAX_RESOURCE_SEND_BYTES {
-                    return Err(format!(
-                        "command exceeds the {} KiB reviewed-command limit",
-                        MAX_RESOURCE_SEND_BYTES / 1024
-                    ));
-                }
-                if !is_reviewable_terminal_text(&value) {
-                    return Err(
-                        "command must be one line and may not contain terminal control characters"
-                            .to_string(),
-                    );
-                }
-                let mut command = value.into_bytes();
-                command.push(b'\r');
-                self.try_write_input(&command)?;
-            }
-            "terminal.paste" => {
-                if kind != OperationKind::Effect {
-                    return Ok(false);
-                }
-                self.try_paste(&value)?;
-            }
-            "terminal.control" => match (kind, value.as_str()) {
-                (OperationKind::Effect, "interrupt") => self.try_write_input(&[0x03])?,
-                (OperationKind::Effect, "clear") => self.try_write_input(&[0x0c])?,
-                (OperationKind::Effect, "copy-selection") => {
-                    let text = self
-                        .selected_text()
-                        .filter(|text| !text.is_empty())
-                        .ok_or("there is no selected terminal output to copy")?;
-                    if !ui::text_selection::try_clipboard_copy(&text) {
-                        return Err(
-                            "the system clipboard did not accept selected terminal output".into(),
-                        );
-                    }
-                }
-                (OperationKind::Effect, "select-all") => self.select_all_output(),
-                (OperationKind::Effect, "copy-visible") => {
-                    let visible = self.current_visible_text();
-                    if visible.trim().is_empty() {
-                        return Err("there is no visible terminal output to copy".to_string());
-                    }
-                    if !ui::text_selection::try_clipboard_copy(&visible) {
-                        return Err("the system clipboard did not accept terminal output".into());
-                    }
-                }
-                (OperationKind::View, "history-top") => self.scroll_to_top(),
-                (OperationKind::View, "history-live") => self.scroll_to_bottom(),
-                _ => return Ok(false),
-            },
-            "terminal.open-link" => {
-                if kind != OperationKind::Effect {
-                    return Ok(false);
-                }
-                if safe_osc_text(value.as_bytes(), MAX_OSC_LINK_BYTES).is_none()
-                    || !is_public_web_link(&value)
-                {
-                    return Err("link target is not a safe public web URL".to_string());
-                }
-                open_url(&value);
-            }
-            _ => return Ok(false),
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        Ok(true)
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn measure(

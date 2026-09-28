@@ -4762,6 +4762,107 @@ impl BackupsApp {
     }
 }
 
+impl BackupsApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if !matches!(
+            kind,
+            tilo_actions::OperationKind::Effect | tilo_actions::OperationKind::View
+        ) {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        if self.job.is_some() {
+            return Err("A backup operation is already running; wait for it to finish.".into());
+        }
+        match operation {
+            crate::actions::BackupOperation::Setup => self.pick_folder(PickPurpose::Source),
+            crate::actions::BackupOperation::BackupNow => {
+                if self.source_path.is_none() || self.destination_path.is_none() {
+                    return Err("Backups are not configured on this device.".into());
+                }
+                self.start_backup();
+            }
+            crate::actions::BackupOperation::Verify { snapshot_id } => {
+                if self.destination_path.is_none()
+                    || !self.catalog.snapshots.iter().any(|s| s.id == snapshot_id)
+                {
+                    return Err("That snapshot is unavailable in this local repository.".into());
+                }
+                self.ui.sel_snapshot = Some(snapshot_id);
+                self.start_verify();
+            }
+            crate::actions::BackupOperation::Restore { snapshot_id } => {
+                if self.destination_path.is_none()
+                    || !self.catalog.snapshots.iter().any(|s| s.id == snapshot_id)
+                {
+                    return Err("That snapshot is unavailable in this local repository.".into());
+                }
+                self.ui.sel_snapshot = Some(snapshot_id);
+                self.pick_folder(PickPurpose::Restore);
+            }
+            crate::actions::BackupOperation::OpenSource { source_id } => {
+                if !self
+                    .catalog
+                    .sources
+                    .iter()
+                    .any(|source| source.id == source_id)
+                {
+                    return Err("That source is unavailable on this device.".into());
+                }
+                self.ui.sel_source = Some(source_id);
+                self.ui.sel_snapshot = None;
+                self.ui.view = View::Sources;
+            }
+            crate::actions::BackupOperation::OpenDestination { destination_id } => {
+                if !self
+                    .catalog
+                    .destinations
+                    .iter()
+                    .any(|destination| destination.id == destination_id)
+                {
+                    return Err("That destination is unavailable on this device.".into());
+                }
+                self.ui.sel_dest = Some(destination_id);
+                self.ui.view = View::Destinations;
+            }
+            crate::actions::BackupOperation::OpenSnapshot { snapshot_id } => {
+                if !self
+                    .catalog
+                    .snapshots
+                    .iter()
+                    .any(|snapshot| snapshot.id == snapshot_id)
+                {
+                    return Err("That snapshot is unavailable in this local repository.".into());
+                }
+                self.ui.sel_snapshot = Some(snapshot_id);
+                self.ui.view = View::Timeline;
+            }
+            crate::actions::BackupOperation::OpenSchedule { source_id } => {
+                if !self
+                    .catalog
+                    .sources
+                    .iter()
+                    .any(|source| source.id == source_id)
+                {
+                    return Err("That schedule's source is unavailable on this device.".into());
+                }
+                self.ui.sel_source = Some(source_id);
+                self.ui.view = View::Schedules;
+            }
+        }
+        Ok(true)
+    }
+}
+
 impl Widget for BackupsApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::BACKUPS_OPERATION_TYPE]
@@ -4958,103 +5059,25 @@ impl Widget for BackupsApp {
         self.actions.take_committed()
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if !matches!(
-            kind,
-            tilo_actions::OperationKind::Effect | tilo_actions::OperationKind::View
-        ) {
-            return Ok(false);
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
         };
-        if self.job.is_some() {
-            return Err("A backup operation is already running; wait for it to finish.".into());
-        }
-        match operation {
-            crate::actions::BackupOperation::Setup => self.pick_folder(PickPurpose::Source),
-            crate::actions::BackupOperation::BackupNow => {
-                if self.source_path.is_none() || self.destination_path.is_none() {
-                    return Err("Backups are not configured on this device.".into());
-                }
-                self.start_backup();
-            }
-            crate::actions::BackupOperation::Verify { snapshot_id } => {
-                if self.destination_path.is_none()
-                    || !self.catalog.snapshots.iter().any(|s| s.id == snapshot_id)
-                {
-                    return Err("That snapshot is unavailable in this local repository.".into());
-                }
-                self.ui.sel_snapshot = Some(snapshot_id);
-                self.start_verify();
-            }
-            crate::actions::BackupOperation::Restore { snapshot_id } => {
-                if self.destination_path.is_none()
-                    || !self.catalog.snapshots.iter().any(|s| s.id == snapshot_id)
-                {
-                    return Err("That snapshot is unavailable in this local repository.".into());
-                }
-                self.ui.sel_snapshot = Some(snapshot_id);
-                self.pick_folder(PickPurpose::Restore);
-            }
-            crate::actions::BackupOperation::OpenSource { source_id } => {
-                if !self
-                    .catalog
-                    .sources
-                    .iter()
-                    .any(|source| source.id == source_id)
-                {
-                    return Err("That source is unavailable on this device.".into());
-                }
-                self.ui.sel_source = Some(source_id);
-                self.ui.sel_snapshot = None;
-                self.ui.view = View::Sources;
-            }
-            crate::actions::BackupOperation::OpenDestination { destination_id } => {
-                if !self
-                    .catalog
-                    .destinations
-                    .iter()
-                    .any(|destination| destination.id == destination_id)
-                {
-                    return Err("That destination is unavailable on this device.".into());
-                }
-                self.ui.sel_dest = Some(destination_id);
-                self.ui.view = View::Destinations;
-            }
-            crate::actions::BackupOperation::OpenSnapshot { snapshot_id } => {
-                if !self
-                    .catalog
-                    .snapshots
-                    .iter()
-                    .any(|snapshot| snapshot.id == snapshot_id)
-                {
-                    return Err("That snapshot is unavailable in this local repository.".into());
-                }
-                self.ui.sel_snapshot = Some(snapshot_id);
-                self.ui.view = View::Timeline;
-            }
-            crate::actions::BackupOperation::OpenSchedule { source_id } => {
-                if !self
-                    .catalog
-                    .sources
-                    .iter()
-                    .any(|source| source.id == source_id)
-                {
-                    return Err("That schedule's source is unavailable on this device.".into());
-                }
-                self.ui.sel_source = Some(source_id);
-                self.ui.view = View::Schedules;
-            }
-        }
-        Ok(true)
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn get_rect(&self) -> Rect {
