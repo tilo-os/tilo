@@ -2204,6 +2204,7 @@ impl ActorState {
         match *result {
             Ok(session) => {
                 let session = Arc::new(session);
+                self.announce_identity_to_host(ws, &session);
                 let pump = spawn_host_pump(
                     ws,
                     peer,
@@ -2454,6 +2455,29 @@ impl ActorState {
         };
         if let Err(error) = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await {
             tracing::warn!(ws, %error, "could not send collaboration identity announcement");
+        }
+    }
+
+    /// Send this device's certificate through a workspace host. Members that
+    /// reach this device only through the host (browsers, shells on another
+    /// network) bind it to the author the host authenticated, as gossip
+    /// neighbours bind it to their direct connection; the host retains it for
+    /// members that join later.
+    fn announce_identity_to_host(&self, ws: WorkspaceId, session: &RelayCoeditSession) {
+        let Some(identity) = self.host_identity.as_ref() else {
+            return;
+        };
+        let (cert, revocations) = identity.material_for(ws);
+        let hello = NeighbourMsg::IdentityHello {
+            cert: Box::new(cert),
+            revocations,
+        };
+        let (Some((channel, _)), Ok(bytes)) = (retention(&hello, false), postcard::to_allocvec(&hello))
+        else {
+            return;
+        };
+        if let Err(error) = session.publish_checkpoint(channel, bytes) {
+            tracing::warn!(ws, %error, "could not send the identity announcement to the workspace host");
         }
     }
 

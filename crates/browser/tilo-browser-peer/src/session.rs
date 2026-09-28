@@ -1021,6 +1021,12 @@ impl Task {
                 envelope = client.recv() => match envelope {
                     Some(envelope) => {
                         let admitted = matches!(envelope, Envelope::Ready { .. });
+                        if let Envelope::Ready { workspace_id, .. } = &envelope
+                            && let Some(hello) = identity_hello(*workspace_id, &self.config.cert)
+                            && client.send(hello).is_err()
+                        {
+                            return Exit::Lost("host session saturated".into());
+                        }
                         self.inbound(envelope);
                         if admitted {
                             self.check_admission();
@@ -1310,6 +1316,26 @@ impl Task {
             complete(if target == op { result.clone() } else { Ok(()) });
         }
     }
+}
+
+/// This device's certificate for a room's other members. A native shell
+/// accepts a member's edits only from a device whose certificate it holds,
+/// and a browser has no gossip neighbours to hand it over, so it goes through
+/// the host, which authenticates the author and keeps it for later joiners.
+fn identity_hello(workspace_id: u64, cert: &DeviceCert) -> Option<Envelope> {
+    let hello = neighbour_wire::NeighbourMsg::IdentityHello {
+        cert: Box::new(cert.clone()),
+        revocations: Vec::new(),
+    };
+    let (channel, _) = neighbour_wire::retention(&hello, false)?;
+    let body = postcard::to_allocvec(&hello).ok()?;
+    Some(Envelope::Delta {
+        workspace_id,
+        author_device_public_key: cert.device_public_key,
+        authored_at_ns: crate::clock::now_ns(),
+        delta: CoeditPayload::Checkpoint { channel, body }.encode().ok()?,
+        signature: [0; 64],
+    })
 }
 
 fn commit(entry: &OutboxEntry, cert: &DeviceCert) -> Envelope {
