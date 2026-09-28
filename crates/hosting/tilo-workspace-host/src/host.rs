@@ -2420,7 +2420,8 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 }
                 status["native_subscription_generation"] = json!(subscription_generation);
                 let authorization=authorization.clone();let commands=enrollment_commands.clone();
-                tokio::spawn(async move { let _=crate::enrollment_http::serve(socket,authorization,commands,status).await; });
+                let operator = crate::enrollment_http::Operator { admin: collaboration_admin.clone(), authority: owner.peer().authority().clone() };
+                tokio::spawn(async move { let _=crate::enrollment_http::serve_with_operator(socket,authorization,commands,status,Some(operator)).await; });
             }
             line = stdin.recv(), if stdin_open => {
                 match line.transpose()? {

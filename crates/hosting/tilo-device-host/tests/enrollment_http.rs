@@ -262,3 +262,79 @@ async fn real_http_enrollment_is_authorized_serialized_recoverable_and_public_on
     assert_eq!(updated["relay_address"], current["relay_address"]);
     drop(host);
 }
+async fn operator(origin: &str, body: &str, capability: &str) -> (u16, serde_json::Value) {
+    let address = origin.strip_prefix("http://").unwrap();
+    let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
+    let wire = format!(
+        "POST /admin/collaboration HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {capability}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    socket.write_all(wire.as_bytes()).await.unwrap();
+    let mut bytes = vec![];
+    tokio::time::timeout(tilo_test_env::hang_bound(), socket.read_to_end(&mut bytes))
+        .await
+        .unwrap()
+        .unwrap();
+    let response = String::from_utf8(bytes).unwrap();
+    let (head, body) = response.split_once("\r\n\r\n").unwrap();
+    (
+        head.split_whitespace().nth(1).unwrap().parse().unwrap(),
+        serde_json::from_str(body).unwrap(),
+    )
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn loopback_operator_administers_invitations_as_the_governing_authority() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = temp.path().join("owner");
+    let ready = temp.path().join("ready.json");
+    drop(SessionOwner::initialize_workspace(&state, "Guest").unwrap());
+    let (host, metadata, cap) = start(&state, &ready).await;
+    let origin = metadata["fixture_origin"].as_str().unwrap();
+    let issue = r#"{"action":"invitation.issue","params":{"role":"viewer","expires_in_seconds":300,"invitee_name":"Partner viewer"}}"#;
+    let (code, _) = operator(origin, issue, &"0".repeat(64)).await;
+    assert_eq!(code, 403, "the capability is required");
+    let (code, denied) = request(
+        origin,
+        "/admin/collaboration",
+        Some(issue.into()),
+        Some(&cap),
+    )
+    .await;
+    assert_eq!(code, 403, "a browser Origin is refused: {denied}");
+    let (code, issued) = operator(origin, issue, &cap).await;
+    assert_eq!(code, 200, "{issued}");
+    let text = issued["invite"].as_str().unwrap();
+    let join = tilo_peer_state::join::decode_and_verify_invitation_text(
+        text,
+        None,
+        &tilo_user_identity::RevocationList::default(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .try_into()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(join.grant().room, metadata["room"].as_str().unwrap());
+    assert_eq!(join.grant().role, tilo_peer_state::join::MemberRole::Viewer);
+    let id = issued["invite_id"].as_str().unwrap();
+    let (code, listed) = operator(origin, r#"{"action":"invitation.list"}"#, &cap).await;
+    assert_eq!(code, 200, "{listed}");
+    let entry = listed["invitations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == id)
+        .unwrap();
+    assert_eq!(entry["status"], "pending");
+    assert_eq!(entry["role"], "viewer");
+    let cancel = format!(r#"{{"action":"invitation.cancel","params":{{"invite_id":"{id}"}}}}"#);
+    let (code, cancelled) = operator(origin, &cancel, &cap).await;
+    assert_eq!(code, 200, "{cancelled}");
+    let (_, listed) = operator(origin, r#"{"action":"invitation.list"}"#, &cap).await;
+    assert_eq!(listed["invitations"][0]["status"], "revoked");
+    let (code, _) = operator(origin, r#"{"action":"media.call.end","params":{}}"#, &cap).await;
+    assert_eq!(code, 404);
+    drop(host);
+}
