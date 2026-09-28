@@ -119,9 +119,7 @@ struct Paths {
 
 impl Paths {
     fn session() -> Result<Self, String> {
-        let runtime_root = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
+        let runtime_root = xdg_paths::xdg::runtime_dir()
             .ok_or_else(|| "XDG_RUNTIME_DIR is not an absolute path".to_string())?;
         Ok(Self {
             sockets: PathBuf::from("/tmp/.X11-unix"),

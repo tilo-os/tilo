@@ -186,9 +186,7 @@ pub mod transport {
 
     #[must_use]
     pub fn path() -> Option<PathBuf> {
-        std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .map(|p| p.join("tilo/clocks.json"))
+        xdg_paths::xdg::runtime_dir().map(|p| p.join("tilo/clocks.json"))
     }
     /// Atomically writes `snapshot` to the private transport file.
     ///
@@ -214,9 +212,7 @@ pub mod transport {
         activity_id: Option<uuid::Uuid>,
     }
     pub fn take_command() -> Option<(String, Option<uuid::Uuid>)> {
-        let path = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)?
-            .join("tilo/clocks-command.json");
+        let path = xdg_paths::xdg::runtime_dir()?.join("tilo/clocks-command.json");
         let bytes = fs::read(&path).ok()?;
         let _ = fs::remove_file(path);
         if bytes.len() > 1024 {
