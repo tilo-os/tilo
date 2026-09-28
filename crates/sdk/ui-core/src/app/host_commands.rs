@@ -12,7 +12,7 @@ use crate::standalone_history::{HistoryReadContext, StandaloneHistory};
 
 /// Changes whenever a host command's label, enabled state or presence may
 /// have, so the host chrome rebuilds only then.
-#[cfg(all(target_os = "macos", feature = "native"))]
+#[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "native"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HostCommandsKey {
     undo: u64,
@@ -161,7 +161,7 @@ impl App {
         )
     }
 
-    #[cfg(all(target_os = "macos", feature = "native"))]
+    #[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "native"))]
     pub(crate) fn host_commands_key(&self) -> HostCommandsKey {
         HostCommandsKey {
             undo: self.state.history_revision(),
