@@ -3418,9 +3418,12 @@ impl CapnpBrokerState {
                         .map_or_else(
                             |_| Err(ActionDirectoryBridgeError::TimedOut),
                             |result| {
-                                result
-                                    .map(ActionDirectoryBridgeResponse::Page)
-                                    .map_err(|_| ActionDirectoryBridgeError::Unavailable)
+                                result.map(ActionDirectoryBridgeResponse::Page).map_err(
+                                    |error| {
+                                        tracing::debug!(%error, "an app's action directory did not answer a query");
+                                        ActionDirectoryBridgeError::Unavailable
+                                    },
+                                )
                             },
                         );
                         reply.send(response);
@@ -3453,9 +3456,12 @@ impl CapnpBrokerState {
                         .map_or_else(
                             |_| Err(ActionDirectoryBridgeError::TimedOut),
                             |result| {
-                                result
-                                    .map(ActionDirectoryBridgeResponse::Resolution)
-                                    .map_err(|_| ActionDirectoryBridgeError::Unavailable)
+                                result.map(ActionDirectoryBridgeResponse::Resolution).map_err(
+                                    |error| {
+                                        tracing::debug!(%error, "an app's action directory did not resolve an action");
+                                        ActionDirectoryBridgeError::Unavailable
+                                    },
+                                )
                             },
                         );
                         reply.send(response);
@@ -3571,7 +3577,7 @@ impl CapnpBrokerState {
             self,
             cluster_id,
             actor,
-            &registered.app_id,
+            (query.peer_id, &registered.app_id),
             page,
             max_results,
         )
@@ -3634,8 +3640,14 @@ impl CapnpBrokerState {
             runtime_collab::ActionDirectoryResolution::Found(row)
                 if row.resource == resource
                     && row.action.as_deref() == Some(action)
-                    && permits_directory_row(self, cluster_id, actor, &registered.app_id, &row)
-                        .map_err(|error| error.to_string())? =>
+                    && permits_directory_row_from(
+                        self,
+                        cluster_id,
+                        actor,
+                        (peer_id, &registered.app_id),
+                        &row,
+                    )
+                    .map_err(|error| error.to_string())? =>
             {
                 Ok(runtime_collab::ActionDirectoryResolution::Found(row))
             }
@@ -3703,7 +3715,7 @@ impl CapnpBrokerState {
         // Resolve rechecked the current capability and actor.  Re-run the
         // validation immediately before constructing the invocation surface
         // so a future local caller cannot bypass the same boundary.
-        if !permits_directory_row(self, cluster_id, actor, &registered.app_id, &row)
+        if !permits_directory_row_from(self, cluster_id, actor, (peer_id, &registered.app_id), &row)
             .map_err(|_| ActionDirectoryBridgeError::Unavailable)?
         {
             return Err(ActionDirectoryBridgeError::NotFound);
@@ -5349,6 +5361,60 @@ impl CapnpBrokerState {
         Ok(current)
     }
 
+    /// Whether `admitted` may write `route`'s whole document now, by the
+    /// same role and capability decision a committed write is checked
+    /// against: who may answer a late joiner with a snapshot.
+    fn may_write_document(&self, route: &CrdtRoute, admitted: &AdmittedJoinIdentity) -> bool {
+        let Ok(now) = self.policy_now_ns().map(|ns| ns / 1_000_000_000) else {
+            return false;
+        };
+        let Some(membership) = self.membership.as_ref() else {
+            return true;
+        };
+        let Ok(tree) = membership.snapshot() else {
+            return false;
+        };
+        let Some(workspace) = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == route.cluster_id)
+        else {
+            return false;
+        };
+        let role = match &admitted.agent_id {
+            Some(agent) => workspace.role_of_agent_at(agent, now),
+            None => workspace.role_of_at(&admitted.principal_id, now),
+        };
+        let Some(mut role) = role else {
+            return false;
+        };
+        if admitted.verified.capped {
+            role = foreign_device_role(role, &workspace.capabilities, now);
+        }
+        let mut current = admitted.clone();
+        current.role = role;
+        let actor = current
+            .policy_actor(workspace, now)
+            .with_principal(Principal::App(route.app_id.clone()));
+        let resource = ResourceRef::Artifact {
+            app: Some(route.app_id.clone()),
+            kind: ArtifactKind::Note,
+            instance: collab_types::document_artifact_id(
+                &route.app_id,
+                &route.cluster_id,
+                &route.record_id,
+            ),
+        };
+        let op = collab_types::OpClass::Splice;
+        workspace.decide_at(
+            &actor,
+            &resource,
+            collab_types::caps::verb_for_opclass(op),
+            now,
+        ) == CapDecision::Allow
+            && role_permits(role, ArtifactKind::Note, op)
+    }
+
     /// Bind a certified operation to the route, typed document protocol and
     /// current workspace capability state. The identity service performs the
     /// same checks before signing; repeating them at receipt prevents a stale
@@ -6111,7 +6177,9 @@ impl CapnpBrokerState {
 
     /// Direct a late-join snapshot request to one established subscriber on
     /// the exact route. Lowest broker peer id makes selection deterministic;
-    /// the requester is excluded so it never snapshots its own empty state.
+    /// the requester is excluded so it never snapshots its own empty state,
+    /// and so is a subscriber whose role may not write the document: its
+    /// answer is a whole-document write the broker would refuse.
     pub fn request_document_snapshot(&self, channel_id: &str, requester: u64) -> bool {
         // A participant inside the shell that holds this route's document
         // (a replay peer) answers first; it is where the room's state is.
@@ -6127,11 +6195,13 @@ impl CapnpBrokerState {
             return false;
         };
         channel.context.sort_by_key(|subscriber| subscriber.peer_id);
-        let Some(index) = channel
-            .context
-            .iter()
-            .position(|subscriber| subscriber.peer_id != requester)
-        else {
+        let Some(index) = channel.context.iter().position(|subscriber| {
+            subscriber.peer_id != requester
+                && subscriber
+                    .grant
+                    .as_ref()
+                    .is_none_or(|grant| self.may_write_document(&grant.route, &grant.admitted))
+        }) else {
             return false;
         };
         if channel.context.get(index).is_some_and(|subscriber| {
@@ -6580,6 +6650,23 @@ fn delegate_nearby_transfer_command(
     }
 }
 
+/// Say at debug level why the action door refused an invocation, which the
+/// caller hears only as a receipt.
+fn noting_door_refusal(
+    answer: tilo_actions::remote::RemoteActionMessage,
+) -> tilo_actions::remote::RemoteActionMessage {
+    if let tilo_actions::remote::RemoteActionMessage::Receipt(
+        tilo_actions::remote::InvocationReceipt {
+            status: tilo_actions::remote::ReceiptStatus::Rejected { error },
+            ..
+        },
+    ) = &answer
+    {
+        tracing::debug!(%error, "refused an invocation over the action door");
+    }
+    answer
+}
+
 /// Answer a remote-action call with `message` at once.
 fn reply_frame(
     message: tilo_actions::remote::RemoteActionMessage,
@@ -6686,9 +6773,9 @@ impl channel_handle::Server for CapnpChannelHandle {
         // Awaited on this local set, which is also where an application's
         // directory answers; the connection's other calls keep flowing.
         Promise::from_future(async move {
-            let answer = answer.await.ok_or_else(|| {
+            let answer = noting_door_refusal(answer.await.ok_or_else(|| {
                 capnp::Error::failed("the action host dropped the request".into())
-            })?;
+            })?);
             let bytes = RemoteActionFrame::new(answer)
                 .encode()
                 .map_err(|error| capnp::Error::failed(error.to_string()))?;
@@ -7691,6 +7778,13 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => return Promise::err(error),
         };
         let route = self.route();
+        tracing::debug!(
+            peer = self.peer_id,
+            app = %app_id,
+            cluster = %route.cluster_id,
+            record = %route.record_id,
+            "an application published its action directory"
+        );
         self.directories.directories.borrow_mut().insert(
             self.peer_id,
             RegisteredActionDirectory {
@@ -7847,7 +7941,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 &state,
                 &cluster,
                 &actor,
-                &registered.app_id,
+                (peer_id, &registered.app_id),
                 page,
                 max_results,
             )?;
@@ -9178,11 +9272,33 @@ fn permits_directory_row(
     }
 }
 
+/// [`permits_directory_row`] for a row the application connection
+/// `publisher` (its peer id and app id) published. An action that speaks as
+/// the participant that connection runs for is offered to that participant
+/// only, as in the eager catalogue: anyone else asks their own app.
+fn permits_directory_row_from(
+    state: &CapnpBrokerState,
+    cluster_id: &str,
+    actor: &BrokerActor,
+    (peer_id, app_id): (u64, &str),
+    row: &runtime_collab::ActionDirectoryRow,
+) -> Result<bool, capnp::Error> {
+    if !permits_directory_row(state, cluster_id, actor, app_id, row)? {
+        return Ok(false);
+    }
+    let Some(descriptor) = row.descriptor.as_ref() else {
+        return Ok(true);
+    };
+    let contract: tilo_actions::ActionContract = serde_json::from_str(&descriptor.contract_json)
+        .map_err(|_| capnp::Error::failed("invalid action directory contract".into()))?;
+    Ok(!contract.speaks_as_participant() || state.performs_for(peer_id, actor))
+}
+
 fn filter_directory_page(
     state: &CapnpBrokerState,
     cluster_id: &str,
     actor: &BrokerActor,
-    app_id: &str,
+    publisher: (u64, &str),
     mut page: runtime_collab::ActionDirectoryPage,
     max_results: u32,
 ) -> Result<runtime_collab::ActionDirectoryPage, capnp::Error> {
@@ -9200,7 +9316,7 @@ fn filter_directory_page(
     validate_resource_view_descriptors(&page_actions)?;
     let mut visible = Vec::with_capacity(page.rows.len());
     for row in page.rows {
-        if permits_directory_row(state, cluster_id, actor, app_id, &row)? {
+        if permits_directory_row_from(state, cluster_id, actor, publisher, &row)? {
             visible.push(row);
         }
     }

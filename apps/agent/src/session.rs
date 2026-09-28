@@ -450,6 +450,14 @@ pub struct Session {
     chat_run: Option<ChatRun>,
     chat_pending: bool,
     chat_catalogue_received: bool,
+    /// Whether everything the broker holds for the Chat route has been
+    /// merged. A restarted agent is served that history change by change,
+    /// oldest first, and a copy built from its oldest snapshot reads as a
+    /// Chat nobody answered; deciding on it takes a summons twice.
+    chat_history_loaded: bool,
+    /// Routed changes that arrived before a copy of their document existed,
+    /// by namespace, applied once a snapshot creates the copy.
+    routed_backlog: BTreeMap<&'static str, Vec<Vec<u8>>>,
     last_chat_action: Option<crate::listen::LastAction>,
     /// First accepted forwarding frame for each message. Its certified key
     /// authenticates the frame, never the inner Message.author claim.
@@ -537,6 +545,12 @@ impl Session {
                 payload: PresencePayload::Arrived,
             })?;
         }
+        // Chat decisions wait for the route's complete held history; a
+        // managed agent is refused history on its task-bound surface.
+        let chat_history_loaded = !is_chat_app_id(&cfg.app_id) || managed.is_some();
+        if !chat_history_loaded {
+            self::chat::fetch_chat_history(&mut link, &cfg, u64::MAX)?;
+        }
         tracing::info!(
             transport = if cfg.endpoint.is_some() { "typed-endpoint" } else { "TILO_SVC_COLLAB_FD" },
             app = %cfg.app_id,
@@ -596,6 +610,8 @@ impl Session {
             chat_run: None,
             chat_pending: false,
             chat_catalogue_received: false,
+            chat_history_loaded,
+            routed_backlog: BTreeMap::new(),
             last_chat_action: None,
             chat_sources: HashMap::new(),
             live: crate::live::LivePublisher::default(),
@@ -1649,6 +1665,21 @@ impl Session {
                     self.link
                         .send_to_route(route, &CollabRequest::document_snapshot(full))?;
                 }
+            }
+            Some(CollabEvent::ScrollbackBatch {
+                artifact,
+                ops,
+                decrypted_payloads,
+                oldest_seq,
+                exhausted,
+            }) => {
+                changed = self.absorb_chat_history(
+                    artifact,
+                    ops,
+                    decrypted_payloads,
+                    oldest_seq,
+                    exhausted,
+                )?;
             }
             Some(CollabEvent::ActionCatalogue { surfaces }) => {
                 self.set_broker_surfaces(surfaces);
@@ -3297,6 +3328,8 @@ mod tests {
                     chat_run: None,
                     chat_pending: false,
                     chat_catalogue_received: false,
+                    chat_history_loaded: true,
+                    routed_backlog: BTreeMap::new(),
                     last_chat_action: None,
                     chat_sources: HashMap::new(),
                     live: crate::live::LivePublisher::default(),
@@ -3551,6 +3584,8 @@ mod tests {
                 chat_run: None,
                 chat_pending: false,
                 chat_catalogue_received: false,
+                chat_history_loaded: true,
+                routed_backlog: BTreeMap::new(),
                 last_chat_action: None,
                 chat_sources: HashMap::new(),
                 live: crate::live::LivePublisher::default(),

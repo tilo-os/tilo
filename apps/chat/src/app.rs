@@ -3311,11 +3311,26 @@ impl Collaborative for ChatApp {
         requests
     }
 
-    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) -> bool {
         match event {
             ui::collaboration::CollabEvent::NativeMediaCommandResult { request_id, result } => {
+                // The call is polled for its status; an answer that finds it
+                // as it was changes nothing this Chat offers or shows, and
+                // laying the window out again for it would retire Chat's
+                // action directory several times a second.
+                let before = (
+                    self.native_voice.snapshot.clone(),
+                    self.native_voice.channel.clone(),
+                );
                 self.native_voice.complete(*request_id, result);
-                self.project_native_voice();
+                let changed = (
+                    self.native_voice.snapshot.clone(),
+                    self.native_voice.channel.clone(),
+                ) != before;
+                if changed {
+                    self.project_native_voice();
+                }
+                return changed;
             }
             ui::collaboration::CollabEvent::RealtimeCommandResult { result, .. } => match result {
                 Ok(ui::realtime_continuity::RealtimeReply::Registered { session }) => {
@@ -3336,7 +3351,7 @@ impl Collaborative for ChatApp {
                 },
             ) if intent.provider == "tilo.chat" => {
                 let Some(workspace_id) = intent.semantic_position.clone() else {
-                    return;
+                    return false;
                 };
                 let offered = crate::continuity::ChatCallContinuation {
                     workspace_id,
@@ -3378,8 +3393,9 @@ impl Collaborative for ChatApp {
             ) if self.realtime.session.as_ref() == Some(session) => {
                 self.realtime.session = None;
             }
-            _ => {}
+            _ => return false,
         }
+        true
     }
 }
 
@@ -4639,6 +4655,20 @@ impl Widget for ChatApp {
         if let Err(error) = result
             && !matches!(error, tilo_actions::DoorError::ConfirmationRequired)
         {
+            // Sharing a posted record is this peer's own upkeep, asked on
+            // reload; one asked before the workspace is reachable is asked
+            // again once it is, rather than never.
+            if matches!(error, tilo_actions::DoorError::Unavailable { .. })
+                && let Some(message) = address.resource.strip_prefix("chat.attachment:")
+                && matches!(address.action.as_str(), "share" | "unshare")
+            {
+                self.feedback
+                    .shared
+                    .remove(&(message.to_owned(), address.action == "share"));
+                self.feedback.reshare_at =
+                    Some(std::time::Instant::now() + std::time::Duration::from_millis(750));
+                return;
+            }
             if let Some(hand) = &self.hand {
                 hand.refused(address, error.to_string());
             }
@@ -4684,11 +4714,20 @@ impl Widget for ChatApp {
     /// continuous redraws (the roster/rings are static), so an idle call
     /// no longer pins a core.
     fn update(&mut self, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
+        // A share the workspace could not take yet is asked again once due.
+        let reshare = self
+            .feedback
+            .reshare_at
+            .is_some_and(|due| std::time::Instant::now() >= due);
+        if reshare {
+            self.feedback.reshare_at = None;
+            self.reconcile_record_sharing();
+        }
         // A bound media endpoint wakes the event loop; sync adopts it.
         let media_bound = self.media.poll_binding();
         // Re-run `sync` once after the first layout so the channel already in
         // view acquires its read receipt on open.
-        std::mem::take(&mut self.read_on_present) || media_bound
+        std::mem::take(&mut self.read_on_present) || media_bound || reshare
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -4699,6 +4738,7 @@ impl Widget for ChatApp {
             || self.call.placement.is_handoff_animating()
             || self.tooltips.needs_frame()
             || !self.images.is_idle()
+            || self.feedback.reshare_at.is_some()
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -5143,5 +5183,64 @@ mod reports_read_aloud {
                 .any(|name| name.ends_with(": Send does nothing")),
             "{read:#?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod record_sharing {
+    use super::*;
+
+    /// A posted record's share asked before the workspace was reachable is
+    /// asked again on a later reload, and bothers nobody with a notice.
+    #[test]
+    fn a_share_the_workspace_could_not_take_yet_is_asked_again() {
+        let mut app = ChatApp::new_ephemeral();
+        app.feedback.shared.insert(("m_1".to_string(), true));
+        Widget::on_control_invocation_result(
+            &mut app,
+            &tilo_actions::ActionAddress::new("chat.attachment:m_1", "share"),
+            &Err(tilo_actions::DoorError::Unavailable {
+                code: "workspace_unavailable".into(),
+                reason: "not connected yet".into(),
+            }),
+        );
+        assert!(!app.feedback.shared.contains(&("m_1".to_string(), true)));
+        assert!(app.feedback.notice.is_none());
+        assert!(
+            app.feedback.reshare_at.is_some(),
+            "and asks again soon, not only when something else reloads the conversation"
+        );
+
+        // Any other refusal is the reader's to hear, and is not retried.
+        app.feedback.shared.insert(("m_1".to_string(), true));
+        Widget::on_control_invocation_result(
+            &mut app,
+            &tilo_actions::ActionAddress::new("chat.attachment:m_1", "share"),
+            &Err(tilo_actions::DoorError::Failed("refused".into())),
+        );
+        assert!(app.feedback.shared.contains(&("m_1".to_string(), true)));
+        assert!(app.feedback.notice.is_some());
+    }
+}
+
+#[cfg(test)]
+mod native_media_polling {
+    use super::*;
+
+    /// Chat polls the device's media state; an answer that changes nothing
+    /// lays nothing out again, which would retire Chat's action directory.
+    #[test]
+    fn a_media_answer_that_changes_nothing_lays_nothing_out() {
+        let mut app = ChatApp::new_ephemeral();
+        app.relayout = false;
+        let unchanged = app.native_voice.snapshot.clone();
+        Collaborative::handle_collab_event(
+            &mut app,
+            &ui::collaboration::CollabEvent::NativeMediaCommandResult {
+                request_id: 41,
+                result: Ok(unchanged),
+            },
+        );
+        assert!(!app.relayout);
     }
 }

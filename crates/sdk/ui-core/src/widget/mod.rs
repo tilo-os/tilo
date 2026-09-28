@@ -503,8 +503,12 @@ pub trait Collaborative {
         Vec::new()
     }
 
-    /// Receive one session-local broker event.
-    fn handle_collab_event(&mut self, _event: &crate::collaboration::CollabEvent) {}
+    /// Receive one session-local broker event. Returns whether handling it
+    /// may have changed what this widget declares: the host applies no
+    /// state of its own for a session answer, so only its receiver knows.
+    fn handle_collab_event(&mut self, _event: &crate::collaboration::CollabEvent) -> bool {
+        false
+    }
 }
 
 /// Optional lifecycle for widgets backed by a platform-native child view.
@@ -2793,19 +2797,21 @@ pub(crate) fn take_collab_requests(
 
 /// Deliver one session event to each explicit collaboration capability once.
 /// Bound callback context remains entered for the complete descendant walk.
+/// Returns whether any receiver may have changed what it declares.
 pub(crate) fn handle_collab_event(
     widget: &mut dyn Widget,
     event: &crate::collaboration::CollabEvent,
-) {
+) -> bool {
     let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
-        return;
+        return false;
     };
-    if let Some(collaborative) = widget.collaborative_mut() {
-        collaborative.handle_collab_event(event);
-    }
+    let mut changed = widget
+        .collaborative_mut()
+        .is_some_and(|collaborative| collaborative.handle_collab_event(event));
     for child in widget.collaboration_children_mut() {
-        handle_collab_event(child, event);
+        changed |= handle_collab_event(child, event);
     }
+    changed
 }
 
 /// Mount native views through each owner's retained lifecycle topology.
@@ -3277,8 +3283,9 @@ mod tests {
             }]
         }
 
-        fn handle_collab_event(&mut self, _: &crate::collaboration::CollabEvent) {
+        fn handle_collab_event(&mut self, _: &crate::collaboration::CollabEvent) -> bool {
             self.events.set(self.events.get().saturating_add(1));
+            true
         }
     }
 

@@ -115,17 +115,16 @@ pub(super) fn decode_routed_mutation(
     }
 }
 impl App {
-    pub(super) fn forward_session_notification(&mut self, event: &CollabEvent) {
+    /// Returns whether a receiving widget may have changed what it declares.
+    pub(super) fn forward_session_notification(&mut self, event: &CollabEvent) -> bool {
         // Document traffic enters only the exact custody-checked merge door.
         // A mutable widget callback is not a read-only notification boundary.
-        if !matches!(
+        !matches!(
             event,
             CollabEvent::Document { .. }
                 | CollabEvent::ScrollbackBatch { .. }
                 | CollabEvent::CommittedDocument { .. }
-        ) {
-            crate::widget::handle_collab_event(self.root_widget.as_mut(), event);
-        }
+        ) && crate::widget::handle_collab_event(self.root_widget.as_mut(), event)
     }
     #[allow(
         clippy::vec_box,

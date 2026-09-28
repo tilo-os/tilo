@@ -575,8 +575,10 @@ pub trait DesktopRequestServices: Send + Sync {
 /// The session's replay of recorded sessions.
 pub trait SessionReplayServices: Send + Sync {
     /// Open the `session` record `record` for `viewer` in an ephemeral
-    /// replay room, shown to them. `None` while the record is still arriving
-    /// from a room that references it; the replay opens once it has.
+    /// replay room, shown to them. `room` is where it was met — a recording
+    /// attached to a message there, which its author serves in that room.
+    /// `None` while the record is still arriving from a room; the replay
+    /// opens once it has.
     ///
     /// # Errors
     ///
@@ -584,6 +586,7 @@ pub trait SessionReplayServices: Send + Sync {
     fn open_record(
         &self,
         record: &ui::record::RecordId,
+        room: Option<RoomId>,
         viewer: &str,
     ) -> Result<Option<RoomId>, String>;
 }

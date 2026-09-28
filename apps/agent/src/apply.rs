@@ -206,6 +206,13 @@ impl Editor {
     /// taken, and the real next change for that document is rejected —
     /// `duplicate seq 1 found for actor …` — dropped without a word.
     ///
+    /// The same holds across sessions: a replica is also one process's
+    /// copy. A restarted agent whose copy lacks one of its earlier changes
+    /// (history evicted, or not yet delivered) would number its next change
+    /// like that one, and the room would refuse every change after it. So
+    /// each peer replica writes under a fresh actor; who wrote is the
+    /// content's `author`, never the replica handle.
+    ///
     /// The page keeps the plain name ([`Editor::from_snapshot`]) because
     /// that is the history somebody reads: the durable `author` mark this
     /// stamps is the plain name either way, only the replica handle differs.
@@ -239,7 +246,11 @@ impl Editor {
             route_app_id,
             bytes,
             actor_handle,
-            &format!("{actor_handle}#{}", contract.namespace),
+            &format!(
+                "{actor_handle}#{}#{}",
+                contract.namespace,
+                uuid::Uuid::new_v4().simple()
+            ),
         )
     }
 
@@ -427,6 +438,25 @@ impl Editor {
         // measured — a delta this replica already had moves nothing and is
         // not news.
         Ok(self.doc.get_heads() != before)
+    }
+
+    /// Apply a change that arrived on this replica's own authenticated
+    /// route. Unlike [`Editor::merge_incremental`] no ancestor check is
+    /// needed: the envelope names this document, so a change whose
+    /// ancestors are still in flight is Automerge's to queue until they
+    /// arrive ([`Editor::missing_ancestors`] reports the gap meanwhile).
+    /// Returns whether the document moved.
+    pub fn merge_routed_incremental(&mut self, bytes: &[u8]) -> bool {
+        let before = self.doc.get_heads();
+        if let Err(error) = self.doc.load_incoming(bytes) {
+            tracing::warn!(
+                app = self.contract.namespace,
+                "a change on this app's own route would not apply: {error}"
+            );
+            return false;
+        }
+        self.drain();
+        self.doc.get_heads() != before
     }
 
     /// Forget what was just merged as far as "changes to broadcast" goes:

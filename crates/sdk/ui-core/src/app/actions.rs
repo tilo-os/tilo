@@ -1596,7 +1596,10 @@ impl App {
         let Ok(current) = self.try_action_directory_revision() else {
             return runtime_collab::ActionDirectoryResolution::Unavailable;
         };
-        if revision != current {
+        // An empty revision is this app asking for its own action, which the
+        // broker resolves as the app is now: the owner has no stale listing
+        // to guard against. Every other caller names the revision it chose at.
+        if !revision.is_empty() && revision != current {
             return runtime_collab::ActionDirectoryResolution::StaleRevision;
         }
         if let Some(row) = self

@@ -376,36 +376,101 @@ fn chat_provider(
 
 /// The provider token of `person`'s own Chat: the only one whose posting
 /// actions the broker offers them, since nobody posts through another
-/// participant's Chat.
+/// participant's Chat. A Chat publishes its actions through its own live
+/// directory, so each Chat the room lists is asked for the remark on the
+/// conversation as `person`.
 fn own_chat(host: &BrokerActionHost, person: &Person, room: &mut Room) -> String {
     let conversation = format!("chat.channel:{}", tilo_reference::ROOM_CONVERSATION);
     let mut provider = None;
-    room.until("the person's own Chat", |_| {
-        let mut page = host.query(
+    room.until("the person's own Chat", |room| {
+        let mut listing = host.query(
             &person.caller(),
             CatalogueQuery {
-                needle: "remark".into(),
-                max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                max_results: 0,
                 ..CatalogueQuery::default()
             },
         );
-        if let PendingPoll::Ready(Ok(page)) = page.poll_ready() {
-            let mut own = page
-                .rows
-                .iter()
-                .filter(|row| {
-                    row.app_id == APP
-                        && row.action.as_ref().is_some_and(|action| {
-                            action.address.resource == conversation
-                                && action.address.action == "remark"
-                        })
-                })
-                .map(|row| row.provider.clone());
-            provider = own.next().filter(|_| own.next().is_none());
-        }
+        let PendingPoll::Ready(Ok(listing)) = listing.poll_ready() else {
+            return false;
+        };
+        let mut own = listing
+            .providers
+            .iter()
+            .filter(|candidate| candidate.app_id == APP)
+            .filter(|candidate| {
+                offers_remark(host, person, &candidate.provider, &conversation, room)
+            })
+            .map(|candidate| candidate.provider.clone());
+        provider = own.next().filter(|_| own.next().is_none());
         provider.is_some()
     });
     provider.expect("found")
+}
+
+/// Whether `provider`'s directory offers `person` the remark on
+/// `conversation`, browsing it from its roots as a palette would.
+fn offers_remark(
+    host: &BrokerActionHost,
+    person: &Person,
+    provider: &str,
+    conversation: &str,
+    room: &mut Room,
+) -> bool {
+    let mut parents = vec![None::<String>];
+    for _ in 0..4 {
+        let mut children = Vec::new();
+        for parent in parents {
+            let Some(page) = directory_page(host, person, provider, parent, room) else {
+                return false;
+            };
+            for row in page.rows {
+                if row.action.as_ref().is_some_and(|action| {
+                    action.address.resource == conversation && action.address.action == "remark"
+                }) {
+                    return true;
+                }
+                if row.has_children && row.action.is_none() {
+                    children.push(Some(row.resource.id.clone()));
+                }
+            }
+        }
+        if children.is_empty() {
+            return false;
+        }
+        parents = children;
+    }
+    false
+}
+
+/// One page of `provider`'s directory under `parent` as `person` sees it.
+fn directory_page(
+    host: &BrokerActionHost,
+    person: &Person,
+    provider: &str,
+    parent: Option<String>,
+    room: &mut Room,
+) -> Option<tilo_actions::remote::CataloguePage> {
+    let mut page = host.query(
+        &person.caller(),
+        CatalogueQuery {
+            provider: Some(provider.to_owned()),
+            parent_resource: parent,
+            max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+            ..CatalogueQuery::default()
+        },
+    );
+    let started = Instant::now();
+    loop {
+        match page.poll_ready() {
+            PendingPoll::Ready(page) => return page.ok(),
+            PendingPoll::Abandoned => return None,
+            PendingPoll::Waiting => {}
+        }
+        if started.elapsed() > Duration::from_secs(5) {
+            return None;
+        }
+        room.step();
+    }
 }
 
 fn may(app: &ui::App, verb: ui::permissions::Verb) -> bool {

@@ -51,6 +51,15 @@ pub fn required_capability(
             verb,
         ));
     }
+    // An app's directory row was admitted by the broker for this caller's
+    // role in the row's own room when it was listed, and is checked again
+    // when it is resolved and invoked. It is no shell action, whose default
+    // contract (Write) would hide a Commenter's reply or vote.
+    if resource.provider == super::providers::live_app_actions::PROVIDER_ID
+        && super::providers::live_app_actions::LiveAppActionsProvider::is_directory_id(&resource.id)
+    {
+        return None;
+    }
     match kind {
         // Showing is free — the larger half of the surface.
         ResourceKind::Note
@@ -145,6 +154,23 @@ mod tests {
 
     fn resource(provider: &str, id: &str) -> ResourceRef {
         ResourceRef::new(provider, id)
+    }
+
+    #[test]
+    fn an_apps_directory_row_is_not_gated_as_a_shell_action() {
+        for id in [
+            "directory\u{1f}2\u{1f}v5:r\u{1f}chat.message:m_1\u{1f}reply",
+            "directory-resource\u{1f}2\u{1f}chat.workspace:ws_home",
+        ] {
+            assert_eq!(
+                required_capability(
+                    &resource(super::super::providers::live_app_actions::PROVIDER_ID, id),
+                    &ResourceKind::Action,
+                ),
+                None,
+                "{id}: the broker admitted it for the caller's role in its room"
+            );
+        }
     }
 
     #[test]

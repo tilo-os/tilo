@@ -2517,7 +2517,7 @@ impl WorkspaceTree {
                     nonce: &added.nonce,
                 };
                 (room_record_seal_holds(room, act, by, sig)
-                    && self.member_may_edit_room(room, doc, by))
+                    && self.member_may_bring_in(room, doc, by, &entry.id))
                 .then_some((added.nonce.as_str(), by.as_str()))
             })
             .collect()
@@ -2682,6 +2682,33 @@ impl WorkspaceTree {
     /// from what this machine already holds, so a member admitted in the
     /// same batch is known.
     fn member_may_edit_room(&self, room: RoomId, doc: &AutoCommit, endpoint: &str) -> bool {
+        self.member_allowed(room, doc, endpoint, Verb::Write)
+    }
+
+    /// Whether the member whose device is `endpoint` may bring `record` into
+    /// `room`'s records: anything, for one who may edit the room; for one who
+    /// may comment, only a comment record of their own device — what they
+    /// post, such as the recording that goes with a report. The broker
+    /// admits a Commenter's share on the same terms, and a room of Commenters
+    /// still cannot be filled with references to anything else.
+    fn member_may_bring_in(
+        &self,
+        room: RoomId,
+        doc: &AutoCommit,
+        endpoint: &str,
+        record: &str,
+    ) -> bool {
+        self.member_may_edit_room(room, doc, endpoint)
+            || (endpoint.parse::<iroh::EndpointId>().is_ok_and(|device| {
+                collab_types::is_comment_record_of(
+                    record,
+                    &collab_types::Ed25519PublicKey::from_bytes(*device.as_bytes()),
+                )
+            }) && self.member_allowed(room, doc, endpoint, Verb::Comment))
+    }
+
+    /// Whether the member whose device is `endpoint` holds `verb` on `room`.
+    fn member_allowed(&self, room: RoomId, doc: &AutoCommit, endpoint: &str, verb: Verb) -> bool {
         if self.is_room_authority(room, endpoint) {
             return true;
         }
@@ -2709,7 +2736,7 @@ impl WorkspaceTree {
             return false;
         };
         let actor = workspace.actor_for_person(&person);
-        workspace.allows(&actor, &ResourceRef::Workspace, Verb::Write)
+        workspace.allows(&actor, &ResourceRef::Workspace, verb)
     }
 
     /// Whether this machine may take `record` out of `room`: it brought it
@@ -6932,6 +6959,56 @@ mod automerge_foundation_tests {
                 "file:/docs/plan.md".to_string(),
                 "document".to_string()
             )]
+        );
+    }
+
+    /// What a Commenter posts is theirs to share: a comment record of their
+    /// own device — the recording that goes with their report — stands in
+    /// the room's records, so the team can fetch it. Somebody else's comment
+    /// record does not.
+    #[test]
+    fn a_commenter_may_bring_in_their_own_comment_records_only() {
+        let (mut host, mut commenter, room) = a_room_with_a_commenter();
+        let own_device = commenter
+            .room_record_signer()
+            .expect("a device key")
+            .public();
+        let parent = "uuid:5c4a7f10-3b2e-4d8a-9f61-0c2d4e6f8a13";
+        let own = collab_types::comment_record_id(
+            &collab_types::Ed25519PublicKey::from_bytes(*own_device.as_bytes()),
+            "recording",
+            parent,
+        )
+        .expect("a comment record id");
+        let anothers = collab_types::comment_record_id(
+            &collab_types::Ed25519PublicKey::from_bytes([7; 32]),
+            "recording",
+            parent,
+        )
+        .expect("a comment record id");
+        commenter.set_room_records(
+            room,
+            [
+                ("file:/docs/plan.md".to_string(), "document".to_string()),
+                (own.clone(), "session".to_string()),
+                (anothers, "session".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        ship(&mut commenter, &mut host, room, 2);
+        assert_eq!(
+            host.take_inbound_room_records(),
+            vec![(room, own.clone(), "session".to_string())]
+        );
+        let mut live = live_in(&host, room);
+        live.sort();
+        assert_eq!(
+            live,
+            vec![
+                (own, "session".to_string()),
+                ("file:/docs/plan.md".to_string(), "document".to_string()),
+            ]
         );
     }
 

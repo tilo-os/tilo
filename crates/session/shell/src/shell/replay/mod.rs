@@ -156,6 +156,10 @@ struct Replay {
     last_tick: Option<Instant>,
 }
 
+/// A replay waiting for its record: which record, the room it was asked
+/// for from, whose it is and how it shows.
+type WaitingReplay = (RecordId, Option<RoomId>, UserId, Presentation);
+
 /// The session's replay and its transport. One per session, shared by the
 /// frame loop, the shell action catalogue and the broker.
 pub struct ReplayController {
@@ -171,8 +175,9 @@ pub struct ReplayController {
     records: Mutex<Option<crate::shell::room_records::LocalRecordLookup>>,
     /// Reaches records another member of a room serves.
     custody: Mutex<Option<Arc<crate::shell::record_custody::RecordCustody>>>,
-    /// Replays waiting for their record to arrive from a room.
-    fetching: Mutex<Vec<(RecordId, UserId, Presentation)>>,
+    /// Replays waiting for their record to arrive from a room, with the
+    /// room each was asked for from.
+    fetching: Mutex<Vec<WaitingReplay>>,
     /// The person at this device, whom out-of-sight checks run for.
     viewer: Mutex<Option<UserId>>,
     /// Offscreen checks by id, and what they ask the frame loop to launch.
@@ -246,14 +251,18 @@ impl ReplayController {
     ///
     /// When the record is not reachable or not a readable session.
     pub fn resolve(&self, record: &RecordId) -> Result<SessionTrace, TransportError> {
-        self.resolve_or_fetch(record)?
+        self.resolve_or_fetch(record, None)?
             .ok_or_else(|| TransportError::UnknownRecord(record.as_str().to_string()))
     }
 
     /// The session trace of `record` if this device holds it, else from a
     /// room this device is in whose index references it: `None` while it
     /// is still arriving from the room's other devices.
-    fn resolve_or_fetch(&self, record: &RecordId) -> Result<Option<SessionTrace>, TransportError> {
+    fn resolve_or_fetch(
+        &self,
+        record: &RecordId,
+        in_room: Option<RoomId>,
+    ) -> Result<Option<SessionTrace>, TransportError> {
         let local = lock(&self.recorder)
             .as_ref()
             .and_then(|recorder| recorder.session_document(record))
@@ -269,7 +278,7 @@ impl ReplayController {
             let Some(custody) = custody else {
                 return Err(TransportError::UnknownRecord(record.as_str().to_string()));
             };
-            match custody.fetch(record) {
+            match custody.fetch(record, in_room) {
                 Ok(Some(document)) => document,
                 Ok(None) => return Ok(None),
                 Err(_) => {
@@ -298,27 +307,43 @@ impl ReplayController {
         owner: &UserId,
         presentation: Presentation,
     ) -> Result<Option<RoomId>, TransportError> {
-        if let Some(trace) = self.resolve_or_fetch(record)? {
+        self.open_record_in(record, None, owner, presentation)
+    }
+
+    /// [`Self::open_record`] for a record met in `room` — a recording
+    /// attached to a message there, which its author serves in that room.
+    ///
+    /// # Errors
+    ///
+    /// When the record cannot be found, read or replayed.
+    pub fn open_record_in(
+        &self,
+        record: &RecordId,
+        room: Option<RoomId>,
+        owner: &UserId,
+        presentation: Presentation,
+    ) -> Result<Option<RoomId>, TransportError> {
+        if let Some(trace) = self.resolve_or_fetch(record, room)? {
             return self
                 .open(trace, Some(record.clone()), owner, presentation)
                 .map(Some);
         }
         let mut fetching = lock(&self.fetching);
-        fetching.retain(|(waiting, _, _)| waiting != record);
-        fetching.push((record.clone(), owner.clone(), presentation));
+        fetching.retain(|(waiting, _, _, _)| waiting != record);
+        fetching.push((record.clone(), room, owner.clone(), presentation));
         drop(fetching);
         Ok(None)
     }
 
     /// Open the replays whose records arrived.
     fn open_fetched(&self) -> bool {
-        let waiting: Vec<(RecordId, UserId, Presentation)> = lock(&self.fetching).clone();
+        let waiting: Vec<WaitingReplay> = lock(&self.fetching).clone();
         let mut opened = false;
-        for (record, owner, presentation) in waiting {
-            match self.resolve_or_fetch(&record) {
+        for (record, room, owner, presentation) in waiting {
+            match self.resolve_or_fetch(&record, room) {
                 Ok(None) => {}
                 Ok(Some(trace)) => {
-                    lock(&self.fetching).retain(|(waiting, _, _)| *waiting != record);
+                    lock(&self.fetching).retain(|(waiting, _, _, _)| *waiting != record);
                     match self.open(trace, Some(record.clone()), &owner, presentation) {
                         Ok(_) => opened = true,
                         Err(error) => {
@@ -327,7 +352,7 @@ impl ReplayController {
                     }
                 }
                 Err(error) => {
-                    lock(&self.fetching).retain(|(waiting, _, _)| *waiting != record);
+                    lock(&self.fetching).retain(|(waiting, _, _, _)| *waiting != record);
                     tracing::warn!(record = %record.as_str(), %error, "replay: the session could not be reached");
                 }
             }
