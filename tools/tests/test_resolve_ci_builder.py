@@ -83,7 +83,7 @@ class BuilderResolutionTests(unittest.TestCase):
         self.assertNotIn('enable-openid-connect:', shared)
         callers = (
             'weekly-quality.yml',
-            'security-fuzz.yml',
+            'nightly.yml',
             'legacy-app-e2e.yml',
             'fs-fuse.yml',
             'staging-loop.yml',

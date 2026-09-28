@@ -140,6 +140,25 @@ impl Caller {
         }
     }
 
+    /// A remote agent device whose certificate the transport verified to
+    /// chain to `user_public_key` and whose root-signed delegation names it
+    /// agent `agent_id`. It is its own principal, never the person who
+    /// delegated it.
+    #[must_use]
+    pub fn delegated_agent(
+        agent_id: impl Into<String>,
+        user_public_key: [u8; 32],
+        device_public_key: [u8; 32],
+    ) -> Self {
+        Self {
+            principal: CallerPrincipal::Agent(agent_id.into()),
+            user_public_key: Some(user_public_key),
+            device_public_key: Some(device_public_key),
+            room: None,
+            foreign: false,
+        }
+    }
+
     /// Mark whether the caller acts from a foreign device: a Tilo runtime on
     /// an operating system Tilo does not control, as its certificate says.
     /// Workspaces it does not govern cap such a caller's role.

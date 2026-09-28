@@ -27,6 +27,8 @@ mod coedit_through_host;
 mod compute_session;
 #[path = "cross_user_workspace_host.rs"]
 mod cross_user_workspace_host;
+#[path = "device_certification.rs"]
+mod device_certification;
 #[path = "durable_host_restart.rs"]
 mod durable_host_restart;
 #[path = "end_to_end_sync.rs"]
@@ -47,6 +49,8 @@ mod federation_workspace_shard;
 mod governed_workspace_access;
 #[path = "interactive_workspace_owner.rs"]
 mod interactive_workspace_owner;
+#[path = "live_plane.rs"]
+mod live_plane;
 #[path = "multi_host.rs"]
 mod multi_host;
 #[path = "personal_device_process.rs"]

@@ -6,6 +6,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The shell retention authority a relay binding pins.
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 fnv.workspace = true
 tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 flate2.workspace = true
