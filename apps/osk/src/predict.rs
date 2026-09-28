@@ -1,7 +1,8 @@
 //! Next-word / completion prediction (W9b).
 //!
 //! An **offline** n-gram language model: unigram frequency (from the
-//! [`Dictionary`]) + a bigram table (`apps/osk/data/bigrams.txt`). It serves
+//! [`Dictionary`]) + a bigram table (`apps/osk/data/bigrams-<lang>.txt`),
+//! one pair per [`Language`]. It serves
 //! two jobs the suggestion bar needs:
 //!
 //! * **next-word** — after a word commits, what word usually follows?
@@ -19,7 +20,7 @@
 
 use std::collections::HashMap;
 
-use crate::dict::{Dictionary, weight_to_count};
+use crate::dict::{Dictionary, Language, fold_char, starts_with_folded, weight_to_count};
 use crate::touch_model::NextKeyDistribution;
 
 /// Bound the local adaptation cache. Prediction is helpful only while it is
@@ -32,8 +33,14 @@ const MAX_LEARNED_WORDS_PER_CONTEXT: usize = 32;
 /// when estimating the next letter.
 const BIGRAM_NEXT_KEY_SHARE: f64 = 0.5;
 
-/// Embedded bigram table: `w1<TAB>w2<TAB>weight` per line. ~40k common pairs.
-const BIGRAMS_TXT: &str = include_str!("../data/bigrams.txt");
+/// The embedded bigram table of `language`: `w1<TAB>w2<TAB>weight` per line,
+/// ~40k common pairs.
+fn bigrams_table(language: Language) -> &'static str {
+    match language {
+        Language::English => include_str!("../data/bigrams-en.txt"),
+        Language::French => include_str!("../data/bigrams-fr.txt"),
+    }
+}
 
 /// Offline n-gram next-word predictor.
 #[derive(Clone, Debug)]
@@ -51,9 +58,20 @@ pub struct Predictor {
 }
 
 impl Predictor {
+    /// Build the predictor over the embedded dictionary + bigrams of
+    /// `language`.
+    pub fn for_language(language: Language) -> Self {
+        Self::from_data(Dictionary::for_language(language), bigrams_table(language))
+    }
+
     /// Build the predictor over the embedded English dictionary + bigrams.
     pub fn english() -> Self {
-        Self::from_data(Dictionary::english(), BIGRAMS_TXT)
+        Self::for_language(Language::English)
+    }
+
+    /// Build the predictor over the embedded French dictionary + bigrams.
+    pub fn french() -> Self {
+        Self::for_language(Language::French)
     }
 
     /// Build from a dictionary and a `w1<TAB>w2<TAB>weight` bigram table.
@@ -158,9 +176,13 @@ impl Predictor {
         let Some(successors) = prev_word.and_then(|p| self.bigrams.get(&p.to_lowercase())) else {
             return lexicon;
         };
+        let skip = prefix.chars().count();
         let context =
             NextKeyDistribution::from_weights(successors.iter().filter_map(|(w, weight)| {
-                let next = w.strip_prefix(prefix.as_str())?.chars().next()?;
+                if !starts_with_folded(w, &prefix) {
+                    return None;
+                }
+                let next = fold_char(w.chars().nth(skip)?);
                 Some((next, weight_to_count(*weight)))
             }));
         lexicon.blend(&context, BIGRAM_NEXT_KEY_SHARE)
@@ -203,7 +225,7 @@ impl Predictor {
         let learned_context = prev.as_deref().unwrap_or("");
         if let Some(words) = self.learned.get(learned_context) {
             for (word, count) in words {
-                if !prefix.is_empty() && !word.starts_with(&prefix) {
+                if !starts_with_folded(word, &prefix) {
                     continue;
                 }
                 let confidence = *count as f32 / count.saturating_add(3) as f32;
@@ -214,7 +236,7 @@ impl Predictor {
         // --- bigram successors of prev_word -----------------------------
         if let Some(succ) = prev.as_deref().and_then(|p| self.bigrams.get(p)) {
             for (w2, weight) in succ {
-                if !prefix.is_empty() && !w2.starts_with(&prefix) {
+                if !starts_with_folded(w2, &prefix) {
                     continue;
                 }
                 let bigram_score = *weight as f32 / self.max_bigram_weight as f32;
@@ -386,6 +408,56 @@ mod tests {
             assert!(ctx.prob('r') > plain.prob('r'));
             // A prefix nothing extends carries no context at all.
             assert!(p.next_key_distribution(None, "zzq").is_uniform());
+        }
+    }
+
+    #[test]
+    fn embedded_models_complete_everyday_english_and_french() {
+        eprintln!("phase english_completes_everyday_and_tech_words");
+        {
+            let p = Predictor::english();
+            for (prefix, word) in [("wish", "wishlist"), ("scree", "screenshot")] {
+                let preds = p.predict_next(None, prefix);
+                let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+                assert!(
+                    words.contains(&word),
+                    "{prefix:?} should offer {word:?}: {words:?}"
+                );
+            }
+            for word in ["github", "wifi", "podcast", "login"] {
+                assert!(p.dictionary().contains(word), "{word} missing");
+            }
+        }
+
+        eprintln!("phase french_predicts_sensibly");
+        {
+            let p = Predictor::french();
+            let after_je: Vec<String> = p
+                .predict_next(Some("je"), "")
+                .into_iter()
+                .map(|(w, _)| w)
+                .collect();
+            assert!(after_je.iter().any(|w| w == "suis"), "je -> {after_je:?}");
+            let bonj = p.predict_next(None, "bonj");
+            assert_eq!(
+                bonj.first().map(|(w, _)| w.as_str()),
+                Some("bonjour"),
+                "{bonj:?}"
+            );
+            // No accented keys: the unaccented spelling reaches the word.
+            let tres = p.predict_next(None, "tres");
+            assert_eq!(
+                tres.first().map(|(w, _)| w.as_str()),
+                Some("très"),
+                "{tres:?}"
+            );
+            let dict = p.dictionary();
+            for (w1, successors) in &p.bigrams {
+                assert!(dict.contains(w1), "bigram context {w1:?} not in dictionary");
+                for (w2, _) in successors {
+                    assert!(dict.contains(w2), "bigram {w1:?} {w2:?} not in dictionary");
+                }
+            }
         }
     }
 
