@@ -3786,6 +3786,13 @@ impl ui::resources::PublishesResources for VpnApp {
     /// Publish the vault + connections resource tree to the shell's Ctrl+K
     /// palette (see [`crate::actions`]).
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        // The framework root publishes the vault and its connections. Tunnel
+        // connect/disconnect Effects still decorate that tree for standalone
+        // tests; when hosted they must move onto Resource children rather than
+        // republishing the document door.
+        if self.actions.is_hosted() {
+            return Vec::new();
+        }
         let mut resources = actions::provide_resources(&self.vault);
         if let Some(root) = resources.first_mut() {
             for connection in &self.vault.connections {

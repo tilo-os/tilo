@@ -1926,6 +1926,11 @@ impl ui::resources::PublishesResources for CalculatorApp {
     /// graph formulas), via the [`ResourceProvider`](tilo_actions::ResourceProvider)
     /// impl in [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        // The framework root publishes this document. The widget tree would
+        // be a second door.
+        if self.actions.is_hosted() {
+            return Vec::new();
+        }
         let state = crate::resource::Calculator::read(doc).unwrap_or_default();
         vec![ui::tilo_resource::publish::<crate::resource::Calculator>(
             crate::resource::Calculator::KIND,

@@ -2026,6 +2026,12 @@ impl ui::resources::PublishesResources for FirewallApp {
                 ),
             ];
         }
+        // The framework root publishes the config document. The widget tree
+        // would be a second door. Recovery above stays — it is not in the
+        // resource children.
+        if self.actions.is_hosted() {
+            return Vec::new();
+        }
         let mut resources = self.publish_resources(doc);
         if let Some(root) = resources.first_mut() {
             root.actions.push(

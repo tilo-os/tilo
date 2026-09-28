@@ -3605,23 +3605,16 @@ impl ui::resources::PublishesResources for RemoteApp {
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        // The framework root publishes saved connections. Keep only the live
+        // session resource when hosted — it is not in Resource::children.
+        if self.actions.is_hosted() {
+            return self.live_session_resources();
+        }
         let mut resources = self.publish_resources(doc);
-        if let Some(id) = self.session_for
-            && let Some(connection) = self.workspace.get(id)
+        if let Some(session) = self.live_session_resources().pop()
+            && let Some(workspace) = resources.first_mut()
         {
-            let can_send_text = matches!(
-                &self.live,
-                Some(LiveSession::Ssh(session))
-                    if session.status() == SessionStatus::Connected
-            );
-            if let Some(workspace) = resources.first_mut() {
-                let host_key_issue = self.ssh_host_key_issue(id);
-                workspace.children.push(crate::actions::session_resource(
-                    connection,
-                    can_send_text,
-                    host_key_issue.as_ref(),
-                ));
-            }
+            workspace.children.push(session);
         }
         resources
     }
@@ -3637,6 +3630,28 @@ impl ui::undo::CommittedActions for RemoteApp {
 }
 
 impl RemoteApp {
+    /// Live SSH/RDP session affordances are not in [`crate::resource::Remote`]'s
+    /// children — publish them beside the framework tree when hosted.
+    fn live_session_resources(&self) -> Vec<tilo_actions::Resource> {
+        let Some(id) = self.session_for else {
+            return Vec::new();
+        };
+        let Some(connection) = self.workspace.get(id) else {
+            return Vec::new();
+        };
+        let can_send_text = matches!(
+            &self.live,
+            Some(LiveSession::Ssh(session))
+                if session.status() == SessionStatus::Connected
+        );
+        let host_key_issue = self.ssh_host_key_issue(id);
+        vec![crate::actions::session_resource(
+            connection,
+            can_send_text,
+            host_key_issue.as_ref(),
+        )]
+    }
+
     fn answer_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
