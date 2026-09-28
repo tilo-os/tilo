@@ -25,7 +25,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 use secret_vault::VaultFormat;
 use serde::{Deserialize, Serialize};
@@ -416,9 +416,7 @@ impl HandoffCredentialSource {
     }
 
     fn current(&self) -> Option<HandoffCredential> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_secs());
+        let now = tilo_clock::unix_now();
         match self.store.read(&self.id) {
             Ok(Some(credential)) if !credential.is_expired(now, EXPIRY_SKEW_SECS) => {
                 Some(credential)

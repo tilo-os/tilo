@@ -1855,9 +1855,7 @@ impl AccountsPane {
 }
 
 fn relative_sync_time(unix: i64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs() as i64);
+    let now = tilo_clock::unix_now_i64();
     let age = now.saturating_sub(unix).max(0);
     match age {
         0..=59 => "just now".into(),
