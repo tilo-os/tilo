@@ -843,3 +843,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 #[path = "inspect-peer-archive/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "support/peer_fixture.rs"]
+mod peer_fixture;
