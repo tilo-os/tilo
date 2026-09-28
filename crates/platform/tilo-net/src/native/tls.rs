@@ -1,8 +1,4 @@
-//! Network client defaults shared by every Tilo process.
-//!
-//! Tilo has one TLS backend (`ring`) and one trust source: the immutable
-//! system bundle read by `tilo-native-certs`. Building those per crate is how
-//! apps drifted onto bundled Mozilla roots, so clients take them from here.
+//! Tilo's one TLS crypto provider and trust source.
 
 use std::sync::Arc;
 
@@ -28,7 +24,8 @@ pub fn install_crypto_provider() {
 /// Roots from the Tilo system trust bundle.
 ///
 /// Unparsable entries are skipped; an unreadable bundle yields an empty store,
-/// so verification fails closed.
+/// so verification fails closed. The bundle exists only on Linux; elsewhere
+/// use [`client_config`], which asks the platform.
 pub fn system_roots() -> RootCertStore {
     let mut roots = RootCertStore::empty();
     roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
@@ -46,42 +43,19 @@ pub fn client_config_with_roots(roots: RootCertStore) -> Result<ClientConfig, ru
         .with_no_client_auth())
 }
 
-/// A client config that verifies servers against the system trust bundle.
+/// A client config that verifies servers against the system's trust: the
+/// Tilo bundle on Linux, the Keychain on macOS. This is the verifier reqwest
+/// uses, so every Tilo client trusts the same servers.
 ///
 /// # Errors
-/// Only if the provider supports none of rustls' default protocol versions.
+/// If the provider supports none of rustls' default protocol versions, or the
+/// platform verifier cannot load the system's trust.
 pub fn client_config() -> Result<ClientConfig, rustls::Error> {
-    client_config_with_roots(system_roots())
-}
-
-/// HTTP clients on Tilo's TLS defaults.
-///
-/// reqwest is built without a bundled crypto provider and verifies through
-/// `rustls-platform-verifier`, which on Linux reads the same system bundle as
-/// [`system_roots`]. Its builders panic unless a process default provider is
-/// installed, so every client starts from these functions.
-#[cfg(feature = "http")]
-pub mod http {
-    /// An async client builder with the crypto provider installed.
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "this is the sanctioned constructor; it installs the provider first"
-    )]
-    pub fn client() -> reqwest::ClientBuilder {
-        crate::install_crypto_provider();
-        reqwest::Client::builder()
-    }
-
-    /// A blocking client builder with the crypto provider installed.
-    #[cfg(feature = "blocking")]
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "this is the sanctioned constructor; it installs the provider first"
-    )]
-    pub fn blocking_client() -> reqwest::blocking::ClientBuilder {
-        crate::install_crypto_provider();
-        reqwest::blocking::Client::builder()
-    }
+    use rustls_platform_verifier::BuilderVerifierExt as _;
+    Ok(ClientConfig::builder_with_provider(crypto_provider())
+        .with_safe_default_protocol_versions()?
+        .with_platform_verifier()?
+        .with_no_client_auth())
 }
 
 #[cfg(test)]
@@ -99,6 +73,10 @@ mod tests {
             install_crypto_provider();
             install_crypto_provider();
             assert!(CryptoProvider::get_default().is_some());
+        }
+        // Phase `the_platform_config_builds`.
+        {
+            assert!(client_config().is_ok());
         }
     }
 }
