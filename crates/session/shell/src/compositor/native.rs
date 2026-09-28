@@ -6372,6 +6372,8 @@ pub fn run() {
             std::process::exit(1);
         }
     };
+    // An `app.<id>/close` action, from the broker's thread.
+    let app_closes = crate::shell::app_close::install(Arc::clone(&session_wake));
     let mut network_start: Option<
         crate::session_runtime::PendingStart<crate::shell::network::ShellNetwork>,
     > = None;
@@ -8109,6 +8111,12 @@ pub fn run() {
             // the normal desktop way; it is not a process kill.
             let mut close_requests = Vec::new();
             frame_builder.with_chrome(|chrome| {
+                for request in app_closes.drain() {
+                    let tabs = crate::shell::app_close::tabs_of(&chrome.tree().desktop, &request);
+                    for tab in tabs {
+                        let _ = crate::shell::window_actions::close_tab(chrome, tab);
+                    }
+                }
                 close_requests = chrome.take_surface_close_requests();
             });
             for surface_id in close_requests {
