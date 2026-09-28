@@ -70,6 +70,10 @@ pub enum LayoutKind {
     Heading,
     Paragraph,
     Quote,
+    /// A stanza: one line per source line, ragged, wrapped lines hanging.
+    Verse {
+        quoted: bool,
+    },
     List,
     Math,
     Separator,
@@ -211,6 +215,15 @@ fn style_for(block: &Block, body: f32, text_scale: f32) -> BlockStyle {
             space_before: body * 0.9 * text_scale,
             fixed_height: None,
         },
+        Block::Verse { quoted, .. } => BlockStyle {
+            kind: LayoutKind::Verse { quoted: *quoted },
+            size: body,
+            force_italic: false,
+            force_bold: false,
+            indent: if *quoted { 30.0 * text_scale } else { 0.0 },
+            space_before: body * 0.75 * text_scale,
+            fixed_height: None,
+        },
         Block::ListItem { .. } => BlockStyle {
             kind: LayoutKind::List,
             size: body,
@@ -270,6 +283,9 @@ struct Word {
     shrink_before: f32,
     start_protrusion: f32,
     end_protrusion: f32,
+    /// This word starts a line (the block's first, or one after a hard
+    /// break), indented this many ems.
+    line_start: Option<u8>,
 }
 
 fn weight(bold: bool) -> TextWeight {
@@ -357,6 +373,7 @@ fn push_math_word(
     span: &Span,
     text: &mut TextRenderer,
     style: &BlockStyle,
+    line_start: Option<u8>,
 ) {
     let space_before = span.space_before;
     if !built.canonical_text.is_empty() && space_before {
@@ -390,6 +407,7 @@ fn push_math_word(
         shrink_before: 0.0,
         start_protrusion: 0.0,
         end_protrusion: 0.0,
+        line_start,
     });
 }
 
@@ -404,8 +422,8 @@ struct WordBreaks {
     opening_fraction: f32,
 }
 
-fn word_break_boundaries(w: &str, settings: &Settings, language: &str) -> WordBreaks {
-    let hyphen = if settings.composition.justified() {
+fn word_break_boundaries(w: &str, hyphenate: bool, language: &str) -> WordBreaks {
+    let hyphen = if hyphenate {
         discretionary_hyphen_breaks(w, language)
     } else {
         Vec::new()
@@ -486,6 +504,7 @@ struct SourceWord<'a> {
     source_byte_start: usize,
     flags: WordFlags,
     family: &'a FontChoice,
+    line_start: Option<u8>,
 }
 
 #[derive(Clone, Copy)]
@@ -540,6 +559,11 @@ struct LinePlacement {
     text_width: f32,
     justify: bool,
     block_top: f32,
+    /// End of the hard-broken line (word index) this visual line belongs to;
+    /// its last visual line is set like a paragraph's last.
+    segment_end: usize,
+    /// Indentation of this visual line from the block's left edge.
+    x_offset: f32,
 }
 
 /// Measure and push the single fragment `w[byte_start..byte_end]` as a
@@ -642,6 +666,7 @@ fn push_one_fragment(
         shrink_before: 0.0,
         start_protrusion,
         end_protrusion,
+        line_start: source.line_start.filter(|_| slice.index == 0),
     });
     fragment_chars
 }
@@ -649,7 +674,9 @@ fn push_one_fragment(
 /// Split one whitespace-separated source word `w` into hyphenation/line-break
 /// fragments and push each as a `Word` (measured, with protrusion).
 fn push_word_fragments(ctx: &mut FragmentBuildCtx<'_>, source: &SourceWord<'_>) {
-    let breaks = word_break_boundaries(source.text, ctx.settings, ctx.language);
+    let hyphenate =
+        ctx.settings.composition.justified() && !matches!(ctx.style.kind, LayoutKind::Verse { .. });
+    let breaks = word_break_boundaries(source.text, hyphenate, ctx.language);
     let hyphen_width = ctx
         .text
         .measure_font(
@@ -702,8 +729,9 @@ fn build_words(text: &mut TextRenderer, input: &WordBuildInput<'_>) -> BuiltWord
         } else {
             input.base_family
         };
+        let line_start = (built.words.is_empty() || span.line_break).then_some(span.line_indent);
         if let Some(expr) = &span.math {
-            push_math_word(&mut built, expr, span, text, input.style);
+            push_math_word(&mut built, expr, span, text, input.style, line_start);
             continue;
         }
         for (wi, w) in span.text.split_whitespace().enumerate() {
@@ -737,6 +765,7 @@ fn build_words(text: &mut TextRenderer, input: &WordBuildInput<'_>) -> BuiltWord
                         mono,
                     },
                     family: word_family,
+                    line_start: line_start.filter(|_| wi == 0),
                 },
             );
         }
@@ -853,11 +882,12 @@ fn compose_one_line(
     {
         last.display_text.push('-');
     }
-    if placement.paragraph_rtl && (line.end == ctx.words.len() || !placement.justify) {
-        let offset = (placement.text_width - x).max(0.0);
-        for run in &mut runs {
-            run.x += offset;
-        }
+    let mut offset = placement.x_offset;
+    if placement.paragraph_rtl && (line.end == placement.segment_end || !placement.justify) {
+        offset += (placement.text_width - x).max(0.0);
+    }
+    for run in &mut runs {
+        run.x += offset;
     }
     LaidLine {
         y: placement.block_top + line_idx as f32 * ctx.line_height,
@@ -868,24 +898,26 @@ fn compose_one_line(
     }
 }
 
-/// Compose the complete paragraph rather than accepting the first local break
-/// that fits, then realize each chosen line into a `LaidLine`. Body prose and
-/// quotations use adjustable inter-word glue; headings and lists retain
-/// natural ragged spacing while still benefiting from paragraph-wide break
-/// selection.
-fn compose_block_lines(
-    text: &mut TextRenderer,
-    composition: &BlockComposition<'_>,
-) -> Vec<LaidLine> {
-    let text_width = (composition.content_width - composition.style.indent).max(40.0);
-    let space_width = measure_space(text, composition.style.size, composition.base_family);
-    let bidi = BidiInfo::new(composition.canonical_text, None);
-    let paragraph_rtl = bidi
-        .paragraphs
-        .first()
-        .is_some_and(|paragraph| paragraph.level.is_rtl());
-    let boxes: Vec<_> = composition
-        .words
+/// The word ranges between hard line breaks: each starts at a word with
+/// [`Word::line_start`].
+fn hard_lines(words: &[Word]) -> Vec<std::ops::Range<usize>> {
+    let starts: Vec<usize> = words
+        .iter()
+        .enumerate()
+        .filter(|(index, word)| *index == 0 || word.line_start.is_some())
+        .map(|(index, _)| index)
+        .collect();
+    let ends = starts.iter().skip(1).copied().chain([words.len()]);
+    starts
+        .iter()
+        .zip(ends)
+        .map(|(&start, end)| start..end)
+        .collect()
+}
+
+/// The compositor's boxes for a block's measured words.
+fn paragraph_boxes(words: &[Word], space_width: f32) -> Vec<ParagraphBox> {
+    words
         .iter()
         .map(|word| ParagraphBox {
             width: word.w,
@@ -900,7 +932,32 @@ fn compose_block_lines(
             break_width: word.hyphen_width_before,
             end_protrusion: word.end_protrusion,
         })
-        .collect();
+        .collect()
+}
+
+/// Compose the complete paragraph rather than accepting the first local break
+/// that fits, then realize each chosen line into a `LaidLine`. Body prose and
+/// quotations use adjustable inter-word glue; headings and lists retain
+/// natural ragged spacing while still benefiting from paragraph-wide break
+/// selection.
+///
+/// Each hard-broken line (after a `<br/>`, or a verse line) is composed on
+/// its own, so it ends like a paragraph's last line. Verse is ragged, and
+/// a verse line too long for the measure wraps with its continuation lines
+/// hanging one em further in.
+fn compose_block_lines(
+    text: &mut TextRenderer,
+    composition: &BlockComposition<'_>,
+) -> Vec<LaidLine> {
+    let text_width = (composition.content_width - composition.style.indent).max(40.0);
+    let space_width = measure_space(text, composition.style.size, composition.base_family);
+    let bidi = BidiInfo::new(composition.canonical_text, None);
+    let paragraph_rtl = bidi
+        .paragraphs
+        .first()
+        .is_some_and(|paragraph| paragraph.level.is_rtl());
+    let verse = matches!(composition.style.kind, LayoutKind::Verse { .. });
+    let boxes = paragraph_boxes(composition.words, space_width);
     let mut options = ParagraphOptions::new(text_width);
     options.justify = composition.settings.composition.justified()
         && matches!(
@@ -911,17 +968,15 @@ fn compose_block_lines(
     // the subtle expansion used for book-like justification. On a narrow
     // phone one expanded line can otherwise exceed its measured paint box,
     // leaving the final word visibly clipped instead of reflowing.
-    if !composition.settings.composition.justified() || composition.settings.font_scale >= 1.35 {
+    if !composition.settings.composition.justified()
+        || composition.settings.font_scale >= 1.35
+        || verse
+    {
         options.max_glyph_expansion = 0.0;
     }
-    let composed = compose_paragraph(&boxes, options);
-    let mut lines: Vec<LaidLine> = Vec::with_capacity(composed.len());
-    let placement = LinePlacement {
-        paragraph_rtl,
-        text_width,
-        justify: options.justify,
-        block_top: composition.block_top,
-    };
+    let em = composition.style.size;
+    let hang = if verse { em } else { 0.0 };
+    let mut lines: Vec<LaidLine> = Vec::new();
     let mut line_ctx = LineComposition {
         words: composition.words,
         bidi: &bidi,
@@ -931,8 +986,53 @@ fn compose_block_lines(
         line_height: composition.line_height,
         text,
     };
-    for (line_idx, line) in composed.iter().enumerate() {
-        lines.push(compose_one_line(&mut line_ctx, line, line_idx, placement));
+    for segment in hard_lines(composition.words) {
+        let indent = composition
+            .words
+            .get(segment.start)
+            .and_then(|word| word.line_start)
+            .map_or(0.0, |ems| f32::from(ems) * em)
+            .min(text_width * 0.5);
+        let Some(segment_boxes) = boxes.get(segment.clone()) else {
+            continue;
+        };
+        let width = (text_width - indent).max(40.0);
+        let mut composed = compose_paragraph(
+            segment_boxes,
+            ParagraphOptions {
+                line_width: width,
+                ..options
+            },
+        );
+        if hang > 0.0 && composed.len() > 1 {
+            composed = compose_paragraph(
+                segment_boxes,
+                ParagraphOptions {
+                    line_width: (width - hang).max(40.0),
+                    ..options
+                },
+            );
+        }
+        for (visual, line) in composed.iter().enumerate() {
+            let line = ComposedLine {
+                start: line.start + segment.start,
+                end: line.end + segment.start,
+                ..*line
+            };
+            let hanging = if visual > 0 { hang } else { 0.0 };
+            let placement = LinePlacement {
+                paragraph_rtl,
+                text_width: width - hanging,
+                justify: options.justify,
+                block_top: composition.block_top,
+                segment_end: segment.end,
+                // Right-to-left lines align to the right edge, so their
+                // indentation comes off the measure instead.
+                x_offset: if paragraph_rtl { 0.0 } else { indent + hanging },
+            };
+            let index = lines.len();
+            lines.push(compose_one_line(&mut line_ctx, &line, index, placement));
+        }
     }
     if lines.is_empty() {
         lines.push(LaidLine {
@@ -1214,7 +1314,7 @@ fn paginate(blocks: &[LaidBlock], page_h: f32) -> Vec<f32> {
         // a page boundary whenever that can be achieved on this page.
         if matches!(
             row.kind,
-            LayoutKind::Paragraph | LayoutKind::Quote | LayoutKind::List
+            LayoutKind::Paragraph | LayoutKind::Quote | LayoutKind::Verse { .. } | LayoutKind::List
         ) && row.line_count >= 4
             && (row.line == 1 || row.line_count - row.line == 1)
         {
@@ -1621,6 +1721,139 @@ mod tests {
                 "logical first word is visually rightmost"
             );
             assert!(line.runs[0].x > 100.0, "short RTL final line aligns right");
+        }
+    }
+
+    /// A run of `text` that starts a new line indented `indent` ems.
+    fn line(text: &str, indent: u8) -> Span {
+        Span {
+            space_before: true,
+            line_break: true,
+            line_indent: indent,
+            ..Span::plain(text)
+        }
+    }
+
+    fn line_text(line: &LaidLine) -> String {
+        line.runs
+            .iter()
+            .map(|run| run.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Verse sets one ragged line per source line, indents marked lines, hangs wrapped ones, and keeps the prose offsets.
+    #[test]
+    fn verse_lays_out_one_ragged_line_per_source_line() {
+        // --- phase: verse_lines_are_ragged_indented_and_hang_when_wrapped ---
+        {
+            let mut tr = TextRenderer::new();
+            let long =
+                "The capitals of many nations, learned the customs of their dwellers, and endured";
+            let verse = Block::Verse {
+                spans: vec![
+                    Span::plain("Tell me, O Muse,"),
+                    line("Who, having overthrown", 0),
+                    line("Of Ilium, wandered far", 2),
+                    line(long, 0),
+                ],
+                quoted: false,
+            };
+            let layout = test_layout(
+                &mut tr,
+                std::slice::from_ref(&verse),
+                360.0,
+                2000.0,
+                &Settings::default(),
+                "en-US",
+                &FontChoice::Serif,
+            );
+            let block = &layout.blocks[0];
+            assert_eq!(block.kind, LayoutKind::Verse { quoted: false });
+            assert_eq!(block.text, verse.plain_text(), "offsets are the prose ones");
+            assert_eq!(line_text(&block.lines[0]), "Tell me, O Muse,");
+            assert_eq!(line_text(&block.lines[1]), "Who, having overthrown");
+            assert_eq!(line_text(&block.lines[2]), "Of Ilium, wandered far");
+            assert!(block.lines.len() >= 5, "the long line wraps");
+            let x = |line: usize| block.lines[line].runs[0].x;
+            let em = block.size;
+            assert!((x(2) - x(1) - 2.0 * em).abs() < 0.5, "i2 indents two ems");
+            assert!(
+                (x(4) - x(3) - em).abs() < 0.5,
+                "a wrapped line hangs one em"
+            );
+            #[allow(
+                clippy::float_cmp,
+                reason = "unjustified lines keep exactly the natural glyph scale 1.0"
+            )]
+            {
+                assert!(block.lines.iter().all(|line| line.glyph_scale == 1.0));
+            }
+            assert!(
+                block
+                    .lines
+                    .iter()
+                    .flat_map(|line| &line.runs)
+                    .all(|run| !run.display_text.ends_with('-')),
+                "verse is not hyphenated"
+            );
+            for run in block.lines.iter().flat_map(|line| &line.runs) {
+                let source: String = block
+                    .text
+                    .chars()
+                    .skip(run.char_start)
+                    .take(run.char_len)
+                    .collect();
+                assert_eq!(source, run.text);
+            }
+        }
+    }
+
+    /// A prose `<br/>` ends its line with natural spacing and no hanging indent.
+    #[test]
+    fn a_prose_break_ends_its_line_without_justifying_it() {
+        {
+            let mut tr = TextRenderer::new();
+            let prose = Block::Paragraph {
+                spans: vec![
+                    Span::plain("Short line"),
+                    line(
+                        "and then a paragraph long enough to wrap and be justified across the measure",
+                        0,
+                    ),
+                ],
+            };
+            let layout = test_layout(
+                &mut tr,
+                std::slice::from_ref(&prose),
+                300.0,
+                2000.0,
+                &Settings::default(),
+                "en-US",
+                &FontChoice::Serif,
+            );
+            let natural = test_layout(
+                &mut tr,
+                &[para("Short line")],
+                300.0,
+                2000.0,
+                &Settings::default(),
+                "en-US",
+                &FontChoice::Serif,
+            );
+            let block = &layout.blocks[0];
+            assert_eq!(line_text(&block.lines[0]), "Short line");
+            let xs = |line: &LaidLine| line.runs.iter().map(|run| run.x).collect::<Vec<_>>();
+            assert_eq!(
+                xs(&block.lines[0]),
+                xs(&natural.blocks[0].lines[0]),
+                "the broken line keeps natural spacing"
+            );
+            assert!(block.lines[1].runs[0].x.abs() < 0.5, "prose does not hang");
+            assert_eq!(
+                block.text,
+                "Short line and then a paragraph long enough to wrap and be justified across the measure"
+            );
         }
     }
 

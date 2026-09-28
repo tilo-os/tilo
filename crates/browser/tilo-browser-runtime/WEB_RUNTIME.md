@@ -278,6 +278,12 @@ phone.invokeAction(phone.opened.resource, 'highlight-selection');
   chapter when omitted), `start_block`/`end_block` (0-based blocks of that
   chapter: headings and paragraphs, so a Standard Ebooks chapter's first
   paragraph is usually block 1) and optional character offsets.
+- Books' `go-to` takes `chapter` and `block` (the same indices; each
+  defaults as above, `block` to 0) and opens that mount's reader at the page
+  holding the block, selecting nothing and clearing any selection, as
+  showing an annotation does. Each mount has its own position, so call it on
+  every mount: `mount.invokeAction(book, 'go-to', {chapter: 4, block: 3})`.
+  A chapter or block the book does not have is refused.
 
 `open.html` in the dev output exercises this with two mounts (see
 [Building](#building)); put an EPUB next to it as `odyssey.epub`, or pass
