@@ -56,9 +56,6 @@ roxmltree.workspace = true
 # shared preview decoder.
 thumbnail = { path = "../../crates/media/thumbnail" }
 unicode-bidi = "0.3.18"
-# Device-local file capabilities (opened book paths and watched roots) must
-# survive restart without entering the shared Automerge document.
-settings-store = { path = "../../crates/system/settings-store" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

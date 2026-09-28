@@ -60,10 +60,14 @@ pub const SECTION: &str = "appearance";
 /// Theme Studio's private artifact below Settings' canonical appearance state.
 pub const STUDIO_KEY: &str = "studio";
 
-/// Resolve the shared settings path. Delegating to [`settings_store`] is what
+fn appearance() -> ui::storage::Settings {
+    ui::storage::Settings::section(SECTION)
+}
+
+/// Resolve the shared settings path. Delegating to [`ui::storage`] is what
 /// keeps this in step with the Settings app rather than by hand.
 pub fn store_path() -> Option<PathBuf> {
-    settings_store::settings_path()
+    appearance().path()
 }
 
 /// Merge `spec` into `existing` (the current settings-document text, or
@@ -72,7 +76,7 @@ pub fn store_path() -> Option<PathBuf> {
 pub fn to_json_merged(spec: &ThemeSpec, existing: &str) -> String {
     // Anything malformed reads as no settings, rather than being indexed
     // into: `existing` is a document another process may have written.
-    let mut obj = settings_store::parse(existing);
+    let mut obj = ui::storage::parse_settings(existing);
     obj.insert("version".into(), serde_json::json!(1));
     let mut appearance = match obj.remove(SECTION) {
         Some(serde_json::Value::Object(map)) => map,
@@ -143,12 +147,12 @@ fn studio_id(appearance: &serde_json::Map<String, serde_json::Value>) -> Option<
 ///
 /// Returns an error if the document cannot be written.
 pub fn save_to(path: &std::path::Path, spec: &ThemeSpec) -> std::io::Result<()> {
-    settings_store::update_section_at(path, SECTION, appearance_values(spec))
+    appearance().in_file(path).update(appearance_values(spec))
 }
 
 /// The active theme id in the settings document at `path`, if any.
 pub fn load_active_id_from(path: &std::path::Path) -> Option<String> {
-    studio_id(&settings_store::load_section_at(path, SECTION))
+    studio_id(&appearance().in_file(path).load())
 }
 
 /// Persist `spec` as the active OS theme through the shared settings
@@ -160,12 +164,12 @@ pub fn load_active_id_from(path: &std::path::Path) -> Option<String> {
 /// Returns an error if there is no settings document to write, or the
 /// write fails.
 pub fn save(spec: &ThemeSpec) -> std::io::Result<()> {
-    settings_store::update_section(SECTION, appearance_values(spec))
+    appearance().update(appearance_values(spec))
 }
 
 /// Load the active theme's id from the shared settings document, if any.
 pub fn load_active_id() -> Option<String> {
-    studio_id(&settings_store::load_section(SECTION))
+    studio_id(&appearance().load())
 }
 
 #[cfg(test)]

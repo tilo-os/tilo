@@ -50,14 +50,15 @@ methods = ["pick_folder"]
 
 [uses."app-files"]
 crates = ["tilo-files", "tilo-paths", "tilo-content"]
-paths = ["ui::persist"]
+paths = ["ui::persist", "storage::AppFiles"]
 
 [uses.settings]
 crates = ["settings-store", "app-state"]
+paths = ["storage::Settings"]
 
 [uses.secrets]
 crates = ["tilo-secrets", "secret-vault", "accounts"]
-paths = ["ui::secrets", "tilo_secrets"]
+paths = ["ui::secrets", "tilo_secrets", "storage::secrets"]
 
 [uses.clipboard]
 crates = ["tilo-clipboard"]

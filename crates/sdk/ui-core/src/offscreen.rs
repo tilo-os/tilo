@@ -2111,7 +2111,7 @@ impl OffscreenRenderer {
     )]
     pub fn render_png<P: AsRef<Path>>(&mut self, scene: &Scene, bg: Color, path: P) {
         let rgba = self.render_resilient(scene, bg);
-        atomic_file::write_creating_parent(
+        tilo_files::native::atomic::write_creating_parent(
             path.as_ref(),
             &Self::encode_png(self.width, self.height, &rgba),
         )
@@ -2205,8 +2205,11 @@ mod tests {
             let dir = tempfile::tempdir().expect("temporary screenshot directory");
             let path = dir.path().join("frame.png");
             let rgba = [0x12, 0x34, 0x56, 0xff];
-            atomic_file::write_creating_parent(&path, &OffscreenRenderer::encode_png(1, 1, &rgba))
-                .expect("publish png");
+            tilo_files::native::atomic::write_creating_parent(
+                &path,
+                &OffscreenRenderer::encode_png(1, 1, &rgba),
+            )
+            .expect("publish png");
 
             let decoded = crate::png::read_rgba8(&path).expect("published png is complete");
             assert_eq!((decoded.width, decoded.height), (1, 1));
