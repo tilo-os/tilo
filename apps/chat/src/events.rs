@@ -41,7 +41,7 @@ fn new_category_id() -> String {
 }
 
 fn now_secs() -> i64 {
-    ui::clock::SystemTime::now()
+    ui::time::wall()
         .duration_since(ui::clock::UNIX_EPOCH)
         .map_or(NOW, |d| d.as_secs() as i64)
 }
@@ -1858,7 +1858,7 @@ mod tests {
                 channel_id: channel.into(),
             })
             .unwrap();
-        let requests = app.native_voice.take_requests(ui::clock::Instant::now());
+        let requests = app.native_voice.take_requests(ui::time::now());
         let id = requests
             .iter()
             .rev()
@@ -4394,7 +4394,7 @@ mod tests {
             app.call.muted,
             "a microphone request is not local consent or active capture"
         );
-        let requests = app.native_voice.take_requests(ui::clock::Instant::now());
+        let requests = app.native_voice.take_requests(ui::time::now());
         assert!(requests.iter().any(|request| matches!(
             request,
             ui::collaboration::CollabRequest::NativeMediaCommand {
@@ -4852,12 +4852,7 @@ mod tests {
                 app.native_voice.snapshot.state,
                 ui::native_media::State::Preparing
             );
-            assert_eq!(
-                app.native_voice
-                    .take_requests(ui::clock::Instant::now())
-                    .len(),
-                1
-            );
+            assert_eq!(app.native_voice.take_requests(ui::time::now()).len(), 1);
             assert!(app.voice_in("c_lounge").is_empty());
         }
         assert_eq!(doc_a.save(), before_a);
