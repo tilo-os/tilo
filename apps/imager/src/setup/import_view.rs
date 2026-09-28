@@ -1291,7 +1291,7 @@ impl ImportApp {
                         c.select_destination_parent(index, &parent)?;
                         parent
                     } else {
-                        let parent = xdg_paths::data_local_dir()
+                        let parent = tilo_paths::data_local_dir()
                             .ok_or("No local user data directory")?
                             .join("tilo/files");
                         super::migration_store::ensure_private_root(&parent)

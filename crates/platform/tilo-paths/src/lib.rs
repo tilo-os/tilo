@@ -61,10 +61,52 @@ use std::path::PathBuf;
 mod app;
 mod caps;
 mod location;
+pub mod session;
 
 pub use app::{AppPaths, DEFAULT_PROFILE, default_profile, set_default_profile};
 pub use caps::{Availability, CAPABILITIES, Feature, Unsupported, availability};
 pub use location::{InvalidVPath, Location, VPath, VirtualRoot};
+
+/// Where a Tilo Linux session mounts the collaborative workspace, and the
+/// root every collaborator's documents name workspace files under, whatever
+/// this device mounts. [`AppPaths::workspace_root`] says whether (and where)
+/// this process has one mounted.
+pub const WORKSPACE_MOUNT: &str = "/var/workspace";
+
+/// The collaborative workspace mounted for this process, as a native path
+/// ([`AppPaths::workspace_root`] for any app). `None` in a page and when no
+/// workspace is mounted.
+#[must_use]
+pub fn workspace_root() -> Option<PathBuf> {
+    let location = AppPaths::for_app("workspace").workspace_root().ok()?;
+    location
+        .native_path()
+        .ok()
+        .map(std::path::Path::to_path_buf)
+}
+
+/// Where Tilo apps kept their data before [`AppPaths`]: an absolute
+/// `$XDG_DATA_HOME`, else `%LOCALAPPDATA%` on Windows and `$HOME/.local/share`
+/// elsewhere (macOS included). For stores whose location is already on
+/// users' disks, and for migrating them; new stores use [`AppPaths`].
+#[must_use]
+pub fn legacy_data_home() -> Option<PathBuf> {
+    env_dir("XDG_DATA_HOME").or_else(legacy::data_home)
+}
+
+#[cfg(windows)]
+mod legacy {
+    pub fn data_home() -> Option<std::path::PathBuf> {
+        super::env_dir("LOCALAPPDATA")
+    }
+}
+
+#[cfg(not(windows))]
+mod legacy {
+    pub fn data_home() -> Option<std::path::PathBuf> {
+        Some(super::home()?.join(".local/share"))
+    }
+}
 
 /// The user's home directory: `$HOME` when set and non-empty, the account
 /// database's entry when `$HOME` is unset (on Unix), and `None` for an empty

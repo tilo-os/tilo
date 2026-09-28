@@ -28,7 +28,7 @@ impl Exceptions {
         origin(url).is_some_and(|o| self.0.contains(&o))
     }
     fn save(&self, path: &Path) -> std::io::Result<()> {
-        atomic_file::write_creating_parent(path, &serde_json::to_vec(&self.0)?)
+        tilo_files::native::atomic::write_creating_parent(path, &serde_json::to_vec(&self.0)?)
     }
     fn load(path: &Path) -> Self {
         if !std::fs::metadata(path).is_ok_and(|m| m.len() <= 1024 * 1024) {

@@ -46,10 +46,10 @@ pub(crate) fn content_path(hash: &str) -> PathBuf {
 /// `/var/workspace` share) and lets tests pin a fixture directory.
 const LIBRARY_DIR_ENV: &str = "EBOOK_LIBRARY_DIR";
 
-/// Override for the collaborative-workspace mount root (tests point it at a temp
-/// directory); production is the real Tilo FUSE mount.
+/// Compatibility override for the collaborative-workspace mount root (tests
+/// point it at a temp directory); production asks
+/// [`tilo_paths::workspace_root`].
 const WORKSPACE_DIR_ENV: &str = "TILO_WORKSPACE_DIR";
-const DEFAULT_WORKSPACE: &str = "/var/workspace";
 
 /// Upper bound on library size, so a pathological watched directory can't stall
 /// startup parsing thousands of files.
@@ -63,10 +63,13 @@ pub struct LoadedBook {
 }
 
 /// The collaborative-workspace mount root. A book under here is shared with the
-/// workspace's peers; a book anywhere else is local to this device.
+/// workspace's peers; a book anywhere else is local to this device. Without a
+/// mounted workspace this is the canonical root peers' documents name.
 pub fn workspace_root() -> PathBuf {
-    std::env::var(WORKSPACE_DIR_ENV)
-        .map_or_else(|_| PathBuf::from(DEFAULT_WORKSPACE), PathBuf::from)
+    std::env::var_os(WORKSPACE_DIR_ENV)
+        .map(PathBuf::from)
+        .or_else(tilo_paths::workspace_root)
+        .unwrap_or_else(|| PathBuf::from(tilo_paths::WORKSPACE_MOUNT))
 }
 
 /// Where a book copied into the workspace lands.
@@ -74,18 +77,8 @@ pub fn workspace_books_dir() -> PathBuf {
     workspace_root().join("Books")
 }
 
-/// The default mount root is an absolute path only where Tilo mounts the
-/// workspace there; elsewhere an absolute override must configure it.
-fn workspace_configured() -> bool {
-    Path::new(DEFAULT_WORKSPACE).is_absolute()
-        || std::env::var_os(WORKSPACE_DIR_ENV).is_some_and(|root| Path::new(&root).is_absolute())
-}
-
 /// Whether a path lives on the collaborative workspace (shared with peers).
 pub fn is_shared(path: &Path) -> bool {
-    if !workspace_configured() {
-        return false;
-    }
     let root = normalise_lexically(&workspace_root());
     let path = normalise_lexically(path);
     // An empty/degenerate root must never make every path look "shared".
@@ -301,9 +294,6 @@ pub fn share_to_workspace(doc: &mut AutoCommit, src: &Path) -> Option<(Book, Pat
 /// Never overwrites an extant object: a conflicting file is reported instead
 /// of risking another reader's bytes.
 fn write_shared_copy(bytes: &[u8], id: &str) -> Result<PathBuf, String> {
-    if !workspace_configured() {
-        return Err("No collaborative workspace is configured on this device".into());
-    }
     let dir = workspace_books_dir();
     let file_id = id.strip_prefix("book:").unwrap_or(id);
     let file_name = format!("book-{file_id}.epub");
@@ -371,7 +361,7 @@ pub fn load_library_with_content<S: BuildHasher>(
     let mut out: Vec<LoadedBook> = Vec::new();
     for entry in BooksDoc::read_library_entries(doc) {
         let canonical_shared = workspace_book_path(&entry.id);
-        let path = if workspace_configured() && canonical_shared.is_file() {
+        let path = if canonical_shared.is_file() {
             Some(canonical_shared)
         } else if !entry.shared {
             local_books

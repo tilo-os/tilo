@@ -362,10 +362,10 @@ pub fn save_device_profile(profile: &DeviceProfile) -> std::io::Result<()> {
 }
 
 /// Native device-local data directory, with an absolute XDG override for
-/// sandboxed launches. Windows resolves to `LocalAppData` through `xdg-paths`.
+/// sandboxed launches. Windows resolves to `LocalAppData` through `tilo-paths`.
 fn dirs_data_dir() -> PathBuf {
-    xdg_paths::env_dir("XDG_DATA_HOME")
-        .or_else(xdg_paths::data_local_dir)
+    tilo_paths::env_dir("XDG_DATA_HOME")
+        .or_else(tilo_paths::data_local_dir)
         // `temp_dir` panics where there is no file system (the page); an
         // unreachable relative path fails the profile's reads and writes
         // instead, and the player keeps its state in memory.

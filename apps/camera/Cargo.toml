@@ -46,7 +46,7 @@ anyhow.workspace = true
 image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 # The shared preview pipeline (recent-capture peek) and bounded image decoder.
 thumbnail = { path = "../../crates/media/thumbnail" }
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tilo-ocr = { path = "../../crates/media/ocr" }
 qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
 # Cameras (live-capture) and SANE document scanners.

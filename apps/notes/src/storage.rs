@@ -85,7 +85,7 @@ pub fn default_root() -> Result<Option<PathBuf>, String> {
         }
         return Ok(Some(root));
     }
-    Ok(xdg_paths::home().map(|home| home.join("notes")))
+    Ok(tilo_paths::home().map(|home| home.join("notes")))
 }
 
 /// Ensure the workspace root + the `pages/` subdirectory exist. Idempotent.

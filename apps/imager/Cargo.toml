@@ -44,7 +44,7 @@ tilo-automerge.workspace = true
 cap-fs-ext = "3.4.6"
 cap-primitives = "3.4.6"
 cap-std = "3.4.6"
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true

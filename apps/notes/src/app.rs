@@ -869,7 +869,7 @@ impl NotesApp {
         main.set_image_store(Some(canonical_image_store(&canonical_assets, None)));
         let mut app = Self::build_widget(workspace, sidebar, main, None);
         app.canonical_assets = canonical_assets;
-        app.canonical_assets_waiting = waiting.then(ui::time::Instant::now);
+        app.canonical_assets_waiting = waiting.then(ui::time::now);
         app.canonical_asset_manifest = crate::notebook::asset_manifest(doc)?;
         app.main = app.main.project_canonical(doc, &app.workspace)?;
         app.bound_page = app.workspace.selected();
@@ -1550,7 +1550,7 @@ impl NotesApp {
         }
     }
 
-    /// Default constructor — resolves the workspace root via `xdg-paths`,
+    /// Default constructor — resolves the workspace root via `tilo-paths`,
     /// falls back to `./notes` if the home dir is unavailable.
     ///
     /// # Errors
@@ -1940,7 +1940,7 @@ impl NotesApp {
     pub fn bypass_seed_grace_for_test(&mut self) {
         self.started = ui::time::now()
             .checked_sub(SEED_GRACE + Duration::from_secs(1))
-            .unwrap_or_else(ui::time::Instant::now);
+            .unwrap_or_else(ui::time::now);
         // Mark first-sync as done so `sync` doesn't re-base `started`
         // back to "now" and undo the bypass.
         self.synced_once = true;
@@ -3519,7 +3519,7 @@ impl NotesApp {
             *assets = snapshot;
         }
         self.canonical_asset_manifest = manifest;
-        self.canonical_assets_waiting = waiting.then(ui::time::Instant::now);
+        self.canonical_assets_waiting = waiting.then(ui::time::now);
         if arrived && retry {
             // The image store remembers a failed load; a fresh store draws the
             // images that were placeholders while their bytes were on the way.

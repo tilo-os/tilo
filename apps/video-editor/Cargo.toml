@@ -19,7 +19,6 @@ path = "src/main.rs"
 tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 fnv.workspace = true
-xdg-paths = { path = "../../crates/system/xdg-paths" }
 # `ui` brings the host file chooser and the planar upload + YUV shader the
 # compositor paints hardware-decoded frames with (`ui::gpu_video`).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }

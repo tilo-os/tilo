@@ -4893,7 +4893,7 @@ mod breadcrumb_home_tests {
         let granted_path = granted.path().to_path_buf();
         // Only `TILO_USER_HOME` is touched: `HOME` is left as the machine's,
         // which is precisely the disagreement under test — the override has
-        // to win over whatever `xdg_paths::home()` says, and it does not say
+        // to win over whatever `tilo_paths::home()` says, and it does not say
         // this temp dir.
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_USER_HOME", &granted_path);
@@ -4911,7 +4911,7 @@ mod breadcrumb_home_tests {
             "the granted home wins over the process's own HOME",
         );
         assert_ne!(
-            xdg_paths::home().as_deref(),
+            tilo_paths::home().as_deref(),
             Some(granted_path.as_path()),
             "this test only means something while the two disagree",
         );

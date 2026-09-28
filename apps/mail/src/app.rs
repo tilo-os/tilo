@@ -945,7 +945,7 @@ impl MailApp {
         if !parent_metadata.is_dir() || parent_metadata.file_type().is_symlink() {
             return Err("selected destination is outside a regular folder".into());
         }
-        atomic_file::write(path, bytes).map_err(|error| error.to_string())
+        tilo_files::native::atomic::write(path, bytes).map_err(|error| error.to_string())
     }
 
     fn attachment_save_busy(&self) -> bool {

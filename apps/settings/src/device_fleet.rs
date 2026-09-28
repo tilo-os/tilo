@@ -173,5 +173,5 @@ pub(crate) fn revoke(device: [u8; 32], reason: RevocationReason) -> io::Result<(
     fleet.revocations.push(entry);
     let bytes = serde_json::to_vec_pretty(&fleet)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    atomic_file::write_with_mode(&fleet_path(&dir, &identity.id), &bytes, 0o600)
+    tilo_files::native::atomic::write_with_mode(&fleet_path(&dir, &identity.id), &bytes, 0o600)
 }

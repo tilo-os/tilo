@@ -976,7 +976,7 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
 /// Default on-disk cache root. Honours `XDG_CACHE_HOME`, falling back to the
 /// bootc-friendly `/var/cache/tilo-maps` location and finally a temp dir.
 fn default_cache_dir() -> PathBuf {
-    xdg_paths::xdg::cache_home()
+    tilo_paths::xdg::cache_home()
         .unwrap_or_else(std::env::temp_dir)
         .join("tilo-maps/tiles")
 }

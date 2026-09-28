@@ -24,8 +24,8 @@ pub fn resolve_dir() -> PathBuf {
     {
         return PathBuf::from(dir);
     }
-    let pics = xdg_paths::picture_dir().unwrap_or_else(|| {
-        xdg_paths::home().map_or_else(|| PathBuf::from("."), |h| h.join("Pictures"))
+    let pics = tilo_paths::picture_dir().unwrap_or_else(|| {
+        tilo_paths::home().map_or_else(|| PathBuf::from("."), |h| h.join("Pictures"))
     });
     pics.join("Camera")
 }

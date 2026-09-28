@@ -121,7 +121,8 @@ fn load_known_hosts(path: &Path) -> Result<KnownHosts, String> {
 fn write_known_hosts(path: &Path, known_hosts: &KnownHosts) -> Result<(), String> {
     validate_private_store_path(path)?;
     let bytes = serde_json::to_vec_pretty(known_hosts).map_err(|error| error.to_string())?;
-    atomic_file::write_with_mode(path, &bytes, 0o600).map_err(|error| error.to_string())?;
+    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
+        .map_err(|error| error.to_string())?;
     validate_private_store_path(path)
 }
 
@@ -138,7 +139,7 @@ pub fn default_known_hosts_path() -> Result<PathBuf, String> {
         validate_private_store_path(&path)?;
         return Ok(path);
     }
-    let state = xdg_paths::xdg::state_home()
+    let state = tilo_paths::xdg::state_home()
         .ok_or_else(|| "no private state directory is available for SSH host trust".to_string())?;
     let directory = state.join("tilo").join("remote");
     ensure_private_directory(&directory)?;

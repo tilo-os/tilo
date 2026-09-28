@@ -1720,7 +1720,7 @@ impl BooksApp {
                 );
                 self.library_paths.insert(
                     "book:c".into(),
-                    PathBuf::from("/var/workspace/Books/shared.epub"),
+                    content::workspace_books_dir().join("shared.epub"),
                 );
             }
             "narrow" => {
@@ -10752,7 +10752,7 @@ impl BooksApp {
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let radii_md = f64::from(theme.tokens.radii.md);
-        let home = std::env::var("HOME").ok();
+        let home = tilo_paths::home().map(|home| home.to_string_lossy().into_owned());
         let ws = content::workspace_root();
         // Present folders in human terms — never a raw internal mount (HIG §4):
         // the workspace reads as "Workspace", the reader's home as "~".

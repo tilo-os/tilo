@@ -20,7 +20,7 @@ thin = ["dep:runtime-dylib"]
 lru.workspace = true
 fnv.workspace = true
 hex.workspace = true
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }

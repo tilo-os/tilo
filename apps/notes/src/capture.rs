@@ -750,7 +750,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
                         "image preview did not become ready within two seconds".into(),
                     ));
                 }
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(5));
             };
             if scenario == Some("image_edit") {
                 driver
@@ -908,14 +908,14 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
                 }
                 // Let the temporary filesystem fault clear. The writer keeps
                 // its real sticky error visible until close retries it.
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(50));
                 for _ in 0..100 {
                     driver.relayout();
                     if semantic_observed(driver, |node| node.name.as_deref() == Some("Save failed"))
                     {
                         break;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(10));
                 }
             }
         }

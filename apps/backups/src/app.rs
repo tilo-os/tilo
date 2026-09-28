@@ -438,7 +438,7 @@ impl BackupsApp {
     }
 
     fn config_path() -> Option<PathBuf> {
-        Some(xdg_paths::xdg::state_home()?.join("tilo/backups/config.json"))
+        Some(tilo_paths::xdg::state_home()?.join("tilo/backups/config.json"))
     }
 
     fn read_config() -> Option<(PathBuf, PathBuf)> {
@@ -460,7 +460,7 @@ impl BackupsApp {
         };
         let value = serde_json::json!({ "source": source, "destination": destination });
         if let Ok(bytes) = serde_json::to_vec_pretty(&value) {
-            let _ = atomic_file::write_creating_parent(&path, &bytes);
+            let _ = tilo_files::native::atomic::write_creating_parent(&path, &bytes);
         }
     }
 
