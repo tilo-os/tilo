@@ -172,7 +172,7 @@ crates/sdk/ui-core/src/chrome/page.rs pixel_const 1
 crates/sdk/ui-core/src/chrome/shell.rs pixel_const 11
 crates/sdk/ui-core/src/chrome/status_bar.rs pixel_const 1
 crates/sdk/ui-core/src/chrome/toolbar.rs pixel_const 1
-crates/sdk/ui-core/src/widget/activity_timeline.rs pixel_const 14
+crates/sdk/ui-core/src/widget/activity_timeline.rs pixel_const 13
 crates/sdk/ui-core/src/widget/app_shell.rs pixel_const 3
 crates/sdk/ui-core/src/widget/autocomplete.rs pixel_const 5
 crates/sdk/ui-core/src/widget/banner.rs pixel_const 6
