@@ -5,7 +5,7 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 [dependencies]
-tilo-clock = { path = "../../system/tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 chrono.workspace = true
 launcher = { path = "../../packaging/launcher" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }

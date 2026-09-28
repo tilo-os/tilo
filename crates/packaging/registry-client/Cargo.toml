@@ -9,7 +9,7 @@ license.workspace = true
 # Deliberately no iroh: `tilo-app` links it, and outside developers build that.
 
 [dependencies]
-tilo-clock = { path = "../../system/tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-app-package = { path = "../tilo-app-package" }
 registry-types = { path = "../registry-types" }
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }

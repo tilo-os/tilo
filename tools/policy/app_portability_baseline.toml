@@ -8,7 +8,7 @@
 D1 = 3
 D2 = 15
 W1 = 8
-W2 = 52
+W2 = 51
 
 [apps.api-tester]
 D2 = 2
@@ -74,7 +74,7 @@ W3 = 13
 [apps.contacts]
 D2 = 3
 W1 = 1
-W2 = 3
+W2 = 2
 W3 = 5
 
 [apps.containers]
@@ -131,7 +131,7 @@ D2 = 13
 R1 = 1
 R3 = 3
 W1 = 2
-W2 = 10
+W2 = 9
 W3 = 71
 
 [apps.firewall]
@@ -164,7 +164,7 @@ R2 = 204
 R3 = 51
 R4 = 26
 W1 = 20
-W2 = 28
+W2 = 27
 W3 = 175
 
 [apps.logs]
@@ -191,7 +191,7 @@ W3 = 8
 [apps.monitor]
 D1 = 2
 D2 = 2
-W2 = 23
+W2 = 22
 
 [apps.music]
 D1 = 3
@@ -225,13 +225,13 @@ W3 = 1
 D1 = 1
 D2 = 3
 W1 = 3
-W2 = 8
+W2 = 6
 
 [apps.pdf-viewer]
 D1 = 1
 D2 = 5
 W1 = 1
-W2 = 12
+W2 = 11
 W3 = 8
 
 [apps.photos]
@@ -269,7 +269,7 @@ D2 = 21
 R3 = 23
 R4 = 3
 W1 = 28
-W2 = 34
+W2 = 31
 W3 = 35
 
 [apps.sheets]
@@ -300,7 +300,7 @@ W2 = 8
 D1 = 3
 D2 = 9
 W1 = 1
-W2 = 5
+W2 = 3
 W3 = 11
 
 [apps.terminal]
@@ -330,7 +330,7 @@ D1 = 6
 D2 = 8
 R3 = 3
 W1 = 4
-W2 = 19
+W2 = 16
 W3 = 8
 
 [apps.typst-editor]
@@ -373,7 +373,7 @@ D1 = 2
 D2 = 4
 R4 = 5
 W1 = 7
-W2 = 9
+W2 = 8
 W3 = 7
 
 [apps.word-processor]
@@ -381,7 +381,7 @@ D1 = 3
 D2 = 12
 F1 = 1
 R1 = 3
-W2 = 6
+W2 = 5
 W3 = 14
 
 [sdk.app-state]
