@@ -120,7 +120,7 @@ struct ProvidersBlock {
     ext: Vec<String>,
     #[serde(default)]
     mime: Vec<String>,
-    #[serde(default, alias = "uri-schemes", alias = "uri_schemes")]
+    #[serde(default)]
     schemes: Vec<String>,
 }
 

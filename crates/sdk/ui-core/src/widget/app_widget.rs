@@ -472,10 +472,6 @@ mod component_adapter {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "existing Widget callback signatures"
-    )]
     impl FullscreenProvider for BoundAppWidget {
         fn fullscreen_intent(&self) -> Option<bool> {
             let binding = self.component.callback_binding();

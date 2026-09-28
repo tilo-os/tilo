@@ -10,6 +10,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use super::context_menu::{ContextMenu, MenuItem};
 use crate::a11y::{AccessNode, AccessState, Action, Role};
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
@@ -569,14 +570,6 @@ fn count_to_f64(n: usize) -> f64 {
 fn to_f32(value: f64) -> f32 {
     value as f32
 }
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "affine composition is non-panicking float math"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
-
 impl Widget for Toolbar {
     /// The overflow menu, anchored to its own chip.
     fn open_overlays(&self) -> Vec<crate::view::OverlayState> {
@@ -736,13 +729,9 @@ impl Widget for Toolbar {
             };
             match item {
                 ToolbarItem::Button { label, .. } => self.draw_button(
-                    scene,
-                    transform,
-                    text,
-                    theme,
+                    &mut PaintCtx::new(scene, transform, text, theme),
                     &style,
                     Target::Item(index),
-                    rect,
                     label,
                 ),
                 ToolbarItem::Separator => {
@@ -774,13 +763,9 @@ impl Widget for Toolbar {
         }
         if self.has_overflow() {
             self.draw_button(
-                scene,
-                transform,
-                text,
-                theme,
+                &mut PaintCtx::new(scene, transform, text, theme),
                 &style,
                 Target::Overflow,
-                self.overflow_rect,
                 "…",
             );
         }
@@ -1038,24 +1023,11 @@ impl Widget for Toolbar {
 }
 
 impl Toolbar {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "paint inputs and an immediate-mode button's geometry"
-    )]
-    fn draw_button(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        style: &TextStyle,
-        target: Target,
-        rect: Rect,
-        label: &str,
-    ) {
-        if rect.is_zero_area() {
+    fn draw_button(&self, ctx: &mut PaintCtx<'_>, style: &TextStyle, target: Target, label: &str) {
+        let Some(rect) = self.target_rect(target).filter(|rect| !rect.is_zero_area()) else {
             return;
-        }
+        };
+        let theme = ctx.theme;
         let radius = f64::from(theme.tokens.radii.sm);
         let shape = RoundedRect::from_rect(rect, radius);
         let color = if self.hovered == Some(target) {
@@ -1066,28 +1038,26 @@ impl Toolbar {
         // Neutral button face with its derived rest edge (HIG §9.5): on a
         // raised card the bare fill is invisible and the buttons read as
         // loose labels.
-        crate::surface::card(scene, transform, rect, radius, color);
+        crate::surface::card(ctx.scene, ctx.transform, rect, radius, color);
         if self.focused && self.focus == Some(target) && !self.menu.is_open() {
-            scene.stroke(
+            ctx.scene.stroke(
                 &Stroke::new(2.0),
-                transform,
+                ctx.transform,
                 theme.tokens.colors.border_focus,
                 None,
                 &shape,
             );
         }
-        let (width, height) = text.measure_style(label, None, style);
-        text.draw_style(
-            scene,
+        let (width, height) = ctx.text.measure_style(label, None, style);
+        ctx.text(
             label,
+            style,
             theme.tokens.colors.text_primary,
-            translated(
-                transform,
+            Point::new(
                 rect.center().x - f64::from(width) / 2.0,
                 rect.center().y - f64::from(height) / 2.0,
             ),
             None,
-            style,
         );
     }
 }

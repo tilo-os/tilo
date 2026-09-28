@@ -462,10 +462,6 @@ impl<C: Widget> ModalDialog<C> {
 // (scene + transform + text_renderer + theme, plus this draw's own
 // content); every parameter is independently load-bearing.
 #[allow(
-    clippy::too_many_arguments,
-    reason = "Detached dialog routing accepts the event, scale/modifiers, and CRDT document/path before supplying Widget layout state."
-)]
-#[allow(
     clippy::arithmetic_side_effects,
     reason = "the `transform * Affine::translate(..)` call below composes 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
 )]

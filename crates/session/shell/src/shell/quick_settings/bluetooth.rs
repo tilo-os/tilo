@@ -247,11 +247,6 @@ impl QuickSettingsBluetoothPane {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, matching the sibling \
-                  wifi/vpn drill-in panes this is called alongside"
-    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -302,12 +297,8 @@ impl QuickSettingsBluetoothPane {
                 continue;
             };
             let glyph = DrillInList::draw_discovery_row(
-                scene,
-                transform,
-                text,
-                theme,
+                &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
                 *row,
-                index,
                 cursor,
                 72.0,
                 &device.name,

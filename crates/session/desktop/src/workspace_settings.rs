@@ -23,6 +23,7 @@ use vello::peniko::{Color, Fill};
 use ui::ColorCompat;
 use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use ui::overlay::{FocusTrap, Modal};
+use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Avatar, Badge, Button, ButtonFace, SegmentedFace, SegmentedStyle};
@@ -1067,24 +1068,16 @@ fn draw_row_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme
 
 /// A concise explanation and live status at the top of each policy pane.
 /// It gives normal users orientation without hiding the full controls.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one positional argument per painted value, shared across the three panes \
-              that open with this intro card; a context struct would need to be rebuilt \
-              at each call site anyway since scene/text_renderer are reborrowed for more \
-              drawing right after this call"
-)]
 fn draw_pane_intro(
-    scene: &mut Scene,
-    transform: Affine,
+    ctx: &mut PaintCtx<'_>,
     pane: Rect,
     icon: Icon,
     title: &str,
     detail: &str,
     status: &str,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
 ) {
+    let (scene, transform, text_renderer, theme) =
+        (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
     let rect = Rect::new(
@@ -2711,11 +2704,6 @@ pub fn members_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<MemberRow> {
 
 /// `is_owner` is the *local* user's authority — a non-owner sees every
 /// row and control, disabled.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "called from shell::overlay_host, outside this change's scope; bundling params \
-              into a struct would require updating that caller too"
-)]
 pub fn draw_members_pane(
     scene: &mut Scene,
     transform: Affine,
@@ -2747,8 +2735,7 @@ pub fn draw_members_pane(
         .actions
         .is_empty();
     draw_pane_intro(
-        scene,
-        transform,
+        &mut PaintCtx::new(scene, transform, text_renderer, theme),
         pane_rect,
         Icon::Home,
         &t_args(
@@ -2763,8 +2750,6 @@ pub fn draw_members_pane(
         } else {
             "workspace-settings-view-only"
         }),
-        text_renderer,
-        theme,
     );
     if can_manage_transfer {
         draw_primary_button(
@@ -2884,10 +2869,6 @@ struct MemberRowDrawContext<'a> {
     theme: &'a Theme,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "a paint routine that lays one member row out left to right from shared running offsets"
-)]
 fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
     let MemberRowDrawContext {
         scene,
@@ -2980,16 +2961,13 @@ fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
 
     let can_manage_row = *is_owner && !row.is_workspace_owner && &row.user != *local_user;
     draw_member_role_chip(
-        scene,
-        *transform,
+        &mut PaintCtx::new(scene, *transform, text_renderer, theme),
         row.role_rect,
         row.role,
         &displayed_role,
         row.is_workspace_owner,
         can_manage_row,
         detail_size,
-        text_renderer,
-        theme,
     );
 
     draw_danger_button(
@@ -3017,22 +2995,17 @@ fn ws_member_display_name(ws: &Workspace, row: &MemberRow, local_user: &UserId) 
 
 /// The role chip half of [`draw_member_row`] — its fill, label and the
 /// chevron affording that owners can open the explicit role chooser.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "role-chip rendering needs shared renderer context plus explicit capability and interaction facts to keep paint and accessibility state aligned"
-)]
 fn draw_member_role_chip(
-    scene: &mut Scene,
-    transform: Affine,
+    ctx: &mut PaintCtx<'_>,
     rect: Rect,
     role: CapRole,
     label: &str,
     structural_owner: bool,
     interactive: bool,
     detail_size: f32,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
 ) {
+    let (scene, transform, text_renderer, theme) =
+        (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
     let role_interactive = interactive;
@@ -3114,8 +3087,7 @@ pub fn draw_agents_pane(
     let rows = agents_pane_rows(ws, pane_rect);
     let count = ws.agent_members().len();
     draw_pane_intro(
-        scene,
-        transform,
+        &mut PaintCtx::new(scene, transform, text_renderer, theme),
         pane_rect,
         Icon::Sparkles,
         &t_args(
@@ -3128,8 +3100,6 @@ pub fn draw_agents_pane(
         } else {
             "workspace-settings-view-only"
         }),
-        text_renderer,
-        theme,
     );
     draw_recording_delegates_switch(
         scene,
@@ -3531,15 +3501,12 @@ fn draw_default_apps_header(
     theme: &Theme,
 ) {
     draw_pane_intro(
-        scene,
-        transform,
+        &mut PaintCtx::new(scene, transform, text_renderer, theme),
         pane,
         Icon::LayoutGrid,
         &t("workspace-settings-apps-intro-title"),
         &t("workspace-settings-apps-intro-detail"),
         status,
-        text_renderer,
-        theme,
     );
     let heading_y = pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP;
     draw_section_header(
@@ -4068,11 +4035,6 @@ fn layout_capability_rows(
 
 /// Non-owners see the same list and controls, painted disabled, with a
 /// footnote explaining why.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "called from shell::overlay_host, outside this change's scope; bundling params \
-              into a struct would require updating that caller too"
-)]
 pub fn draw_permissions_pane(
     scene: &mut Scene,
     transform: Affine,
@@ -4089,8 +4051,7 @@ pub fn draw_permissions_pane(
     let layout = permissions_pane_layout(ws, pane_rect, apps);
     let active_grants = listed_capabilities(ws).len();
     draw_pane_intro(
-        scene,
-        transform,
+        &mut PaintCtx::new(scene, transform, text_renderer, theme),
         pane_rect,
         Icon::Shield,
         &t("workspace-settings-permissions-intro-title"),
@@ -4099,8 +4060,6 @@ pub fn draw_permissions_pane(
             "workspace-settings-active-grants",
             &[("count", active_grants.into())],
         ),
-        text_renderer,
-        theme,
     );
 
     let card = draw_permission_composer(

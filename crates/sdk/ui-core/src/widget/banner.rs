@@ -15,12 +15,13 @@ use std::collections::HashMap;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
@@ -35,47 +36,74 @@ const ACCENT_BAR_W: f64 = 4.0;
 const DISMISS_D: f64 = 18.0;
 const GAP: f64 = 10.0;
 
+/// What an immediate-mode [`Banner::paint`] shows: severity, leading icon,
+/// title, optional secondary message and whether the "×" is offered.
+#[derive(Clone, Copy, Debug)]
+pub struct BannerContent<'a> {
+    pub kind: BannerKind,
+    pub icon: Icon,
+    pub title: &'a str,
+    pub message: Option<&'a str>,
+    pub dismissible: bool,
+}
+
+impl<'a> BannerContent<'a> {
+    /// A non-dismissible banner with the severity's default icon.
+    pub fn new(kind: BannerKind, title: &'a str) -> Self {
+        Self {
+            kind,
+            icon: kind.default_icon(),
+            title,
+            message: None,
+            dismissible: false,
+        }
+    }
+
+    #[must_use]
+    pub fn with_icon(mut self, icon: Icon) -> Self {
+        self.icon = icon;
+        self
+    }
+
+    #[must_use]
+    pub fn with_message(mut self, message: Option<&'a str>) -> Self {
+        self.message = message;
+        self
+    }
+
+    #[must_use]
+    pub fn dismissible(mut self, dismissible: bool) -> Self {
+        self.dismissible = dismissible;
+        self
+    }
+}
+
 /// Shared visual paint for a banner filling `rect`. Used by both the retained
 /// [`Banner`] widget and the immediate-mode [`Banner::paint`] entry point.
 /// Returns the dismiss "×" rect when `dismissible`, else `Rect::ZERO`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "shared banner painting combines render context with bounds, severity, icon, text and dismiss-button hover state"
-)]
 fn paint_banner(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     rect: Rect,
-    kind: BannerKind,
-    icon: Icon,
-    title: &str,
-    message: Option<&str>,
-    dismissible: bool,
+    content: &BannerContent<'_>,
     hover: Point,
 ) -> Rect {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return Rect::ZERO;
     }
+    let BannerContent {
+        kind,
+        icon,
+        title,
+        message,
+        dismissible,
+    } = *content;
+    let theme = ctx.theme;
+    let transform = ctx.transform;
     let accent = kind.color(theme);
     let radius = f64::from(theme.tokens.radii.md);
 
-    let surf = RoundedRect::from_rect(rect, radius);
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        accent.with_alpha_factor(0.13),
-        None,
-        &surf,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        accent.with_alpha_factor(0.4),
-        None,
-        &surf,
-    );
+    ctx.fill_round(rect, radius, accent.with_alpha_factor(0.13));
+    ctx.stroke_round(rect, radius, accent.with_alpha_factor(0.4), 1.0);
 
     let bar = RoundedRect::new(
         rect.x0,
@@ -84,57 +112,45 @@ fn paint_banner(
         rect.y1,
         (radius, 0.0, 0.0, radius),
     );
-    scene.fill(Fill::NonZero, transform, accent, None, &bar);
+    ctx.scene.fill(Fill::NonZero, transform, accent, None, &bar);
 
     let icon_x = rect.x0 + PAD_X;
     let icon_cy = rect.center().y;
     let icon_rect =
         Rect::from_center_size(Point::new(icon_x + ICON_D / 2.0, icon_cy), (ICON_D, ICON_D));
-    icon.draw_with_stroke(scene, transform, icon_rect, accent, 1.6);
+    icon.draw_with_stroke(ctx.scene, transform, icon_rect, accent, 1.6);
 
     let text_x = icon_rect.x1 + GAP;
-    let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.base);
-    let msg_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+    let title_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.base);
+    let msg_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.sm);
     let title_style = TextStyle::new(title_size);
     let message_style = TextStyle::new(msg_size);
     let text_width = banner_text_width(rect, dismissible);
-    let (_, title_h) = text_renderer.measure_style(title, Some(text_width), &title_style);
+    let (_, title_h) = ctx
+        .text
+        .measure_style(title, Some(text_width), &title_style);
     let message_h = message.map_or(0.0, |msg| {
-        text_renderer
+        ctx.text
             .measure_style(msg, Some(text_width), &message_style)
             .1
     });
     let gap = f64::from(theme.tokens.spacing.s1);
     let total_text_h = f64::from(title_h + message_h) + if message.is_some() { gap } else { 0.0 };
     let mut ty = rect.center().y - total_text_h / 2.0;
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "Affine composition is float matrix multiplication; it cannot overflow or \
-                  panic"
-    )]
-    let title_transform = transform * Affine::translate((text_x, ty));
-    text_renderer.draw_text(
-        scene,
+    ctx.text(
         title,
-        title_size,
+        &title_style,
         theme.text_primary,
-        title_transform,
+        Point::new(text_x, ty),
         Some(text_width),
     );
     ty += f64::from(title_h) + gap;
     if let Some(msg) = message {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine composition is float matrix multiplication; it cannot overflow \
-                      or panic"
-        )]
-        let msg_transform = transform * Affine::translate((text_x, ty));
-        text_renderer.draw_text(
-            scene,
+        ctx.text(
             msg,
-            msg_size,
+            &message_style,
             theme.text_dim,
-            msg_transform,
+            Point::new(text_x, ty),
             Some(text_width),
         );
     }
@@ -151,7 +167,7 @@ fn paint_banner(
         } else {
             theme.text_dim
         };
-        Icon::X.draw_with_stroke(scene, transform, dr, col, 1.6);
+        Icon::X.draw_with_stroke(ctx.scene, transform, dr, col, 1.6);
         dr
     } else {
         Rect::ZERO
@@ -313,36 +329,13 @@ impl Banner {
     /// straight to a `Scene`. Returns the dismiss "×" rect (or `Rect::ZERO`
     /// when not dismissible) so the caller can hit-test it against its own
     /// pointer state; pass `hover` for the ×-hover tint.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "immediate banner painting forwards render context, content, bounds and dismissal state to the retained widget painter"
-    )]
     pub fn paint(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         rect: Rect,
-        kind: BannerKind,
-        icon: Icon,
-        title: &str,
-        message: Option<&str>,
-        dismissible: bool,
+        content: &BannerContent<'_>,
         hover: Point,
     ) -> Rect {
-        paint_banner(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect,
-            kind,
-            icon,
-            title,
-            message,
-            dismissible,
-            hover,
-        )
+        paint_banner(ctx, rect, content, hover)
     }
 
     /// Intrinsic content height for the current title/message, in logical px.
@@ -475,17 +468,14 @@ impl Widget for Banner {
             self.dismiss_rect = Rect::ZERO;
             return;
         }
+        let content = BannerContent::new(self.kind, &self.title)
+            .with_icon(self.icon())
+            .with_message(self.message.as_deref())
+            .dismissible(self.dismissible);
         self.dismiss_rect = paint_banner(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             self.rect,
-            self.kind,
-            self.icon(),
-            &self.title,
-            self.message.as_deref(),
-            self.dismissible,
+            &content,
             self.last_cursor,
         );
     }

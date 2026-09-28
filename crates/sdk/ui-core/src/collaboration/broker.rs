@@ -3086,16 +3086,18 @@ async fn drive_shovel(
                 primary_result = match tokio::time::timeout_at(
                     tokio::time::Instant::from_std(deadline.start()),
                     ensure_sdk_route(
-                        &client,
-                        &presentation,
-                        participant_handle.as_deref(),
-                        participant_kind,
-                        &inbound_tx,
+                        &SdkJoinContext {
+                            asks_channel_keys,
+                            client: &client,
+                            presentation: &presentation,
+                            participant_handle: participant_handle.as_deref(),
+                            participant_kind,
+                            inbound_tx: &inbound_tx,
+                            media_routes: &media_routes,
+                        },
                         &mut routes,
-                        &media_routes,
                         &spec,
                         record_kind.as_deref().unwrap_or(""),
-                        asks_channel_keys,
                     ),
                 )
                 .await
@@ -3128,32 +3130,36 @@ async fn drive_shovel(
             }
             SdkCommand::Join(spec, record_kind) => {
                 let _ = ensure_sdk_route(
-                    &client,
-                    &presentation,
-                    participant_handle.as_deref(),
-                    participant_kind,
-                    &inbound_tx,
+                    &SdkJoinContext {
+                        asks_channel_keys,
+                        client: &client,
+                        presentation: &presentation,
+                        participant_handle: participant_handle.as_deref(),
+                        participant_kind,
+                        inbound_tx: &inbound_tx,
+                        media_routes: &media_routes,
+                    },
                     &mut routes,
-                    &media_routes,
                     &spec,
                     record_kind.as_deref().unwrap_or(""),
-                    asks_channel_keys,
                 )
                 .await;
             }
             SdkCommand::ToRoute(spec, request) => {
                 let key = spec.channel_id();
                 let joined = ensure_sdk_route(
-                    &client,
-                    &presentation,
-                    participant_handle.as_deref(),
-                    participant_kind,
-                    &inbound_tx,
+                    &SdkJoinContext {
+                        asks_channel_keys,
+                        client: &client,
+                        presentation: &presentation,
+                        participant_handle: participant_handle.as_deref(),
+                        participant_kind,
+                        inbound_tx: &inbound_tx,
+                        media_routes: &media_routes,
+                    },
                     &mut routes,
-                    &media_routes,
                     &spec,
                     "",
-                    asks_channel_keys,
                 )
                 .await;
                 if joined.is_ok()
@@ -3288,19 +3294,7 @@ async fn install_sdk_encryption(
     group: channel_crypto::ChannelGroup,
 ) -> Result<(), String> {
     let key = spec.channel_id();
-    ensure_sdk_route(
-        context.client,
-        context.presentation,
-        context.participant_handle,
-        context.participant_kind,
-        context.inbound_tx,
-        routes,
-        context.media_routes,
-        &spec,
-        "",
-        context.asks_channel_keys,
-    )
-    .await?;
+    ensure_sdk_route(&context, routes, &spec, "").await?;
     let route = routes
         .get_mut(&key)
         .ok_or_else(|| "joined MLS route disappeared".to_string())?;
@@ -3312,6 +3306,7 @@ async fn install_sdk_encryption(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 struct SdkJoinContext<'a> {
     asks_channel_keys: bool,
     client: &'a runtime_collab::CollabClient,
@@ -3468,17 +3463,20 @@ fn segment_transfer(event: &CollabEvent) -> Option<SegmentTransfer> {
     reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
 )]
 async fn ensure_sdk_route(
-    client: &runtime_collab::CollabClient,
-    identity_bytes: &[u8],
-    participant_handle: Option<&str>,
-    participant_kind: &str,
-    inbound_tx: &InboundBridge,
+    context: &SdkJoinContext<'_>,
     routes: &mut std::collections::HashMap<String, SdkRoute>,
-    media_routes: &native_media::Routes,
     spec: &RouteSpec,
     record_kind: &str,
-    asks_channel_keys: bool,
 ) -> Result<(), String> {
+    let SdkJoinContext {
+        asks_channel_keys,
+        client,
+        presentation: identity_bytes,
+        participant_handle,
+        participant_kind,
+        inbound_tx,
+        media_routes,
+    } = *context;
     let channel_id = spec.channel_id();
     if routes.contains_key(&channel_id) {
         return Ok(());
@@ -5673,35 +5671,24 @@ async fn dispatch_sdk_request(
                 tilo_actions::ARGUMENTS_JSON_PREFIX,
                 serde_json::Value::Object(arguments)
             );
+            let target = runtime_collab::TaskAction {
+                peer_id,
+                resource: &resource,
+                action: &action,
+                argument: Some(&argument),
+            };
             let (result, continuation, retry_step) = match step {
                 Some(step) => task_step_event(
                     route
                         .channel
-                        .invoke_task_step(
-                            run_id,
-                            &lease,
-                            step,
-                            peer_id,
-                            &resource,
-                            &action,
-                            Some(&argument),
-                        )
+                        .invoke_task_step(run_id, &lease, step, target)
                         .await
                         .map_err(|error| error.to_string()),
                 ),
                 None => (
                     route
                         .channel
-                        .invoke_task_action(
-                            run_id,
-                            &lease,
-                            peer_id,
-                            &resource,
-                            &action,
-                            Some(&argument),
-                            "",
-                            &invocation.0.to_string(),
-                        )
+                        .invoke_task_action(run_id, &lease, target, "", &invocation.0.to_string())
                         .await
                         .map_err(|error| error.to_string())
                         .and_then(|(id, update)| parse_task_update(id, &update)),
@@ -5935,7 +5922,10 @@ mod tests {
     // Future<Output = ...>` spelling wouldn't change any behaviour, only
     // make capnp-generated-shaped code look less like the rest of the
     // capnp-rpc code it's mocking.
-    #![allow(refining_impl_trait)]
+    #![allow(
+        refining_impl_trait,
+        reason = "mock capnp servers return the concrete Promise capnp-rpc expects"
+    )]
 
     use super::*;
 

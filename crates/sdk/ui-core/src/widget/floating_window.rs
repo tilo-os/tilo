@@ -682,10 +682,6 @@ impl<C: Widget> FloatingWindow<C> {
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "touch forwarding carries the same document, focus, and scale context as Widget::handle_event"
-    )]
     fn handle_touch(
         &mut self,
         touch: &winit::event::Touch,

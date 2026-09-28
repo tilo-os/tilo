@@ -308,10 +308,6 @@ fn sign_collaboration_join(bound_room: &RoomId, workspace_id: &str) -> Response 
 /// and attestation ids are route-derived, only typed document payloads pass,
 /// and the op class must fit the route (`Comment` only on the author's own
 /// comment record or the room index; see [`collab_types::comment`]).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each argument is an independently authenticated boundary value: live tree, bound workspace/app, requested route, and opaque envelope"
-)]
 fn sign_collaboration_op(
     tree: &dyn WorkspaceMembership,
     bound_room: &RoomId,

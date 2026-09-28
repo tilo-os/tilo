@@ -61,6 +61,15 @@ pub(crate) trait RemoteCaptureAdapter: Send {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RemoteCaptureApproval([u8; 32]);
 
+/// One remote capture session between an exact source and target device, and
+/// the grant it runs under.
+pub(crate) struct RemoteSessionBinding {
+    pub(crate) source: DeviceId,
+    pub(crate) target: DeviceId,
+    pub(crate) session_id: [u8; 16],
+    pub(crate) grant: RemoteCaptureGrant,
+}
+
 struct LocalSession {
     source: DeviceId,
     target: DeviceId,
@@ -93,21 +102,20 @@ impl RemoteCaptureTargetBridge {
     /// Install an endpoint produced by the bounded provisioning worker. This
     /// half is deliberately non-blocking and safe to call from a compositor
     /// tick; discovery and subprocess startup happen before it.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "every field of the exact source/target/session/grant binding is checked explicitly"
-    )]
     pub(crate) fn prepare_endpoint(
         &mut self,
         app: &VerifiedAppRegistration,
         request: &RemoteCaptureRequest,
-        source: DeviceId,
-        target: DeviceId,
-        session_id: [u8; 16],
-        grant: RemoteCaptureGrant,
+        binding: RemoteSessionBinding,
         endpoint: RemoteCaptureEndpoint,
         adapter: &mut dyn RemoteCaptureAdapter,
     ) -> Result<(), RemoteCaptureAdapterError> {
+        let RemoteSessionBinding {
+            source,
+            target,
+            session_id,
+            grant,
+        } = binding;
         if !request.valid()
             || request.app_id != app.app_id()
             || request.workspace_id != app.workspace_id()
@@ -190,10 +198,6 @@ impl RemoteCaptureTargetBridge {
     }
 
     /// Consume the exact approval and make the endpoint available to the app.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "every field of the exact source/target/session/grant binding is checked explicitly"
-    )]
     pub(crate) fn activate(
         &mut self,
         app: &VerifiedAppRegistration,
@@ -821,10 +825,6 @@ mod tests {
             .unwrap()
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "forwards the production prepare_endpoint binding unchanged"
-    )]
     fn prepare(
         bridge: &mut RemoteCaptureTargetBridge,
         adapter: &mut FakeAdapter,
@@ -837,7 +837,16 @@ mod tests {
     ) -> Result<(), RemoteCaptureAdapterError> {
         let endpoint = adapter.provision(session, &request.profile)?;
         bridge.prepare_endpoint(
-            owner, request, source, target, session, grant, endpoint, adapter,
+            owner,
+            request,
+            RemoteSessionBinding {
+                source,
+                target,
+                session_id: session,
+                grant,
+            },
+            endpoint,
+            adapter,
         )
     }
 

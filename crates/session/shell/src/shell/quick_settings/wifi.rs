@@ -545,11 +545,6 @@ impl QuickSettingsWifiPane {
     }
 
     #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, matching the sibling \
-                  bluetooth/vpn drill-in panes this is called alongside"
-    )]
-    #[allow(
         clippy::too_many_lines,
         reason = "The drill-in's paint, scroll, and Wi-Fi hit targets share one panel coordinate system and must remain synchronized."
     )]
@@ -653,12 +648,8 @@ impl QuickSettingsWifiPane {
                 cursor
             };
             let glyph = DrillInList::draw_discovery_row(
-                scene,
-                transform,
-                text,
-                theme,
+                &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
                 *row,
-                index,
                 row_cursor,
                 100.0,
                 &network.ssid,

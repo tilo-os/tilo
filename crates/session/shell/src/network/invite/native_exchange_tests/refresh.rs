@@ -7,23 +7,35 @@ use super::*;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 
+/// The parent exchange test's state directory, device identity, endpoint,
+/// relay and publishing session, still live when its restart phase begins.
+pub(super) struct LiveExchange<'a> {
+    pub directory: &'a tempfile::TempDir,
+    pub identity: &'a HostIdentity,
+    pub endpoint: &'a iroh::Endpoint,
+    pub relay: &'a tilo_relay::Relay,
+    pub publisher: &'a tilo_relay::RelayCoeditSession,
+}
+
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "continuation of the parent exchange test: it takes over that test's live relay, \
               endpoints and custody and runs the restart phase as one linear scenario"
 )]
 pub(super) async fn restart_after_offline_snapshot(
-    directory: &tempfile::TempDir,
+    live: LiveExchange<'_>,
     owner: NativeWorkspaceOwner,
     room: RoomId,
-    identity: &HostIdentity,
-    endpoint: &iroh::Endpoint,
-    relay: &tilo_relay::Relay,
-    publisher: &tilo_relay::RelayCoeditSession,
     authority: ActualAuthority,
     receiving_custody: Arc<Mutex<Option<NativeWorkspaceOwner>>>,
 ) {
+    let LiveExchange {
+        directory,
+        identity,
+        endpoint,
+        relay,
+        publisher,
+    } = live;
     let now = SystemTime::now();
     let topic = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
     // The normal member producer signs its Snapshot before admission. Only the

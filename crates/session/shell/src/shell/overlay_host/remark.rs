@@ -1514,10 +1514,7 @@ impl ShellOverlayHost {
                     .as_ref()
                     .is_some_and(|recorder| recorder.recent_buffer);
                 self.remark.view.draw_composer(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
+                    &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                     presence,
                     viewport,
                     &st.remark,
@@ -1633,7 +1630,6 @@ impl ShellOverlayHost {
     /// Route one input event to the remark surface. Returns whether it was
     /// consumed.
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "the remark surface's input routing, with the text field's event context"
     )]

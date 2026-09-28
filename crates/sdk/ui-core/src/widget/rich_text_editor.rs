@@ -531,17 +531,14 @@ impl RichTextEditor {
             underlines.push((pr.start, pr.end));
         }
         let browser_emoji = tr.browser_color_emoji_installed();
-        let layout = RichTextLayout::shape_browser(
+        let layout = RichTextLayout::shape_styled_browser(
             &mut tr.font_system,
             &spans,
-            base_bold,
-            size,
-            width,
+            &RichTextLayout::block_style(base_bold, size, FontFamily::Sans, 1.0),
+            Some(width),
             TextAlign::Left,
-            FontFamily::Sans,
             underlines,
             strikes,
-            1.0,
             browser_emoji,
         );
         tr.note_browser_rich_layout(&layout);

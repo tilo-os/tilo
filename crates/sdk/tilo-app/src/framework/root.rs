@@ -22,7 +22,7 @@ use ui_core::{LocalState, Theme};
 use super::dispatch::Dispatcher;
 use super::live::Live;
 use super::stage::Stages;
-use super::view::Updaters;
+use super::view::{Updaters, ViewCx};
 
 pub(crate) struct ResourceRoot<R: Resource> {
     title: &'static str,
@@ -47,35 +47,29 @@ pub(crate) struct ResourceRoot<R: Resource> {
 }
 
 impl<R: Resource> ResourceRoot<R> {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "assembled once by the framework from parts it already owns"
-    )]
+    /// A root over `content`, the view built in `cx`, whose handles the root
+    /// keeps; `alive` is the scope `cx`'s bindings are tied to.
     pub(crate) fn new(
         title: &'static str,
         icon: IconDescriptor,
         label: String,
-        live: Live<R>,
-        updaters: Updaters<R>,
+        cx: ViewCx<R>,
         alive: Rc<()>,
-        dispatch: Dispatcher<R>,
-        saved: LocalState<RecordSaveStatus>,
-        stages: Stages,
         content: Element,
     ) -> Self {
         Self {
             title,
             icon,
             label,
-            live,
-            updaters,
+            live: cx.live,
+            updaters: cx.updaters,
             followed: std::cell::Cell::new(0),
             _alive: alive,
-            dispatch,
-            saved,
+            dispatch: cx.dispatch,
+            saved: cx.saved,
             permissions: None,
             write: None,
-            stages,
+            stages: cx.stages,
             content,
             search: std::cell::RefCell::new(None),
         }

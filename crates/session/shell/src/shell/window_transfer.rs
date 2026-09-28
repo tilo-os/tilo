@@ -1909,10 +1909,6 @@ fn merge_late(
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one phase of the transfer state machine, passed through unchanged"
-)]
 fn redeliver(
     st: &mut ChromeState,
     transfers: &mut WindowTransfers,

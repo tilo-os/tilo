@@ -1352,10 +1352,6 @@ impl EnrolledServiceContext {
     ///
     /// Returns a description for an invalid binding, provider or context label, an unusable
     /// data home or stream, or a failed model gateway handoff.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit owned service capabilities and immutable launch context are independently supplied"
-    )]
     #[expect(
         clippy::needless_pass_by_value,
         reason = "public constructor shared with the cloud host; the canonical root replaces the supplied one"

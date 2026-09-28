@@ -29,6 +29,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::portal::{
     FileFilter, LaunchChannel, LaunchOutcome, PickRequest, PortalChannel, PortalOutcome,
@@ -2374,7 +2375,7 @@ impl FeedsApp {
         };
         let list_title = self.filter_title();
         draw_list(
-            PaintContext {
+            PaintCtx {
                 scene,
                 transform: t,
                 text: tr,
@@ -2414,7 +2415,7 @@ impl FeedsApp {
         let article = self.selected.and_then(|id| self.store.article(id));
         let feed = article.and_then(|article| self.store.feed(article.feed_id));
         let (links, tags, open_rect, content_h) = draw_reader(
-            PaintContext {
+            PaintCtx {
                 scene,
                 transform: t,
                 text: tr,
@@ -2706,7 +2707,7 @@ impl FeedsApp {
             y + bsz,
         );
         self.step_button(
-            PaintContext {
+            PaintCtx {
                 scene,
                 transform: t,
                 text: tr,
@@ -2725,7 +2726,7 @@ impl FeedsApp {
             None,
         );
         self.step_button(
-            PaintContext {
+            PaintCtx {
                 scene,
                 transform: t,
                 text: tr,
@@ -2758,10 +2759,12 @@ impl FeedsApp {
             .position(|f| *f == self.settings.font)
             .unwrap_or(0);
         self.seg_row(
-            scene,
-            t,
-            tr,
-            theme,
+            PaintCtx {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             Rect::new(seg_x0, y, seg_x0 + seg_w, y + bsz),
             &font_labels,
             font_selected,
@@ -2788,10 +2791,12 @@ impl FeedsApp {
             .position(|th| *th == self.settings.theme)
             .unwrap_or(0);
         self.seg_row(
-            scene,
-            t,
-            tr,
-            theme,
+            PaintCtx {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             Rect::new(seg_x0, y, seg_x0 + seg_w, y + bsz),
             &theme_labels,
             theme_selected,
@@ -2803,21 +2808,20 @@ impl FeedsApp {
     /// `ToggleGroup` face (HIG §8: never hand-roll a control) over rects this
     /// popover owns: equal-width segments an `s2` apart across `band`, each
     /// registered as a settings hit.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The settings segment painter combines render context and band geometry with labels, selection, and hit actions."
-    )]
     fn seg_row(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintCtx<'_>,
         band: Rect,
         labels: &[&str],
         selected: usize,
         actions: &[SettingsAction],
     ) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = paint;
         let n = labels.len().max(1) as f64;
         let gap = f64::from(theme.tokens.spacing.s2);
         let cellw = ((band.width() - (n - 1.0) * gap) / n).max(0.0);
@@ -2846,12 +2850,12 @@ impl FeedsApp {
     /// A small square stepper button ("−"/"+") for the settings popover.
     fn step_button(
         &mut self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         rect: &Rect,
         glyph: &str,
         action: SettingsAction,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: t,
             text: tr,
@@ -3092,17 +3096,6 @@ impl FeedsApp {
 // Drawing free functions (explicit borrows keep the borrow checker happy)
 // ---------------------------------------------------------------------
 
-/// Shared renderer state passed through the custom-painted Feeds views.
-///
-/// Keeping these four values together makes view helpers describe the data
-/// they render instead of repeating backend plumbing in every signature.
-struct PaintContext<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    text: &'a mut TextRenderer,
-    theme: &'a Theme,
-}
-
 #[derive(Clone, Copy)]
 struct ListView<'a> {
     rect: &'a Rect,
@@ -3168,8 +3161,8 @@ fn hline(scene: &mut Scene, t: Affine, x0: f64, x1: f64, y: f64, color: Color) {
 }
 
 /// Draw a pill badge with a number; returns its width.
-fn badge(paint: PaintContext<'_>, right_x: f64, cy: f64, n: usize, bg: Color, fg: Color) -> f64 {
-    let PaintContext {
+fn badge(paint: PaintCtx<'_>, right_x: f64, cy: f64, n: usize, bg: Color, fg: Color) -> f64 {
+    let PaintCtx {
         scene,
         transform: t,
         text: tr,
@@ -3395,7 +3388,7 @@ fn draw_sidebar(
                 (alpha(c.neutral[3], 180), c.text_dim)
             };
             badge(
-                PaintContext {
+                PaintCtx {
                     scene,
                     transform: t,
                     text: tr,
@@ -3518,8 +3511,8 @@ fn draw_centered_onboarding(
     reason = "a single linear draw pass over this panel's fixed regions; splitting it would \
               only relocate the line count, not the amount a reader must hold in mind"
 )]
-fn draw_list(paint: PaintContext<'_>, view: &ListView<'_>) {
-    let PaintContext {
+fn draw_list(paint: PaintCtx<'_>, view: &ListView<'_>) {
+    let PaintCtx {
         scene,
         transform: t,
         text: tr,
@@ -3913,8 +3906,8 @@ fn draw_refresh_strip(
     reason = "a single linear draw pass over this panel's fixed regions; splitting it would \
               only relocate the line count, not the amount a reader must hold in mind"
 )]
-fn draw_reader(paint: PaintContext<'_>, view: &ReaderView<'_>) -> ReaderPaint {
-    let PaintContext {
+fn draw_reader(paint: PaintCtx<'_>, view: &ReaderView<'_>) -> ReaderPaint {
+    let PaintCtx {
         scene,
         transform: t,
         text: tr,
@@ -4005,17 +3998,14 @@ fn draw_reader(paint: PaintContext<'_>, view: &ReaderView<'_>) -> ReaderPaint {
 
     // Title — sized relative to the reading font scale, in the chosen family.
     let title_size = settings.heading_size(1) + 6.0;
-    let title_layout = RichTextLayout::shape(
+    let title_layout = RichTextLayout::shape_styled(
         &mut tr.font_system,
         &[RichSpan::new(a.title.clone()).bold(true)],
-        true,
-        title_size,
-        content_w,
+        &RichTextLayout::block_style(true, title_size, family, 1.0),
+        Some(content_w),
         TextAlign::Left,
-        family,
         vec![],
         vec![],
-        1.0,
     );
     let th = title_layout.height();
     tr.draw_rich(
@@ -4170,17 +4160,14 @@ fn draw_block(
     // Lay out `text` in `fam` at `size` within width `width`, returning height.
     let lay =
         |tr: &mut TextRenderer, text: &str, size: f32, width: f32, fam: FontFamily, bold: bool| {
-            RichTextLayout::shape(
+            RichTextLayout::shape_styled(
                 &mut tr.font_system,
                 &[RichSpan::new(text.to_string()).bold(bold)],
-                bold,
-                size,
-                width,
+                &RichTextLayout::block_style(bold, size, fam, 1.0),
+                Some(width),
                 TextAlign::Left,
-                fam,
                 vec![],
                 vec![],
-                1.0,
             )
         };
 
@@ -4224,17 +4211,14 @@ fn draw_block(
         BlockKind::Quote => {
             let tw = w - 24.0;
             // Quotes are italic — render via the styled (italic) span.
-            let layout = RichTextLayout::shape(
+            let layout = RichTextLayout::shape_styled(
                 &mut tr.font_system,
                 &[RichSpan::new(block.text.clone()).italic(true)],
-                false,
-                body_size,
-                tw,
+                &RichTextLayout::block_style(false, body_size, family, 1.0),
+                Some(tw),
                 TextAlign::Left,
-                family,
                 vec![],
                 vec![],
-                1.0,
             );
             let h = layout.height();
             let bar = Rect::new(x, y, x + 3.0, y + f64::from(h) + 4.0);

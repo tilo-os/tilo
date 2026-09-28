@@ -110,19 +110,6 @@ use crate::compositor::surface_outputs::{
     Change as SurfaceOutputChange, Memberships as SurfaceOutputMemberships,
 };
 
-#[derive(Clone)]
-struct PendingLegacyStream {
-    source_peer: u64,
-    surface: u64,
-    local_peer: u64,
-    app_id: String,
-    codec: String,
-    /// The size the sender announced; decoded pictures are cropped to it.
-    display_size: Option<(u32, u32)>,
-    hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
-    input_sink: Arc<dyn Fn(crate::network::streaming::InputEvent) + Send + Sync>,
-}
-
 /// The legacy windows to encode for viewers: none while nobody watches the
 /// backend, so a headless machine's encoders stop and receivers get
 /// `SurfaceStreamEnd` at once.
@@ -2908,10 +2895,6 @@ fn forward_test_control_touch(
 /// the DRM ownership arena rather than reimplementing a test-only notion of
 /// "third finger": E2E assertions therefore cover the exact cancel/frame
 /// decision production hardware uses before the native loop forwards it.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "The test-control touch wire contract keeps each protocol field explicit at the dispatch boundary so fixture inputs map one-to-one onto compositor touch events."
-)]
 fn dispatch_test_control_touch(
     device: &str,
     slot: u32,
@@ -4623,13 +4606,6 @@ fn load_session_tree(
         tree.flush_to_disk();
     }
 
-    let roomless = tree.adopt_roomless_workspaces();
-    if !roomless.is_empty() {
-        tracing::info!(
-            "collaboration: minted a room identity for {} workspace(s)",
-            roomless.len()
-        );
-    }
     let adopted = tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
     if !adopted.is_empty() {
         tracing::info!(
@@ -6987,7 +6963,8 @@ pub fn run() {
     // describe, and a workspace rebuild can replace a mounted runtime
     // widget. Retain descriptors until explicit stream end and retry their
     // cheap idempotent mount every network tick.
-    let mut pending_legacy_streams: HashMap<(u64, u64), PendingLegacyStream> = HashMap::new();
+    let mut pending_legacy_streams: HashMap<(u64, u64), crate::shell::peer_view::PeerStreamStart> =
+        HashMap::new();
     let legacy_share_config = crate::config::load_config().flatpak_share;
     // Optional paint-rate diagnostics (`TILO_PAINT_STATS=1`).
     let paint_stats = std::env::var("TILO_PAINT_STATS").is_ok();
@@ -8846,7 +8823,7 @@ pub fn run() {
                                     );
                                 }
                             });
-                            let stream = PendingLegacyStream {
+                            let stream = crate::shell::peer_view::PeerStreamStart {
                                 source_peer,
                                 surface,
                                 local_peer,
@@ -8857,16 +8834,7 @@ pub fn run() {
                                 input_sink,
                             };
                             let mounted = !stream.app_id.is_empty()
-                                && frame_builder.host_mut().mount_peer_stream(
-                                    stream.source_peer,
-                                    stream.surface,
-                                    stream.local_peer,
-                                    &stream.app_id,
-                                    &stream.codec,
-                                    stream.display_size,
-                                    stream.hdr_static_metadata,
-                                    Arc::clone(&stream.input_sink),
-                                );
+                                && frame_builder.host_mut().mount_peer_stream(&stream);
                             if !mounted {
                                 tracing::warn!(
                                     source_peer,
@@ -8931,16 +8899,7 @@ pub fn run() {
                 pending_legacy_count,
                 for stream in pending_legacy_streams.values() {
                     if !stream.app_id.is_empty() {
-                        let _ = frame_builder.host_mut().mount_peer_stream(
-                            stream.source_peer,
-                            stream.surface,
-                            stream.local_peer,
-                            &stream.app_id,
-                            &stream.codec,
-                            stream.display_size,
-                            stream.hdr_static_metadata,
-                            Arc::clone(&stream.input_sink),
-                        );
+                        let _ = frame_builder.host_mut().mount_peer_stream(stream);
                     }
                 }
             );

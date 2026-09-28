@@ -87,7 +87,6 @@ fn edit_key(id: &str) -> String {
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::needless_pass_by_value,
     reason = "the resource action binding mirrors the framework's distinct address, label, operation, and destructive fields"
 )]
@@ -127,10 +126,13 @@ pub enum AccountViewCommand {
     CancelReauthentication,
 }
 
-struct PendingFormSave {
+/// The account form's fields, as checked and then committed.
+struct AccountDraft {
     kind: AccountKind,
+    /// The account being edited; `None` adds a new one.
     existing_id: Option<String>,
-    assigned_id: accounts::AccountId,
+    /// The id a new account takes once its draft has been checked.
+    assigned_id: Option<accounts::AccountId>,
     name: String,
     identity: String,
     username: String,
@@ -200,7 +202,7 @@ pub struct AccountsPane {
     reauth_id: Option<String>,
     account_tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
     form_probe: Option<ProbeJob>,
-    form_candidate: Option<PendingFormSave>,
+    form_candidate: Option<AccountDraft>,
     reauth_probe: Option<ProbeJob>,
     reauth_candidate: Option<(accounts::AccountId, accounts::Secret)>,
     pending_remove: Option<(AccountKind, String)>,
@@ -1252,33 +1254,26 @@ impl AccountsPane {
     /// envelopes are cloned so fields contributed by another app or a newer
     /// provider survive an edit.
     #[allow(
-        clippy::too_many_arguments,
-        reason = "Account preparation validates the account kind, existing or assigned ID, display name, identity, login, server, and credential together."
-    )]
-    #[allow(
         clippy::too_many_lines,
         reason = "one canonical conversion validates the complete set of account kinds and credential fields"
     )]
     fn prepare_account(
         account_root: &AccountRoot,
-        kind: AccountKind,
-        existing_id: Option<&str>,
-        assigned_id: Option<&accounts::AccountId>,
-        name: &str,
-        identity: &str,
-        username: &str,
-        server: &str,
-        password: &str,
+        draft: &AccountDraft,
     ) -> Result<(accounts::Account, accounts::Secret), String> {
+        let kind = draft.kind;
+        let existing_id = draft.existing_id.as_deref();
+        let name = draft.name.as_str();
+        let password = draft.password.as_str();
         if kind.is_custodied() {
             return Err(format!(
                 "{} accounts are connected by signing in",
                 kind.label()
             ));
         }
-        let identity = identity.trim();
-        let username = username.trim();
-        let server = server.trim().trim_end_matches('/');
+        let identity = draft.identity.trim();
+        let username = draft.username.trim();
+        let server = draft.server.trim().trim_end_matches('/');
         if name.trim().is_empty() {
             return Err("enter a display name".into());
         }
@@ -1331,7 +1326,7 @@ impl AccountsPane {
         let shared = account_root.store();
         let id = existing_id.map_or_else(
             || {
-                assigned_id.cloned().unwrap_or_else(|| {
+                draft.assigned_id.clone().unwrap_or_else(|| {
                     accounts::AccountId::from(match kind {
                         AccountKind::Mail => identity.to_ascii_lowercase(),
                         _ => format!("{}-{}", kind.slug(), uuid::Uuid::new_v4()),
@@ -1418,33 +1413,13 @@ impl AccountsPane {
 
     /// Commit a draft after its protocol probe succeeds. The draft is rebuilt
     /// over the latest canonical envelope to preserve concurrent/newer fields.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Account persistence passes the full validated draft, including existing or assigned ID and credential, into canonical preparation."
-    )]
     fn save_account_with_id(
         account_root: &AccountRoot,
-        kind: AccountKind,
-        existing_id: Option<&str>,
-        assigned_id: Option<&accounts::AccountId>,
-        name: &str,
-        identity: &str,
-        username: &str,
-        server: &str,
-        password: &str,
+        draft: &AccountDraft,
     ) -> Result<(), String> {
-        let (stored, prepared_secret) = Self::prepare_account(
-            account_root,
-            kind,
-            existing_id,
-            assigned_id,
-            name,
-            identity,
-            username,
-            server,
-            password,
-        )?;
-        let publishes = matches!(kind, AccountKind::WebDav | AccountKind::Nextcloud);
+        let (stored, prepared_secret) = Self::prepare_account(account_root, draft)?;
+        let password = draft.password.as_str();
+        let publishes = matches!(draft.kind, AccountKind::WebDav | AccountKind::Nextcloud);
         let id = stored.id.clone();
         Self::commit_account(
             account_root,
@@ -1511,10 +1486,6 @@ impl AccountsPane {
     }
 
     #[cfg(test)]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the validated draft fields of save_account_with_id"
-    )]
     fn save_account(
         account_root: &AccountRoot,
         kind: AccountKind,
@@ -1527,14 +1498,16 @@ impl AccountsPane {
     ) -> Result<(), String> {
         Self::save_account_with_id(
             account_root,
-            kind,
-            existing_id,
-            None,
-            name,
-            identity,
-            username,
-            server,
-            password,
+            &AccountDraft {
+                kind,
+                existing_id: existing_id.map(str::to_string),
+                assigned_id: None,
+                name: name.to_string(),
+                identity: identity.to_string(),
+                username: username.to_string(),
+                server: server.to_string(),
+                password: password.to_string(),
+            },
         )
     }
 
@@ -1717,39 +1690,29 @@ impl AccountsPane {
                 return;
             }
             let identity = if kind == AccountKind::Mail {
-                &email
+                email
             } else {
-                &user
+                user.clone()
             };
-            let prepared = Self::prepare_account(
-                &self.account_root,
+            let mut draft = AccountDraft {
                 kind,
-                self.form_account_id.as_deref(),
-                None,
-                &name,
+                existing_id: self.form_account_id.clone(),
+                assigned_id: None,
+                name,
                 identity,
-                &user,
-                &server,
-                &password,
-            );
-            match prepared {
+                username: user,
+                server,
+                password,
+            };
+            match Self::prepare_account(&self.account_root, &draft) {
                 Ok((account, secret)) => {
-                    let candidate = PendingFormSave {
-                        kind,
-                        existing_id: self.form_account_id.clone(),
-                        assigned_id: account.id.clone(),
-                        name,
-                        identity: identity.clone(),
-                        username: user,
-                        server,
-                        password,
-                    };
+                    draft.assigned_id = Some(account.id.clone());
                     let tester = std::sync::Arc::clone(&self.account_tester);
                     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
                     std::thread::spawn(move || {
                         let _ = sender.send(tester.test(&account, &secret));
                     });
-                    self.form_candidate = Some(candidate);
+                    self.form_candidate = Some(draft);
                     self.form_probe = Some(ProbeJob::new(receiver));
                     self.form_error = Some("Checking the account before saving…".into());
                     self.structure_dirty = true;
@@ -1780,17 +1743,7 @@ impl AccountsPane {
                 self.structure_dirty = true;
                 return;
             };
-            match Self::save_account_with_id(
-                &self.account_root,
-                candidate.kind,
-                candidate.existing_id.as_deref(),
-                Some(&candidate.assigned_id),
-                &candidate.name,
-                &candidate.identity,
-                &candidate.username,
-                &candidate.server,
-                &candidate.password,
-            ) {
+            match Self::save_account_with_id(&self.account_root, &candidate) {
                 Ok(()) => {
                     self.form_kind = None;
                     self.form_error = None;

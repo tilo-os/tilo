@@ -1725,10 +1725,6 @@ impl CartesianPlot {
         .filter(|point| plot.contains(*point))
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "axis paint needs the shared scene, text, theme and two resolved domains"
-    )]
     fn draw_axes(
         &self,
         scene: &mut Scene,

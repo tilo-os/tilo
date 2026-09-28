@@ -62,6 +62,7 @@ use vello::kurbo::{Affine, Point, Rect};
 
 use crate::model::{ActionKind, SourceFilter, StoreItem, StoreSource};
 use crate::sources::distinct_categories;
+use crate::widgets::{CardAction, CardDetails, CardLayout};
 
 /// Build a taffy node from `children` already built in the same tree.
 /// `new_with_children` only fails when a child id does not resolve in this
@@ -1266,6 +1267,16 @@ impl StoreApp {
 
     fn stacked_catalogue_layout(&self) -> bool {
         self.compact_layout() || self.readable_type_layout()
+    }
+
+    fn card_layout(&self) -> CardLayout {
+        if self.stacked_catalogue_layout() {
+            CardLayout::Stacked {
+                large_text: self.readable_type_layout(),
+            }
+        } else {
+            CardLayout::Wide
+        }
     }
 
     pub fn set_remotes(&mut self, remotes: Vec<crate::flathub_client::Remote>) {
@@ -3353,16 +3364,19 @@ impl StoreApp {
             let select_key = format!("store.detail.{}", item.id);
             let card = crate::widgets::store_card(
                 item,
-                action,
-                &select_key,
-                &click_key,
+                CardAction {
+                    kind: action,
+                    key: &click_key,
+                    binding: item_action_binding(item, action),
+                    in_progress: operation_active,
+                },
+                CardDetails {
+                    key: &select_key,
+                    binding: detail_binding(item),
+                },
                 theme,
                 self.images.clone(),
-                item_action_binding(item, action),
-                detail_binding(item),
-                self.stacked_catalogue_layout(),
-                self.readable_type_layout(),
-                operation_active,
+                self.card_layout(),
             );
             if !group_by_availability {
                 search_cards.push(card);
@@ -5473,16 +5487,23 @@ mod tests {
                 for busy in [false, true] {
                     let card = crate::widgets::store_card(
                         item,
-                        action,
-                        "select",
-                        "primary",
+                        CardAction {
+                            kind: action,
+                            key: "primary",
+                            binding: item_action_binding(item, action),
+                            in_progress: busy,
+                        },
+                        CardDetails {
+                            key: "select",
+                            binding: detail_binding(item),
+                        },
                         &Theme::dark(),
                         None,
-                        item_action_binding(item, action),
-                        detail_binding(item),
-                        width < 600.0,
-                        false,
-                        busy,
+                        if width < 600.0 {
+                            CardLayout::Stacked { large_text: false }
+                        } else {
+                            CardLayout::Wide
+                        },
                     );
                     let mut grid = CardGrid::content_sized(vec![card]);
                     let (tree, node) = layout_card_grid(&mut grid, width);

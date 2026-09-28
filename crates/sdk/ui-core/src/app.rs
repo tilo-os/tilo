@@ -1152,11 +1152,12 @@ impl App {
                 &self.bindings,
                 &self.layout.node_map,
                 node,
-                &mut self.state.doc,
-                &self.state.root,
                 action,
-                &self.permission_ctx,
-                &author,
+                &mut self.state,
+                crate::bound_dispatch::SemanticCaller {
+                    authority: &self.permission_ctx,
+                    author: &author,
+                },
                 callback,
             )
         }

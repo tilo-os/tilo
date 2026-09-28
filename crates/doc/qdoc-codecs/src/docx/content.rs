@@ -1372,10 +1372,6 @@ impl BodyState {
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the body parser needs every part the other parsers produced, and the content inputs it adds images to"
-)]
 pub(crate) fn parse_body(
     document_xml: &[u8],
     reg: &StyleRegistry,

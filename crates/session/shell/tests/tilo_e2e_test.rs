@@ -1055,11 +1055,6 @@ fn topbar_with_overview_btn_hit() -> (
 /// pair reaches the widget tree. Split out of
 /// [`full_root_click_toggles_overview_via_topbar_button`] to keep it under
 /// the line limit.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "mirrors Widget::handle_event's own parameter list, forwarded verbatim from the \
-              test harness"
-)]
 fn click_full_root(
     root: &mut Box<dyn Widget>,
     taffy: &taffy::TaffyTree<()>,

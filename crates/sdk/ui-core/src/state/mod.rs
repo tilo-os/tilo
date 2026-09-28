@@ -773,10 +773,6 @@ impl UndoLog {
         )
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "legacy and bound restore share explicit history attribution"
-    )]
     fn restore_to_heads_owned(
         &mut self,
         doc: &mut AutoCommit,

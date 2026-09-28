@@ -1,9 +1,9 @@
 //! Layout and input routing for chrome plus a borrowed presentation slot.
 //! Live ownership/lifecycle traversal stays entirely with the runner.
 use super::{
-    Affine, AutoCommit, Dimension, FlexDirection, HashMap, HistoryHost, NodeId, ObjId, Point,
-    PresenceCtx, PreviewSide, Rect, Scene, Size, Style, TaffyTree, TaffyTreeExt, TextRenderer,
-    Theme, Widget, WindowEvent,
+    Affine, Dimension, FlexDirection, HashMap, HistoryHost, NodeId, Point, PresenceCtx,
+    PreviewSide, Rect, Scene, Size, Style, TaffyTree, TaffyTreeExt, TextRenderer, Theme, Widget,
+    WindowEvent,
 };
 use crate::widget::{AppModel, ModelPath};
 
@@ -134,65 +134,31 @@ impl HistoryHost {
     pub(crate) fn live_layout_node(&self) -> Option<NodeId> {
         self.live_node
     }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "History routing forwards the Widget input, CRDT, focus/handled, and layout context to chrome or the live child."
-    )]
-    #[allow(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "event router forwards borrowed modifiers to the Widget event contract"
-    )]
+    /// Route `event` to the History chrome, then (when the chrome did not
+    /// take it) to the `live` app. Each is dispatched at its own layout node;
+    /// `ctx.node_id` is the node the event arrived at and is not forwarded.
     pub(crate) fn route_event(
         &mut self,
         live: &mut dyn Widget,
         event: &WindowEvent,
-        scale: f64,
-        mods: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        tree: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
+        let scale = ctx.scale_factor;
         let chrome_event = self.controls_event(event, scale);
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = Point::new(position.x / scale, position.y / scale);
         }
         if let Some(root) = self.chrome_node {
-            self.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: scale,
-                    modifiers: mods,
-                    state: doc,
-                    path,
-                    handled,
-                    focus_target: focus,
-                    node_id: root,
-                    taffy: tree,
-                },
-            );
+            self.handle_event(event, &mut ctx.reborrow(ctx.path, root));
         }
         if chrome_event && !matches!(event, WindowEvent::KeyboardInput { .. }) {
-            *handled = true;
+            *ctx.handled = true;
         }
         if !chrome_event
-            && !*handled
+            && !*ctx.handled
             && let Some(child) = self.live_node
         {
-            live.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: scale,
-                    modifiers: mods,
-                    state: doc,
-                    path,
-                    handled,
-                    focus_target: focus,
-                    node_id: child,
-                    taffy: tree,
-                },
-            );
+            live.handle_event(event, &mut ctx.reborrow(ctx.path, child));
         }
     }
 }

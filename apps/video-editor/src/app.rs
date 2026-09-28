@@ -26,6 +26,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Role};
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
@@ -4372,7 +4373,6 @@ impl VideoEditorApp {
             VIDEO_EDITOR_ACTION_TYPE,
             &VideoEditorAction::AddEffect {
                 clip: id.to_string(),
-                expected_stack: Vec::new(),
                 ordinal,
                 effect,
             },
@@ -8315,11 +8315,9 @@ impl VideoEditorApp {
             tr,
             tf,
             hint,
-            15.0,
+            &TextStyle::new(15.0).with_weight(TextWeight::Semibold),
             c.accent[5],
-            plate.x0 + 18.0,
-            baseline,
-            TextWeight::Semibold,
+            Point::new(plate.x0 + 18.0, baseline),
         );
     }
 
@@ -8685,11 +8683,9 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 group,
-                ty.xs,
+                &TextStyle::new(ty.xs).with_weight(TextWeight::Bold),
                 dim,
-                g.heading.x0,
-                g.heading.y0,
-                TextWeight::Bold,
+                Point::new(g.heading.x0, g.heading.y0),
             );
             for ((combo, what), row) in rows.iter().zip(&g.rows) {
                 text_w(
@@ -8697,11 +8693,9 @@ impl VideoEditorApp {
                     tr,
                     tf,
                     combo,
-                    ty.sm,
+                    &TextStyle::new(ty.sm).with_weight(TextWeight::Bold),
                     c.accent[6],
-                    row.x0,
-                    row.y0,
-                    TextWeight::Bold,
+                    Point::new(row.x0, row.y0),
                 );
                 let shown = elide_at(what, (row.width() - l.what_dx) as f32, ty.sm, tr);
                 text(
@@ -8798,11 +8792,9 @@ impl VideoEditorApp {
             tr,
             tf,
             shown,
-            ty.xl,
+            &TextStyle::new(ty.xl).with_weight(TextWeight::Bold),
             col,
-            x,
-            l.entry_top,
-            TextWeight::Bold,
+            Point::new(x, l.entry_top),
         );
         // A caret, so an empty field reads as "type here" rather than as a
         // placeholder someone forgot to remove. Measured at the weight the
@@ -8923,7 +8915,12 @@ impl VideoEditorApp {
                 .position(|(_, _, on)| *on)
                 .unwrap_or(usize::MAX);
             draw_segmented_sized(
-                scene, tf, tr, theme, &rects, &labels, selected, cursor, ty.sm,
+                &mut PaintCtx::new(scene, tf, tr, theme),
+                &rects,
+                &labels,
+                selected,
+                cursor,
+                ty.sm,
             );
         };
         let res: Vec<_> = l

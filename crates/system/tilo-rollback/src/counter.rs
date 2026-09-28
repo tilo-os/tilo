@@ -635,6 +635,16 @@ impl AdvanceOutcome {
     }
 }
 
+/// The floor authority's key and the single-use approvals it has signed.
+#[derive(Debug, Clone, Copy)]
+pub struct FloorApprovals<'a> {
+    pub authority_public_key: &'a Path,
+    pub authority_key_name: &'a [u8],
+    pub approvals: &'a [crate::approval::Approval],
+    /// Where spent approvals are discarded from, when they came from disk.
+    pub dir: Option<&'a Path>,
+}
+
 /// Raise the floor towards `target_floor`, spending one signed approval per step. Advances
 /// as far as available approvals allow and reports the rest — a partial advance is safe (the
 /// counter only ever moves in the permitted direction), and better than refusing outright,
@@ -647,12 +657,8 @@ impl AdvanceOutcome {
 /// # Errors
 ///
 /// Returns an error if the number of increments needed to reach `target_floor` exceeds
-/// `max_increments`, if an approved increment fails, or if the counter doesn't move after an
-/// approved increment.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "TPM step inputs; each is an independent value the caller already holds"
-)]
+/// [`MAX_INCREMENTS_PER_ADVANCE`], if an approved increment fails, or if the counter doesn't
+/// move after an approved increment.
 pub fn advance(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -660,12 +666,9 @@ pub fn advance(
     scratch: &Path,
     state: FloorState,
     target_floor: u64,
-    max_increments: u64,
-    authority_public_key: &Path,
-    authority_key_name: &[u8],
-    approvals: &[crate::approval::Approval],
-    approval_dir: Option<&Path>,
+    approvals: &FloorApprovals<'_>,
 ) -> Result<AdvanceOutcome> {
+    let max_increments = MAX_INCREMENTS_PER_ADVANCE;
     let n = state.increments_to(target_floor)?;
     if n == 0 {
         return Ok(AdvanceOutcome {
@@ -690,7 +693,7 @@ pub fn advance(
             .counter
             .checked_add(1)
             .context("rollback floor counter is at its maximum value")?;
-        let Some(approval) = crate::approval::find(approvals, next) else {
+        let Some(approval) = crate::approval::find(approvals.approvals, next) else {
             unapproved.push(next);
             break;
         };
@@ -698,11 +701,11 @@ pub fn advance(
             runner,
             ws,
             index,
-            authority_public_key,
-            authority_key_name,
+            approvals.authority_public_key,
+            approvals.authority_key_name,
             approval,
         )?;
-        if let Some(d) = approval_dir {
+        if let Some(d) = approvals.dir {
             crate::approval::discard(d, approval);
         }
         let counter = read(runner, index, scratch)?

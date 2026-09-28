@@ -104,7 +104,7 @@ pub mod prelude {
 
     pub use ui_core::application::{
         AppComponent, ApplicationCatalog, ApplicationDefinition, ComponentRunnerInputs,
-        HostContext, LaunchTarget, PreparedComponentInputs, RestoreInput,
+        HostContext, HostContextInputs, LaunchTarget, PreparedComponentInputs, RestoreInput,
     };
     pub use ui_core::application_view::{InstanceViewStore, SavedInstanceView};
     pub use ui_core::launch::ComponentHostPreparer;

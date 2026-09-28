@@ -1065,10 +1065,6 @@ fn bounded_agent_name(name: &str) -> String {
     name.get(..end).unwrap_or(name).to_owned()
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "canonical leaf constructor mirrors the replayable SendMessage action payload; callers must supply every authored field before dispatch"
-)]
 pub fn send_message_action(
     channel: &str,
     id: &str,

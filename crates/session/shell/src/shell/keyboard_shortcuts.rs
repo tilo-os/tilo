@@ -170,35 +170,38 @@ fn chord_param() -> Vec<ActionParam> {
     )]
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one positional field per descriptor field keeps each published action readable as one call"
-)]
-fn descriptor(
-    resource: String,
-    resource_kind: &str,
-    resource_label: String,
-    action: &str,
-    action_label: String,
-    description: String,
-    kind: OperationKind,
-    contract: ActionContract,
-    params: Vec<ActionParam>,
-) -> ActionDescriptor {
-    ActionDescriptor {
-        address: ActionAddress::new(resource, action),
-        resource_kind: resource_kind.into(),
-        resource_label,
-        // Shortcut names and chords are the shell's own chrome.
-        resource_sensitivity: tilo_actions::Sensitivity::Public,
-        action_label,
-        description: Some(description),
-        locus: ExecutionLocus::default(),
-        kind,
-        contract,
-        input: InputSpec::None,
-        params,
-        view: None,
+/// The resource a published action sits on: [`RESOURCE`] or one shortcut's.
+struct ShortcutResource {
+    id: String,
+    kind: &'static str,
+    label: String,
+}
+
+impl ShortcutResource {
+    /// The parameterless `action` on this resource.
+    fn action(
+        &self,
+        action: &str,
+        action_label: String,
+        description: String,
+        kind: OperationKind,
+        contract: ActionContract,
+    ) -> ActionDescriptor {
+        ActionDescriptor {
+            address: ActionAddress::new(self.id.clone(), action),
+            resource_kind: self.kind.into(),
+            resource_label: self.label.clone(),
+            // Shortcut names and chords are the shell's own chrome.
+            resource_sensitivity: tilo_actions::Sensitivity::Public,
+            action_label,
+            description: Some(description),
+            locus: ExecutionLocus::default(),
+            kind,
+            contract,
+            input: InputSpec::None,
+            params: Vec::new(),
+            view: None,
+        }
     }
 }
 
@@ -209,33 +212,29 @@ fn descriptor(
 pub fn descriptors(
     config: &ShortcutConfig,
 ) -> Vec<(ActionDescriptor, Option<ResourcePresentation>)> {
-    let resource_label = t("keyboard-shortcuts-resource");
+    let resource = ShortcutResource {
+        id: RESOURCE.into(),
+        kind: RESOURCE_KIND,
+        label: t("keyboard-shortcuts-resource"),
+    };
     let mut out = vec![
         (
-            descriptor(
-                RESOURCE.into(),
-                RESOURCE_KIND,
-                resource_label.clone(),
+            resource.action(
                 LIST_ACTION,
                 t("keyboard-shortcuts-list"),
                 t("keyboard-shortcuts-list-description"),
                 OperationKind::View,
                 contract(PermissionRequirement::Read, list_schema()),
-                Vec::new(),
             ),
             None,
         ),
         (
-            descriptor(
-                RESOURCE.into(),
-                RESOURCE_KIND,
-                resource_label,
+            resource.action(
                 RESET_ALL_ACTION,
                 t("keyboard-shortcuts-reset-all"),
                 t("keyboard-shortcuts-reset-all-description"),
                 OperationKind::Effect,
                 contract(PermissionRequirement::Write, list_schema()),
-                Vec::new(),
             ),
             None,
         ),
@@ -249,32 +248,33 @@ pub fn descriptors(
         };
         let presentation = presentation.is_valid().then_some(presentation);
         let shortcut = || [("shortcut", name.clone().into())];
+        let resource = ShortcutResource {
+            id: entry_resource(entry.id),
+            kind: ENTRY_KIND,
+            label: name.clone(),
+        };
         out.push((
-            descriptor(
-                entry_resource(entry.id),
-                ENTRY_KIND,
-                name.clone(),
-                REBIND_ACTION,
-                t_args("keyboard-shortcut-rebind", &shortcut()),
-                t_args(
-                    "keyboard-shortcut-rebind-description",
-                    &[
-                        ("shortcut", name.clone().into()),
-                        ("chords", chords_text(&entry.chords).into()),
-                        ("defaults", chords_text(&entry.defaults).into()),
-                    ],
-                ),
-                OperationKind::Effect,
-                contract(PermissionRequirement::Write, entry_schema()),
-                chord_param(),
-            ),
+            ActionDescriptor {
+                params: chord_param(),
+                ..resource.action(
+                    REBIND_ACTION,
+                    t_args("keyboard-shortcut-rebind", &shortcut()),
+                    t_args(
+                        "keyboard-shortcut-rebind-description",
+                        &[
+                            ("shortcut", name.clone().into()),
+                            ("chords", chords_text(&entry.chords).into()),
+                            ("defaults", chords_text(&entry.defaults).into()),
+                        ],
+                    ),
+                    OperationKind::Effect,
+                    contract(PermissionRequirement::Write, entry_schema()),
+                )
+            },
             presentation.clone(),
         ));
         out.push((
-            descriptor(
-                entry_resource(entry.id),
-                ENTRY_KIND,
-                name.clone(),
+            resource.action(
                 RESET_ACTION,
                 t_args("keyboard-shortcut-reset", &shortcut()),
                 t_args(
@@ -286,7 +286,6 @@ pub fn descriptors(
                 ),
                 OperationKind::Effect,
                 contract(PermissionRequirement::Write, entry_schema()),
-                Vec::new(),
             ),
             presentation,
         ));

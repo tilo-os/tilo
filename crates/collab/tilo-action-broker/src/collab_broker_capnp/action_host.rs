@@ -25,9 +25,10 @@ use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, In
 use super::launchable::{is_launchable_provider, launchable_provider};
 use super::{
     ActionDirectoryBridgeError, ActionDirectoryBridgeReply, ActionDirectoryBridgeResponse,
-    ActionDirectoryRoot, BrokerActor, CapDecision, CapnpBrokerState, InvocationOwner, LaunchScope,
-    PublishedAction, PublishedInput, PublishedSurface, ResourceRef, Verb, confirmation_satisfied,
-    permission_verb, published_directory_action, validate_directory_target_input,
+    ActionDirectoryRoot, BrokerActor, CapDecision, CapnpBrokerState, InvocationInputs,
+    InvocationOwner, LaunchScope, PublishedAction, PublishedInput, PublishedSurface, ResourceRef,
+    Verb, confirmation_satisfied, permission_verb, published_directory_action,
+    validate_directory_target_input,
 };
 use crate::automation;
 use crate::collab_broker::CrdtRoute;
@@ -1271,10 +1272,12 @@ impl CapnpBrokerState {
         self.start_invocation_from_offered(
             root.peer_id,
             (surface, offered),
-            argument,
-            &actor,
-            token.as_deref(),
-            request.context.clone(),
+            InvocationInputs {
+                argument,
+                actor: &actor,
+                confirmation_token: token.as_deref(),
+                context: request.context.clone(),
+            },
             request.revision.as_deref(),
         )
         .map(|job| job.id)
@@ -1350,10 +1353,12 @@ impl CapnpBrokerState {
             peer_id,
             &address.resource,
             &address.action,
-            argument.as_deref(),
-            &actor,
-            token.as_deref(),
-            request.context.clone(),
+            InvocationInputs {
+                argument: argument.as_deref(),
+                actor: &actor,
+                confirmation_token: token.as_deref(),
+                context: request.context.clone(),
+            },
             None,
             origin.cloned(),
         )
@@ -1733,10 +1738,12 @@ impl CapnpBrokerState {
             peer_id,
             &action.resource,
             &action.action,
-            None,
-            actor,
-            None,
-            request.context.clone(),
+            InvocationInputs {
+                argument: None,
+                actor,
+                confirmation_token: None,
+                context: request.context.clone(),
+            },
         )
         .map(|job| job.id)
         .map_err(refusal)

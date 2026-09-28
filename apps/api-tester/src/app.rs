@@ -49,7 +49,7 @@ use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::richtext::{RichSpan, RichTextLayout, TextAlign};
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
@@ -2884,16 +2884,13 @@ impl ApiTesterApp {
                 let mut cx = text_x0;
                 for tok in &line.tokens {
                     let col = token_color(theme, tok.kind);
-                    tr.draw_text_styled(
+                    tr.draw_style(
                         scene,
                         &tok.text,
-                        size,
                         col,
                         t * Affine::translate((cx, screen_y + 3.0)),
                         None,
-                        TextWeight::Regular,
-                        false,
-                        true,
+                        &TextStyle::new(size).with_family(FontChoice::Monospace),
                     );
                     let (w, _) =
                         tr.measure_styled(&tok.text, size, None, TextWeight::Regular, false, true);
@@ -2946,16 +2943,13 @@ impl ApiTesterApp {
         let mut y = area.y0 + 8.0 - self.body_scroll;
         for line in body.lines() {
             if y + line_h >= area.y0 && y <= area.y1 {
-                tr.draw_text_styled(
+                tr.draw_style(
                     scene,
                     line,
-                    size,
                     c.text_primary,
                     t * Affine::translate((area.x0 + PAD, y + 3.0)),
                     None,
-                    TextWeight::Regular,
-                    false,
-                    true,
+                    &TextStyle::new(size).with_family(FontChoice::Monospace),
                 );
             }
             y += line_h;

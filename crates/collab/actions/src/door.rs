@@ -502,10 +502,6 @@ pub fn invoke_confirmed(
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one door invocation binds the document, published tree, address, argument, provenance, registry, transport and consent together"
-)]
 fn invoke_with_consent(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -567,10 +563,6 @@ pub fn invoke_json_confirmed(
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one door invocation binds the document, published tree, address, arguments, provenance, registry, transport and consent together"
-)]
 fn invoke_json_with_consent(
     doc: &mut crate::action::Doc,
     resources: &[Resource],

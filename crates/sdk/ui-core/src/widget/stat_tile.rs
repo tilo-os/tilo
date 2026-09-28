@@ -18,13 +18,14 @@ use std::collections::HashMap;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 
 use crate::icons::Icon;
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_metrics::renderer_type_size;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
@@ -83,31 +84,29 @@ fn tile_height(has_delta: bool, theme: &Theme) -> f64 {
     PAD * 2.0 + caption + 6.0 + value + delta
 }
 
+/// What an immediate-mode [`StatTile::paint`] shows.
+#[derive(Clone, Copy, Debug)]
+pub struct StatTileContent<'a> {
+    pub caption: &'a str,
+    pub value: &'a str,
+    pub value_color: Color,
+    pub icon: Option<Icon>,
+    /// E.g. `("12%", Trend::Up)`.
+    pub delta: Option<(&'a str, Trend)>,
+}
+
 /// Shared paint of a stat tile filling `rect`. Used by both the retained
 /// [`StatTile`] widget and the immediate-mode [`StatTile::paint`] entry point.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Shared stat-tile painting combines render context and bounds with caption, value/color, optional icon, and trend delta."
-)]
-fn paint_stat_tile(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    caption: &str,
-    value: &str,
-    value_color: Color,
-    icon: Option<Icon>,
-    delta: Option<(&str, Trend)>,
-) {
+fn paint_stat_tile(ctx: &mut PaintCtx<'_>, rect: Rect, content: &StatTileContent<'_>) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
+    let theme = ctx.theme;
+    let transform = ctx.transform;
     // Card surface with its derived rest edge (HIG §9.5), crisp inside the
     // tile so it registers on a raised ground in dark and light alike.
     crate::surface::card(
-        scene,
+        ctx.scene,
         transform,
         rect,
         f64::from(theme.tokens.radii.lg),
@@ -119,67 +118,58 @@ fn paint_stat_tile(
     // scale is applied exactly once.
     let caption_step = f64::from(theme.tokens.typography.scale.sm);
     let value_step = f64::from(theme.tokens.typography.scale.x2l);
-    let caption_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-    let value_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.x2l);
-    let delta_size = caption_size;
+    let caption_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.sm);
+    let value_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.x2l);
+    let caption_style = TextStyle::new(caption_size);
 
     let x = rect.x0 + PAD;
     let mut y = rect.y0 + PAD;
 
-    let (_, caption_h) = text_renderer.measure(caption, caption_size, None);
-    text_renderer.draw_text(
-        scene,
-        caption,
-        caption_size,
+    let (_, caption_h) = ctx.text.measure(content.caption, caption_size, None);
+    ctx.text(
+        content.caption,
+        &caption_style,
         theme.text_dim,
-        transform.pre_translate(Vec2::new(x, y)),
+        Point::new(x, y),
         None,
     );
 
-    if let Some(icon) = icon {
+    if let Some(icon) = content.icon {
         // Centre the glyph on the caption's measured line so the two read as
         // one row.
         let ir = Rect::from_center_size(
             Point::new(rect.x1 - PAD - ICON_D / 2.0, y + f64::from(caption_h) / 2.0),
             (ICON_D, ICON_D),
         );
-        icon.draw_with_stroke(scene, transform, ir, theme.text_dim, 1.6);
+        icon.draw_with_stroke(ctx.scene, transform, ir, theme.text_dim, 1.6);
     }
 
     y += caption_step + 6.0;
 
-    text_renderer.draw_text(
-        scene,
-        value,
-        value_size,
-        value_color,
-        transform.pre_translate(Vec2::new(x, y)),
+    ctx.text(
+        content.value,
+        &TextStyle::new(value_size),
+        content.value_color,
+        Point::new(x, y),
         None,
     );
     y += value_step + 6.0;
 
-    if let Some((delta_text, trend)) = delta {
+    if let Some((delta_text, trend)) = content.delta {
         let col = trend.color(theme);
         let mut dx = x;
         if let Some(arrow) = trend.arrow() {
             // Centre the arrow on the delta text's measured line, like the
             // icon on the caption line.
-            let (_, delta_h) = text_renderer.measure(delta_text, delta_size, None);
+            let (_, delta_h) = ctx.text.measure(delta_text, caption_size, None);
             let ar = Rect::from_center_size(
                 Point::new(dx + caption_step / 2.0, y + f64::from(delta_h) / 2.0),
                 (caption_step, caption_step),
             );
-            arrow.draw_with_stroke(scene, transform, ar, col, 1.8);
+            arrow.draw_with_stroke(ctx.scene, transform, ar, col, 1.8);
             dx += caption_step + 2.0;
         }
-        text_renderer.draw_text(
-            scene,
-            delta_text,
-            delta_size,
-            col,
-            transform.pre_translate(Vec2::new(dx, y)),
-            None,
-        );
+        ctx.text(delta_text, &caption_style, col, Point::new(dx, y), None);
     }
 }
 
@@ -232,34 +222,8 @@ impl StatTile {
     }
 
     /// For apps that render straight to a `Scene`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Immediate stat-tile painting forwards render context, bounds, caption/value/color, icon, and trend to the shared painter."
-    )]
-    pub fn paint(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        caption: &str,
-        value: &str,
-        value_color: Color,
-        icon: Option<Icon>,
-        delta: Option<(&str, Trend)>,
-    ) {
-        paint_stat_tile(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect,
-            caption,
-            value,
-            value_color,
-            icon,
-            delta,
-        );
+    pub fn paint(ctx: &mut PaintCtx<'_>, rect: Rect, content: &StatTileContent<'_>) {
+        paint_stat_tile(ctx, rect, content);
     }
 }
 
@@ -320,18 +284,17 @@ impl Widget for StatTile {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let value_color = self.value_color(theme);
+        let content = StatTileContent {
+            caption: &self.caption,
+            value: &self.value,
+            value_color: self.value_color(theme),
+            icon: self.icon,
+            delta: self.delta.as_ref().map(|(t, tr)| (t.as_str(), *tr)),
+        };
         paint_stat_tile(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             self.rect,
-            &self.caption,
-            &self.value,
-            value_color,
-            self.icon,
-            self.delta.as_ref().map(|(t, tr)| (t.as_str(), *tr)),
+            &content,
         );
     }
 

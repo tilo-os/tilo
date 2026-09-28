@@ -126,6 +126,15 @@ fn admit(
     ))
 }
 
+/// What each later snapshot phase needs to open a Store turn and revalidate
+/// the admitted session inside it.
+struct SessionTurns<'a> {
+    source: &'a CloudStoreSource,
+    pool: &'a HostBytes,
+    registry: &'a mut Registries,
+    pins: &'a Pins,
+}
+
 impl Snapshots {
     pub(super) fn new() -> Self {
         Self {
@@ -233,16 +242,13 @@ impl Snapshots {
                     admit(registry, pins, turn, request)
                 })
                 .context("snapshot renew admission")?;
-            return match self.renew(
+            let turns = SessionTurns {
                 source,
                 pool,
-                work,
                 registry,
                 pins,
-                (session, device),
-                pin,
-                manifest_digest,
-            ) {
+            };
+            return match self.renew(turns, work, (session, device), pin, manifest_digest) {
                 Ok(manifest) => frame(MessageType::SnapshotManifest, &manifest),
                 Err(error) => {
                     let reason = reset_reason(&error).unwrap_or(ResetReason::HistoryUnavailable);
@@ -316,7 +322,13 @@ impl Snapshots {
                 Ok(live.manifest(turn, session).map_err(delivery)?.to_vec())
             },
         )?;
-        self.retain(source, pool, registry, pins, session, device, live)?;
+        let turns = SessionTurns {
+            source,
+            pool,
+            registry,
+            pins,
+        };
+        self.retain(turns, (session, device), live)?;
         frame(MessageType::SnapshotManifest, &manifest)
     }
 
@@ -332,20 +344,18 @@ impl Snapshots {
     }
 
     /// Keep the new live pin, superseding the device's oldest beyond its bound.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct piece of custody or context the caller already holds"
-    )]
     fn retain(
         &mut self,
-        source: &CloudStoreSource,
-        pool: &HostBytes,
-        registry: &mut Registries,
-        pins: &Pins,
-        session: [u8; 16],
-        device: [u8; 32],
+        turns: SessionTurns<'_>,
+        (session, device): ([u8; 16], [u8; 32]),
         live: LiveSnapshot,
     ) -> Result<()> {
+        let SessionTurns {
+            source,
+            pool,
+            registry,
+            pins,
+        } = turns;
         let now = tilo_delivery_protocol::clock::now_ns();
         self.live
             .retain(|transfer| transfer.live.expires_at_ns() > now);
@@ -381,28 +391,35 @@ impl Snapshots {
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit protocol inputs stay separate parameters"
-    )]
     fn renew(
         &mut self,
-        source: &CloudStoreSource,
-        pool: &HostBytes,
+        turns: SessionTurns<'_>,
         work: &HostWorkInventory,
-        registry: &mut Registries,
-        pins: &Pins,
         (session, device): ([u8; 16], [u8; 32]),
         pin: [u8; 16],
         digest: Digest,
     ) -> Result<Vec<u8>> {
+        let SessionTurns {
+            source,
+            pool,
+            registry,
+            pins,
+        } = turns;
         let live = match self
             .live
             .iter()
             .position(|t| t.device == device && t.live.pin() == pin)
         {
             Some(index) => self.live.remove(index).live,
-            None => Self::recover_live(source, pool, work, registry, pins, session, pin, digest)?,
+            None => {
+                let turns = SessionTurns {
+                    source,
+                    pool,
+                    registry: &mut *registry,
+                    pins,
+                };
+                Self::recover_live(turns, work, session, pin, digest)?
+            }
         };
         let live = if live.renewable() {
             match with_turn(source, pool, DeliveryOperation::SnapshotRenew, |turn| {
@@ -446,20 +463,19 @@ impl Snapshots {
     }
 
     /// Reconcile a durable pin from its signed sidecar after a restart.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit protocol inputs stay separate parameters"
-    )]
     fn recover_live(
-        source: &CloudStoreSource,
-        pool: &HostBytes,
+        turns: SessionTurns<'_>,
         work: &HostWorkInventory,
-        registry: &mut Registries,
-        pins: &Pins,
         session: [u8; 16],
         pin: [u8; 16],
         digest: Digest,
     ) -> Result<LiveSnapshot> {
+        let SessionTurns {
+            source,
+            pool,
+            registry,
+            pins,
+        } = turns;
         let job = with_turn(source, pool, DeliveryOperation::SnapshotSelect, |turn| {
             let session = revalidate(registry, pins, turn, session)?;
             phases::open_recovery(source, turn, session, work, pin).map_err(delivery)

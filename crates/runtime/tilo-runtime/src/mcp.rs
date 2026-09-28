@@ -606,7 +606,34 @@ fn empty_object() -> Value {
     json!({})
 }
 fn page_json(page: &CataloguePage) -> Value {
-    json!({"revision":page.revision,"rows":page.rows.iter().map(row_json).collect::<Vec<_>>(),"next_cursor":page.next_cursor,"exhausted":page.exhausted,"stale_cursor":page.stale_cursor,"budget_exhausted":page.budget_exhausted})
+    json!({"revision":page.revision,"rows":page.rows.iter().map(browsed_row_json).collect::<Vec<_>>(),"next_cursor":page.next_cursor,"exhausted":page.exhausted,"stale_cursor":page.stale_cursor,"budget_exhausted":page.budget_exhausted})
+}
+/// A parameter schema larger than this is left to `tilo_resolve` in a
+/// browsed page: one rich-text `apply` schema is tens of kilobytes, and an
+/// agent pays for every byte of every page it reads.
+const BROWSED_SCHEMA_BYTES: usize = 1024;
+/// [`row_json`] with large parameter schemas replaced by a pointer to
+/// `tilo_resolve`, which returns them in full.
+fn browsed_row_json(row: &CatalogueRow) -> Value {
+    let mut value = row_json(row);
+    if let Some(params) = value
+        .pointer_mut("/descriptor/params")
+        .and_then(Value::as_array_mut)
+    {
+        for param in params {
+            let large = param
+                .get("schema")
+                .is_some_and(|schema| schema.to_string().len() > BROWSED_SCHEMA_BYTES);
+            if large && let Some(param) = param.as_object_mut() {
+                param.remove("schema");
+                param.insert(
+                    "schema_omitted".into(),
+                    json!("large schema: tilo_resolve this action to read it"),
+                );
+            }
+        }
+    }
+    value
 }
 fn row_json(row: &CatalogueRow) -> Value {
     let descriptor = row.action.as_ref().map(|action| {

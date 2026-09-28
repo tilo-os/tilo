@@ -27,9 +27,10 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::webview::{SharedEngine, WebViewCommand};
-use ui::widget::{Button, ButtonFace, EmptyState, TextInput, WebView};
+use ui::widget::{Button, ButtonFace, EmptyState, EmptyStateContent, TextInput, WebView};
 
 use crate::account::AccountStore;
+use ui::paint::PaintCtx;
 use ui::surface::{card, edge_on, pill, separator};
 
 use crate::draw::{
@@ -1405,15 +1406,14 @@ impl Pane {
                 &st.search,
             );
             EmptyState::paint(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 Rect::new(r.x0, self.list_content_y(), r.x1, r.y1),
-                Some(icon),
-                title,
-                Some(message),
-                None,
+                &EmptyStateContent {
+                    icon: Some(icon),
+                    title,
+                    message: Some(message),
+                    action_label: None,
+                },
                 Point::new(-1.0, -1.0),
             );
             return;

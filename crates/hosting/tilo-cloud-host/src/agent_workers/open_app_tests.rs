@@ -6,36 +6,15 @@ use super::*;
 
 const NOTES: &str = "so.tilo.notes";
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is a distinct piece of custody or context the caller already holds"
-)]
 async fn run_step(
-    workers: &mut AgentWorkers,
-    documents: &mut mpsc::Receiver<PendingHostDocument>,
-    network: &mut mpsc::Receiver<NeighbourMsg>,
-    dispatch: &VerifiedEnrolledDispatch,
-    step: u32,
-    peer: u64,
-    resource: &str,
-    action: &str,
-    argument: Option<String>,
+    mut pump: Pump<'_>,
+    request: tilo_action_broker::enrolled_dispatch::EnrolledStepRequest,
 ) -> tilo_actions::InvocationUpdate {
-    let mut answer = workers
-        .step_service
-        .submit(tilo_action_broker::enrolled_dispatch::EnrolledStepRequest {
-            dispatch: dispatch.clone(),
-            step,
-            peer,
-            resource: resource.into(),
-            action: action.into(),
-            argument,
-        })
-        .unwrap();
+    let step = request.step;
+    let mut answer = pump.workers.step_service.submit(request).unwrap();
     let deadline = tokio::time::Instant::now() + crate::agent_workers::tests::HARNESS_WAIT;
     let reply = loop {
-        workers.pump().unwrap();
-        drain(workers, documents, network);
+        pump.turn();
         if let Ok(reply) = answer.try_recv() {
             break reply;
         }
@@ -177,15 +156,19 @@ async fn agent_opens_notes_then_creates_a_note_via_its_ops() {
         .map(|row| row.record_id)
         .collect();
     let opened = run_step(
-        &mut workers,
-        &mut documents,
-        &mut network,
-        &dispatch,
-        0,
-        desktop.peer_id,
-        &open,
-        "open",
-        None,
+        Pump {
+            workers: &mut workers,
+            documents: &mut documents,
+            network: &mut network,
+        },
+        tilo_action_broker::enrolled_dispatch::EnrolledStepRequest {
+            dispatch: dispatch.clone(),
+            step: 0,
+            peer: desktop.peer_id,
+            resource: open.clone(),
+            action: "open".into(),
+            argument: None,
+        },
     )
     .await;
     assert!(
@@ -265,15 +248,19 @@ async fn agent_opens_notes_then_creates_a_note_via_its_ops() {
     drop(store);
 
     let created = run_step(
-        &mut workers,
-        &mut documents,
-        &mut network,
-        &dispatch,
-        1,
-        notes_peer,
-        &notebook,
-        "new-page",
-        Some("Groceries".into()),
+        Pump {
+            workers: &mut workers,
+            documents: &mut documents,
+            network: &mut network,
+        },
+        tilo_action_broker::enrolled_dispatch::EnrolledStepRequest {
+            dispatch: dispatch.clone(),
+            step: 1,
+            peer: notes_peer,
+            resource: notebook.clone(),
+            action: "new-page".into(),
+            argument: Some("Groceries".into()),
+        },
     )
     .await;
     assert!(

@@ -266,10 +266,6 @@ impl WorkspaceJoinClient {
     /// # Errors
     ///
     /// Returns `WorkspaceJoinError` if the request cannot be sent or its reply is rejected.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "membership proof inputs remain explicit so no caller-supplied identity can hide in an options bag"
-    )]
     pub async fn refresh_membership(
         &self,
         address: iroh::EndpointAddr,
@@ -320,10 +316,6 @@ impl WorkspaceJoinClient {
     /// # Errors
     ///
     /// Returns `WorkspaceJoinError` if the request cannot be sent or its reply is rejected.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "verified hint plus explicit membership proof inputs preserve the transport trust boundary"
-    )]
     pub async fn refresh_membership_hint(
         &self,
         hint: &TransportHint,

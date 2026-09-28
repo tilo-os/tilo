@@ -4066,10 +4066,6 @@ impl SheetsApp {
 
     // --- drawing ------------------------------------------------------------
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one chip painter receives its shared paint context, the resolved metrics and the chip's own geometry/state"
-    )]
     fn draw_chip(
         scene: &mut Scene,
         transform: Affine,
@@ -4324,10 +4320,9 @@ impl SheetsApp {
         // so what the pointer lands on is exactly what is painted.
         let colors = &theme.tokens.colors;
         let m = &self.metrics;
-        tr.draw_text_styled(
+        tr.draw_style(
             scene,
             "fx",
-            m.base,
             colors.text_dim,
             transform
                 * Affine::translate((
@@ -4335,9 +4330,7 @@ impl SheetsApp {
                     ChromeMetrics::centred_top(self.fx_rect, m.lh_base),
                 )),
             None,
-            TextWeight::Regular,
-            true,
-            false,
+            &TextStyle::new(m.base).with_italic(true),
         );
     }
 
@@ -4394,10 +4387,6 @@ impl SheetsApp {
     /// Formulas (whether being edited OR merely selected) tint each cell
     /// reference to match the coloured outlines on the grid; plain values
     /// draw in the body colour.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "formula painting passes the render context alongside cell content, font size and the formula-bar origin"
-    )]
     fn draw_formula_content(
         scene: &mut Scene,
         transform: Affine,

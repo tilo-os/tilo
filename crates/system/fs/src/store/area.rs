@@ -909,10 +909,6 @@ impl FileArea {
         self.data.join(format!(".{}.{n}.staging", hex(key)))
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the parts of one complete entry, recorded together"
-    )]
     fn install(
         &self,
         key: &AreaKey,

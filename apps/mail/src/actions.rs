@@ -1968,6 +1968,8 @@ mod tests {
         // Phase `purge_action_refuses_mixed_or_stale_ids_without_deleting_a_valid_subset`.
         {
             let mut doc = AutoCommit::new();
+            MailDoc::register_message(&mut doc, "inbox");
+            MailDoc::register_message(&mut doc, "trash");
             MailDoc::set_folder_for(&mut doc, "inbox", Folder::Inbox);
             MailDoc::set_folder_for(&mut doc, "trash", Folder::Trash);
             let heads_before = doc.get_heads();

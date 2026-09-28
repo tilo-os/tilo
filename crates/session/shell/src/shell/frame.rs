@@ -2109,13 +2109,17 @@ impl FrameBuilder {
         // their placeholder wherever they are, on screen or not.
         let _capture = crate::shell::capture_protection::CapturePaint::begin();
         let rects = self.host.draw_capture_targets(
-            target_ids,
-            extent,
-            complete_semantic_content,
-            &mut scene,
-            Affine::IDENTITY,
-            &mut self.text_renderer,
-            &self.theme,
+            &ui::widget::LiveCapture {
+                target_ids,
+                extent,
+                complete_semantic_content,
+            },
+            &mut ui::paint::PaintCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut self.text_renderer,
+                &self.theme,
+            ),
             &self.presence,
         );
         (scene, rects)

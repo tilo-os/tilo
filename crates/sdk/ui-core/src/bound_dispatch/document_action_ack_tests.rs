@@ -125,15 +125,18 @@ fn execute(
         &ROOT,
         &registry,
         &mut Host,
-        &tilo_actions::ActionAddress::new("ack.owner", "write"),
-        &resource,
-        &spec,
-        tilo_actions::EncodedAction::encode("ack.write", action).unwrap(),
-        "local",
-        "local",
-        broker,
-        tilo_actions::InvocationId::new(),
-        None,
+        ResourceOperation {
+            address: &tilo_actions::ActionAddress::new("ack.owner", "write"),
+            resource: &resource,
+            spec: &spec,
+            encoded: tilo_actions::EncodedAction::encode("ack.write", action).unwrap(),
+            actor: "local",
+            local_author: "local",
+            broker_admitted: broker,
+            invocation: tilo_actions::InvocationId::new(),
+            ambient: None,
+            scope: None,
+        },
     )
 }
 #[test]
@@ -209,15 +212,19 @@ fn document_actions_acknowledge_only_locally_applied_exact_owner_frontiers() {
                 &ROOT,
                 &registry,
                 &mut Host,
-                &tilo_actions::ActionAddress::new("owner", "run"),
-                &resource,
-                &spec,
-                tilo_actions::EncodedAction::encode_operation("operation", &action).unwrap(),
-                "local",
-                "local",
-                false,
-                tilo_actions::InvocationId::new(),
-                None,
+                ResourceOperation {
+                    address: &tilo_actions::ActionAddress::new("owner", "run"),
+                    resource: &resource,
+                    spec: &spec,
+                    encoded: tilo_actions::EncodedAction::encode_operation("operation", &action)
+                        .unwrap(),
+                    actor: "local",
+                    local_author: "local",
+                    broker_admitted: false,
+                    invocation: tilo_actions::InvocationId::new(),
+                    ambient: None,
+                    scope: None,
+                },
             )
             .unwrap();
         }

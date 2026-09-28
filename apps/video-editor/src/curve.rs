@@ -734,7 +734,7 @@ mod tests {
         clippy::float_cmp,
         reason = "the points are stored as given and read straight back"
     )]
-    fn curve_names_and_json_round_trip_with_legacy_defaults() {
+    fn curve_names_and_json_round_trip_with_absent_field_defaults() {
         // Case `channel_names_round_trip`.
         {
             for c in Channel::ALL {
