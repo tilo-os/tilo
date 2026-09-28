@@ -2446,9 +2446,7 @@ impl AppHandler {
             window.request_redraw();
         }
 
-        app.broadcast_focus_presence();
-        app.broadcast_location_presence();
-        app.broadcast_view_presence();
+        app.publish_presence();
         app.publish_action_surface();
         app.publish_continuation_metadata();
         app.publish_playback_handoff();

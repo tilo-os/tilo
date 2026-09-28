@@ -37,13 +37,16 @@ pub fn declare(transform: Affine, rect: Rect) {
     });
 }
 
-/// Start collecting the declarations of one frame.
+/// Start collecting the declarations of one frame. The app's frame pass
+/// (`draw_frame_content`) runs it; a host without that pass collects nothing.
+#[cfg(any(feature = "native", test))]
 pub(crate) fn begin_frame() {
     FRAME.with(|frame| *frame.borrow_mut() = Some(Vec::new()));
 }
 
 /// Stop collecting, returning what the frame declared in the logical
 /// coordinates `base` (the frame's composite transform) maps from.
+#[cfg(any(feature = "native", test))]
 pub(crate) fn end_frame(base: Affine) -> Vec<Rect> {
     let declared = FRAME
         .with(|frame| frame.borrow_mut().take())

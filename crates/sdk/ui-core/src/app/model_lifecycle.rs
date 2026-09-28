@@ -141,6 +141,7 @@ impl super::App {
             self.collaboration.manager.publish_action_directory(app_id);
         }
         self.broadcast_doc_delta();
+        self.publish_presence();
         self.finish_model_directory_refresh(directory);
         if report.published {
             self.actions.hosted.publication = self.hosted_publication_stamp();
