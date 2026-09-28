@@ -6,7 +6,6 @@
 
 use crate::paint_context::PaintContext;
 use tilo_doc::snapshot::{ChangeKind, ChangeView, CommentView};
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
 

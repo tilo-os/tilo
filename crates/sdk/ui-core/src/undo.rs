@@ -531,7 +531,7 @@ mod tests {
             use crate::widget::Widget;
             let mut button = crate::widget::UndoButton::undo();
             let mut calls = 0;
-            button.set_undo_status(&mut || {
+            crate::undo::set_undo_status(&mut button, &mut || {
                 calls += 1;
                 status(true, false)
             });

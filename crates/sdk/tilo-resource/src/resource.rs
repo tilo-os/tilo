@@ -125,6 +125,14 @@ pub trait Resource: Sized + 'static {
         Vec::new()
     }
 
+    /// Document actions whose payload is bound from `state` at publish time
+    /// (clear-all that names the current rows). Prefer [`declarations`] when
+    /// the payload does not need the live state. Published on the same
+    /// resource as [`declarations`].
+    fn bound_actions(_state: &Self::State) -> Vec<tilo_actions::ActionSpec> {
+        Vec::new()
+    }
+
     /// The JSON Schema of [`Action`](Self::Action)'s serde form, published as
     /// the schema of the generic [`APPLY`] operation's argument (and of the
     /// `apply` members of [`GROUP`](crate::GROUP)), so agents and scripts can
@@ -160,7 +168,6 @@ pub trait Resource: Sized + 'static {
     /// Not an action called `open`: ordinary presentation toggles never become
     /// composable views by accident. Defaults to none.
     fn views(_state: &Self::State) -> Vec<tilo_actions::ResourceViewSpec> {
-        let _ = _state;
         Vec::new()
     }
 
@@ -488,6 +495,12 @@ pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_act
         } else {
             spec
         });
+    }
+    for spec in R::bound_actions(state) {
+        if spec.kind != OperationKind::Document {
+            continue;
+        }
+        resource = resource.with_action(spec);
     }
     for view in R::views(state) {
         resource = resource.with_view(view);

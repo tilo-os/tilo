@@ -84,6 +84,10 @@ impl EditorDoc {
     /// Private engine handle for import/seed helpers. Interactive edits go
     /// through [`crate::actions::RichTextAction`] / the framework dispatcher —
     /// not this API.
+    #[allow(
+        dead_code,
+        reason = "seed/import helpers and lib tests bind through this handle"
+    )]
     pub(crate) fn edit<'a>(&'a mut self, doc: &'a mut AutoCommit) -> tilo_doc::DocMut<'a> {
         tilo_doc::DocMut {
             doc,
