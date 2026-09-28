@@ -120,52 +120,6 @@ pub trait Decorator {
         std::any::type_name::<Self>()
     }
 
-    fn document_action_applied(
-        &mut self,
-        action: &tilo_actions::EncodedAction,
-        before: &[automerge::ChangeHash],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) {
-        self.inner_mut()
-            .document_action_applied(action, before, doc, path);
-    }
-
-    fn history_registration(
-        &self,
-    ) -> Result<
-        Option<crate::history_mode::HistoryRegistration>,
-        crate::history_mode::HistoryRegistrationError,
-    > {
-        self.inner().history_registration()
-    }
-
-    fn document_history_definition(
-        &self,
-    ) -> Option<&'static crate::history_mode::HistoryDefinition> {
-        self.inner().document_history_definition()
-    }
-
-    fn provides_document_history(&self) -> bool {
-        self.inner().provides_document_history()
-    }
-
-    #[doc(hidden)]
-    fn visit_framework_history(
-        &self,
-        visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
-    ) {
-        self.inner().visit_framework_history(visitor);
-    }
-
-    #[doc(hidden)]
-    fn visit_framework_history_mut(
-        &mut self,
-        visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
-    ) {
-        self.inner_mut().visit_framework_history_mut(visitor);
-    }
-
     #[doc(hidden)]
     fn resets_callback_binding(&self) -> bool {
         self.inner().resets_callback_binding()
@@ -797,10 +751,6 @@ pub trait Decorator {
         self.inner_mut().focus_requested(target, tree)
     }
 
-    fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
-        self.inner().history_restore_readiness(scope)
-    }
-
     fn install_control_custody(
         &mut self,
         domain: &crate::ControlDomain,
@@ -902,51 +852,6 @@ impl<T: Decorator> Widget for T {
     #[doc(hidden)]
     fn concrete_type_name(&self) -> &'static str {
         Decorator::concrete_type_name(self)
-    }
-
-    fn document_action_applied(
-        &mut self,
-        action: &tilo_actions::EncodedAction,
-        before: &[automerge::ChangeHash],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) {
-        Decorator::document_action_applied(self, action, before, doc, path);
-    }
-
-    fn history_registration(
-        &self,
-    ) -> Result<
-        Option<crate::history_mode::HistoryRegistration>,
-        crate::history_mode::HistoryRegistrationError,
-    > {
-        Decorator::history_registration(self)
-    }
-
-    fn document_history_definition(
-        &self,
-    ) -> Option<&'static crate::history_mode::HistoryDefinition> {
-        Decorator::document_history_definition(self)
-    }
-
-    fn provides_document_history(&self) -> bool {
-        Decorator::provides_document_history(self)
-    }
-
-    #[doc(hidden)]
-    fn visit_framework_history(
-        &self,
-        visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
-    ) {
-        Decorator::visit_framework_history(self, visitor);
-    }
-
-    #[doc(hidden)]
-    fn visit_framework_history_mut(
-        &mut self,
-        visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
-    ) {
-        Decorator::visit_framework_history_mut(self, visitor);
     }
 
     #[doc(hidden)]
@@ -1569,10 +1474,6 @@ impl<T: Decorator> Widget for T {
 
     fn focus_requested(&mut self, target: Option<NodeId>, tree: &TaffyTree<()>) {
         Decorator::focus_requested(self, target, tree)
-    }
-
-    fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
-        Decorator::history_restore_readiness(self, scope)
     }
 
     fn install_control_custody(

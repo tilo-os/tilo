@@ -25,9 +25,9 @@ fn semantic_action_is_focused(driver: &ui::headless::Driver, action_target: &str
 
 #[test]
 fn controlled_real_root_declares_video_player_history() {
-    let definition = controlled_root()
-        .document_history_definition()
-        .expect("controlled real root declares framework History");
+    let definition =
+        ui::history_mode::capability::document_history_definition(controlled_root().as_ref())
+            .expect("controlled real root declares framework History");
     assert_eq!(definition.app_id, "so.tilo.video-player");
     assert_eq!(definition.scopes.len(), 1);
     let scope = &definition.scopes[0];

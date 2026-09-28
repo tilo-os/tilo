@@ -111,6 +111,8 @@ impl tilo_actions::Action for MintedDocument {
     }
 }
 impl Widget for Probe {
+    ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
+
     fn action_directory_invocation_domain(
         &self,
         _: &AutoCommit,
@@ -175,20 +177,6 @@ impl Widget for Probe {
             exhausted: true,
         })
     }
-    fn document_action_applied(
-        &mut self,
-        action: &tilo_actions::EncodedAction,
-        _: &[ui::automerge::ChangeHash],
-        doc: &AutoCommit,
-        _: &ObjId,
-    ) {
-        assert_eq!(action.type_id, TYPE);
-        assert_eq!(
-            doc.get(ROOT, "deferred-owner").unwrap().unwrap().0.as_str(),
-            Some(OWNER)
-        );
-        self.applied.fetch_add(1, Ordering::SeqCst);
-    }
     fn build_layout(
         &mut self,
         tree: &mut ui::taffy::TaffyTree<()>,
@@ -220,6 +208,23 @@ impl Widget for Probe {
     }
     fn get_rect(&self) -> ui::kurbo::Rect {
         ui::kurbo::Rect::ZERO
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for Probe {
+    fn document_action_applied(
+        &mut self,
+        action: &tilo_actions::EncodedAction,
+        _: &[ui::automerge::ChangeHash],
+        doc: &AutoCommit,
+        _: &ObjId,
+    ) {
+        assert_eq!(action.type_id, TYPE);
+        assert_eq!(
+            doc.get(ROOT, "deferred-owner").unwrap().unwrap().0.as_str(),
+            Some(OWNER)
+        );
+        self.applied.fetch_add(1, Ordering::SeqCst);
     }
 }
 impl AppWidget for Probe {

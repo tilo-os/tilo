@@ -110,7 +110,10 @@ pub(crate) fn address() -> ActionAddress {
     ActionAddress::new("controlled.value", "set")
 }
 impl Widget for Probe {
-    crate::provides!(dyn crate::undo::CommittedActions);
+    crate::provides!(
+        dyn crate::undo::CommittedActions,
+        dyn crate::history_mode::capability::DocumentHistory
+    );
 
     crate::testing::inert_widget_methods!(
         leaf_layout,
@@ -237,6 +240,9 @@ impl Widget for Probe {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.queue.borrow_mut().pop_front()
     }
+}
+
+impl crate::history_mode::capability::DocumentHistory for Probe {
     fn document_action_applied(
         &mut self,
         _: &EncodedAction,

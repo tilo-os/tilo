@@ -6800,8 +6800,10 @@ fn control_custody_core_outer_component_legacy_owners_and_sibling() {
     assert_eq!(outer_ledger.borrow().len(), 1, "outer owner stays live");
     assert!(a_ledger.borrow().is_empty());
     let mut saved = Vec::new();
-    app.root_widget
-        .visit_framework_history(&mut |history, _| saved.extend(history.pending_control_reviews()));
+    crate::history_mode::capability::visit_framework_history(
+        app.root_widget.as_ref(),
+        &mut |history, _| saved.extend(history.pending_control_reviews()),
+    );
     assert_eq!(saved.len(), 1);
     assert!(saved[0].owner.starts_with("legacy owner "));
     assert!(
@@ -6837,10 +6839,12 @@ fn custody_embedded_click(app: &mut App, id: &str) {
     app.layout.node_map.clear();
     app.bindings.clear();
     let mut clicked = false;
-    app.root_widget
-        .visit_framework_history_mut(&mut |history, _| {
+    crate::history_mode::capability::visit_framework_history_mut(
+        app.root_widget.as_mut(),
+        &mut |history, _| {
             clicked |= history.activate_retained_control_for_test(id);
-        });
+        },
+    );
     assert!(clicked, "real embedded control {id}");
     layout(app);
 }
@@ -7363,9 +7367,10 @@ fn custody_native_return_covers_final_draw_callbacks(embedded: bool) {
     layout(&mut app);
     let reviews = |app: &App| {
         let mut saved = app.pending_history_controls();
-        app.root_widget.visit_framework_history(&mut |history, _| {
-            saved.extend(history.pending_control_reviews())
-        });
+        crate::history_mode::capability::visit_framework_history(
+            app.root_widget.as_ref(),
+            &mut |history, _| saved.extend(history.pending_control_reviews()),
+        );
         saved
     };
     let saved = reviews(&app);

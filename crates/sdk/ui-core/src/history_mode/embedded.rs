@@ -12,17 +12,19 @@ use winit::event::{ElementState, WindowEvent};
 
 pub(crate) fn has_surfaces(root: &dyn Widget) -> bool {
     let mut found = false;
-    root.visit_framework_history(&mut |_, _| found = true);
+    crate::history_mode::capability::visit_framework_history(root, &mut |_, _| found = true);
     found
 }
 pub(crate) fn owns_node(root: &dyn Widget, node: NodeId, tree: &TaffyTree<()>) -> bool {
     let mut owned = false;
-    root.visit_framework_history(&mut |history, _| owned |= history.owns_node(node, tree));
+    crate::history_mode::capability::visit_framework_history(root, &mut |history, _| {
+        owned |= history.owns_node(node, tree)
+    });
     owned
 }
 pub(crate) fn allows_focus(root: &dyn Widget, node: NodeId, tree: &TaffyTree<()>) -> bool {
     let mut allowed = true;
-    root.visit_framework_history(&mut |history, _| {
+    crate::history_mode::capability::visit_framework_history(root, &mut |history, _| {
         if (history.captures_input() || history.has_saved_focus())
             && history.composition_contains(node, tree)
             && !history.owns_node(node, tree)
@@ -40,7 +42,7 @@ pub(crate) fn observe_event(
     tree: &TaffyTree<()>,
 ) -> bool {
     let mut controls = false;
-    root.visit_framework_history_mut(&mut |history, _| {
+    crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, _| {
         history.observe_pointer(event, scale);
         if matches!(
             event,
@@ -71,7 +73,7 @@ pub(crate) fn needs_refresh(
     status: Option<&str>,
 ) -> bool {
     let mut needed = false;
-    root.visit_framework_history(&mut |history, live| {
+    crate::history_mode::capability::visit_framework_history(root, &mut |history, live| {
         let width = if history.get_rect().width() > 0.0 {
             history.get_rect().width()
         } else {
@@ -84,14 +86,14 @@ pub(crate) fn needs_refresh(
     needed
 }
 pub(crate) fn capture_entries(root: &mut dyn Widget, doc: &automerge::AutoCommit) {
-    root.visit_framework_history_mut(&mut |history, live| {
+    crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
         if history.captures_input() {
             history.capture_embedded_pending_controls(live, doc);
         }
     });
 }
 pub(crate) fn discard_active_output(root: &mut dyn Widget) {
-    root.visit_framework_history_mut(&mut |history, live| {
+    crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
         if history.captures_input() {
             history.discard_pending_output(live);
         }
@@ -103,7 +105,7 @@ pub(crate) struct PendingCommand {
 }
 pub(crate) fn drain_pending_commands(root: &mut dyn Widget) -> Vec<PendingCommand> {
     let mut commands = Vec::new();
-    root.visit_framework_history_mut(&mut |history, _| {
+    crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, _| {
         let surface = history.pending_control_surface_lifetime();
         commands.extend(
             history
@@ -121,7 +123,7 @@ pub(crate) fn prepare_pending_command(
     confirmed: bool,
 ) -> Option<super::pending_controls::PreparedContinuation> {
     let mut prepared = None;
-    root.visit_framework_history_mut(&mut |history, _| {
+    crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, _| {
         if history.pending_control_surface_lifetime() == surface {
             prepared = history.prepare_pending_control(token, confirmed);
         }
@@ -135,7 +137,7 @@ pub(crate) fn prepare_pending_command_typed(
     value: &str,
 ) -> Option<super::pending_controls::PreparedContinuation> {
     let mut prepared = None;
-    root.visit_framework_history_mut(&mut |history, _| {
+    crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, _| {
         if history.pending_control_surface_lifetime() == surface {
             prepared = history.prepare_pending_control_typed(token, value);
         }
@@ -147,7 +149,7 @@ pub(crate) fn cancel_pending_command(
     surface: uuid::Uuid,
     token: &super::pending_controls::ContinuationToken,
 ) {
-    root.visit_framework_history_mut(&mut |history, _| {
+    crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, _| {
         if history.pending_control_surface_lifetime() == surface {
             history.cancel_pending_control(token);
         }
@@ -164,7 +166,7 @@ pub(crate) fn finish_pending_command(
     id: super::pending_controls::PendingControlId,
     outcome: &PendingCommandOutcome,
 ) {
-    root.visit_framework_history_mut(&mut |history, _| {
+    crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, _| {
         if history.pending_control_surface_lifetime() != surface {
             return;
         }
@@ -186,7 +188,7 @@ pub(crate) fn refresh(
     fallback_width: f64,
     status: Option<&str>,
 ) {
-    root.visit_framework_history_mut(&mut |history, live| {
+    crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
         if history.validate_root(live).is_err() {
             history.invalidate_owner();
             return;
@@ -216,7 +218,9 @@ pub(crate) fn refresh(
 }
 pub(crate) fn has_review(root: &dyn Widget) -> bool {
     let mut pending = false;
-    root.visit_framework_history(&mut |history, _| pending |= history.has_review_request());
+    crate::history_mode::capability::visit_framework_history(root, &mut |history, _| {
+        pending |= history.has_review_request()
+    });
     pending
 }
 /// Settled matching owners are checked again immediately at the shared door.
@@ -228,7 +232,7 @@ pub(crate) fn service_reviews(
     author: &crate::permissions::UserId,
 ) -> Vec<HistorySourceRegistration> {
     let mut restored = vec![];
-    root.visit_framework_history_mut(&mut |history, live| {
+    crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
         history.service_restore(state, live, authority, author);
         if let Some(source) = history.take_restored_source() {
             restored.push(source);
@@ -250,7 +254,7 @@ pub(crate) unsafe fn move_focus(
         unsafe { crate::widget::layout::CompositionFocus::capture(current, nodes, bindings) };
     let mut suspended = false;
     let mut resumed = false;
-    root.visit_framework_history_mut(&mut |history, _| {
+    crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, _| {
         let inside = target.is_some_and(|node| history.composition_contains(node, tree));
         history.set_keyboard_active(inside);
         if !history.captures_input()
@@ -297,7 +301,7 @@ pub(crate) unsafe fn restore_focus(
     bindings: &BoundNodeMap,
 ) -> Option<NodeId> {
     let mut saved = None;
-    root.visit_framework_history_mut(&mut |history, _| {
+    crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, _| {
         if history.returning_live() {
             if history.keyboard_is_active() {
                 saved = history.take_returning_focus().or_else(|| saved.take());
@@ -314,7 +318,7 @@ pub(crate) unsafe fn restore_focus(
 /// Restoring one surface's focus must not end its custody halfway through the
 /// same return frame, or release any other surface's independent lease.
 pub(crate) fn finish_returns(root: &mut dyn Widget) {
-    root.visit_framework_history_mut(&mut |history, live| {
+    crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
         if history.has_settled_control_return() {
             history.discard_pending_output(live);
             history.finish_control_return();
@@ -328,7 +332,7 @@ pub(crate) fn keyboard_captured(
     tree: &TaffyTree<()>,
 ) -> bool {
     let mut captured = false;
-    root.visit_framework_history(&mut |history, _| {
+    crate::history_mode::capability::visit_framework_history(root, &mut |history, _| {
         captured |= focused.is_some_and(|node| history.owns_node(node, tree))
             || (history.keyboard_is_active() && history.captures_input());
     });
@@ -337,6 +341,8 @@ pub(crate) fn keyboard_captured(
 
 pub(crate) fn captures_input(root: &dyn Widget) -> bool {
     let mut captured = false;
-    root.visit_framework_history(&mut |history, _| captured |= history.captures_input());
+    crate::history_mode::capability::visit_framework_history(root, &mut |history, _| {
+        captured |= history.captures_input()
+    });
     captured
 }

@@ -13,8 +13,7 @@ fn managed_driver() -> ui::headless::Driver {
 }
 
 fn managed_driver_for(root: Box<dyn Widget>) -> ui::headless::Driver {
-    let definition = root
-        .document_history_definition()
+    let definition = ui::history_mode::capability::document_history_definition(root.as_ref())
         .expect("Monitor root must declare framework History");
     let scope = &definition.scopes[0];
     let HistoryPresentation::External { reason } = scope.presentation else {
@@ -93,9 +92,9 @@ fn semantic_center(inspection: &str, name: &str) -> (f64, f64) {
 fn monitor_history_declaration_is_static_inert_and_external_only() {
     // Phase `production_root_declares_monitor_history`.
     {
-        let definition = crate::app_root()
-            .document_history_definition()
-            .expect("production Monitor root declares History");
+        let definition =
+            ui::history_mode::capability::document_history_definition(crate::app_root().as_ref())
+                .expect("production Monitor root declares History");
         assert_eq!(definition.app_id, "so.tilo.monitor");
         assert!(std::ptr::eq(
             definition,

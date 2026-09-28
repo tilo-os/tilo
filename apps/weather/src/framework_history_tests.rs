@@ -38,8 +38,7 @@ fn saved_place_history_is_declared_and_sync_preserves_the_graph() {
     // Case `production_root_and_launch_declare_saved_place_history`.
     {
         assert_eq!(
-            crate::app_root()
-                .document_history_definition()
+            ui::history_mode::capability::document_history_definition(crate::app_root().as_ref())
                 .unwrap()
                 .app_id,
             "so.tilo.weather"
