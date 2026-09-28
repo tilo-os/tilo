@@ -357,13 +357,7 @@ pub(super) const V5_READ_ONLY_REASON: &str =
 
 impl Aggregate {
     pub(super) fn is_read_only(&self) -> bool {
-        matches!(self.publication, PublicationStorage::V5 { .. })
-            && !self.peer_has_exact_admissions()
-    }
-    /// The peer's durable envelope carries exact admission evidence: v5, or
-    /// v6, which is v5 plus the sealed writes of encrypted records.
-    fn peer_has_exact_admissions(&self) -> bool {
-        matches!(self.peer.first(), Some(5 | 6))
+        matches!(self.publication, PublicationStorage::V5 { .. }) && self.peer.first() != Some(&5)
     }
     pub(super) fn require_writable(&self) -> Result<()> {
         if self.is_read_only() {
@@ -393,7 +387,7 @@ impl Aggregate {
     pub(super) fn validate(&self) -> Result<()> {
         if let Some(creation) = &self.creation {
             if !matches!(self.publication, PublicationStorage::V5 { .. })
-                || !self.peer_has_exact_admissions()
+                || self.peer.first() != Some(&5)
             {
                 bail!("creation V6 requires selected native V5 delivery");
             }
