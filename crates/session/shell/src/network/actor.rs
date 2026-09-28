@@ -2273,6 +2273,13 @@ impl ActorState {
                 self.request_native_refresh(ws);
                 Some(NetEvent::HostReady { ws, peer })
             }
+            HostEvent::Message { author, .. } if self.is_own_device(&author) => {
+                // The host replays retained state to every subscriber,
+                // including what this device published earlier; gossip never
+                // delivers a device its own messages, and nothing downstream
+                // holds this device's own certificate to authenticate them.
+                None
+            }
             HostEvent::Message {
                 author,
                 fingerprint,
@@ -2456,6 +2463,14 @@ impl ActorState {
         if let Err(error) = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await {
             tracing::warn!(ws, %error, "could not send collaboration identity announcement");
         }
+    }
+
+    /// Whether a host-relayed message was authored by this device: the host
+    /// names authors by the device key it authenticated them with.
+    fn is_own_device(&self, author: &EndpointId) -> bool {
+        self.host_identity.as_ref().is_some_and(|identity| {
+            *author.as_bytes() == identity.device_signing_key.verifying_key().to_bytes()
+        }) || *author == self.endpoint.id()
     }
 
     /// Send this device's certificate through a workspace host. Members that
@@ -4954,6 +4969,85 @@ mod tests {
             }
         }
         (cmd_a, rx_a, cmd_b, rx_b)
+    }
+
+    /// Each device's certificate reaches the others through the host, which
+    /// retains it; a device resubscribing receives the other member's again
+    /// but never its own, which nothing on this side could authenticate.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn host_replays_member_certificates_but_not_this_devices_own() {
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
+        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
+        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
+            &root,
+            a_key.verifying_key().to_bytes(),
+            b_key.verifying_key().to_bytes(),
+        )
+        .await;
+        let a_device = a_key.verifying_key().to_bytes();
+        let b_device = b_key.verifying_key().to_bytes();
+        let (a, lookup_a) = identified_endpoint(&a_key).await;
+        let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let b_restart_key = b_key.clone();
+        let b_restart_cert = b_cert.clone();
+        let identity = |key, cert| HostIdentity {
+            device_cert: cert,
+            device_signing_key: key,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let (_cmd_a, _rx_a, cmd_b, _rx_b) = join_workspace_and_await_host_ready(
+            a,
+            lookup_a,
+            identity(a_key, a_cert),
+            b,
+            lookup_b,
+            identity(b_key, b_cert),
+            &relay,
+            HEARTBEAT_INTERVAL,
+        )
+        .await;
+        drop(cmd_b);
+
+        let (b_restarted, lookup_restarted) = identified_endpoint(&b_restart_key).await;
+        let (cmd_restarted, _task_restarted) = Actor::spawn_reporting_addrs(
+            b_restarted,
+            lookup_restarted,
+            Some(identity(b_restart_key, b_restart_cert)),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (events, mut replay_events) = mpsc::channel(16);
+        cmd_restarted
+            .send(NetCmd::JoinWorkspace {
+                ws: 42,
+                on_event: events,
+            })
+            .await
+            .unwrap();
+        cmd_restarted
+            .send(NetCmd::ConnectHost {
+                addr: relay.node_addr(),
+                expectation: None,
+            })
+            .await
+            .unwrap();
+        let mut hellos = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while let Ok(Some(event)) = tokio::time::timeout_at(deadline, replay_events.recv()).await {
+            if let NetEvent::Msg {
+                peer,
+                msg: NeighbourMsg::IdentityHello { cert, .. },
+                ..
+            } = event
+            {
+                assert_eq!(*peer.as_bytes(), cert.device_public_key);
+                hellos.push(cert.device_public_key);
+            }
+        }
+        assert!(hellos.contains(&a_device), "A's certificate is replayed");
+        assert!(!hellos.contains(&b_device), "B's own certificate is not");
     }
 
     /// The room's governance transport of one device, over its real actor:
