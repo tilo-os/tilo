@@ -5,7 +5,6 @@
     clippy::cast_precision_loss,
     clippy::indexing_slicing,
     clippy::semicolon_if_nothing_returned,
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "immediate-mode capture geometry uses tiny fixed arrays and bounded screen coordinates"
 )]
@@ -15,6 +14,7 @@ use crate::text_metrics::renderer_type_size;
 use crate::{
     ColorCompat,
     icons::{self, Icon},
+    paint::PaintCtx,
     presence::PresenceCtx,
     surface,
     text_render::{TextRenderer, TextWeight},
@@ -164,6 +164,18 @@ pub enum CaptureExtent {
     /// Every app in the current horizontal desktop strip, including portions
     /// outside the monitor viewport.
     WholeStrip,
+}
+
+/// The live apps a `FullApp` or `WholeStrip` capture repaints outside the
+/// output clip.
+#[derive(Clone, Copy, Debug)]
+pub struct LiveCapture<'a> {
+    /// `group:<group>:tab:<tab>` ids of the selected apps.
+    pub target_ids: &'a [String],
+    pub extent: CaptureExtent,
+    /// Paint a `FullApp` target's complete semantic content (page, document,
+    /// canvas) where its app provides one, rather than its virtual surface.
+    pub complete_semantic_content: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2668,19 +2680,40 @@ impl CaptureStudio {
         Button::paint(scene, t, tr, theme, &face);
     }
 
+    /// The tint a capture in the current mode marks its selection with.
+    fn selection_color(&self, theme: &Theme) -> Color {
+        let c = &theme.tokens.colors;
+        match self.mode {
+            CaptureMode::Screenshot => c.accent[4],
+            CaptureMode::Recording => c.semantic.danger,
+            CaptureMode::Pip => c.semantic.info,
+        }
+    }
+
+    /// The highest a window candidate's badge may sit: clear of the
+    /// candidate picker, or of the top bar when there is none.
+    fn min_target_badge_y(&self) -> f64 {
+        self.candidate_picker_rects()
+            .first()
+            .map_or_else(|| self.top_bar().y1 + 8.0, |picker| picker.y1 + 8.0)
+    }
+
     fn target_badge(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        &self,
+        ctx: &mut PaintCtx<'_>,
         target: &CaptureTarget,
         rect: Rect,
         selected: bool,
-        full_app: bool,
-        mode: CaptureMode,
-        selection_color: Color,
-        min_badge_y: f64,
     ) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
+        let (mode, full_app) = (self.mode, self.extent == CaptureExtent::FullApp);
+        let selection_color = self.selection_color(theme);
+        let min_badge_y = self.min_target_badge_y();
         let c = &theme.tokens.colors;
         let prefix = if selected && mode == CaptureMode::Pip {
             "LIVE · "
@@ -2850,17 +2883,17 @@ impl CaptureStudio {
         }
     }
 
-    fn draw_offscreen_target(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        bounds: Rect,
-        target: &CaptureTarget,
-        mode: CaptureMode,
-        extent: CaptureExtent,
-        accent: Color,
-    ) {
+    /// A card in the selection bounds standing in for a selected `target`
+    /// with no useful on-screen aperture.
+    fn draw_offscreen_target(&self, ctx: &mut PaintCtx<'_>, target: &CaptureTarget) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let (bounds, mode, extent) = (self.selection_bounds(), self.mode, self.extent);
+        let accent = self.selection_color(theme);
         let colors = &theme.tokens.colors;
         let width = 430.0_f64.min(bounds.width() - 40.0);
         let card = Rect::from_center_size(bounds.center(), (width, 132.0));
@@ -3015,18 +3048,14 @@ impl CaptureStudio {
         }
     }
 
-    fn option_button(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
+    fn option_face<'a>(
         theme: &Theme,
         rect: Rect,
-        label: &str,
+        label: &'a str,
         icon: Icon,
         active: bool,
-        hovered: bool,
-    ) {
-        let face = if active {
+    ) -> ButtonFace<'a> {
+        if active {
             ButtonFace::new(rect, label).primary()
         } else {
             ButtonFace::new(rect, label)
@@ -3035,8 +3064,6 @@ impl CaptureStudio {
         .radius(9.0)
         .text_size(theme.tokens.typography.scale.sm)
         .weight(TextWeight::Medium)
-        .hovered(hovered);
-        Button::paint(scene, t, tr, theme, &face);
     }
 
     fn scrim_path(&self, regions: &[Rect]) -> BezPath {
@@ -4610,11 +4637,7 @@ impl Widget for CaptureStudio {
         let top_t = t.pre_translate((0.0, -10.0 * f64::from(1.0 - eased)).into());
         let bottom_t = t.pre_translate((0.0, 12.0 * f64::from(1.0 - eased)).into());
         let c = &theme.tokens.colors;
-        let selection_color = match self.mode {
-            CaptureMode::Screenshot => c.accent[4],
-            CaptureMode::Recording => c.semantic.danger,
-            CaptureMode::Pip => c.semantic.info,
-        };
+        let selection_color = self.selection_color(theme);
         let active_control_fill = match self.mode {
             CaptureMode::Screenshot => c.accent[5],
             CaptureMode::Recording => c.semantic.danger.with_alpha_factor(0.28),
@@ -4654,10 +4677,6 @@ impl Widget for CaptureStudio {
             &self.scrim_path(&regions),
         );
         if self.source == SourceMode::Window {
-            let min_target_badge_y = self
-                .candidate_picker_rects()
-                .first()
-                .map_or_else(|| self.top_bar().y1 + 8.0, |picker| picker.y1 + 8.0);
             for target in &self.candidates {
                 let rect = target.visible_rect.intersect(self.selection_bounds());
                 if rect.area() <= 0.0 {
@@ -4699,19 +4718,7 @@ impl Widget for CaptureStudio {
                     ),
                 );
                 if !selected || Self::target_has_useful_aperture(target, self.status_rect()) {
-                    Self::target_badge(
-                        s,
-                        t,
-                        tr,
-                        theme,
-                        target,
-                        rect,
-                        selected,
-                        self.extent == CaptureExtent::FullApp,
-                        self.mode,
-                        selection_color,
-                        min_target_badge_y,
-                    );
+                    self.target_badge(&mut PaintCtx::new(s, t, tr, theme), target, rect, selected);
                 }
                 if selected && self.extent == CaptureExtent::FullApp {
                     Self::draw_continuation_markers(
@@ -4726,17 +4733,7 @@ impl Widget for CaptureStudio {
             if let Some(target) = self.selected_candidate().cloned()
                 && !Self::target_has_useful_aperture(&target, self.status_rect())
             {
-                Self::draw_offscreen_target(
-                    s,
-                    t,
-                    tr,
-                    theme,
-                    self.selection_bounds(),
-                    &target,
-                    self.mode,
-                    self.extent,
-                    selection_color,
-                );
+                self.draw_offscreen_target(&mut PaintCtx::new(s, t, tr, theme), &target);
                 if self.extent == CaptureExtent::FullApp {
                     Self::draw_continuation_markers(
                         s,
@@ -5105,17 +5102,9 @@ impl Widget for CaptureStudio {
                             CaptureExtent::WholeStrip,
                         ][i]
                 };
-                Self::option_button(
-                    s,
-                    bottom_t,
-                    tr,
-                    theme,
-                    r,
-                    label,
-                    icon,
-                    active,
-                    r.contains(self.cursor),
-                );
+                let face = Self::option_face(theme, r, label, icon, active)
+                    .hovered(r.contains(self.cursor));
+                Button::paint(s, bottom_t, tr, theme, &face);
             }
         }
         let pointer = self.pointer_rect();

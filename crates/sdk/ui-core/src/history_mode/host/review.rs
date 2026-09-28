@@ -182,20 +182,20 @@ impl HistoryHost {
         let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else {
             return false;
         };
-        let schema = scope.content_schema;
         let Some(now) = (self.clock)() else {
             self.show_review(None, I18nManager::lookup_plain("history-review-no-clock"));
             return false;
         };
         let result = crate::state::owned_restore::restore_reviewed_history(
             state,
-            self.source(),
-            controller,
-            review,
-            schema,
+            &crate::state::owned_restore::ReviewedRestore {
+                source: self.source(),
+                scope,
+                controller,
+                review,
+            },
             authority,
             author,
-            scope.title,
             now,
         );
         match result {

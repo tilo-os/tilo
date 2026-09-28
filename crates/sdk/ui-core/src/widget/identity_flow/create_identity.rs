@@ -48,6 +48,7 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -603,10 +604,7 @@ impl Widget for CreateIdentityScreen {
         sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
         sheet.clip_body(scene, transform);
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.explanation,
             EXPLANATION,
             Role::Body,
@@ -614,10 +612,7 @@ impl Widget for CreateIdentityScreen {
             true,
         );
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.name_label,
             NAME_LABEL,
             Role::Label,
@@ -627,10 +622,7 @@ impl Widget for CreateIdentityScreen {
         self.name
             .draw(scene, transform, text_renderer, theme, presence);
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.accent_label,
             ACCENT_LABEL,
             Role::Label,
@@ -640,10 +632,7 @@ impl Widget for CreateIdentityScreen {
         self.draw_accent_tiles(scene, transform, theme, plan);
         if let (Some(rect), Some(err)) = (plan.error, self.submit_error.as_deref()) {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 err,
                 Role::Error,

@@ -4203,7 +4203,7 @@ mod tests {
     #[serial_test::serial]
     fn native_initial_launch_component_host_reads_before_factory_on_same_worker() {
         use crate::application::{
-            HostContext, LaunchTarget, PreparedComponentInputs, RestoreInput,
+            HostContext, HostContextInputs, LaunchTarget, PreparedComponentInputs, RestoreInput,
         };
         use crate::application_test_support as probe;
         static RECHECK: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>> =
@@ -4232,13 +4232,15 @@ mod tests {
             };
             let context = HostContext::prepare(
                 definition,
-                records,
-                views,
-                probe::DEVICE.into(),
-                11,
-                probe::runner_permissions(),
-                probe::author(),
-                probe::provenance(),
+                HostContextInputs {
+                    records,
+                    views,
+                    device_id: probe::DEVICE.into(),
+                    instance_id: 11,
+                    permissions: probe::runner_permissions(),
+                    author: probe::author(),
+                    action_context: probe::provenance(),
+                },
                 &target,
             )?;
             context
@@ -4377,13 +4379,15 @@ mod tests {
             // the component factory writes its genesis after admission.
             let context = HostContext::prepare_new_record(
                 definition,
-                records,
-                views,
-                probe::DEVICE.into(),
-                11,
-                probe::runner_permissions(),
-                probe::author(),
-                probe::provenance(),
+                crate::application::HostContextInputs {
+                    records,
+                    views,
+                    device_id: probe::DEVICE.into(),
+                    instance_id: 11,
+                    permissions: probe::runner_permissions(),
+                    author: probe::author(),
+                    action_context: probe::provenance(),
+                },
                 id,
             )?;
             Ok(PreparedComponentInputs {
@@ -4912,7 +4916,9 @@ mod tests {
 #[cfg(test)]
 mod prepared_launch_tests {
     use super::*;
-    use crate::application::{HostContext, LaunchTarget, PreparedComponentInputs, RestoreInput};
+    use crate::application::{
+        HostContext, HostContextInputs, LaunchTarget, PreparedComponentInputs, RestoreInput,
+    };
     use crate::application_test_support::*;
     use std::cell::Cell;
     use std::rc::Rc;
@@ -4955,13 +4961,15 @@ mod prepared_launch_tests {
         );
         let context = HostContext::prepare(
             definition,
-            records,
-            views,
-            DEVICE.into(),
-            11,
-            authority,
-            author(),
-            provenance(),
+            HostContextInputs {
+                records,
+                views,
+                device_id: DEVICE.into(),
+                instance_id: 11,
+                permissions: authority,
+                author: author(),
+                action_context: provenance(),
+            },
             &target,
         )?;
         Ok(PreparedComponentInputs {

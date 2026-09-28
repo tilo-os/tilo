@@ -448,15 +448,17 @@ fn a_bound_component_builds_participant_trees_against_its_own_record() {
     let target = crate::application::LaunchTarget::New;
     let context = crate::application::HostContext::prepare(
         &definition,
-        records.clone(),
-        views,
-        "D".into(),
-        1,
-        Rc::new(RefCell::new(
-            crate::permissions::PermissionContext::permissive(),
-        )),
-        crate::permissions::UserId("fixture-user".into()),
-        tilo_actions::ActionContext::default(),
+        crate::application::HostContextInputs {
+            records: records.clone(),
+            views,
+            device_id: "D".into(),
+            instance_id: 1,
+            permissions: Rc::new(RefCell::new(
+                crate::permissions::PermissionContext::permissive(),
+            )),
+            author: crate::permissions::UserId("fixture-user".into()),
+            action_context: tilo_actions::ActionContext::default(),
+        },
         &target,
     )
     .unwrap();

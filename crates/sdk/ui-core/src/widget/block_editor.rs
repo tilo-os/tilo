@@ -23,7 +23,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::color_compat::ColorCompat;
 use crate::icons::{Icon, draw_icon};
 use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::{clipboard_copy, clipboard_paste};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -5230,10 +5230,6 @@ fn deterministic_block_uuid(seed: &str) -> Uuid {
 /// the only way `insert_object`/`put_object` can fail here — leaving the
 /// caller's local block unbound rather than panicking on a legitimate CRDT
 /// race.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the CRDT insertion boundary takes the complete serialized block schema explicitly"
-)]
 fn insert_doc_block(
     state: &mut AutoCommit,
     list: &ObjId,
@@ -5980,29 +5976,23 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
                 let x = rect.x0 + layout.padding_x;
                 let width = Some((layout.column_width - 2.0 * layout.padding_x).max(1.0) as f32);
                 if let Some(label) = labels.get(column) {
-                    ctx.text_renderer.draw_text_styled(
+                    ctx.text_renderer.draw_style(
                         ctx.scene,
                         label,
-                        14.0,
                         ctx.theme.tokens.colors.text_primary,
                         translated(ctx.transform, x, y),
                         width,
-                        crate::text_render::TextWeight::Bold,
-                        false,
-                        false,
+                        &TextStyle::new(14.0).with_weight(crate::text_render::TextWeight::Bold),
                     );
                 }
                 let label_height = layout.label_heights.get(column).copied().unwrap_or(0.0);
-                ctx.text_renderer.draw_text_styled(
+                ctx.text_renderer.draw_style(
                     ctx.scene,
                     value,
-                    14.0,
                     ctx.theme.tokens.colors.text_primary,
                     translated(ctx.transform, x, y + label_height + 4.0 * scale),
                     width,
-                    crate::text_render::TextWeight::Regular,
-                    false,
-                    false,
+                    &TextStyle::new(14.0),
                 );
                 y += layout
                     .cell_heights
@@ -6069,20 +6059,17 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         for (column_index, value) in row.iter().enumerate() {
             let x = table_rect.x0 + column_width * column_index as f64 + layout.padding_x;
             let y = row_y + 8.0 * scale;
-            ctx.text_renderer.draw_text_styled(
+            ctx.text_renderer.draw_style(
                 ctx.scene,
                 value,
-                14.0,
                 ctx.theme.tokens.colors.text_primary,
                 translated(ctx.transform, x, y),
                 Some((column_width - 2.0 * layout.padding_x).max(1.0) as f32),
-                if row_index == 0 {
+                &TextStyle::new(14.0).with_weight(if row_index == 0 {
                     crate::text_render::TextWeight::Bold
                 } else {
                     crate::text_render::TextWeight::Regular
-                },
-                false,
-                false,
+                }),
             );
         }
         row_y += height;
@@ -6144,10 +6131,9 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         1.5 * scale,
     );
     let label = if alt.is_empty() { "Image" } else { alt };
-    ctx.text_renderer.draw_text_styled(
+    ctx.text_renderer.draw_style(
         ctx.scene,
         label,
-        16.0,
         ctx.theme.tokens.colors.text_primary,
         translated(
             ctx.transform,
@@ -6155,9 +6141,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
             rect.y0 + 18.0 * scale,
         ),
         Some(text_layout_width((rect.width() - 76.0 * scale).max(1.0))),
-        crate::text_render::TextWeight::Medium,
-        false,
-        false,
+        &TextStyle::new(16.0).with_weight(crate::text_render::TextWeight::Medium),
     );
     ctx.text_renderer.draw_text(
         ctx.scene,

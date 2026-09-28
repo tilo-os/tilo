@@ -955,11 +955,12 @@ impl FrameHarness {
                 &self.bindings,
                 &self.node_map,
                 node,
-                &mut self.state.doc,
-                &self.state.root,
                 action,
-                &self.permissions,
-                &author,
+                &mut self.state,
+                crate::bound_dispatch::SemanticCaller {
+                    authority: &self.permissions,
+                    author: &author,
+                },
                 callback,
             )
         }
@@ -1253,10 +1254,6 @@ impl FrameHarness {
         )
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "private constructor behind the public entry points"
-    )]
     fn with_inputs_and_host(
         state: State,
         root: Box<dyn Widget>,
@@ -4929,13 +4926,16 @@ impl FrameHarness {
             &mut self.state.doc,
             &target,
             self.action_transport.as_mut(),
-            None,
-            Some(arguments),
-            &self.author.0,
-            confirmed,
-            false,
-            invocation,
-            None,
+            crate::bound_dispatch::ResourceActionRequest {
+                argument: None,
+                arguments: Some(arguments),
+                actor: &self.author.0,
+                confirmed,
+                broker_admitted: false,
+                invocation,
+                ambient: None,
+                scope: None,
+            },
         )?;
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
             self.bound_invocations.insert(invocation, target);
@@ -5101,13 +5101,16 @@ impl FrameHarness {
             &mut self.state.doc,
             &target,
             self.action_transport.as_mut(),
-            None,
-            Some(&intent.arguments),
-            &self.author.0,
-            false,
-            false,
-            invocation,
-            None,
+            crate::bound_dispatch::ResourceActionRequest {
+                argument: None,
+                arguments: Some(&intent.arguments),
+                actor: &self.author.0,
+                confirmed: false,
+                broker_admitted: false,
+                invocation,
+                ambient: None,
+                scope: None,
+            },
         )
         .map_err(crate::bound_dispatch::BoundActionError::into_door);
         if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
@@ -5423,13 +5426,16 @@ impl FrameHarness {
                     &mut self.state.doc,
                     &target,
                     self.action_transport.as_mut(),
-                    argument,
-                    json,
-                    &self.author.0,
-                    confirmed,
-                    false,
-                    invocation_id,
-                    None,
+                    crate::bound_dispatch::ResourceActionRequest {
+                        argument,
+                        arguments: json,
+                        actor: &self.author.0,
+                        confirmed,
+                        broker_admitted: false,
+                        invocation: invocation_id,
+                        ambient: None,
+                        scope: None,
+                    },
                 )
                 .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
                 if matches!(result, crate::widget::ResourceOperationStart::Accepted) {
@@ -5549,15 +5555,18 @@ impl FrameHarness {
                     &self.state.root,
                     &self.action_registry,
                     self.action_transport.as_mut(),
-                    address,
-                    resource,
-                    spec,
-                    encoded,
-                    &self.author.0,
-                    &self.author.0,
-                    false,
-                    invocation_id,
-                    None,
+                    crate::bound_dispatch::ResourceOperation {
+                        address,
+                        resource,
+                        spec,
+                        encoded,
+                        actor: &self.author.0,
+                        local_author: &self.author.0,
+                        broker_admitted: false,
+                        invocation: invocation_id,
+                        ambient: None,
+                        scope: None,
+                    },
                 )?;
                 if let Some(before) = before {
                     self.state.record_committed_action_authored(
@@ -5678,15 +5687,18 @@ impl FrameHarness {
                     &self.state.root,
                     &self.action_registry,
                     self.action_transport.as_mut(),
-                    &intent.address,
-                    resource,
-                    spec,
-                    encoded,
-                    &self.author.0,
-                    &self.author.0,
-                    false,
-                    invocation,
-                    None,
+                    crate::bound_dispatch::ResourceOperation {
+                        address: &intent.address,
+                        resource,
+                        spec,
+                        encoded,
+                        actor: &self.author.0,
+                        local_author: &self.author.0,
+                        broker_admitted: false,
+                        invocation,
+                        ambient: None,
+                        scope: None,
+                    },
                 )?;
                 if let Some(before) = before {
                     self.state.record_committed_action_authored(
@@ -5772,15 +5784,18 @@ impl FrameHarness {
             &self.state.root,
             &self.action_registry,
             self.action_transport.as_mut(),
-            address,
-            resource,
-            spec,
-            encoded,
-            &self.author.0,
-            &self.author.0,
-            false,
-            invocation,
-            None,
+            crate::bound_dispatch::ResourceOperation {
+                address,
+                resource,
+                spec,
+                encoded,
+                actor: &self.author.0,
+                local_author: &self.author.0,
+                broker_admitted: false,
+                invocation,
+                ambient: None,
+                scope: None,
+            },
         )?;
         if let Some(before) = before {
             self.state.record_committed_action_authored(
@@ -6542,13 +6557,16 @@ impl FrameHarness {
             &mut self.state.doc,
             &target,
             self.action_transport.as_mut(),
-            None,
-            Some(arguments),
-            &self.author.0,
-            confirmed,
-            false,
-            invocation,
-            None,
+            crate::bound_dispatch::ResourceActionRequest {
+                argument: None,
+                arguments: Some(arguments),
+                actor: &self.author.0,
+                confirmed,
+                broker_admitted: false,
+                invocation,
+                ambient: None,
+                scope: None,
+            },
         )
         .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {

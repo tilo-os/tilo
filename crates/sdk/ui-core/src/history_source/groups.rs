@@ -206,41 +206,49 @@ pub fn move_named_boundary(
     Some((new_left, new_right))
 }
 
+/// One work session beside a seam, as the person saw it: its named record,
+/// or `None` while it is still an automatic projection with these bounds and
+/// title.
+#[derive(Clone, Copy)]
+pub struct DisplayedSession<'a> {
+    pub record: Option<&'a str>,
+    pub start: &'a HistoryEntryId,
+    pub end: &'a HistoryEntryId,
+    pub label: &'a str,
+}
+
+impl DisplayedSession<'_> {
+    fn materialize(self, doc: &mut AutoCommit) -> String {
+        match self.record {
+            Some(record) => record.to_string(),
+            None => name_range(doc, self.start, Some(self.end), self.label),
+        }
+    }
+}
+
 /// Correct a seam even when one or both work sessions are still automatic
 /// projections. Missing records are materialized with the titles and bounds
 /// the person saw, then the bordering action is moved in the same document
 /// transaction. The atomic history entries themselves are never rewritten.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a seam names both sessions' records, bounds and labels plus the moved boundary"
-)]
 pub fn materialize_and_move_boundary(
     doc: &mut AutoCommit,
-    left_record: Option<&str>,
-    left_start: &HistoryEntryId,
-    left_end: &HistoryEntryId,
-    left_label: &str,
-    right_record: Option<&str>,
-    right_start: &HistoryEntryId,
-    right_end: &HistoryEntryId,
-    right_label: &str,
+    left: DisplayedSession<'_>,
+    right: DisplayedSession<'_>,
     new_left_end: &HistoryEntryId,
     new_right_start: &HistoryEntryId,
 ) -> Option<(String, String)> {
-    if left_record.is_some_and(|record| named_range_record(doc, record).is_none())
-        || right_record.is_some_and(|record| named_range_record(doc, record).is_none())
-        || matches!((left_record, right_record), (Some(left), Some(right)) if left == right)
+    if left
+        .record
+        .is_some_and(|record| named_range_record(doc, record).is_none())
+        || right
+            .record
+            .is_some_and(|record| named_range_record(doc, record).is_none())
+        || matches!((left.record, right.record), (Some(left), Some(right)) if left == right)
     {
         return None;
     }
-    let left_record = match left_record {
-        Some(record) => record.to_string(),
-        None => name_range(doc, left_start, Some(left_end), left_label),
-    };
-    let right_record = match right_record {
-        Some(record) => record.to_string(),
-        None => name_range(doc, right_start, Some(right_end), right_label),
-    };
+    let left_record = left.materialize(doc);
+    let right_record = right.materialize(doc);
     move_named_boundary(
         doc,
         &left_record,
@@ -449,14 +457,18 @@ mod tests {
             let mut doc = AutoCommit::new();
             let (left, right) = materialize_and_move_boundary(
                 &mut doc,
-                None,
-                &id(1),
-                &id(2),
-                "Write Q3 financial report",
-                None,
-                &id(3),
-                &id(4),
-                "Onboard Sarah",
+                DisplayedSession {
+                    record: None,
+                    start: &id(1),
+                    end: &id(2),
+                    label: "Write Q3 financial report",
+                },
+                DisplayedSession {
+                    record: None,
+                    start: &id(3),
+                    end: &id(4),
+                    label: "Onboard Sarah",
+                },
                 &id(1),
                 &id(2),
             )

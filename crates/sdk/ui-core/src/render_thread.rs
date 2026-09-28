@@ -461,17 +461,21 @@ pub fn spawn_render_thread(
                     &render_cx,
                     &surface,
                     &mut renderer,
-                    &scene,
-                    width,
-                    height,
-                    base_color,
-                    &damage_regions,
-                    full_redraw || !target_valid,
                     &mut damage_cache,
-                    present_dbg,
-                    frame_ix,
-                    cpu_frame_id,
-                    presentation.as_ref(),
+                    FrameContent {
+                        scene: &scene,
+                        width,
+                        height,
+                        base_color,
+                        damage_regions: &damage_regions,
+                        full_redraw: full_redraw || !target_valid,
+                    },
+                    FramePresentation {
+                        frame_ix,
+                        cpu_frame_id,
+                        present_dbg,
+                        observer: presentation.as_ref(),
+                    },
                 );
                 let render_host_end = native_timing.and_then(|_| timing::capture());
                 timing::handoff::set(
@@ -698,23 +702,25 @@ fn resize_surface_checked(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::expect_used,
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "damage bounds are clamped to the u32 surface before narrowing; one bounded GPU transaction keeps retained-target correctness visible in one place"
 )]
 fn rasterize_damage(
-    device: &vello::wgpu::Device,
-    queue: &vello::wgpu::Queue,
+    gpu: &crate::gpu::DeviceHandle,
     surface: &RenderSurface<'static>,
     renderer: &mut Renderer,
-    scene: &Scene,
-    width: u32,
-    height: u32,
-    base_color: Color,
-    damage_regions: &[Rect],
-    full_redraw: bool,
     damage_cache: &mut DamageCache,
+    frame: &FrameContent<'_>,
 ) -> Result<u64, vello::Error> {
+    let crate::gpu::DeviceHandle { device, queue, .. } = gpu;
+    let FrameContent {
+        scene,
+        width,
+        height,
+        base_color,
+        damage_regions,
+        full_redraw,
+    } = *frame;
     let full_pixels = u64::from(width).saturating_mul(u64::from(height));
     let render_full = |renderer: &mut Renderer| {
         renderer.render_to_texture(
@@ -986,12 +992,27 @@ fn rasterize_damage(
     Ok(raster_pixels)
 }
 
-// One call site: this is the whole worker's per-frame encode+present step,
-// and each parameter is a distinct, independently necessary piece of GPU
-// state or frame metadata. Bundling would trade nine named parameters for
-// an equally large ad-hoc struct with no behavioural change.
+/// One frame's scene, surface size and damage, as the worker received it.
+#[derive(Clone, Copy)]
+struct FrameContent<'a> {
+    scene: &'a Scene,
+    width: u32,
+    height: u32,
+    base_color: Color,
+    damage_regions: &'a [Rect],
+    full_redraw: bool,
+}
+
+/// How a presented frame is identified and observed.
+#[derive(Clone, Copy)]
+struct FramePresentation<'a> {
+    frame_ix: u64,
+    cpu_frame_id: Option<u64>,
+    present_dbg: bool,
+    observer: Option<&'a crate::presentation_feedback::Observer>,
+}
+
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "one render-thread frame transaction; splitting it would separate acquire/encode/present state and timings"
 )]
@@ -999,18 +1020,22 @@ fn render_one_frame(
     render_cx: &RenderContext,
     surface: &RenderSurface<'static>,
     renderer: &mut Renderer,
-    scene: &Scene,
-    width: u32,
-    height: u32,
-    base_color: Color,
-    damage_regions: &[Rect],
-    full_redraw: bool,
     damage_cache: &mut DamageCache,
-    present_dbg: bool,
-    frame_ix: u64,
-    cpu_frame_id: Option<u64>,
-    presentation: Option<&crate::presentation_feedback::Observer>,
+    frame: FrameContent<'_>,
+    present: FramePresentation<'_>,
 ) -> FrameOutcome {
+    let FrameContent {
+        scene,
+        width,
+        height,
+        ..
+    } = frame;
+    let FramePresentation {
+        frame_ix,
+        cpu_frame_id,
+        present_dbg,
+        observer: presentation,
+    } = present;
     let Some(device_handle) = render_cx.devices.get(surface.dev_id) else {
         tracing::info!("render device index out of range; stopping the render thread");
         return FrameOutcome::SurfaceGone;
@@ -1060,17 +1085,15 @@ fn render_one_frame(
 
     let t_encode = present_dbg.then(crate::time::now);
     let raster_pixels = match rasterize_damage(
-        &device_handle.device,
-        &device_handle.queue,
+        device_handle,
         surface,
         renderer,
-        scene,
-        width,
-        height,
-        base_color,
-        damage_regions,
-        full_redraw || POST_PROCESSOR_ACTIVE.load(std::sync::atomic::Ordering::Acquire),
         damage_cache,
+        &FrameContent {
+            full_redraw: frame.full_redraw
+                || POST_PROCESSOR_ACTIVE.load(std::sync::atomic::Ordering::Acquire),
+            ..frame
+        },
     ) {
         Ok(pixels) => pixels,
         Err(err) => {
