@@ -22,7 +22,7 @@
  *   `{kind: 'phrase', phrase}`.
  * - `provider` answers a search palette: `query(needle)` → hits whose target
  *   is an action, `choose(hit, {confirmation})` → a ticket.
- * - `v1` is the frozen qOS `actionsV1` contract the Cloud console reads.
+ * - `v1` is the frozen `actionsV1` contract the Cloud console reads.
  */
 
 const REMOTE_ACTIONS_VERSION = 1;
@@ -344,7 +344,7 @@ export function createActions({
     return api.v1.getSnapshot();
   }
 
-  // --- actionsV1: the frozen qOS contract Cloud reads -----------------------
+  // --- actionsV1: the frozen contract Cloud reads -----------------------
 
   const binding = () => ({room, sender: device, senderRoot: userPublicKey, target: hostDevice, targetRoot: userPublicKey, certificate: hostDevice});
 
