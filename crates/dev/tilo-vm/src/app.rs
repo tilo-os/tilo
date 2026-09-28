@@ -1951,6 +1951,24 @@ impl App {
         }
     }
 
+    fn ensure_whpx_running(
+        &mut self,
+        vm: &Resolved,
+        adapter: &dyn Hypervisor,
+    ) -> Result<(), CliError> {
+        if adapter.running(&vm.vm(), &mut self.runner) == Some(false) {
+            return Err(CliError::Unreachable {
+                vm: vm.name.clone(),
+                detail: format!(
+                    "QEMU exited before SSH answered; inspect {}.stderr.log and Windows Application errors",
+                    vm.entry.disk.as_deref().unwrap_or("the VM disk")
+                ),
+                debug: Self::debug_commands(adapter, &vm.name),
+            });
+        }
+        Ok(())
+    }
+
     fn vm_start(&mut self, name: Option<&str>) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(name)?;
         let floor = vm_free_floor(self.registry()?.min_free_bytes(), &vm.entry.hypervisor);
@@ -1977,7 +1995,7 @@ impl App {
         let mut reachable = false;
         let mut no_daemon = None;
         let mut remote = None;
-        let mut next_whpx_running_check = started + Duration::from_secs(2);
+        let mut last_whpx_running_check = started;
         while started.elapsed() < Duration::from_secs(180) {
             match self.connect(&vm) {
                 Ok(connected) => {
@@ -1993,18 +2011,11 @@ impl App {
                 }
                 // Connection transport failures can resolve while the VM boots.
                 Err(CliError::Unreachable { .. }) => {
-                    if vm.entry.hypervisor == "whpx" && Instant::now() >= next_whpx_running_check {
-                        if adapter.running(&vm.vm(), &mut self.runner) == Some(false) {
-                            return Err(CliError::Unreachable {
-                                vm: vm.name.clone(),
-                                detail: format!(
-                                    "QEMU exited before SSH answered; inspect {}.stderr.log and Windows Application errors",
-                                    vm.entry.disk.as_deref().unwrap_or("the VM disk")
-                                ),
-                                debug: Self::debug_commands(adapter.as_ref(), &vm.name),
-                            });
-                        }
-                        next_whpx_running_check = Instant::now() + Duration::from_secs(2);
+                    if vm.entry.hypervisor == "whpx"
+                        && last_whpx_running_check.elapsed() >= Duration::from_secs(2)
+                    {
+                        self.ensure_whpx_running(&vm, adapter.as_ref())?;
+                        last_whpx_running_check = Instant::now();
                     }
                     // WHPX boots quickly enough that a two-second SSH poll
                     // accounts for a noticeable part of the restart time.
