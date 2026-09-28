@@ -1644,9 +1644,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # when a process also asks through this tunable — which is precisely what makes
 # the protection scopeable instead of global. fs.service earns it because it
 # parses bytes that arrived from a peer. Measured cost on an allocation-heavy
-# loop: about 8%. If the CPU, the kernel or any loaded library cannot support
-# it, glibc leaves shadow stacks off rather than failing, and
-# tilo-security-audit reports which processes actually got them.
+# loop: about 8%. If the CPU, the kernel or any library loaded at startup
+# cannot support it, glibc leaves shadow stacks off rather than failing, and
+# tilo-security-audit reports which processes actually got them. A library
+# dlopened later is different: glibc refuses one without the SHSTK note (see
+# crates/packaging/launcher/src/hardening.rs for the libzstd/Mesa case).
 #
 # Only Scudo has to remain for tilo-launcher's scoped hardening. Copy that one
 # DSO to a stable image-owned path, then erase compiler-rt's other sanitizers,
