@@ -27,17 +27,21 @@ fn frame_pts(app: &PlayerApp) -> Option<u64> {
         .map(|frame| frame.pts_ms)
 }
 
-fn invoke(app: &mut PlayerApp, doc: &automerge::AutoCommit, operation: &PlayerOperation) {
-    assert!(
-        app.invoke_resource_operation(
-            tilo_actions::OperationKind::Effect,
-            OPERATION_TYPE,
-            &serde_json::to_vec(operation).unwrap(),
+fn invoke(app: &mut PlayerApp, doc: &mut automerge::AutoCommit, operation: &PlayerOperation) {
+    assert!(matches!(
+        app.start_operation(
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
+                OPERATION_TYPE,
+                &serde_json::to_vec(operation).unwrap()
+            ),
             doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         )
-        .expect("production playback action")
-    );
+        .expect("production playback action"),
+        Some(ui::widget::ResourceOperationStart::Completed(_))
+    ));
 }
 
 fn wait_for(
@@ -165,9 +169,9 @@ fn exercise_app(root: &Path) {
     assert_eq!(app.player().engine().unwrap().audio_tracks().len(), 1);
     assert!(app.player().is_playing());
 
-    invoke(&mut app, &doc, &PlayerOperation::TogglePlayback);
+    invoke(&mut app, &mut doc, &PlayerOperation::TogglePlayback);
     assert!(!app.player().is_playing());
-    invoke(&mut app, &doc, &PlayerOperation::SeekSeconds(2.0));
+    invoke(&mut app, &mut doc, &PlayerOperation::SeekSeconds(2.0));
     wait_for(
         &mut app,
         &mut doc,
@@ -186,7 +190,7 @@ fn exercise_app(root: &Path) {
     }
 
     let audio_before_resume = audio_buffers.load(Ordering::Relaxed);
-    invoke(&mut app, &doc, &PlayerOperation::TogglePlayback);
+    invoke(&mut app, &mut doc, &PlayerOperation::TogglePlayback);
     wait_for(
         &mut app,
         &mut doc,
