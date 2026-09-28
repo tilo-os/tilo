@@ -946,7 +946,6 @@ mod tests {
         assert!(rt.current_heads().is_empty());
     }
 
-
     #[test]
     fn the_commit_ledger_is_durable_and_forgets_its_oldest_commits_first() {
         let tmp = tempfile::tempdir().unwrap();

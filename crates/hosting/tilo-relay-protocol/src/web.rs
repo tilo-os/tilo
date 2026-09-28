@@ -109,6 +109,34 @@ pub struct SessionGrant {
     pub expires_at_ns: u64,
 }
 
+/// The host accepts [`crate::transport::Envelope::SubscribeFrom`] and issues
+/// [`crate::transport::Envelope::Position`]s.
+pub const FEATURE_RESUME: u64 = 1;
+
+/// Encode a `/session/finish` answer: the [`SessionGrant`] followed by the
+/// host's feature bits. A device that predates the features reads the grant
+/// and ignores the rest.
+///
+/// # Errors
+///
+/// Returns an error if postcard fails to encode.
+pub fn encode_grant(grant: &SessionGrant, features: u64) -> Result<Vec<u8>, postcard::Error> {
+    let mut bytes = postcard::to_allocvec(grant)?;
+    bytes.extend(postcard::to_allocvec(&features)?);
+    Ok(bytes)
+}
+
+/// Decode a `/session/finish` answer into the grant and the host's feature
+/// bits, which are `0` from a host that predates them.
+///
+/// # Errors
+///
+/// Returns an error if the grant does not decode.
+pub fn decode_grant(bytes: &[u8]) -> Result<(SessionGrant, u64), postcard::Error> {
+    let (grant, rest) = postcard::take_from_bytes::<SessionGrant>(bytes)?;
+    Ok((grant, postcard::from_bytes(rest).unwrap_or(0)))
+}
+
 /// Host-signed position in one session's event stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cursor {

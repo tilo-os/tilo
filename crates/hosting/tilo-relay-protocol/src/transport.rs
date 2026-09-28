@@ -360,6 +360,28 @@ pub enum Envelope {
         /// Whether it is now a live member.
         active: bool,
     },
+
+    /// A `Subscribe` that resumes: the host replays only what this device
+    /// has not received since `position` (a [`Envelope::Position`] it
+    /// issued to this device), or everything when it cannot honour the
+    /// position, and then follows the subscriber's durable deliveries with
+    /// `Position`s. Sent only to a host that advertised resumable sessions.
+    SubscribeFrom {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The last position received for this workspace, if any.
+        position: Option<Vec<u8>>,
+    },
+
+    /// Everything the host delivered to this subscriber so far. Opaque and
+    /// host-authenticated; present it to [`Envelope::SubscribeFrom`] after
+    /// a reconnect. Only subscribers that used `SubscribeFrom` receive it.
+    Position {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The position.
+        position: Vec<u8>,
+    },
 }
 
 /// Version of the [`Envelope::RemoteAction`] kind this build routes. The

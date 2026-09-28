@@ -414,6 +414,7 @@ impl PeerHandle {
             held_inbound: BTreeMap::new(),
             held_outbound: saved.held.into_iter().collect(),
             reassembly: Reassembly::default(),
+            positions: BTreeMap::new(),
             doc_seq: 0,
             barriers: Vec::new(),
             admission_since: None,
@@ -787,6 +788,10 @@ struct Task {
     /// keys; they are sealed and committed once the keys arrive.
     held_outbound: BTreeMap<DocumentRoute, Vec<Vec<u8>>>,
     reassembly: Reassembly,
+    /// The host's last position per room, presented when resubscribing so
+    /// the host replays only what came after it. Kept for the session task's
+    /// lifetime only: it describes what this page has received.
+    positions: BTreeMap<u64, Vec<u8>>,
     doc_seq: u64,
     barriers: Vec<([u8; 16], Completion)>,
     /// When the rooms not yet admitted were subscribed (ms since the epoch).
@@ -986,7 +991,11 @@ impl Task {
                     biased;
                     command = commands.recv() => match command {
                         None | Some(Command::Close) => return self.closed(),
-                        Some(Command::Reconnect | Command::Refresh) => break,
+                        Some(Command::Reconnect) => break,
+                        Some(Command::Refresh) => {
+                            self.positions.clear();
+                            break;
+                        }
                         Some(command) => {
                             self.apply(command, None).await;
                         }
@@ -1012,7 +1021,11 @@ impl Task {
         loop {
             match commands.recv().await {
                 None | Some(Command::Close) => return false,
-                Some(Command::Reconnect | Command::Refresh) => return true,
+                Some(Command::Reconnect) => return true,
+                Some(Command::Refresh) => {
+                    self.positions.clear();
+                    return true;
+                }
                 Some(command) => {
                     self.apply(command, None).await;
                 }
@@ -1027,11 +1040,7 @@ impl Task {
     ) -> Exit {
         let mut sent_ok = true;
         for workspace_id in &self.rooms {
-            sent_ok &= client
-                .send(Envelope::Subscribe {
-                    workspace_id: *workspace_id,
-                })
-                .is_ok();
+            sent_ok &= client.send(self.subscribe(&client, *workspace_id)).is_ok();
         }
         for workspace_id in &self.live {
             sent_ok &= client
@@ -1078,6 +1087,8 @@ impl Task {
                     }
                     Some(Command::Refresh) => {
                         self.clear_admission_failure();
+                        // A refresh asks for the rooms whole: no position.
+                        self.positions.clear();
                         if !self.resubscribe(&client) {
                             return Exit::Lost("host session saturated".into());
                         }
@@ -1133,7 +1144,7 @@ impl Task {
                     status.rooms.entry(workspace_id).or_insert(false);
                 });
                 client
-                    .is_none_or(|client| client.send(Envelope::Subscribe { workspace_id }).is_ok())
+                    .is_none_or(|client| client.send(self.subscribe(client, workspace_id)).is_ok())
             }
             Command::LiveJoin(workspace_id) => {
                 self.live.insert(workspace_id);
@@ -1280,6 +1291,19 @@ impl Task {
         delivered
     }
 
+    /// Subscribe to `workspace_id`, resuming after the last position when
+    /// the host supports it.
+    fn subscribe(&self, client: &Link, workspace_id: u64) -> Envelope {
+        if client.resumable() {
+            Envelope::SubscribeFrom {
+                workspace_id,
+                position: self.positions.get(&workspace_id).cloned(),
+            }
+        } else {
+            Envelope::Subscribe { workspace_id }
+        }
+    }
+
     fn inbound(&mut self, envelope: Envelope) {
         let now = crate::clock::now_ms();
         self.update(|status| status.last_contact_at_ms = Some(now));
@@ -1308,6 +1332,12 @@ impl Task {
                     return;
                 };
                 self.inbound_body(body, author_device_public_key);
+            }
+            Envelope::Position {
+                workspace_id,
+                position,
+            } => {
+                self.positions.insert(workspace_id, position);
             }
             Envelope::Committed { op, seq, .. } => self.acknowledge(op, Some(seq)),
             Envelope::CommitRefused { op, reason, .. } => {
@@ -1685,6 +1715,14 @@ enum Link {
 }
 
 impl Link {
+    fn resumable(&self) -> bool {
+        match self {
+            Self::Https(link) => link.resumable(),
+            #[cfg(feature = "iroh")]
+            Self::Iroh(_) => false,
+        }
+    }
+
     fn send(&self, envelope: Envelope) -> Result<(), Box<Envelope>> {
         match self {
             Self::Https(link) => link.send(envelope),

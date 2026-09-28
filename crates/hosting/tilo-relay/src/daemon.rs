@@ -1842,6 +1842,9 @@ impl RelayProtocol {
             app_serving: self.app_serving.clone(),
             live_bridge: self.live_bridge.get().cloned(),
             agents: self.agents.clone(),
+            positions: Some(crate::position::PositionIssuer::new(
+                &self.own_sk.to_bytes(),
+            )),
         }
     }
 }

@@ -16,35 +16,14 @@
 
 mod support;
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 
 use collab_types::DocumentMutation;
-use tilo_browser_peer::{Host, HttpClient, HttpFuture, PeerEvent};
+use tilo_browser_peer::{Host, PeerEvent};
 use tilo_relay_protocol::web::MAX_PAGE_BYTES;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{enrol, ready, route, start_host, start_peer, wait_for, workspace};
-
-/// Records the largest `/events` answer the host sent.
-struct Recording {
-    inner: Arc<support::https::DevHttps>,
-    largest_page: Arc<AtomicUsize>,
-}
-
-impl HttpClient for Recording {
-    fn post(&self, path: &str, session: Option<&str>, body: Vec<u8>) -> HttpFuture<'_> {
-        let events = path.ends_with("/events");
-        let answer = self.inner.post(path, session, body);
-        Box::pin(async move {
-            let answer = answer.await;
-            if events && let Ok((_, bytes)) = &answer {
-                self.largest_page.fetch_max(bytes.len(), Ordering::Relaxed);
-            }
-            answer
-        })
-    }
-}
+use support::{Recording, enrol, ready, route, start_host, start_peer, wait_for, workspace};
 
 fn noise(len: usize, seed: u64) -> Vec<u8> {
     let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
@@ -97,13 +76,11 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
     .await
     .unwrap();
 
-    let largest_page = Arc::new(AtomicUsize::new(0));
+    let recording = Recording::new(host.https());
+    let largest_page = recording.largest_page.clone();
     let joined_at = std::time::Instant::now();
     let joiner = start_peer(
-        Host::Https(Arc::new(Recording {
-            inner: host.https(),
-            largest_page: largest_page.clone(),
-        })),
+        Host::Https(recording),
         joiner.cert,
         host_device.cert.clone(),
         joiner.key,

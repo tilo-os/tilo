@@ -25,6 +25,7 @@
 pub(crate) mod bounded;
 pub(crate) mod continuity;
 pub(crate) mod replay;
+pub(crate) mod resume;
 pub(crate) mod retained;
 #[cfg(test)]
 pub(crate) mod shell_proof_fixture;
