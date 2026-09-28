@@ -355,7 +355,7 @@ mod tests {
             ui::resources::action_directory_invocation_domain(&widget, &doc),
             before
         );
-        let a = action(&ResourceProvider::resources(&widget, &doc), "use-selected");
+        let a = action(&ui::resources::resources(&widget, &doc), "use-selected");
         assert!(
             a.continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Immediate))
                 .is_some()
@@ -385,7 +385,7 @@ mod tests {
                 ui::resources::action_directory_invocation_domain(&changed, &doc),
                 before
             );
-            let other = action(&ResourceProvider::resources(&changed, &doc), "use-selected");
+            let other = action(&ui::resources::resources(&changed, &doc), "use-selected");
             assert_ne!(
                 other.continuation_identity(ContinuationQuery::Exact(
                     ContinuationArguments::Immediate

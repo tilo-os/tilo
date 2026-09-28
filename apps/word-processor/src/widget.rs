@@ -11396,6 +11396,12 @@ impl ui::resources::PublishesResources for WordProcessorWidget {
         if self.participant_host {
             return Self::publish_catalogue_schema(self, doc);
         }
+        // The framework root already publishes this document through
+        // `tilo_resource::publish`. A second tree from the widget would be
+        // another door.
+        if self.source.hosted() {
+            return Vec::new();
+        }
         Self::publish_resources(self, doc)
     }
     fn action_directory_invocation_domain(
