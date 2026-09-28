@@ -358,8 +358,7 @@ mod tests {
                 let state = chrome.borrow();
                 ActionCatalog::build_exact(
                     &registry(),
-                    WINDOWS_PROVIDER_ID,
-                    "tab.close:200:3",
+                    &ResourceRef::new(WINDOWS_PROVIDER_ID, "tab.close:200:3"),
                     SearchScope::All,
                     None,
                     &state,
@@ -393,8 +392,7 @@ mod tests {
                 let state = chrome.borrow();
                 ActionCatalog::build_exact(
                     &registry(),
-                    WINDOWS_PROVIDER_ID,
-                    "tab.close:100:999",
+                    &ResourceRef::new(WINDOWS_PROVIDER_ID, "tab.close:100:999"),
                     SearchScope::All,
                     None,
                     &state,
@@ -440,8 +438,7 @@ mod tests {
             let state = chrome.borrow();
             ActionCatalog::build_exact(
                 &registry(),
-                WINDOWS_PROVIDER_ID,
-                &id,
+                &ResourceRef::new(WINDOWS_PROVIDER_ID, &id),
                 SearchScope::All,
                 None,
                 &state,

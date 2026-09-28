@@ -13,6 +13,7 @@ use tilo_desktop::drill_in::{
     SIBLING_GAP, TARGET, TOGGLE_H, TOGGLE_W, centred_text_top, control_radius, leading_glyph,
     paint_control, trailing_glyph, trailing_toggle, type_size,
 };
+use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::drag::{DragController, ListMetrics};
@@ -132,6 +133,14 @@ enum RootStop {
     PowerProfile,
     Edit,
     Tile(RootTile),
+}
+
+/// A drill-in row's focus stop and the glyph, label and detail line it shows.
+struct LinkRow {
+    stop: RootStop,
+    icon: ui::icons::Icon,
+    label: String,
+    detail: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1515,10 +1524,6 @@ impl QuickSettingsRoot {
         self.slider_drag.is_some() || self.edit_drag.is_pending()
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the retained-rendering entry point receives the scene, transform, text, theme, input, and current model together to produce one coherent frame"
-    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -1739,10 +1744,7 @@ impl QuickSettingsRoot {
         let controls = self.visible_controls(state);
         for (i, c) in controls.iter().copied().enumerate() {
             self.draw_control(
-                scene,
-                transform,
-                text,
-                theme,
+                &mut PaintCtx::new(scene, transform, text, theme),
                 cursor,
                 state,
                 i,
@@ -1750,22 +1752,25 @@ impl QuickSettingsRoot {
                 c,
             );
         }
-        for (stop, icon, label, detail) in [
-            (
-                RootStop::Devices,
-                ui::icons::Icon::Monitor,
-                t("qs-devices"),
-                Self::devices_subline(state),
-            ),
-            (
-                RootStop::Clipboard,
-                ui::icons::Icon::ClipboardPaste,
-                t("qs-clipboard"),
-                Self::clipboard_subline(state),
-            ),
+        for row in [
+            LinkRow {
+                stop: RootStop::Devices,
+                icon: ui::icons::Icon::Monitor,
+                label: t("qs-devices"),
+                detail: Self::devices_subline(state),
+            },
+            LinkRow {
+                stop: RootStop::Clipboard,
+                icon: ui::icons::Icon::ClipboardPaste,
+                label: t("qs-clipboard"),
+                detail: Self::clipboard_subline(state),
+            },
         ] {
             self.draw_link_row(
-                scene, transform, text, theme, cursor, state, stop, icon, &label, &detail,
+                &mut PaintCtx::new(scene, transform, text, theme),
+                cursor,
+                state,
+                &row,
             );
         }
         // The power row: battery glyph, profile and detail, chevron — all
@@ -1843,23 +1848,21 @@ impl QuickSettingsRoot {
     }
     /// A drill-in row (Devices, Clipboard): leading glyph, label over a
     /// detail line, trailing chevron — the power row's anatomy at half width.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a drill-in row's retained rendering needs its shared renderer context plus the stop, glyph and copy it presents"
-    )]
     fn draw_link_row(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         cursor: Option<Point>,
         state: &QuickSettingsState,
-        stop: RootStop,
-        icon: ui::icons::Icon,
-        label: &str,
-        detail: &str,
+        row: &LinkRow,
     ) {
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let LinkRow {
+            stop,
+            icon,
+            ref label,
+            ref detail,
+        } = *row;
         let colors = &theme.tokens.colors;
         let glyph = Self::glyph_at(self.layout_scale);
         let inset = self.scaled(CONTROL_INSET);
@@ -1910,22 +1913,17 @@ impl QuickSettingsRoot {
             None,
         );
     }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a control's retained rendering needs its shared renderer context plus the explicit indexed control data for stable focus and geometry"
-    )]
     fn draw_control(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         cursor: Option<Point>,
         s: &QuickSettingsState,
         i: usize,
         count: usize,
         c: QuickSettingsControl,
     ) {
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let colors = &theme.tokens.colors;
         let r = self.control_card(self.panel, i, count);
         let on = Self::on(c, s);
@@ -2235,10 +2233,6 @@ impl QuickSettingsRoot {
     /// The grip, label and add/remove button of an edit row, shared by the
     /// resting rows and the drag ghost so the two cannot drift apart. Every
     /// element sits on the row's centre line (HIG §7).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the row painter receives the scene, transform, text, theme, pointer, row rect and control together to paint one coherent row"
-    )]
     fn draw_edit_row_content(
         &self,
         scene: &mut Scene,

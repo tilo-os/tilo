@@ -439,13 +439,15 @@ async fn actual_exchange(restart: bool) {
     drop(received);
     if restart {
         Box::pin(refresh::restart_after_offline_snapshot(
-            &directory,
+            refresh::LiveExchange {
+                directory: &directory,
+                identity: &identity,
+                endpoint: &endpoint,
+                relay: &relay,
+                publisher: &publisher,
+            },
             receiving_owner,
             room,
-            &identity,
-            &endpoint,
-            &relay,
-            &publisher,
             actual_authority,
             receiving_custody,
         ))

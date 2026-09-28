@@ -324,10 +324,6 @@ impl RemoteCaptureRegistry {
     /// Install a grant minted by the certified source after matching it to an
     /// outstanding target request. The caller owns that request correlation;
     /// this registry owns the exact data-plane binding from this point on.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the source-minted grant arrives as separate wire fields that are all bound here"
-    )]
     pub fn accept_grant(
         &mut self,
         request: &RemoteCaptureRequest,

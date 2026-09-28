@@ -1004,7 +1004,6 @@ fn apply_scanout_command(
 /// same painting logic, different owner of the scanouts and the pointer.
 #[allow(
     clippy::too_many_lines,
-    clippy::too_many_arguments,
     reason = "one dispatcher keeps bridge lifetime, sparse eligibility, diagnostics, and the single versus multi-output presentation boundaries together"
 )]
 fn paint_scanouts(

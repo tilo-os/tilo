@@ -2023,23 +2023,8 @@ impl DeviceFabricRuntime {
         envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
     ) -> bool {
         match &envelope.action {
-            PersonalFabricAction::GamepadForwardRequest {
-                forwarding_id,
-                app_id,
-                workspace_id,
-                session_id,
-                label,
-            } => {
-                self.queue_gamepad_request(
-                    network,
-                    &envelope.source,
-                    &envelope.target,
-                    *forwarding_id,
-                    app_id,
-                    workspace_id,
-                    session_id,
-                    label,
-                );
+            PersonalFabricAction::GamepadForwardRequest { .. } => {
+                self.queue_gamepad_request(network, envelope);
             }
             PersonalFabricAction::GamepadForwardGrant {
                 forwarding_id,
@@ -2124,21 +2109,25 @@ impl DeviceFabricRuntime {
         true
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "every authenticated wire binding stays explicit at the privileged broker boundary"
-    )]
+    /// Queue the `GamepadForwardRequest` that `envelope` carries for the
+    /// user's decision, rejecting it when it cannot be queued.
     fn queue_gamepad_request(
         &self,
         network: &ShellNetwork,
-        source: &crate::shell::personal_continuity::DeviceId,
-        target: &crate::shell::personal_continuity::DeviceId,
-        forwarding_id: [u8; 16],
-        app_id: &str,
-        workspace_id: &str,
-        session_id: &str,
-        label: &str,
+        envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
     ) {
+        let PersonalFabricAction::GamepadForwardRequest {
+            forwarding_id,
+            app_id,
+            workspace_id,
+            session_id,
+            label,
+        } = &envelope.action
+        else {
+            return;
+        };
+        let forwarding_id = *forwarding_id;
+        let source = &envelope.source;
         let reject = PersonalFabricAction::GamepadForwardGrant {
             forwarding_id,
             accepted: false,
@@ -2150,11 +2139,11 @@ impl DeviceFabricRuntime {
         };
         let request = PendingGamepadAuthorization {
             source: source.clone(),
-            target: target.clone(),
-            app_id: app_id.to_owned(),
-            workspace_id: workspace_id.to_owned(),
-            session_id: session_id.to_owned(),
-            label: label.to_owned(),
+            target: envelope.target.clone(),
+            app_id: app_id.clone(),
+            workspace_id: workspace_id.clone(),
+            session_id: session_id.clone(),
+            label: label.clone(),
             received: Instant::now(),
         };
         if !authorizations.queue(
@@ -3223,12 +3212,14 @@ fn handle_nearby_drop_action(
             }
             let _ = network.start_nearby_transfer(
                 &target,
-                transfer_id,
-                request_id,
-                entry.total_bytes,
-                committed_offset,
-                prefix_hash,
-                entry.content_hash,
+                crate::network::actor::NearbyTransferCheckpoint {
+                    transfer_id,
+                    request_id,
+                    total_bytes: entry.total_bytes,
+                    resume_offset: committed_offset,
+                    prefix_hash,
+                    content_hash: entry.content_hash,
+                },
                 &path,
             );
         }
@@ -5175,13 +5166,15 @@ pub fn decide_nearby_transfer_at(
                     crate::shell::i18n::t("device-fabric-error-transfer-unrecoverable")
                 })?;
             let (committed_offset, prefix_hash) = store.begin_incoming(
-                entry.id,
-                entry.source.clone(),
-                entry.request_id,
-                entry.name.clone(),
-                entry.kind,
-                entry.total_bytes,
-                entry.content_hash,
+                crate::shell::nearby_transfer::IncomingManifest {
+                    id: entry.id,
+                    source: entry.source.clone(),
+                    request_id: entry.request_id,
+                    name: entry.name.clone(),
+                    kind: entry.kind,
+                    total_bytes: entry.total_bytes,
+                    content_hash: entry.content_hash,
+                },
                 unix_now_ms(),
             )?;
             Ok((entry, committed_offset, prefix_hash))
@@ -5282,13 +5275,15 @@ pub fn decide_nearby_transfer_at(
             }
             let (committed_offset, prefix_hash) = with_nearby_transfer_store(|store| {
                 store.begin_incoming(
-                    transfer_id,
-                    pending.source.as_str().to_string(),
-                    pending.request_id,
-                    pending.name,
-                    kind,
-                    pending.total_bytes,
-                    content_hash,
+                    crate::shell::nearby_transfer::IncomingManifest {
+                        id: transfer_id,
+                        source: pending.source.as_str().to_string(),
+                        request_id: pending.request_id,
+                        name: pending.name,
+                        kind,
+                        total_bytes: pending.total_bytes,
+                        content_hash,
+                    },
                     unix_now_ms(),
                 )
             })?;
@@ -7447,10 +7442,6 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "snapshot construction receives each sampled runtime input explicitly"
-)]
 fn build_local_snapshot(
     device: &crate::shell::personal_continuity::DeviceId,
     label: String,

@@ -26,8 +26,12 @@ use ui::text_selection::{
 
 use crate::shell::crdt_text::{CrdtTextBody, full_bleed_leaf, full_bleed_rect};
 use ui::icons::Icon;
+use ui::paint::PaintCtx;
 use ui::theme::Theme;
-use ui::widget::{AppKind, AppWidget, CompleteContentProvider, EmptyState, IconDescriptor, Widget};
+use ui::widget::{
+    AppKind, AppWidget, CompleteContentProvider, EmptyState, EmptyStateContent, IconDescriptor,
+    Widget,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Size};
 use vello::peniko::Fill;
@@ -363,15 +367,14 @@ impl Widget for NotesApp {
             let body = crate::shell::i18n::t("notes-empty-body");
             let action = crate::shell::i18n::t("notes-empty-action");
             self.empty_action_rect = EmptyState::paint(
-                scene,
-                transform,
-                tr,
-                &card_theme,
+                &mut PaintCtx::new(scene, transform, tr, &card_theme),
                 self.rect,
-                Some(Icon::PenTool),
-                &crate::shell::i18n::t("notes-empty-title"),
-                Some(body.as_str()),
-                Some(action.as_str()),
+                &EmptyStateContent {
+                    icon: Some(Icon::PenTool),
+                    title: &crate::shell::i18n::t("notes-empty-title"),
+                    message: Some(body.as_str()),
+                    action_label: Some(action.as_str()),
+                },
                 self.last_mouse,
             )
             .unwrap_or(Rect::ZERO);

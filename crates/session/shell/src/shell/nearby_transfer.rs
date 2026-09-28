@@ -222,6 +222,19 @@ pub struct InboxEntry {
     pub expires_unix_ms: u64,
 }
 
+/// What an exact source offers for one incoming object: the manifest a new
+/// inbox entry is created from, or that a resume must match exactly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IncomingManifest {
+    pub id: [u8; 16],
+    pub source: String,
+    pub request_id: [u8; 16],
+    pub name: String,
+    pub kind: TransferKind,
+    pub total_bytes: u64,
+    pub content_hash: [u8; 32],
+}
+
 #[derive(Default, Serialize, Deserialize)]
 struct StoreIndex {
     version: u16,
@@ -454,21 +467,20 @@ impl NearbyTransferStore {
     ///
     /// # Errors
     /// Returns an error for invalid/mismatched manifests, quota, or durable I/O failure.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Incoming transfers bind source and request IDs to name, kind, byte length, content hash, and the timestamp used for expiry."
-    )]
     pub fn begin_incoming(
         &mut self,
-        id: [u8; 16],
-        source: String,
-        request_id: [u8; 16],
-        name: String,
-        kind: TransferKind,
-        total_bytes: u64,
-        content_hash: [u8; 32],
+        manifest: IncomingManifest,
         now_unix_ms: u64,
     ) -> Result<(u64, [u8; 32]), String> {
+        let IncomingManifest {
+            id,
+            source,
+            request_id,
+            name,
+            kind,
+            total_bytes,
+            content_hash,
+        } = manifest;
         validate_manifest(id, &source, &name, total_bytes)?;
         if let Some(existing) = self.index.inbox.iter().find(|entry| entry.id == id) {
             if existing.source != source
@@ -1244,13 +1256,15 @@ mod tests {
             let checkpoint_len = usize::try_from(CHECKPOINT_BYTES).expect("checkpoint fits usize");
             store
                 .begin_incoming(
-                    id,
-                    "peer".into(),
-                    [5; 16],
-                    "x.bin".into(),
-                    TransferKind::File,
-                    CHECKPOINT_BYTES + 9,
-                    [8; 32],
+                    IncomingManifest {
+                        id,
+                        source: "peer".into(),
+                        request_id: [5; 16],
+                        name: "x.bin".into(),
+                        kind: TransferKind::File,
+                        total_bytes: CHECKPOINT_BYTES + 9,
+                        content_hash: [8; 32],
+                    },
                     10,
                 )
                 .unwrap();
@@ -1269,13 +1283,15 @@ mod tests {
             );
             let (offset, hash) = reopened
                 .begin_incoming(
-                    id,
-                    "peer".into(),
-                    [5; 16],
-                    "x.bin".into(),
-                    TransferKind::File,
-                    CHECKPOINT_BYTES + 9,
-                    [8; 32],
+                    IncomingManifest {
+                        id,
+                        source: "peer".into(),
+                        request_id: [5; 16],
+                        name: "x.bin".into(),
+                        kind: TransferKind::File,
+                        total_bytes: CHECKPOINT_BYTES + 9,
+                        content_hash: [8; 32],
+                    },
                     11,
                 )
                 .unwrap();
@@ -1289,26 +1305,30 @@ mod tests {
             let id = [7; 16];
             store
                 .begin_incoming(
-                    id,
-                    "peer".into(),
-                    [6; 16],
-                    "x".into(),
-                    TransferKind::File,
-                    2,
-                    [1; 32],
+                    IncomingManifest {
+                        id,
+                        source: "peer".into(),
+                        request_id: [6; 16],
+                        name: "x".into(),
+                        kind: TransferKind::File,
+                        total_bytes: 2,
+                        content_hash: [1; 32],
+                    },
                     10,
                 )
                 .unwrap();
             assert!(
                 store
                     .begin_incoming(
-                        id,
-                        "other".into(),
-                        [6; 16],
-                        "x".into(),
-                        TransferKind::File,
-                        2,
-                        [1; 32],
+                        IncomingManifest {
+                            id,
+                            source: "other".into(),
+                            request_id: [6; 16],
+                            name: "x".into(),
+                            kind: TransferKind::File,
+                            total_bytes: 2,
+                            content_hash: [1; 32]
+                        },
                         10
                     )
                     .is_err()
@@ -1324,13 +1344,15 @@ mod tests {
             let id = [8; 16];
             store
                 .begin_incoming(
-                    id,
-                    "peer".into(),
-                    [3; 16],
-                    "x.bin".into(),
-                    TransferKind::File,
-                    3,
-                    [9; 32],
+                    IncomingManifest {
+                        id,
+                        source: "peer".into(),
+                        request_id: [3; 16],
+                        name: "x.bin".into(),
+                        kind: TransferKind::File,
+                        total_bytes: 3,
+                        content_hash: [9; 32],
+                    },
                     10,
                 )
                 .unwrap();
@@ -1477,13 +1499,15 @@ mod tests {
             let mut receiver = NearbyTransferStore::open(tmp.path().join("receiver"), 10).unwrap();
             receiver
                 .begin_incoming(
-                    entry.id,
-                    "peer".into(),
-                    [42; 16],
-                    entry.name,
-                    entry.kind,
-                    entry.total_bytes,
-                    entry.content_hash,
+                    IncomingManifest {
+                        id: entry.id,
+                        source: "peer".into(),
+                        request_id: [42; 16],
+                        name: entry.name,
+                        kind: entry.kind,
+                        total_bytes: entry.total_bytes,
+                        content_hash: entry.content_hash,
+                    },
                     10,
                 )
                 .unwrap();

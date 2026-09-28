@@ -80,7 +80,8 @@ use std::path::PathBuf;
 use ui::ColorCompat;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::search::system::filters::{
-    FilterText, KindChip, ScopeSegment, SearchFilters, draw_filter_chip, toggle_kind,
+    FilterStripSlot, FilterText, KindChip, ScopeSegment, SearchFilters, draw_filter_chip,
+    toggle_kind,
 };
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -2504,19 +2505,10 @@ impl ShellOverlayHost {
     /// clipping them to the physical output. Used by the compositor's capture
     /// executor for `FullApp` and `WholeStrip`; the normal screen scene remains
     /// the source for visible-region/display captures.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "capture rendering needs the complete widget paint context"
-    )]
     pub fn draw_capture_targets(
         &mut self,
-        target_ids: &[String],
-        extent: ui::widget::CaptureExtent,
-        complete_semantic_content: bool,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        capture: &ui::widget::LiveCapture<'_>,
+        ctx: &mut ui::paint::PaintCtx<'_>,
         presence: &PresenceCtx,
     ) -> Vec<Rect> {
         let rows: Vec<_> = self.group_row_ptrs.values().copied().collect();
@@ -2526,16 +2518,7 @@ impl ShellOverlayHost {
             // this exclusive host borrow and sequential traversal prevent
             // aliasing, matching the existing capture-target/read paths.
             unsafe {
-                rects.extend((&mut *row).draw_capture_targets(
-                    target_ids,
-                    extent,
-                    complete_semantic_content,
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    presence,
-                ));
+                rects.extend((&mut *row).draw_capture_targets(capture, ctx, presence));
             }
         }
         rects
@@ -3839,21 +3822,17 @@ impl ShellOverlayHost {
     /// Replace one matching peer-window card with a live, session-local
     /// decoder. Returns false when the remote app has no corresponding tab;
     /// the caller may retry when the replicated window description arrives.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "stream negotiation fields are supplied together by the authenticated wire event"
-    )]
-    pub fn mount_peer_stream(
-        &mut self,
-        source_peer: u64,
-        surface_id: u64,
-        local_peer: u64,
-        app_id: &str,
-        codec: &str,
-        display_size: Option<(u32, u32)>,
-        hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
-        input_sink: std::sync::Arc<dyn Fn(crate::network::streaming::InputEvent) + Send + Sync>,
-    ) -> bool {
+    pub fn mount_peer_stream(&mut self, stream: &crate::shell::peer_view::PeerStreamStart) -> bool {
+        let crate::shell::peer_view::PeerStreamStart {
+            source_peer,
+            surface: surface_id,
+            local_peer,
+            ref app_id,
+            ref codec,
+            display_size,
+            hdr_static_metadata,
+            ref input_sink,
+        } = *stream;
         let key = (source_peer, surface_id);
         if let Some(tab_id) = self.peer_stream_tabs.get(&key).copied() {
             for &row_ptr in self.group_row_ptrs.values() {
@@ -3919,7 +3898,7 @@ impl ShellOverlayHost {
             hdr_static_metadata,
         );
         peer_view.restart_stream(codec, display_size);
-        peer_view.set_input_sink(input_sink);
+        peer_view.set_input_sink(std::sync::Arc::clone(input_sink));
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: identical to `foreign_surface_rect`: rows are boxed by
             // this host and `&mut self` makes this traversal exclusive.
@@ -7800,8 +7779,7 @@ impl ShellOverlayHost {
         let scope = crate::shell::chrome_state::SearchScope::All;
         crate::shell::search::action_api::ActionCatalog::build_exact(
             &self.search_registry,
-            provider,
-            id,
+            &crate::shell::search::action_api::ResourceRef::new(provider, id),
             scope,
             None,
             chrome,
@@ -11494,10 +11472,6 @@ impl ShellOverlayHost {
         clippy::too_many_lines,
         reason = "the existing shell chord router remains one auditable precedence table"
     )]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Each argument is a distinct input-event fact; bundling them would conceal the chord precedence table."
-    )]
     fn handle_shell_mod_chords(
         &mut self,
         logical_key: &Key,
@@ -14172,16 +14146,7 @@ impl ShellOverlayHost {
                     }
                     st.bump();
                 }
-                self.dispatch_quick_settings_toggle_actions(
-                    pending.wifi,
-                    pending.bluetooth,
-                    pending.wired,
-                    pending.airplane,
-                    pending.hotspot,
-                    pending.mobile,
-                    pending.night_light,
-                    pending.power,
-                );
+                self.dispatch_quick_settings_toggle_actions(pending);
                 if let Some(locked) = pending.rotation_lock {
                     Self::save_rotation_lock(locked);
                 }
@@ -14234,22 +14199,12 @@ impl ShellOverlayHost {
     }
 
     /// Shells out to the OS for changes returned by the root component.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Each pending network, airplane, hotspot, mobile, night-light, and power-profile change is an independent optional action."
-    )]
+    /// Do-not-disturb and rotation lock are applied by the caller.
     fn dispatch_quick_settings_toggle_actions(
         &mut self,
-        pending_wifi: Option<bool>,
-        pending_bt: Option<bool>,
-        pending_wired: Option<bool>,
-        pending_airplane: Option<bool>,
-        pending_hotspot: Option<bool>,
-        pending_mobile: Option<bool>,
-        pending_night_light: Option<bool>,
-        pending_power: Option<crate::shell::quick_settings::PowerProfile>,
+        pending: crate::shell::quick_settings::root::PendingRootActions,
     ) {
-        if let Some(v) = pending_wifi {
+        if let Some(v) = pending.wifi {
             let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
                 self.qs_actions.as_ref(),
             )
@@ -14259,7 +14214,7 @@ impl ShellOverlayHost {
                 self.qs_refresh.kick_wifi_networks();
             }
         }
-        if let Some(v) = pending_bt {
+        if let Some(v) = pending.bluetooth {
             let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
                 self.qs_actions.as_ref(),
             )
@@ -14270,7 +14225,7 @@ impl ShellOverlayHost {
                 result,
             );
         }
-        if let Some(v) = pending_wired {
+        if let Some(v) = pending.wired {
             let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
                 self.qs_actions.as_ref(),
             )
@@ -14281,7 +14236,7 @@ impl ShellOverlayHost {
                 result,
             );
         }
-        if let Some(v) = pending_airplane {
+        if let Some(v) = pending.airplane {
             let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
                 self.qs_actions.as_ref(),
             )
@@ -14292,7 +14247,7 @@ impl ShellOverlayHost {
                 result,
             );
         }
-        if let Some(v) = pending_hotspot {
+        if let Some(v) = pending.hotspot {
             let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
                 self.qs_actions.as_ref(),
             )
@@ -14303,7 +14258,7 @@ impl ShellOverlayHost {
                 result,
             );
         }
-        if let Some(v) = pending_mobile {
+        if let Some(v) = pending.mobile {
             let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
                 self.qs_actions.as_ref(),
             )
@@ -14314,14 +14269,14 @@ impl ShellOverlayHost {
                 result,
             );
         }
-        if let Some(v) = pending_night_light {
+        if let Some(v) = pending.night_light {
             let mut values = serde_json::Map::new();
             values.insert("night_light".into(), serde_json::Value::Bool(v));
             if let Err(e) = settings_store::update_section("display", values) {
                 tracing::warn!(error = %e, "night light preference save failed");
             }
         }
-        if let Some(p) = pending_power {
+        if let Some(p) = pending.power {
             use crate::shell::quick_settings::PowerProfile as UiPP;
             use crate::shell::quick_settings::actions::PowerProfile as ActPP;
             let mapped = match p {
@@ -18487,10 +18442,6 @@ impl ShellOverlayHost {
     /// The production root has no painting container of its own, so its three typed children
     /// may be recorded separately without changing the final compositor layer order. Unrecognised roots are
     /// recorded as one opaque section.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the three ordered recordings share one widget draw context without reordering"
-    )]
     fn draw_workspace_sections(
         &mut self,
         backdrop_scene: &mut Scene,
@@ -19491,7 +19442,7 @@ impl ShellOverlayHost {
             ControllerBinding, ControllerButton, InputBinding, KeyLegend, KeyboardBinding,
             KeyboardModifier, TouchGesture,
         };
-        use ui::widget::{InputDeviceGlyph, InputHint};
+        use ui::widget::{InputDeviceGlyph, InputHint, LegendConventions};
         let platform = ui::PlatformConventions::default();
         let family = self
             .interaction
@@ -19627,16 +19578,15 @@ impl ShellOverlayHost {
                         None,
                     );
                     InputHint::paint_controller_choice_at(
-                        scene,
-                        transform,
+                        &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                         Point::new(x, y + 20.0),
                         &ControllerBinding::new(first.iter().copied()),
                         &ControllerBinding::new(second.iter().copied()),
-                        platform,
-                        self.interaction.keyboard_family,
-                        family,
-                        text_renderer,
-                        theme,
+                        LegendConventions {
+                            platform,
+                            keyboard: self.interaction.keyboard_family,
+                            controller: family,
+                        },
                     );
                 }
             }
@@ -19686,15 +19636,14 @@ impl ShellOverlayHost {
                         None,
                     );
                     InputHint::paint_at(
-                        scene,
-                        transform,
+                        &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                         Point::new(x, y + 25.0),
                         &InputBinding::Touch(*gesture),
-                        platform,
-                        self.interaction.keyboard_family,
-                        family,
-                        text_renderer,
-                        theme,
+                        LegendConventions {
+                            platform,
+                            keyboard: self.interaction.keyboard_family,
+                            controller: family,
+                        },
                     );
                 }
             }
@@ -19760,15 +19709,15 @@ impl ShellOverlayHost {
                     );
                     let actions = [*previous, *next];
                     let hit_rects = InputHint::paint_keyboard_choice_at(
-                        scene,
-                        transform,
+                        &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                         Point::new(x, y + 18.0),
                         &binding(*previous),
                         &binding(*next),
-                        platform,
-                        self.interaction.keyboard_family,
-                        text_renderer,
-                        theme,
+                        LegendConventions {
+                            platform,
+                            keyboard: self.interaction.keyboard_family,
+                            controller: family,
+                        },
                     );
                     for (action, rect) in actions.into_iter().zip(hit_rects) {
                         let hit =
@@ -20405,22 +20354,14 @@ impl ShellOverlayHost {
     /// `right_x`, centred on `cy`. `ground` must match the surface behind
     /// the stack — the separator ring is a hole punched in the face below.
     /// An absent member stays at reduced opacity rather than disappearing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Member-face stacks use render context, right edge and centerline, roster and identity colors, and the ground color for separator rings."
-    )]
     fn draw_face_stack(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        right_x: f64,
-        cy: f64,
+        ctx: &mut ui::paint::PaintCtx<'_>,
+        anchor: Point,
         people: &[tilo_desktop::overview::RoomPerson],
         colors_for: &std::collections::HashMap<String, (u8, u8, u8)>,
         ground: Color,
     ) -> f64 {
-        let c = &theme.tokens.colors;
+        let (right_x, cy) = (anchor.x, anchor.y);
         let r = OVERVIEW_FACE_RADIUS_PX;
         let step = OVERVIEW_FACE_STEP_PX;
         let shown = people.len().min(OVERVIEW_FACES_MAX);
@@ -20454,29 +20395,26 @@ impl ShellOverlayHost {
                 .to_ascii_uppercase()
                 .to_string();
             ui::widget::Avatar::draw_ringed_at(
-                scene,
-                transform,
+                ctx,
                 Rect::new(cx - r, cy - r, cx + r, cy + r),
                 &initial,
                 fill,
-                ground,
-                2.0,
-                theme,
-                text_renderer,
+                ui::widget::AvatarRing {
+                    color: ground,
+                    width: 2.0,
+                },
             );
         }
         if overflow > 0 {
             let cx = right;
             ui::widget::Avatar::draw_overflow_at(
-                scene,
-                transform,
+                ctx,
                 Rect::new(cx - r, cy - r, cx + r, cy + r),
                 overflow,
-                c.surfaces.raised,
-                ground,
-                2.0,
-                c.text_dim,
-                text_renderer,
+                ui::widget::AvatarRing {
+                    color: ground,
+                    width: 2.0,
+                },
             );
         }
         right - usize_to_f64_lossy(slots.saturating_sub(1)) * step - r
@@ -20499,21 +20437,16 @@ impl ShellOverlayHost {
     }
 
     /// One room row in the "go to" list.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Room rows combine render context and bounds with workspace index, room metadata, and selected state."
-    )]
     fn draw_overview_room_row(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut ui::paint::PaintCtx<'_>,
         rect: Rect,
         idx: usize,
         card: &tilo_desktop::overview::RoomCard,
         selected: bool,
     ) {
+        let (scene, transform, text_renderer, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
@@ -20574,12 +20507,8 @@ impl ShellOverlayHost {
         // running underneath them.
         let colors_for = self.overview_face_colors(idx);
         let faces_left = Self::draw_face_stack(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            x1,
-            rect.center().y,
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            Point::new(x1, rect.center().y),
             &card.people,
             &colors_for,
             ground,
@@ -20716,10 +20645,7 @@ impl ShellOverlayHost {
         let caption_size = tokens.typography.scale.sm;
 
         self.draw_overview_here_section(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             content,
             here_rect,
             here_idx,
@@ -20927,32 +20853,23 @@ impl ShellOverlayHost {
     /// "Where you are": the current room's face stack, name, "You are
     /// here" chip and access label — or an honest empty state when
     /// nothing is marked current.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, matching every other \
-                  draw_overview_* pane helper in this impl"
-    )]
     fn draw_overview_here_section(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut ui::paint::PaintCtx<'_>,
         content: Rect,
         here_rect: Rect,
         here_idx: Option<usize>,
         cards: &[tilo_desktop::overview::RoomCard],
     ) {
+        let (scene, transform, text_renderer, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let name_size = Self::overview_header_font_size_for(tokens);
 
         if let Some((hi, card)) = here_idx.and_then(|hi| cards.get(hi).map(|card| (hi, card))) {
             self.draw_overview_here_room(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                 content,
                 here_rect,
                 hi,
@@ -20976,17 +20893,9 @@ impl ShellOverlayHost {
 
     /// The current room's selection highlight, face stack, name, "You
     /// are here" chip and access label.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, matching every other \
-                  draw_overview_* pane helper in this impl"
-    )]
     fn draw_overview_here_room(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut ui::paint::PaintCtx<'_>,
         content: Rect,
         here_rect: Rect,
         hi: usize,
@@ -20994,6 +20903,9 @@ impl ShellOverlayHost {
         name_size: f32,
     ) {
         use ui::widget::{Chip, ChipLead, ChipStyle};
+
+        let (scene, transform, text_renderer, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
 
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
@@ -21010,12 +20922,8 @@ impl ShellOverlayHost {
         // them.
         let colors_for = self.overview_face_colors(hi);
         let faces_left = Self::draw_face_stack(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            content.x1,
-            here_rect.y0 + m.name_lh / 2.0,
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            Point::new(content.x1, here_rect.y0 + m.name_lh / 2.0),
             &card.people,
             &colors_for,
             ground,
@@ -21086,10 +20994,6 @@ impl ShellOverlayHost {
     /// The keyboard target lands here on open, so the current room
     /// carries the same accent selection a list row does — without it
     /// the first arrow press would seem to come from nowhere.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a paint step that receives the caller's scene, transform, theme and laid-out row geometry"
-    )]
     fn draw_overview_here_selection(
         &self,
         scene: &mut Scene,
@@ -21132,11 +21036,6 @@ impl ShellOverlayHost {
 
     /// "What leaves this room": the share list, or an honest zero-state
     /// when nothing in the current room is shared out of it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, matching every other \
-                  draw_overview_* pane helper in this impl"
-    )]
     fn draw_overview_shares_section(
         &self,
         scene: &mut Scene,
@@ -21244,11 +21143,6 @@ impl ShellOverlayHost {
 
     /// One row per share (up to `OVERVIEW_SHARES_MAX_ROWS`), plus an
     /// "and N more" trailer when there are more than that.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, matching every other \
-                  draw_overview_* pane helper in this impl"
-    )]
     fn draw_overview_share_rows(
         scene: &mut Scene,
         transform: Affine,
@@ -21267,14 +21161,9 @@ impl ShellOverlayHost {
         let shown = here_card.shares.len().min(OVERVIEW_SHARES_MAX_ROWS);
         for share in here_card.shares.iter().take(shown) {
             Self::draw_overview_share_row(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                content,
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                Rect::new(content.x0, sy, content.x1, sy + row_h),
                 share,
-                sy,
-                row_h,
                 glyph,
             );
             sy += row_h;
@@ -21301,22 +21190,15 @@ impl ShellOverlayHost {
     }
 
     /// One "shared out of here" row: an icon, who holds it, and what.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, matching every other \
-                  draw_overview_* pane helper in this impl"
-    )]
     fn draw_overview_share_row(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        content: Rect,
+        ctx: &mut ui::paint::PaintCtx<'_>,
+        row: Rect,
         share: &tilo_desktop::overview::RoomShare,
-        sy: f64,
-        row_h: f64,
         glyph: f64,
     ) {
+        let (scene, transform, text_renderer, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let (content, sy, row_h) = (row, row.y0, row.height());
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let body_size = tokens.typography.scale.base;
@@ -21417,10 +21299,7 @@ impl ShellOverlayHost {
                 continue;
             }
             self.draw_overview_room_row(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 idx,
                 card,
@@ -22005,13 +21884,12 @@ impl ShellOverlayHost {
         };
         let previous_rows = self.search_filters.search_chip_rows;
         let rows_needed = self.search_filters.draw(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            band,
-            self.palette.filter_strip_row_height(),
-            self.palette.host_filter_strip_rows(),
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            FilterStripSlot {
+                band,
+                row_height: self.palette.filter_strip_row_height(),
+                reserved_rows: self.palette.host_filter_strip_rows(),
+            },
             self.last_cursor,
         );
         if rows_needed != previous_rows && self.palette.set_host_filter_strip_rows(rows_needed) {

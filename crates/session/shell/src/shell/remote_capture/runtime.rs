@@ -19,6 +19,7 @@ use crate::shell::realtime_session::VerifiedAppRegistration;
 use crate::shell::remote_capture::adapter::{
     ProductionRemoteCaptureAdapter, RemoteCaptureAdapter, RemoteCaptureAdapterError,
     RemoteCaptureAvailability, RemoteCaptureEndpoint, RemoteCaptureTargetBridge,
+    RemoteSessionBinding,
 };
 use crate::shell::remote_capture::device::{
     MAX_REMOTE_CAPTURE_SESSIONS, REMOTE_CAPTURE_PROTOCOL_VERSION, RemoteCaptureChunk,
@@ -484,10 +485,12 @@ impl RemoteCaptureFabricRuntime {
                     .prepare_endpoint(
                         &session.app,
                         &session.request,
-                        session.source.clone(),
-                        session.target.clone(),
-                        session_id,
-                        session.grant,
+                        RemoteSessionBinding {
+                            source: session.source.clone(),
+                            target: session.target.clone(),
+                            session_id,
+                            grant: session.grant,
+                        },
                         endpoint,
                         adapter.as_mut(),
                     )
