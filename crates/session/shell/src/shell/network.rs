@@ -1385,7 +1385,9 @@ pub struct InboundPresence {
     /// Presence channel key (workspace, tab, widget path, …), JSON so
     /// the wire format stays opaque to the bridge.
     pub key: String,
-    /// Pointer position in the publisher's logical-pixel scene-space.
+    /// Pointer position in the space `key` names — for a person's desktop
+    /// pointer, logical pixels from the corner of a tab's tile
+    /// ([`crate::shell::peer_presence::PointerAnchor`]).
     pub point: (f64, f64),
     /// Wall-clock millisecond timestamp from the publisher.
     pub ts: u64,

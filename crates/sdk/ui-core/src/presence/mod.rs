@@ -582,7 +582,7 @@ impl PresenceCtx {
     pub fn pointer_owner_for(&self, key: &PresenceKey) -> PointerOwner {
         match key.pointer_space() {
             None => PointerOwner::Window,
-            Some(PointerSpace::Desktop { .. }) => PointerOwner::Desktop,
+            Some(PointerSpace::Desktop { .. } | PointerSpace::Tile { .. }) => PointerOwner::Desktop,
             Some(PointerSpace::Surface { surface }) => match self.surface.as_deref() {
                 Some(mine) if mine == surface => PointerOwner::Window,
                 _ => PointerOwner::OtherSurface,
@@ -1391,6 +1391,23 @@ impl PresenceCtx {
 
     /// Drop every trace of `user_id`, on an actual disconnect (not `Left`,
     /// which is just the pointer leaving the viewport — see the arm above).
+    /// Stop drawing `user_id`'s pointer, wherever it was, without touching
+    /// anything else about them: they are still here, just not pointing at
+    /// anything this device can show. Returns whether a pointer went.
+    pub fn clear_pointer(&mut self, user_id: &str) -> bool {
+        let uid = UserId(user_id.to_owned());
+        let before = self.pointers.values().map(Vec::len).sum::<usize>();
+        for list in self.pointers.values_mut() {
+            list.retain(|(u, _)| u != &uid);
+        }
+        self.pointers.retain(|_, list| !list.is_empty());
+        self.pointer_seen.retain(|(_, u), _| u != &uid);
+        let cursors = self.remote_cursors.len();
+        self.remove_remote_cursor(user_id);
+        before != self.pointers.values().map(Vec::len).sum::<usize>()
+            || cursors != self.remote_cursors.len()
+    }
+
     pub fn unregister_peer(&mut self, user_id: &str) {
         let uid = UserId(user_id.to_owned());
         self.participant_kinds.remove(&uid);
