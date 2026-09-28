@@ -981,6 +981,9 @@ impl Recorder {
         }
         self.resync_rooms();
         for room in rooms {
+            // Arrive like any participant: the room's apps restate what they
+            // show, and its document holders answer with their documents.
+            self.fanout.announce_arrival(&self.subscription, room);
             let asked = self.fanout.request_room_snapshots(room, self.peer_id);
             tracing::debug!(%room, routes = asked.len(), "recorder: asked for starting snapshots");
         }
@@ -1332,6 +1335,9 @@ impl Recorder {
         let mut control = lock(&self.control);
         if control.held == held {
             return false;
+        }
+        for room in held.difference(&control.held) {
+            self.fanout.announce_arrival(&self.subscription, room);
         }
         control.held = held;
         true

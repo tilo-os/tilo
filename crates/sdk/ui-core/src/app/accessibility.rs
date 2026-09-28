@@ -408,7 +408,8 @@ impl App {
             .presence_ctx
             .apply_remote_presence(user_id, key, payload)
         {
-            RemotePresenceEffect::None | RemotePresenceEffect::PeerArrived => {}
+            RemotePresenceEffect::None => {}
+            RemotePresenceEffect::PeerArrived => self.restate_presence(),
             RemotePresenceEffect::PeerViewChanged => self.apply_follow(),
             RemotePresenceEffect::InteractionAdvanced => {
                 if let Some(interaction) = interaction

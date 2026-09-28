@@ -285,6 +285,35 @@ impl FanoutState {
         })
     }
 
+    /// Announce the participant `subscription` takes part as, arrived in
+    /// `room`, as a connected participant's app announces itself on joining.
+    /// The room's apps answer an arrival by restating what they show (caret,
+    /// selection, view), so the newcomer holds the room's presence as well as
+    /// its documents. Only the room's apps hear it: the shell's own
+    /// subscribers are not participants it arrives among. A subscription
+    /// that is no participant announces nothing.
+    pub fn announce_arrival(&self, subscription: &RoomSubscription, room: &str) {
+        let Some(participant) = &subscription.participant else {
+            return;
+        };
+        if self.stopped.load(Ordering::Acquire) || room.is_empty() {
+            return;
+        }
+        if let Some(capnp) = self.capnp_state() {
+            capnp.fanout_to_route(
+                &CollabEvent::RemotePresenceUpdate {
+                    user_id: participant.agent.clone(),
+                    key: ui::presence::PresenceKey::Workspace {
+                        id: room.to_string(),
+                    },
+                    payload: ui::collaboration::PresencePayload::Arrived,
+                },
+                u64::MAX,
+                &CrdtRoute::cluster(room.to_string()),
+            );
+        }
+    }
+
     /// Ask every document route in `room` for its late-joiner snapshot on
     /// behalf of the typed participant `requester`. Returns the routes a
     /// holder was asked on; empty when no typed broker is attached.
