@@ -37,6 +37,8 @@ pub mod custody;
 pub mod document;
 pub mod health;
 pub mod live;
+#[cfg(feature = "net")]
+pub mod net;
 pub mod session;
 #[cfg(feature = "toolkit")]
 pub mod transport;
@@ -46,6 +48,8 @@ pub use custody::{CertifyError, MemoryPeerStore, OutboxEntry, PeerRecord, PeerSt
 pub use document::{ContentCipher, DocumentRoute, OpenedDocument};
 pub use health::{PeerSnapshot, SessionHealth};
 pub use live::{LiveChange, LiveState, RemoteMember};
+#[cfg(feature = "net")]
+pub use net::NetHttp;
 pub use session::{
     Failure, FailureSubject, Host, LocalState, PAGE_FAILURE_CODES, PeerConfig, PeerEvent,
     PeerEvents, PeerHandle, PeerStatus, TransportPhase,
