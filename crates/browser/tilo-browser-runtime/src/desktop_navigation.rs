@@ -93,10 +93,13 @@ pub(crate) enum Command {
         action: ScrollAction,
     },
     /// Open an installed app in a new window of the active workspace, as
-    /// the launcher's `desktop:requests#open-<app>` does.
+    /// the launcher's `desktop:requests#open-<app>` does; on a local desktop,
+    /// with `record`, on that existing record of the app.
     Open {
         generation: String,
         app: String,
+        #[serde(default)]
+        record: Option<String>,
     },
     /// Show the active workspace's settings on `tab`, as the top bar does.
     WorkspaceSettings {
@@ -208,6 +211,29 @@ mod tests {
             assert!(serde_json::from_value::<Command>(wire).is_err());
         }
         assert!(serde_json::from_str::<Command>(r#"{"kind":"workspace-activity","generation":"mount-1","workspace":"1","view":"catchUp"}"#).is_err());
+    }
+    #[test]
+    fn an_open_may_name_an_existing_record() {
+        let open = |wire: &str| {
+            serde_json::from_str::<Command>(wire).map(|command| match command {
+                Command::Open { app, record, .. } => (app, record),
+                _ => unreachable!(),
+            })
+        };
+        assert_eq!(
+            open(r#"{"kind":"open","generation":"g","app":"so.tilo.ebook"}"#).unwrap(),
+            ("so.tilo.ebook".into(), None)
+        );
+        assert_eq!(
+            open(r#"{"kind":"open","generation":"g","app":"so.tilo.ebook","record":"uuid:1"}"#)
+                .unwrap()
+                .1
+                .as_deref(),
+            Some("uuid:1")
+        );
+        assert!(
+            open(r#"{"kind":"open","generation":"g","app":"so.tilo.ebook","record":7}"#).is_err()
+        );
     }
     #[test]
     fn route_round_trips_full_u64_and_rejects_numeric_ids() {

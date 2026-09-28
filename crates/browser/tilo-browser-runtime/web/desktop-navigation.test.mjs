@@ -316,6 +316,10 @@ test('open links the app before dispatching its full id, and needs a topology ow
  assert.deepEqual(sent,[{kind:'open',generation:'surface',app:'so.tilo.word-processor'}]);
  await assert.rejects(nav.controller.dispatch({kind:'open',generation:'old',app:'so.tilo.notes'}),/Stale/);
  await assert.rejects(nav.controller.dispatch({kind:'open',generation:'surface',app:''}),/Invalid application/);
+ sent.length=0;
+ await nav.controller.dispatch({kind:'open',generation:'surface',app:'so.tilo.ebook',record:'tab:00000000000000aa'});
+ assert.deepEqual(sent,[{kind:'open',generation:'surface',app:'so.tilo.ebook',record:'tab:00000000000000aa'}],'an existing record travels with the open');
+ for(const record of ['',7,null])await assert.rejects(nav.controller.dispatch({kind:'open',generation:'surface',app:'so.tilo.ebook',record}),/Invalid record/);
  nav.close();
  const unavailable=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>'1',dispatch:()=>{throw Error('dispatched');},awaitTerminal:async()=>{},install:async app=>{throw Error(`application "${app}" is not available`);},active:()=>true});
  await assert.rejects(unavailable.controller.dispatch({kind:'open',generation:'surface',app:'so.tilo.nope'}),/not available/);
