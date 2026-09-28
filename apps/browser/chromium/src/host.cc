@@ -957,6 +957,12 @@ class App final : public CefApp,public CefBrowserProcessHandler {
     // The Rust application owns browser onboarding; Chromium's first-run UI
     // cannot be completed in an offscreen embedding and can stall Linux init.
     if(process_type.empty()) command_line->AppendSwitch("no-first-run");
+#if defined(OS_LINUX)
+    // Every frame is rendered offscreen, yet Chromium's default Linux platform
+    // exits unless it reaches an X server, and a Tilo app sandbox has none.
+    if(process_type.empty() && !std::getenv("DISPLAY") && !command_line->HasSwitch("ozone-platform"))
+      command_line->AppendSwitchWithValue("ozone-platform","headless");
+#endif
   }
   void OnContextInitialized() override {
     request_filter=new tilo::RequestFilter([] { StringEvent("error","message","Native request matcher failed to check a resource"); });
