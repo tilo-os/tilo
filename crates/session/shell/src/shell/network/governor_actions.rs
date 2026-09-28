@@ -87,10 +87,15 @@ async fn invoke(
         resource: resource.clone(),
         action: action.clone(),
     };
-    let ActionMessage::BrokerCatalogue { host, catalogue } = route
+    let ActionMessage::BrokerCatalogue {
+        host, catalogue, ..
+    } = route
         .ask(
             &commands,
-            ActionMessage::CatalogueRefresh { scope: Some(scope) },
+            ActionMessage::CatalogueRefresh {
+                scope: Some(scope),
+                after: None,
+            },
         )
         .await?
     else {

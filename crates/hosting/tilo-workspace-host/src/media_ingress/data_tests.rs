@@ -835,7 +835,10 @@ async fn installed_https_private_catalogue_over_actual_action_runtime() {
         request_id: uuid::Uuid::new_v4(),
         source: h.f.owner.identity.native_cert.device_public_key,
         target: h.f.owner.peer().authority().device_public_key,
-        message: ActionMessage::CatalogueRefresh { scope: None },
+        message: ActionMessage::CatalogueRefresh {
+            scope: None,
+            after: None,
+        },
     };
     let body = private_wire::encode_request(
         catalogue,

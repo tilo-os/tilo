@@ -273,7 +273,10 @@ mod tests {
                     request_id,
                     source: [1; 32],
                     target: [2; 32],
-                    message: ActionMessage::CatalogueRefresh { scope: None },
+                    message: ActionMessage::CatalogueRefresh {
+                        scope: None,
+                        after: None,
+                    },
                 }),
                 [
                     vec![3],
@@ -310,7 +313,10 @@ mod tests {
                         request_id,
                         source: [1; 32],
                         target: [2; 32],
-                        message: ActionMessage::CatalogueRefresh { scope: None },
+                        message: ActionMessage::CatalogueRefresh {
+                            scope: None,
+                            after: None,
+                        },
                     },
                     source_user: [3; 32],
                 },

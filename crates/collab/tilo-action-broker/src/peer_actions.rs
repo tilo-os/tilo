@@ -506,7 +506,11 @@ fn bounded_reply(request: &DirectedAction, message: ActionMessage) -> DirectedAc
         request_id: request.request_id,
         source: request.target,
         target: request.source,
-        message,
+        // A catalogue is answered a message-sized page at a time.
+        message: tilo_delivery_protocol::peer_actions::serve_catalogue_page(
+            &request.message,
+            message,
+        ),
     };
     // Reject locally with the original correlation ID. Letting the relay reject
     // an invalid response reports only to us and leaves the caller waiting.
@@ -635,13 +639,17 @@ mod tests {
             request_id: Uuid::new_v4(),
             source: [1; 32],
             target: [2; 32],
-            message: ActionMessage::CatalogueRefresh { scope: None },
+            message: ActionMessage::CatalogueRefresh {
+                scope: None,
+                after: None,
+            },
         };
         let reply = bounded_reply(
             &request,
             ActionMessage::BrokerCatalogue {
                 host: Uuid::new_v4(),
                 catalogue: serde_json::json!({"version":1,"surfaces":[],"text":"x".repeat(tilo_delivery_protocol::peer_actions::MAX_PRIVATE_BYTES)}),
+                next: None,
             },
         );
         assert!(matches!(reply.message, ActionMessage::Rejected { .. }));
@@ -666,7 +674,10 @@ mod tests {
             request_id: Uuid::new_v4(),
             source: [1; 32],
             target: [2; 32],
-            message: ActionMessage::CatalogueRefresh { scope: None },
+            message: ActionMessage::CatalogueRefresh {
+                scope: None,
+                after: None,
+            },
         };
         let message = ActionMessage::BrokerCatalogue {
             host: Uuid::new_v4(),
@@ -675,6 +686,7 @@ mod tests {
                 "surfaces": [{"actions": [{}, {}]}],
                 "text": "x".repeat(tilo_delivery_protocol::peer_actions::MAX_PRIVATE_BYTES),
             }),
+            next: None,
         };
         let reply = DirectedAction {
             room: request.room,

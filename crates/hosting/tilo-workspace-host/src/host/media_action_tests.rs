@@ -284,8 +284,8 @@ async fn room_media_broker_certified_scenario() {
         let server = tokio::spawn(async move { queue.serve_with_readiness(server_session, room, durable_host, ready).await });
         tilo_test_env::within("the room media broker to become ready", async { while !*readiness.borrow_and_update() { readiness.changed().await.unwrap(); } }).await;
         let mut harness = Harness { owner, host, committed, runtime, admin, commits, signatures, network, service: CollaborationService::new(vec![]), dispatched: 0 };
-        let request = send(&caller, room, source, target, ActionMessage::CatalogueRefresh { scope: None });
-        let ActionMessage::BrokerCatalogue { host: advertised_host, catalogue } = harness.response(&caller, request, false).await else { panic!("native durable catalogue absent") };
+        let request = send(&caller, room, source, target, ActionMessage::CatalogueRefresh { scope: None, after: None });
+        let ActionMessage::BrokerCatalogue { host: advertised_host, catalogue, .. } = harness.response(&caller, request, false).await else { panic!("native durable catalogue absent") };
         assert_eq!(advertised_host, durable_host);
         let surface = catalogue["surfaces"].as_array().unwrap().iter().find(|s| s["app_id"] == APP_ID).unwrap();
         let live_surface = broker.surfaces().into_iter().find(|s| s.app_id == APP_ID).unwrap();

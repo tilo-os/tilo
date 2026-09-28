@@ -565,9 +565,10 @@ async fn handle_inner(
         peer.permissions(action.source, now_time(now))
             .map_err(anyhow::Error::msg)?;
         match &action.message {
-            ActionMessage::CatalogueRefresh { scope } => Ok(ActionMessage::BrokerCatalogue {
+            ActionMessage::CatalogueRefresh { scope, .. } => Ok(ActionMessage::BrokerCatalogue {
                 host,
                 catalogue: catalogue(&store, action.source, scope.as_ref(), now)?,
+                next: None,
             }),
             ActionMessage::InvokeBound {
                 host: requested_host,
@@ -720,7 +721,11 @@ pub(crate) fn reply(request: &DirectedAction, message: ActionMessage) -> Directe
         request_id: request.request_id,
         source: request.target,
         target: request.source,
-        message,
+        // A catalogue is answered a message-sized page at a time.
+        message: tilo_delivery_protocol::peer_actions::serve_catalogue_page(
+            &request.message,
+            message,
+        ),
     }
 }
 

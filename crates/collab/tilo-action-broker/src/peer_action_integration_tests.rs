@@ -183,10 +183,10 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
                 &caller,
                 room,
                 52,
-                ActionMessage::CatalogueRefresh { scope: None },
+                ActionMessage::CatalogueRefresh { scope: None, after: None },
             );
             match tokio::time::timeout(Duration::from_millis(250), reply(&caller, id)).await {
-                Ok(ActionMessage::BrokerCatalogue { host, catalogue }) => { assert_eq!(host, request.host); break catalogue; }
+                Ok(ActionMessage::BrokerCatalogue { host, catalogue, .. }) => { assert_eq!(host, request.host); break catalogue; }
                 _ => tokio::task::yield_now().await,
             }
         }}).await;
@@ -199,7 +199,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
             &dynamic,
             room,
             56,
-            ActionMessage::CatalogueRefresh { scope: None },
+            ActionMessage::CatalogueRefresh { scope: None, after: None },
         );
         assert!(matches!(reply(&dynamic, dynamic_catalogue).await, ActionMessage::BrokerCatalogue { .. }));
         let mut revocation = tilo_user_identity::RevocationEntry { user_public_key: authority.root, revoked_device_public_key: device(56, false).1.device_public_key, revoked_at_ns: 1, reason: tilo_user_identity::RevocationReason::Lost, signature: [0;64] };
@@ -209,7 +209,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
             &dynamic,
             room,
             56,
-            ActionMessage::CatalogueRefresh { scope: None },
+            ActionMessage::CatalogueRefresh { scope: None, after: None },
         );
         assert!(matches!(reply(&dynamic, revoked).await, ActionMessage::Rejected { .. }));
         dynamic.close().await;
@@ -308,7 +308,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let membership = fixture.membership.as_ref().unwrap().clone();
         membership.write().workspaces[0].set_owner("replacement-owner");
         for message in [
-            ActionMessage::CatalogueRefresh { scope: None },
+            ActionMessage::CatalogueRefresh { scope: None, after: None },
             invoke(&request),
             ActionMessage::Status {
                 invocation: request.invocation,
@@ -350,7 +350,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
                 &caller,
                 room,
                 52,
-                ActionMessage::CatalogueRefresh { scope: None },
+                ActionMessage::CatalogueRefresh { scope: None, after: None },
             );
             if matches!(tokio::time::timeout(Duration::from_millis(250), reply(&caller, id)).await, Ok(ActionMessage::BrokerCatalogue { .. })) { break; }
         }}).await;

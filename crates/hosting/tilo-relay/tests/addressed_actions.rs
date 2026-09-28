@@ -351,7 +351,10 @@ fn refresh(room: Uuid, sender: &TestDevice, target: &TestDevice) -> DirectedActi
         request_id: Uuid::from_u128(100),
         source: sender.device_pubkey(),
         target: target.device_pubkey(),
-        message: ActionMessage::CatalogueRefresh { scope: None },
+        message: ActionMessage::CatalogueRefresh {
+            scope: None,
+            after: None,
+        },
     }
 }
 

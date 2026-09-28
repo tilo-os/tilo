@@ -50,6 +50,10 @@ pub enum ActionMessage {
     CatalogueRefresh {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<ExactActionRoute>,
+        /// Where the previous page of this catalogue ended; absent for the
+        /// first page. See [`serve_catalogue_page`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<CatalogueCursor>,
     },
     /// Best-effort immediate copy of a durably committed desktop publication.
     /// Receivers must pin the source authority and use ordinary state admission.
@@ -62,6 +66,10 @@ pub enum ActionMessage {
     BrokerCatalogue {
         host: Uuid,
         catalogue: serde_json::Value,
+        /// Present while more of the catalogue remains: ask again with it
+        /// as `after` until a page arrives without one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next: Option<CatalogueCursor>,
     },
     InvokeBound {
         host: Uuid,
@@ -102,6 +110,132 @@ pub enum ActionMessage {
     CancellationRequested {
         invocation: InvocationId,
     },
+}
+
+/// Where a paged catalogue continues: which catalogue it is a page of (the
+/// digest of every surface in it) and the first surface of the next page.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogueCursor {
+    pub revision: String,
+    pub surface: u32,
+}
+
+/// The refusal a caller gets when the catalogue it was paging through
+/// changed under it: it starts again from the first page.
+pub const CATALOGUE_MOVED: &str = "catalogue_moved";
+
+/// What a page may occupy of a private message, leaving room for the
+/// message around it (its type, host and cursor).
+const CATALOGUE_PAGE_BYTES: usize = MAX_PRIVATE_BYTES - 1024;
+const CATALOGUE_PAGE_NODES: usize = MAX_CATALOGUE_NODES - 64;
+const CATALOGUE_PAGE_SURFACES: usize = 256;
+
+/// Serve the page of a whole catalogue `reply` that `request` asks for.
+///
+/// A room's catalogue can outgrow one private message, so every answer to a
+/// catalogue refresh is a page: whole surfaces, in one stable order, filling
+/// the message, with a cursor to the rest pinned to the catalogue they come
+/// from. Every surface appears whole on exactly one page; a caller asking
+/// after a catalogue that has since changed is told [`CATALOGUE_MOVED`] and
+/// starts again. Anything but a whole catalogue answering a refresh passes
+/// through unchanged.
+#[must_use]
+pub fn serve_catalogue_page(request: &ActionMessage, reply: ActionMessage) -> ActionMessage {
+    let ActionMessage::CatalogueRefresh { after, .. } = request else {
+        return reply;
+    };
+    let ActionMessage::BrokerCatalogue {
+        host,
+        catalogue,
+        next: None,
+    } = reply
+    else {
+        return reply;
+    };
+    match catalogue_page(catalogue, after.as_ref()) {
+        Ok((catalogue, next)) => ActionMessage::BrokerCatalogue {
+            host,
+            catalogue,
+            next,
+        },
+        Err(code) => ActionMessage::Rejected { code: code.into() },
+    }
+}
+
+fn catalogue_page(
+    catalogue: serde_json::Value,
+    after: Option<&CatalogueCursor>,
+) -> Result<(serde_json::Value, Option<CatalogueCursor>), &'static str> {
+    let serde_json::Value::Object(mut fields) = catalogue else {
+        return Err("invalid_catalogue");
+    };
+    let Some(serde_json::Value::Array(mut surfaces)) = fields.shift_remove("surfaces") else {
+        return Err("invalid_catalogue");
+    };
+    // One order for every page, whatever order the surfaces were gathered in.
+    surfaces.sort_by_cached_key(|surface| serde_json::to_vec(surface).unwrap_or_default());
+    let mut digest = blake3::Hasher::new();
+    for surface in &surfaces {
+        digest.update(&serde_json::to_vec(surface).map_err(|_| "invalid_catalogue")?);
+        digest.update(b"\n");
+    }
+    let revision = digest.finalize().to_hex().to_string();
+    let start = match after {
+        None => 0,
+        Some(cursor) if cursor.revision == revision => {
+            usize::try_from(cursor.surface).map_err(|_| CATALOGUE_MOVED)?
+        }
+        Some(_) => return Err(CATALOGUE_MOVED),
+    };
+    if start > surfaces.len() || (start == surfaces.len() && start != 0) {
+        return Err(CATALOGUE_MOVED);
+    }
+    fields.insert("surfaces".into(), serde_json::Value::Array(Vec::new()));
+    let base = serde_json::Value::Object(fields.clone());
+    let mut bytes = serde_json::to_vec(&base)
+        .map_err(|_| "invalid_catalogue")?
+        .len();
+    let mut nodes = json_nodes(&base);
+    let mut page = Vec::new();
+    for surface in surfaces.iter().skip(start) {
+        let size = serde_json::to_vec(surface)
+            .map_err(|_| "invalid_catalogue")?
+            .len()
+            .saturating_add(1);
+        let count = json_nodes(surface);
+        let fits = bytes.saturating_add(size) <= CATALOGUE_PAGE_BYTES
+            && nodes.saturating_add(count) <= CATALOGUE_PAGE_NODES
+            && page.len() < CATALOGUE_PAGE_SURFACES;
+        // A page always carries at least one surface; one too large for any
+        // page is then refused by the message bounds, never split.
+        if !fits && !page.is_empty() {
+            break;
+        }
+        bytes = bytes.saturating_add(size);
+        nodes = nodes.saturating_add(count);
+        page.push(surface.clone());
+    }
+    let end = start.saturating_add(page.len());
+    let next = (end < surfaces.len())
+        .then(|| {
+            u32::try_from(end).map(|surface| CatalogueCursor {
+                revision: revision.clone(),
+                surface,
+            })
+        })
+        .transpose()
+        .map_err(|_| "invalid_catalogue")?;
+    fields.insert("surfaces".into(), serde_json::Value::Array(page));
+    Ok((serde_json::Value::Object(fields), next))
+}
+
+fn json_nodes(value: &serde_json::Value) -> usize {
+    1usize.saturating_add(match value {
+        serde_json::Value::Array(values) => values.iter().map(json_nodes).sum(),
+        serde_json::Value::Object(values) => values.values().map(json_nodes).sum(),
+        _ => 0,
+    })
 }
 
 /// Optional exact discovery narrowing. The broker still performs ordinary
@@ -240,6 +374,9 @@ impl ActionMessage {
                     && revision.as_ref().is_none_or(|v| identifier(v))
                     && !matches!(confirmation, Some(Confirmation::Phrase(v)) if v.len() > MAX_CONFIRMATION_BYTES)
             }
+            Self::BrokerCatalogue {
+                next: Some(next), ..
+            } if !next.is_well_formed() => false,
             Self::Catalogue { catalogue } | Self::BrokerCatalogue { catalogue, .. } => {
                 catalogue.get("version").and_then(serde_json::Value::as_u64) == Some(1)
                     && catalogue
@@ -269,12 +406,14 @@ impl ActionMessage {
                         _ => true,
                     }
             }
-            Self::CatalogueRefresh { scope } => scope.as_ref().is_none_or(|scope| {
-                identifier(&scope.app_id)
-                    && scope.record_id.len() <= MAX_IDENTIFIER_BYTES
-                    && identifier(&scope.resource)
-                    && identifier(&scope.action)
-            }),
+            Self::CatalogueRefresh { scope, after } => {
+                scope.as_ref().is_none_or(|scope| {
+                    identifier(&scope.app_id)
+                        && scope.record_id.len() <= MAX_IDENTIFIER_BYTES
+                        && identifier(&scope.resource)
+                        && identifier(&scope.action)
+                }) && after.as_ref().is_none_or(CatalogueCursor::is_well_formed)
+            }
             _ => self.invocation().is_none_or(|id| !id.0.is_nil()),
         }
     }
@@ -302,6 +441,12 @@ fn bounded_json(value: &serde_json::Value, depth: usize, remaining: &mut usize) 
 // `shift_remove` exists only with that feature, so its absence fails the build.
 const _: fn(&mut serde_json::Map<String, serde_json::Value>, &str) -> Option<serde_json::Value> =
     |map, key| map.shift_remove(key);
+
+impl CatalogueCursor {
+    fn is_well_formed(&self) -> bool {
+        self.revision.len() == 64 && self.revision.bytes().all(|b| b.is_ascii_hexdigit())
+    }
+}
 
 impl DirectedAction {
     pub fn validate(&self) -> bool {
@@ -337,6 +482,117 @@ mod message_json {
 mod catalogue_bounds_tests {
     use super::*;
 
+    fn surface(index: usize) -> serde_json::Value {
+        serde_json::json!({
+            "peer_id": index,
+            "app_id": "so.tilo.word-processor",
+            "record_id": format!("tab:{index:016x}"),
+            "live": true,
+            "actions": vec![serde_json::json!({
+                "resource": format!("document:{index}"),
+                "action": "edit",
+                "description": "x".repeat(900),
+                "params": [],
+            }); 20],
+        })
+    }
+
+    fn refresh(after: Option<CatalogueCursor>) -> ActionMessage {
+        ActionMessage::CatalogueRefresh { scope: None, after }
+    }
+
+    fn whole(surfaces: &[serde_json::Value]) -> ActionMessage {
+        ActionMessage::BrokerCatalogue {
+            host: Uuid::from_u128(7),
+            catalogue: serde_json::json!({"version": 1, "surfaces": surfaces, "agentReadsV1": {"fresh": true}}),
+            next: None,
+        }
+    }
+
+    fn directed(message: ActionMessage) -> DirectedAction {
+        DirectedAction {
+            room: Uuid::from_u128(1),
+            request_id: Uuid::from_u128(2),
+            source: [1; 32],
+            target: [2; 32],
+            message,
+        }
+    }
+
+    /// A catalogue far larger than one private message arrives whole, each
+    /// surface exactly once, across pages that each fit a message.
+    #[test]
+    fn a_catalogue_above_one_message_arrives_whole_across_pages() {
+        let surfaces = (0..40).map(surface).collect::<Vec<_>>();
+        let size = serde_json::to_vec(&whole(&surfaces)).unwrap().len();
+        assert!(
+            size > 2 * MAX_PRIVATE_BYTES,
+            "{size} bytes spans several messages"
+        );
+        let mut seen = Vec::new();
+        let mut after = None;
+        let mut pages = 0;
+        loop {
+            let page = serve_catalogue_page(&refresh(after.take()), whole(&surfaces));
+            assert!(
+                directed(page.clone()).validate(),
+                "every page fits one message"
+            );
+            let ActionMessage::BrokerCatalogue {
+                catalogue, next, ..
+            } = page
+            else {
+                panic!("a page of the catalogue: {page:?}");
+            };
+            assert_eq!(catalogue["agentReadsV1"]["fresh"], true);
+            seen.extend(catalogue["surfaces"].as_array().unwrap().iter().cloned());
+            pages += 1;
+            match next {
+                Some(next) => after = Some(next),
+                None => break,
+            }
+        }
+        assert!(pages > 2);
+        let mut expected = surfaces;
+        expected.sort_by_cached_key(|s| serde_json::to_vec(s).unwrap());
+        assert_eq!(seen, expected, "every surface once, whole, in one order");
+    }
+
+    /// Paging through a catalogue that changes meanwhile starts again
+    /// rather than mixing two catalogues; one that fits a message is one
+    /// page, whatever order its surfaces were gathered in.
+    #[test]
+    fn a_catalogue_that_moves_while_paged_is_started_again() {
+        let surfaces = (0..40).map(surface).collect::<Vec<_>>();
+        let ActionMessage::BrokerCatalogue {
+            next: Some(next), ..
+        } = serve_catalogue_page(&refresh(None), whole(&surfaces))
+        else {
+            panic!("more than one page");
+        };
+        let changed = (1..41).map(surface).collect::<Vec<_>>();
+        assert_eq!(
+            serve_catalogue_page(&refresh(Some(next.clone())), whole(&changed)),
+            ActionMessage::Rejected {
+                code: CATALOGUE_MOVED.into()
+            }
+        );
+        let mut reordered = surfaces;
+        reordered.reverse();
+        assert!(
+            matches!(
+                serve_catalogue_page(&refresh(Some(next)), whole(&reordered)),
+                ActionMessage::BrokerCatalogue { .. }
+            ),
+            "the same catalogue gathered in another order is the same catalogue"
+        );
+        let small = (0..3).map(surface).collect::<Vec<_>>();
+        assert!(matches!(
+            serve_catalogue_page(&refresh(None), whole(&small)),
+            ActionMessage::BrokerCatalogue { next: None, .. }
+        ));
+    }
+
     #[test]
     fn scoped_catalogue_refresh_remains_compatible_with_frozen_unit_reader() {
         #[derive(Debug, Deserialize, PartialEq, Serialize)]
@@ -351,6 +607,7 @@ mod catalogue_bounds_tests {
                 resource: "desktop:session".into(),
                 action: "command".into(),
             }),
+            after: None,
         };
         let encoded = serde_json::to_vec(&scoped).unwrap();
         let frozen: FrozenActionMessage = serde_json::from_slice(&encoded).unwrap();
@@ -360,7 +617,11 @@ mod catalogue_bounds_tests {
             br#"{"type":"catalogue_refresh"}"#
         );
         assert_eq!(
-            serde_json::to_vec(&ActionMessage::CatalogueRefresh { scope: None }).unwrap(),
+            serde_json::to_vec(&ActionMessage::CatalogueRefresh {
+                scope: None,
+                after: None
+            })
+            .unwrap(),
             br#"{"type":"catalogue_refresh"}"#
         );
         assert_eq!(
@@ -383,6 +644,7 @@ mod catalogue_bounds_tests {
             ActionMessage::BrokerCatalogue {
                 host: Uuid::new_v4(),
                 catalogue: catalogue.clone(),
+                next: None,
             },
         ] {
             let directed = DirectedAction {
@@ -439,6 +701,7 @@ mod catalogue_bounds_tests {
                 ActionMessage::BrokerCatalogue {
                     host: Uuid::new_v4(),
                     catalogue,
+                    next: None,
                 },
             ] {
                 assert!(!message.validate());
@@ -452,6 +715,7 @@ mod catalogue_bounds_tests {
             message: ActionMessage::BrokerCatalogue {
                 host: Uuid::new_v4(),
                 catalogue: serde_json::json!({"version":1,"surfaces":[],"text":"x".repeat(MAX_PRIVATE_BYTES)}),
+                next: None,
             },
         };
         assert!(!action.validate());

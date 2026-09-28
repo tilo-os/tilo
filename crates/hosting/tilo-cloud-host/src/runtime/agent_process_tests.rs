@@ -403,7 +403,10 @@ async fn genuine_spawn_scenario(stage: Option<StageScenario>) {
                         room,
                         caller.device(),
                         host,
-                        A::CatalogueRefresh { scope: None },
+                        A::CatalogueRefresh {
+                            scope: None,
+                            after: None,
+                        },
                     )
                     .await;
                     if let A::BrokerCatalogue { catalogue, .. } = reply {

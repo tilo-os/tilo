@@ -1102,7 +1102,10 @@ async fn a_document_proposed_over_the_relay_is_created_only_once_the_owner_accep
                 request_id,
                 source: cert.device_public_key,
                 target: native.device_public_key,
-                message: ActionMessage::CatalogueRefresh { scope: None },
+                message: ActionMessage::CatalogueRefresh {
+                    scope: None,
+                    after: None,
+                },
             }))
             .unwrap();
         let response = tokio::time::timeout(Duration::from_millis(500), async {
@@ -1121,7 +1124,9 @@ async fn a_document_proposed_over_the_relay_is_created_only_once_the_owner_accep
         .await
         .ok()
         .flatten();
-        if let Some(ActionMessage::BrokerCatalogue { host, catalogue }) = response
+        if let Some(ActionMessage::BrokerCatalogue {
+            host, catalogue, ..
+        }) = response
             && let Some(surface) = catalogue["surfaces"].as_array().and_then(|surfaces| {
                 surfaces
                     .iter()
@@ -1465,49 +1470,84 @@ async fn checked_application_catalogue(
         .send_action(EnvelopeV2::EnableBrokerClient { room })
         .unwrap();
     let deadline = tilo_test_env::hang_deadline();
+    // The catalogue arrives a page at a time; it is read to its last page.
+    let mut pages: usize;
     let (broker_host, catalogue) = loop {
-        let request_id = uuid::Uuid::new_v4();
-        client
-            .send_action(EnvelopeV2::Directed(DirectedAction {
-                room,
-                request_id,
-                source: cert.device_public_key,
-                target: native.device_public_key,
-                message: ActionMessage::CatalogueRefresh { scope: None },
-            }))
-            .unwrap();
-        let response = tokio::time::timeout(Duration::from_millis(500), async {
-            loop {
-                match client.recv_action().await.unwrap() {
-                    EnvelopeV2::Delivered {
-                        action,
-                        source_user,
-                    } if action.request_id == request_id => {
-                        assert_eq!(source_user, native.user_public_key);
-                        assert_eq!(action.room, room);
-                        assert_eq!(action.source, native.device_public_key);
-                        assert_eq!(action.target, cert.device_public_key);
-                        break Some(action.message);
+        let mut after = None;
+        let mut surfaces = Vec::new();
+        let mut whole = None;
+        pages = 0;
+        while let Some(response) = {
+            let request_id = uuid::Uuid::new_v4();
+            client
+                .send_action(EnvelopeV2::Directed(DirectedAction {
+                    room,
+                    request_id,
+                    source: cert.device_public_key,
+                    target: native.device_public_key,
+                    message: ActionMessage::CatalogueRefresh {
+                        scope: None,
+                        after: after.take(),
+                    },
+                }))
+                .unwrap();
+            tokio::time::timeout(Duration::from_millis(500), async {
+                loop {
+                    match client.recv_action().await.unwrap() {
+                        EnvelopeV2::Delivered {
+                            action,
+                            source_user,
+                        } if action.request_id == request_id => {
+                            assert_eq!(source_user, native.user_public_key);
+                            assert_eq!(action.room, room);
+                            assert_eq!(action.source, native.device_public_key);
+                            assert_eq!(action.target, cert.device_public_key);
+                            break Some(action.message);
+                        }
+                        EnvelopeV2::Unavailable { request_id: id, .. } if id == request_id => {
+                            break None;
+                        }
+                        _ => {}
                     }
-                    EnvelopeV2::Unavailable { request_id: id, .. } if id == request_id => {
-                        break None;
-                    }
-                    _ => {}
+                }
+            })
+            .await
+            .ok()
+            .flatten()
+        } {
+            let ActionMessage::BrokerCatalogue {
+                host,
+                mut catalogue,
+                next,
+            } = response
+            else {
+                break;
+            };
+            pages += 1;
+            surfaces.extend(
+                catalogue["surfaces"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            match next {
+                Some(next) => after = Some(next),
+                None => {
+                    catalogue["surfaces"] = serde_json::Value::Array(std::mem::take(&mut surfaces));
+                    whole = Some((host, catalogue));
+                    break;
                 }
             }
-        })
-        .await
-        .ok()
-        .flatten();
-        if let Some(ActionMessage::BrokerCatalogue {
-            host: broker_host,
-            catalogue,
-        }) = response
+        }
+        if let Some((broker_host, catalogue)) = whole
             && catalogue["surfaces"].as_array().is_some_and(|s| {
                 s.iter()
                     .filter(|s| s["app_id"] == "so.tilo.word-processor")
                     .count()
                     >= if multiple_writers { 5 } else { 1 }
+                    && ["so.tilo.chat", "so.tilo.notes"]
+                        .iter()
+                        .all(|app| s.iter().any(|s| s["app_id"] == *app))
             })
         {
             assert!(!broker_host.is_nil());
@@ -1529,6 +1569,9 @@ async fn checked_application_catalogue(
         broker_host,
     };
     if multiple_writers {
+        // Five Writers, Notes and Chat outgrow one private message: the
+        // whole catalogue arrived across pages.
+        assert!(pages > 1, "the catalogue arrived in {pages} page(s)");
         assert!(
             catalogue["surfaces"]
                 .as_array()
@@ -1875,7 +1918,10 @@ async fn checked_application_catalogue(
             request_id: refresh,
             source: cert.device_public_key,
             target: native.device_public_key,
-            message: ActionMessage::CatalogueRefresh { scope: None },
+            message: ActionMessage::CatalogueRefresh {
+                scope: None,
+                after: None,
+            },
         }))
         .unwrap();
     let current_catalogue = tokio::time::timeout(tilo_test_env::hang_bound(), async {
@@ -1890,7 +1936,10 @@ async fn checked_application_catalogue(
                 assert_eq!(action.source, native.device_public_key);
                 assert_eq!(action.target, cert.device_public_key);
                 assert_eq!(action.room, room);
-                if let ActionMessage::BrokerCatalogue { host, catalogue } = action.message {
+                if let ActionMessage::BrokerCatalogue {
+                    host, catalogue, ..
+                } = action.message
+                {
                     assert_eq!(host, broker_host);
                     break catalogue;
                 } else {
@@ -1970,7 +2019,7 @@ async fn checked_application_catalogue(
                     let check = uuid::Uuid::new_v4(); probes.insert(check);
                     client.send_action(EnvelopeV2::Directed(DirectedAction {
                         room, request_id: check, source: cert.device_public_key,
-                        target: native.device_public_key, message: ActionMessage::CatalogueRefresh { scope: None },
+                        target: native.device_public_key, message: ActionMessage::CatalogueRefresh { scope: None, after: None },
                     })).unwrap();
                 },
                 event = client.recv_action() => { match event.unwrap() {

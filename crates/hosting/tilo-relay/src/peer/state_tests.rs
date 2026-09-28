@@ -2299,7 +2299,10 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
         request_id: uuid::Uuid::from_u128(8),
         source: fixture.source.peer.device_public_key,
         target: fixture.recipient.device_public_key,
-        message: ActionMessage::CatalogueRefresh { scope: None },
+        message: ActionMessage::CatalogueRefresh {
+            scope: None,
+            after: None,
+        },
     };
     let delivery = PrivateDelivery {
         certified: false,

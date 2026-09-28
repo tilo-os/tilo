@@ -29,7 +29,10 @@ impl PendingAgentReads {
         identity: &serde_json::Value,
         generation: u64,
     ) {
-        let ActionMessage::BrokerCatalogue { host, catalogue } = message else {
+        let ActionMessage::BrokerCatalogue {
+            host, catalogue, ..
+        } = message
+        else {
             return;
         };
         let publication = catalogue
@@ -401,6 +404,7 @@ mod tests {
         let message = ActionMessage::BrokerCatalogue {
             host: Uuid::from_u128(2),
             catalogue: json!({"version":1,"surfaces":[],"agentReadsV1":binding}),
+            next: None,
         };
         pending.observe_catalogue(&message, &identity, 7);
         assert_eq!(pending.binding(&identity, 7), Some(binding));
@@ -412,6 +416,7 @@ mod tests {
             &ActionMessage::BrokerCatalogue {
                 host: Uuid::from_u128(2),
                 catalogue: json!({"version":1,"surfaces":[]}),
+                next: None,
             },
             &identity,
             7,
@@ -426,6 +431,7 @@ mod tests {
         let catalogue = |binding| ActionMessage::BrokerCatalogue {
             host: Uuid::from_u128(2),
             catalogue: json!({"version":1,"surfaces":[],"agentReadsV1":binding}),
+            next: None,
         };
         pending.observe_catalogue(&catalogue(binding.clone()), &identity, 7);
         pending

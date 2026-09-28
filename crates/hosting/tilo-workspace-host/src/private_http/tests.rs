@@ -183,7 +183,10 @@ async fn private_http_real_broker_catalogue_and_unknown_status_preserve_correlat
     ] {
         let id = tilo_actions::InvocationId(Uuid::from_u128(333));
         let message = match op {
-            PrivateOperation::Catalogue => ActionMessage::CatalogueRefresh { scope: None },
+            PrivateOperation::Catalogue => ActionMessage::CatalogueRefresh {
+                scope: None,
+                after: None,
+            },
             PrivateOperation::Status => ActionMessage::Status { invocation: id },
             _ => ActionMessage::Cancel { invocation: id },
         };
