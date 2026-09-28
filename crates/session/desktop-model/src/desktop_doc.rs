@@ -38,6 +38,8 @@ const CAPABILITIES_KEY: &str = "capabilities";
 const PERMISSION_PROFILES_KEY: &str = "permission_profiles_v1";
 const TASKS_KEY: &str = "tasks_v1";
 const CHANNEL_CLASS_KEY: &str = "channel_class";
+const RECORDING_DELEGATES_FORBIDDEN_KEY: &str = "recording_delegates_forbidden";
+const TRIAGE_IN_DIRECT_ROOMS_KEY: &str = "triage_in_direct_rooms";
 const STRIPS_KEY: &str = "strips";
 const GROUPS_KEY: &str = "window_groups";
 const TABS_KEY: &str = "tabs";
@@ -229,6 +231,16 @@ pub fn seed(doc: &mut AutoCommit, desktop: &DesktopTree) {
             let _ = doc.put(&entry, "owner", owner.clone());
         }
         let _ = doc.put(&entry, CHANNEL_CLASS_KEY, ws.channel_class.as_str());
+        let _ = doc.put(
+            &entry,
+            RECORDING_DELEGATES_FORBIDDEN_KEY,
+            ws.recording_delegates_forbidden,
+        );
+        let _ = doc.put(
+            &entry,
+            TRIAGE_IN_DIRECT_ROOMS_KEY,
+            ws.triage_in_direct_rooms,
+        );
         put_blob_map(
             doc,
             &entry,
@@ -403,6 +415,20 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
         {
             ws.channel_class = class;
         }
+        if let Some((Value::Scalar(value), _)) = doc
+            .get(entry, RECORDING_DELEGATES_FORBIDDEN_KEY)
+            .ok()
+            .flatten()
+            && let ScalarValue::Boolean(forbidden) = value.as_ref()
+        {
+            ws.recording_delegates_forbidden = *forbidden;
+        }
+        if let Some((Value::Scalar(value), _)) =
+            doc.get(entry, TRIAGE_IN_DIRECT_ROOMS_KEY).ok().flatten()
+            && let ScalarValue::Boolean(on) = value.as_ref()
+        {
+            ws.triage_in_direct_rooms = *on;
+        }
         ws.tasks = read_tasks(doc, entry);
         ws.effect_receipts = read_effect_receipts(doc, entry);
         ws.shortcuts = read_shortcuts(doc, entry);
@@ -544,6 +570,18 @@ pub fn append_workspace(
     let _ = doc.put(&entry, "room", room.to_string());
     let _ = doc.put(&entry, CHANNEL_CLASS_KEY, channel_class.as_str());
     true
+}
+
+/// Remove a workspace entry: the person left its room. `false` when the
+/// document does not hold the workspace.
+pub fn remove_workspace(doc: &mut AutoCommit, workspace_id: WorkspaceId) -> bool {
+    let Some(list) = obj(doc, &ROOT, WORKSPACES_KEY) else {
+        return false;
+    };
+    let index = (0..doc.length(&list)).find(|&i| {
+        obj(doc, &list, i).and_then(|entry| uint(doc, &entry, "id")) == Some(workspace_id.raw())
+    });
+    index.is_some_and(|index| doc.delete(&list, index).is_ok())
 }
 
 /// Record which workspace is showing.

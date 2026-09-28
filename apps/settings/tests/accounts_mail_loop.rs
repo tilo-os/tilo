@@ -108,3 +108,72 @@ fn adding_an_email_account_in_settings_is_read_by_mail() {
         "Mail rehydrates the password from the shared secret vault"
     );
 }
+
+/// A Forgejo account added in Settings is checked against the forge with its
+/// token before it is saved, keeps the token only in the vault, and is the
+/// account custody then files issues with.
+#[test]
+fn a_forgejo_account_added_in_settings_is_the_one_custody_files_with() {
+    use settings::panes::accounts::ADD_FORGEJO_KEY;
+    let root_dir = tempfile::tempdir().unwrap();
+    let tilo_root = root_dir.path().join("tilo");
+    let forge = account_custody::forge::fake::FakeForge::start("repo-token");
+
+    let mut pane = AccountsPane::in_root(AccountRoot::at(&tilo_root)).with_account_tester(
+        std::sync::Arc::new(settings::account_probe::LiveAccountTester),
+    );
+    let mut doc = AutoCommit::new();
+    let root = automerge::ROOT;
+    let _ = doc.put(&root, ADD_FORGEJO_KEY, true);
+    pane.sync(&mut doc, &root);
+    assert!(pane.form_open(), "Add opens the Forgejo form");
+
+    // A wrong token is refused by the forge, and nothing is saved.
+    pane.set_form_fields_for_test("Tilo issues", "", "tilo/tilo", &forge.url());
+    pane.set_form_password_for_test("wrong-token");
+    pane.submit_form_for_test();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        pane.sync(&mut doc, &root);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(pane.form_open(), "a refused token keeps the form open");
+    assert!(
+        pane.form_error_for_test()
+            .is_some_and(|error| error.contains("refused this token")),
+        "{:?}",
+        pane.form_error_for_test()
+    );
+    assert!(accounts::AccountStore::load_in(&tilo_root).is_empty());
+
+    pane.set_form_password_for_test("repo-token");
+    pane.submit_form_for_test();
+    assert!(pane.finish_form_submission_for_test(&mut doc, &root));
+    let store = accounts::AccountStore::load_in(&tilo_root);
+    let account = store
+        .list(&accounts::AccountTypeId::from(
+            account_custody::forge::FORGEJO_TYPE,
+        ))
+        .into_iter()
+        .next()
+        .cloned()
+        .expect("the Forgejo account");
+    let store_json = std::fs::read_to_string(accounts::store_path_in(&tilo_root)).unwrap();
+    assert!(
+        !store_json.contains("repo-token"),
+        "the token is not metadata"
+    );
+
+    let filed = account_custody::Custodian::for_root(Some(tilo_root))
+        .file_forge_issue(
+            &account.id,
+            &account_custody::forge::ForgeIssue {
+                title: "Send does nothing".into(),
+                body: "From feedback".into(),
+                marker: "room:m_draft".into(),
+            },
+        )
+        .expect("custody files with the saved account");
+    assert_eq!(filed.number, 1);
+    assert_eq!(forge.issues().len(), 1);
+}

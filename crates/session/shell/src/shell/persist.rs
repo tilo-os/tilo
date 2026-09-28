@@ -694,6 +694,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_left_room_is_gone_from_the_tree_the_document_and_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let mut tree = WorkspaceTree::default();
+        let home = tree.append_empty_workspace("Home");
+        let community = tree.append_public_workspace("Tilo Community");
+        let room = tree.room_of(community).expect("community room");
+        tree.desktop.active = community;
+
+        assert!(tree.leave_room(room));
+        assert!(!tree.desktop.workspaces.iter().any(|w| w.room == room));
+        assert_eq!(
+            tree.desktop.active, home,
+            "focus moves to a room still held"
+        );
+        let mut rebuilt = tree.desktop.clone();
+        tilo_desktop_model::desktop_doc::rebuild(&tree.doc, &mut rebuilt);
+        assert!(
+            !rebuilt.workspaces.iter().any(|w| w.room == room),
+            "the desktop document no longer lists it, so no merge brings it back"
+        );
+        save_tree_to(&tree, &path).expect("save");
+        let loaded = load_tree_from(&path).expect("load");
+        assert!(!loaded.desktop.workspaces.iter().any(|w| w.room == room));
+
+        let home_room = tree.room_of(home).expect("home room");
+        assert!(
+            !tree.leave_room(home_room),
+            "the last durable room is never left"
+        );
+    }
+
     fn assert_demo_near_miss_is_preserved(tree: &WorkspaceTree, label: &str) {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("state.json");

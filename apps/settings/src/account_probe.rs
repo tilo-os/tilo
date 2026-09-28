@@ -219,6 +219,17 @@ impl AccountTester for LiveAccountTester {
         match account.type_id.as_str() {
             "email" => Self::email(account, secret),
             "caldav" | "webdav" | "nextcloud" => Self::dav(account, secret),
+            account_custody::forge::FORGEJO_TYPE => {
+                let config = account
+                    .config_as::<account_custody::forge::ForgeConfig>()
+                    .ok_or("the forge account has no server")?;
+                account_custody::forge::verify_forge(
+                    &config,
+                    secret.token.as_deref().unwrap_or_default(),
+                )
+                .map(|()| format!("{} takes issues with this token", config.repository))
+                .map_err(|error| error.to_string())
+            }
             _ => Err("unsupported account type".into()),
         }
     }

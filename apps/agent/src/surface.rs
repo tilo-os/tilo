@@ -350,6 +350,7 @@ fn chat_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
                 })
                 .collect(),
             comment_messages: Vec::new(),
+            comment_only: false,
         },
         doc,
     )

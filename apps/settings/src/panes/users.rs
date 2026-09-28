@@ -7,11 +7,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use ui::doc::{read_bool, read_str_or_text};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use runtime_identity::{IdentitySummary, KeyProtection};
+use settings_store::community::Membership;
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget};
@@ -30,6 +32,8 @@ const CANCEL_KEY: &str = "settings.users.form.cancel";
 const FULL_NAME_KEY: &str = "users.form.full_name";
 const USERNAME_KEY: &str = "users.form.username";
 const FORM_KEYS: [&str; 2] = [FULL_NAME_KEY, USERNAME_KEY];
+pub const COMMUNITY_LEAVE_KEY: &str = "settings.users.community.leave";
+pub const COMMUNITY_JOIN_KEY: &str = "settings.users.community.join";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceUser {
@@ -214,6 +218,11 @@ pub struct UsersPane {
     structure_dirty: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
+    /// Whether the person is in the Tilo Community, as remembered for them
+    /// (`tilo.community.membership`); the shell joins or leaves to match.
+    community: Membership,
+    /// The settings file the choice is kept in; `None` is the person's own.
+    settings_path: Option<PathBuf>,
 }
 
 impl Default for UsersPane {
@@ -242,6 +251,8 @@ impl UsersPane {
             structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
+            community: read_membership(None),
+            settings_path: None,
         }
     }
 
@@ -269,7 +280,80 @@ impl UsersPane {
             structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
+            community: read_membership(None),
+            settings_path: None,
         }
+    }
+
+    /// Keep the community choice in `path` instead of the person's settings
+    /// file: for stills and tests.
+    #[must_use]
+    pub fn with_settings_path(mut self, path: PathBuf) -> Self {
+        self.community = read_membership(Some(&path));
+        self.settings_path = Some(path);
+        self
+    }
+
+    /// The Tilo Community card: everyone is a member by default, it says
+    /// what that makes public, and leaving (or joining again) is one button.
+    fn community_card(&self) -> El {
+        let (button, state, tone, explanation) = match self.community {
+            Membership::Auto => (
+                Button::new(
+                    COMMUNITY_LEAVE_KEY,
+                    "Leave the community",
+                    Some(COMMUNITY_LEAVE_KEY),
+                )
+                .fit_content(40.0),
+                "Member",
+                StatusTone::Success,
+                "Where Tilo people meet, help each other and send feedback. It is public: your display name and what you post there are visible to everyone in it. Leaving applies to all your devices.",
+            ),
+            Membership::Left => (
+                Button::new(
+                    COMMUNITY_JOIN_KEY,
+                    "Join the community",
+                    Some(COMMUNITY_JOIN_KEY),
+                )
+                .fit_content(40.0),
+                "Left",
+                StatusTone::Neutral,
+                "You left the Tilo Community. None of your devices joins it again unless you choose to join.",
+            ),
+        };
+        card_with_action(
+            "Tilo Community",
+            Box::new(button),
+            rows(vec![
+                setting_row("Membership", semantic_status_pill(state, tone)),
+                caption(explanation),
+            ]),
+        )
+    }
+
+    fn sync_community(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let chosen = if take_bool(state, root, COMMUNITY_LEAVE_KEY) {
+            Some(Membership::Left)
+        } else if take_bool(state, root, COMMUNITY_JOIN_KEY) {
+            Some(Membership::Auto)
+        } else {
+            None
+        };
+        let Some(chosen) = chosen else {
+            return;
+        };
+        let saved = match &self.settings_path {
+            Some(path) => settings_store::community::set_membership_at(path, chosen),
+            None => settings_store::community::set_membership(chosen),
+        };
+        match saved {
+            Ok(()) => {
+                self.community = chosen;
+                self.error = None;
+            }
+            Err(error) => self.error = Some(format!("The choice was not saved: {error}")),
+        }
+        self.structure_dirty = true;
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -306,6 +390,7 @@ impl UsersPane {
             )
         };
         cards.push(card("Your Tilo identities", identity_rows));
+        cards.push(self.community_card());
         let mut protection_rows: Vec<El> = vec![caption(
             "Secret Service is preferred. If the desktop keyring is locked, signing pauses and asks the session to unlock it; Tilo never silently copies that key into an app.",
         )];
@@ -678,6 +763,13 @@ pub fn build() -> Box<dyn Widget> {
     Box::new(UsersPane::new())
 }
 
+/// The community choice in the settings file at `path`, or the person's own.
+fn read_membership(path: Option<&std::path::Path>) -> Membership {
+    settings_store::community::membership_in(
+        &path.map_or_else(settings_store::load, settings_store::load_at),
+    )
+}
+
 fn take_bool(state: &mut AutoCommit, root: &ObjId, key: &str) -> bool {
     let value = read_bool(state, root, key).unwrap_or(false);
     if value {
@@ -759,6 +851,7 @@ impl Widget for UsersPane {
         self.sync_form(&mut state, &root);
         self.sync_users(&mut state, &root);
         self.sync_identities(&mut state, &root);
+        self.sync_community(&mut state, &root);
         if let Some(c) = &mut self.composed {
             c.sync(&mut state, &root);
         }
@@ -1057,5 +1150,69 @@ mod tests {
             );
             assert!(pane.password_buffer.lock().unwrap().is_empty());
         }
+    }
+
+    fn names(widget: &dyn Widget, out: &mut Vec<String>) {
+        if let Some(name) = widget.accessibility().and_then(|node| node.name) {
+            out.push(name);
+        }
+        for child in widget.children() {
+            names(child, out);
+        }
+    }
+
+    /// Settings shows whether the person is in the Tilo Community and
+    /// switches it with one button, remembered in the settings file.
+    #[test]
+    fn the_community_card_shows_the_membership_and_switches_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut pane = UsersPane::with_data(
+            vec![user("ada", true)],
+            vec![identity("personal", true)],
+            Arc::new(RecordingAdmin::default()),
+            Arc::new(RecordingIds::default()),
+        )
+        .with_settings_path(path.clone());
+        let shown = |pane: &UsersPane| {
+            let mut out = Vec::new();
+            names(pane.community_card().as_ref(), &mut out);
+            out
+        };
+        let member = shown(&pane);
+        assert!(
+            member.iter().any(|name| name.contains("It is public")),
+            "{member:?}"
+        );
+        assert!(
+            member.iter().any(|name| name == "Leave the community"),
+            "{member:?}"
+        );
+
+        let mut doc = AutoCommit::new();
+        doc.put(&automerge::ROOT, COMMUNITY_LEAVE_KEY, true)
+            .unwrap();
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            settings_store::community::membership_in(&settings_store::load_at(&path)),
+            Membership::Left
+        );
+        let left = shown(&pane);
+        assert!(
+            left.iter()
+                .any(|name| name.starts_with("You left the Tilo Community")),
+            "{left:?}"
+        );
+        assert!(
+            left.iter().any(|name| name == "Join the community"),
+            "joining is offered again once left: {left:?}"
+        );
+
+        doc.put(&automerge::ROOT, COMMUNITY_JOIN_KEY, true).unwrap();
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            settings_store::community::membership_in(&settings_store::load_at(&path)),
+            Membership::Auto
+        );
     }
 }

@@ -1,0 +1,128 @@
+# One relay, one device identity. A second replica would be a second device
+# the team never paired, so this never scales past one; the state volume holds
+# the room's retained checkpoints, admitted memberships and offline queues.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tilo-community-relay
+spec:
+  serviceName: tilo-community-relay
+  replicas: 1
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        # Records and identity are read at start; roll the pod when they change.
+        reloader.stakater.com/auto: "true"
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: relay
+          image: registry.tilo.so/tilo/tilo-relay
+          env:
+            - name: TILO_HOST_KIND
+              value: room-host
+            - name: TILO_IDENTITY_SOURCE
+              value: /run/secrets/tilo-room-host
+            - name: TILO_COMMUNITY_RECORDS
+              value: /etc/tilo-community
+            - name: TILO_RELAY_PORT
+              value: "4433"
+            - name: TILO_METRICS_LISTEN
+              value: 0.0.0.0:9464
+            - name: TILO_RELAY_LOG
+              value: tilo_relay=info,warn
+          ports:
+            - name: iroh
+              containerPort: 4433
+              protocol: UDP
+            - name: metrics
+              containerPort: 9464
+              protocol: TCP
+          # The metrics endpoint is served only once the relay has bound its
+          # endpoint and installed every record, so it doubles as readiness.
+          startupProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: identity-source
+              mountPath: /run/secrets/tilo-room-host
+              readOnly: true
+            - name: identity
+              mountPath: /var/lib/tilo
+            - name: records
+              mountPath: /etc/tilo-community
+              readOnly: true
+            - name: config
+              mountPath: /etc/tilo
+            - name: state
+              mountPath: /var/lib/tilo-relay
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # The paired room-host identity (never the team's root). Copied into
+        # the memory-backed `identity` volume with owner-only modes at start:
+        # the relay refuses a key behind the symlinks a Secret volume uses.
+        - name: identity-source
+          secret:
+            secretName: tilo-community-relay-identity
+            defaultMode: 0440
+        - name: identity
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: records
+          configMap:
+            name: tilo-community-records
+        # relay.toml is derived from the environment on every start.
+        - name: config
+          emptyDir:
+            sizeLimit: 1Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: state
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 20Gi

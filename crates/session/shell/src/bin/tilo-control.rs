@@ -262,18 +262,19 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
     Ok(Invocation { socket, command })
 }
 
-/// Parse `community join|status|team-room|direct-room PERSON [LABEL]`.
+/// Parse `community join|leave|status|team-room|direct-room PERSON [LABEL]`.
 fn parse_community_command<'a>(
     iter: &mut impl Iterator<Item = &'a String>,
 ) -> Result<Command, ParseError> {
     let verb = iter.next().map(String::as_str).ok_or_else(|| {
         ParseError::Usage(
-            "community requires `join`, `status`, `team-room` or `direct-room` (try --help)"
+            "community requires `join`, `leave`, `status`, `team-room` or `direct-room` (try --help)"
                 .to_string(),
         )
     })?;
     let wire = match verb {
         "join" => json!({ "op": "community_join" }),
+        "leave" => json!({ "op": "community_leave" }),
         "status" => json!({ "op": "community_status" }),
         "team-room" => json!({ "op": "community_team_room" }),
         "direct-room" => {
@@ -291,7 +292,7 @@ fn parse_community_command<'a>(
         }
         other => {
             return Err(ParseError::Usage(format!(
-                "community: unknown verb `{other}` (join, status, team-room, direct-room)"
+                "community: unknown verb `{other}` (join, leave, status, team-room, direct-room)"
             )));
         }
     };
@@ -299,13 +300,14 @@ fn parse_community_command<'a>(
 }
 
 /// Parse `public-room create NAME | invite ROOM [--role R] [--expires-in S] |
-/// status ROOM`.
+/// status ROOM | grant ROOM PERSON [--role R] | revoke ROOM INVITE_ID`.
 fn parse_public_room_command<'a>(
     iter: &mut impl Iterator<Item = &'a String>,
 ) -> Result<Command, ParseError> {
     let verb = iter.next().map(String::as_str).ok_or_else(|| {
         ParseError::Usage(
-            "public-room requires `create`, `invite` or `status` (try --help)".to_string(),
+            "public-room requires `create`, `invite`, `status`, `grant` or `revoke` (try --help)"
+                .to_string(),
         )
     })?;
     let wire = match verb {
@@ -371,9 +373,18 @@ fn parse_public_room_command<'a>(
             };
             json!({ "op": "room_grant", "room": room, "person": person, "role": role })
         }
+        "revoke" => {
+            let (Some(room), Some(invite_id), None) = (iter.next(), iter.next(), iter.next())
+            else {
+                return Err(ParseError::Usage(
+                    "public-room revoke ROOM INVITE_ID".to_string(),
+                ));
+            };
+            json!({ "op": "standing_invite_revoke", "room": room, "invite_id": invite_id })
+        }
         other => {
             return Err(ParseError::Usage(format!(
-                "public-room: unknown verb `{other}` (create, invite, status, grant)"
+                "public-room: unknown verb `{other}` (create, invite, status, grant, revoke)"
             )));
         }
     };
@@ -1152,6 +1163,8 @@ fn print_usage() {
          \x20 replay status                 transport and step list (`chrome.replay`)\n\
          \x20 community join                join the Tilo community room from the OS's\n\
          \x20                               standing invitation; prints its class and your role\n\
+         \x20 community leave               leave the Tilo community room; none of your devices\n\
+         \x20                               joins it again until you `community join`\n\
          \x20 community status              the community room as this session knows it\n\
          \x20 community team-room           open your private feedback room with the Tilo team\n\
          \x20 community direct-room PERSON [LABEL]\n\
@@ -1162,7 +1175,10 @@ fn print_usage() {
          \x20 public-room status ROOM       a room's channel class and your role in it\n\
          \x20 public-room grant ROOM PERSON [--role viewer|commenter|editor]\n\
          \x20                               grant a role in a room you govern (default editor)\n\
-         \x20 inspect apps                  list app connections that answer inspection\n\
+         \x20 public-room revoke ROOM INVITE_ID\n\
+         \x20                               stop redeeming a standing invitation here; its\n\
+         \x20                               members stay (revoke it at the room's hosts too)\n\
+         \x20 inspect apps                 list app connections that answer inspection\n\
          \x20                               (PEER id, app id, room, record)\n\
          \x20                               PEER below may also be surface:ID, a window's surface\n\
          \x20                               id, to inspect the app behind that window\n\

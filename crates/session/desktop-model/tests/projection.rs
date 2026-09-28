@@ -13,14 +13,25 @@
 use automerge::AutoCommit;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::projection::{
-    EmptyStrips, Reader, changed_owned_entries, contents_of, declared_room, merge_room_contents,
-    project_owned_contents, project_room_records, project_workspace_shortcuts,
-    project_workspace_tasks, room_records_of, workspace_shortcuts_of, workspace_tasks_of,
+    EmptyStrips, Reader, RoomRecordAct, changed_owned_entries, contents_of, declared_room,
+    merge_room_contents, project_owned_contents, project_room_records, project_workspace_shortcuts,
+    project_workspace_tasks, room_record_entries_of, room_records_of, workspace_shortcuts_of,
+    workspace_tasks_of,
 };
 use tilo_desktop_model::{
     AppKind, DesktopTree, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
     Workspace, WorkspaceId, WorkspaceTask, WorkspaceTaskRoute, WorkspaceTaskStatus, compose_id,
 };
+
+/// A host's seal on a room-record act; what it signs is the shell's to
+/// check, not the projection's.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the shape of a host's seal, which may have nothing to sign with"
+)]
+fn sealed(_: RoomRecordAct<'_>) -> Option<String> {
+    Some("member signature".to_string())
+}
 
 const ALICE: u16 = 0x0A11;
 const BOB: u16 = 0x0B0B;
@@ -152,7 +163,7 @@ fn projection_round_trips_owned_contents_once_shared() {
         let held = [("rec-1".to_string(), "note".to_string())]
             .into_iter()
             .collect();
-        project_room_records(&mut doc, &held, None, &|_| None).unwrap();
+        project_room_records(&mut doc, &held, None, &sealed).unwrap();
         assert_eq!(
             room_records_of(&doc),
             vec![("rec-1".to_string(), "note".to_string())]
@@ -295,8 +306,8 @@ fn two_members_starting_a_rooms_records_share_one_map() {
     let from_bob = [("rec-b".to_string(), "sheet".to_string())]
         .into_iter()
         .collect();
-    project_room_records(&mut alice, &from_alice, None, &|_| None).unwrap();
-    project_room_records(&mut bob, &from_bob, None, &|_| None).unwrap();
+    project_room_records(&mut alice, &from_alice, None, &sealed).unwrap();
+    project_room_records(&mut bob, &from_bob, None, &sealed).unwrap();
 
     let alice_bytes = alice.save();
     let bob_bytes = bob.save();
@@ -326,8 +337,8 @@ fn two_members_bringing_the_same_record_in_share_one_entry() {
     let held = [("rec-1".to_string(), "note".to_string())]
         .into_iter()
         .collect();
-    project_room_records(&mut alice, &held, None, &|_| None).unwrap();
-    project_room_records(&mut bob, &held, None, &|_| None).unwrap();
+    project_room_records(&mut alice, &held, None, &sealed).unwrap();
+    project_room_records(&mut bob, &held, None, &sealed).unwrap();
     let alice_bytes = alice.save();
     let bob_bytes = bob.save();
     tilo_automerge::ApplyIncoming::load_incoming(&mut alice, &bob_bytes).unwrap();
@@ -340,4 +351,47 @@ fn two_members_bringing_the_same_record_in_share_one_entry() {
             "one entry"
         );
     }
+}
+
+/// A machine with nothing to sign with brings nothing into a room: every
+/// entry there is sealed by who brought it in, over its kind.
+#[test]
+fn only_a_sealed_bringing_in_writes_a_room_record() {
+    let held = [("rec-1".to_string(), "note".to_string())]
+        .into_iter()
+        .collect();
+    let mut unsigned = AutoCommit::new();
+    project_room_records(&mut unsigned, &held, None, &|_| None).unwrap();
+    assert!(room_record_entries_of(&unsigned).is_empty());
+
+    let mut doc = AutoCommit::new();
+    let kinds = std::cell::RefCell::new(Vec::new());
+    let seal = |act: RoomRecordAct<'_>| {
+        if let RoomRecordAct::Added { kind, .. } = act {
+            kinds.borrow_mut().push(kind.to_string());
+        }
+        sealed(act)
+    };
+    project_room_records(&mut doc, &held, None, &seal).unwrap();
+    let entries = room_record_entries_of(&doc);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].added.len(), 1);
+    assert_eq!(
+        entries[0].added[0].seal.as_ref().map(|(by, _)| by.as_str()),
+        Some("member")
+    );
+    // Recasting the record is a new, sealed bringing-in.
+    let recast = [("rec-1".to_string(), "sheet".to_string())]
+        .into_iter()
+        .collect();
+    project_room_records(&mut doc, &recast, Some(&held), &seal).unwrap();
+    assert_eq!(
+        *kinds.borrow(),
+        vec!["note".to_string(), "sheet".to_string()]
+    );
+    assert_eq!(room_record_entries_of(&doc)[0].kind, "sheet");
+    // Re-projecting what is already there writes nothing.
+    let heads = doc.get_heads();
+    project_room_records(&mut doc, &recast, Some(&recast), &seal).unwrap();
+    assert_eq!(doc.get_heads(), heads);
 }

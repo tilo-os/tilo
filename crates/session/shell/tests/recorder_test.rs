@@ -775,3 +775,199 @@ fn assert_only_the_marker(pending: &shell::shell::recorder::PendingSession, room
     assert!(!encoded.contains(PROTECTED_APP));
     assert!(!encoded.contains(&protected_record_id()));
 }
+
+/// A room someone else owns, where the recording person is a Viewer.
+fn viewer_room_tree() -> WorkspaceTreeHandle {
+    let mut workspace = Workspace::new(WorkspaceId(1), "Shared room");
+    workspace.room = RoomId::parse(&ROOM.to_string()).unwrap();
+    workspace.set_owner("someone-else".to_string());
+    workspace.grant_capability(
+        shell::shell::state::CapOverride::membership(
+            shell::shell::state::Subject::person(owner()),
+            ROOM.to_string(),
+            shell::shell::state::Verb::Read,
+        )
+        .with_id("viewer-membership"),
+    );
+    let mut tree = WorkspaceTree::default();
+    tree.desktop.active = workspace.id;
+    tree.desktop.workspaces.push(workspace);
+    tree.shared()
+}
+
+fn governance_cap_ids(tree: &WorkspaceTreeHandle) -> Vec<String> {
+    use automerge::ReadDoc as _;
+    let room = RoomId::parse(&ROOM.to_string()).unwrap();
+    let mut tree = tree.write();
+    tree.sync_room_doc(room);
+    let doc = tree.room_docs.get(&room).expect("a room document").clone();
+    drop(tree);
+    let Some((_, caps)) = doc.get(ROOT, "capabilities").unwrap() else {
+        return Vec::new();
+    };
+    doc.keys(&caps).collect()
+}
+
+/// A reporter records a shared room they only view: the recorder acts for
+/// them on their own device, needs no administrator, reads no more than
+/// they do, is listed as an agent while it records, and is gone when they
+/// stop.
+#[test]
+fn a_viewer_records_a_shared_room_through_their_own_delegate() {
+    let dir = tempfile::tempdir().unwrap();
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
+    let socket = dir.path().join("collab.sock");
+    let tree = viewer_room_tree();
+    let broker =
+        shell::shell::collab_broker::spawn_native_harness(socket, Arc::clone(&tree), Vec::new())
+            .unwrap();
+    let recorder = Recorder::attach(&broker, Arc::clone(&tree));
+    let mut roster = LocalParticipantRoster::new(broker.fanout());
+    let room = ROOM.to_string();
+    assert!(!tree.read().desktop.workspaces[0].may_administer(&owner()));
+
+    recorder
+        .start(std::slice::from_ref(&room), Vec::new(), None, &owner())
+        .expect("a Viewer may record what they can see");
+    assert_eq!(
+        workspace_has_recorder(&mut roster, &tree),
+        (Some(CapRole::Viewer), true),
+        "the recorder is an Observer, listed in the room"
+    );
+    assert!(
+        tree.read().desktop.workspaces[0]
+            .agent_members()
+            .iter()
+            .any(|(agent, role)| agent == RECORDER_AGENT && *role == CapRole::Viewer),
+        "it is listed as an agent, not a person"
+    );
+    let delegate: Vec<String> = tree.read().desktop.workspaces[0]
+        .capabilities
+        .iter()
+        .filter(|cap| shell::shell::state::device_delegate_person(cap) == Some(owner().as_str()))
+        .map(|cap| cap.id.clone())
+        .collect();
+    assert_eq!(delegate.len(), 1, "admitted as the Viewer's delegate");
+    assert!(
+        governance_cap_ids(&tree)
+            .iter()
+            .all(|id| !delegate.contains(id)),
+        "a device delegate is not written into the room's governance"
+    );
+
+    recorder.stop(&owner()).expect("the recording seals");
+    assert_eq!(
+        workspace_has_recorder(&mut roster, &tree),
+        (None, false),
+        "stopping revokes the delegate and takes it off the roster"
+    );
+    assert!(
+        tree.read().desktop.workspaces[0]
+            .capabilities
+            .iter()
+            .all(|cap| !delegate.contains(&cap.id))
+    );
+    drop(broker);
+}
+
+/// The delegate reads no more than its person: someone who is not a member
+/// cannot record, and a person who loses their membership takes the
+/// recorder out with them.
+#[test]
+fn a_delegate_stands_only_on_its_persons_membership() {
+    let dir = tempfile::tempdir().unwrap();
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
+    let socket = dir.path().join("collab.sock");
+    let tree = viewer_room_tree();
+    let broker =
+        shell::shell::collab_broker::spawn_native_harness(socket, Arc::clone(&tree), Vec::new())
+            .unwrap();
+    let recorder = Recorder::attach(&broker, Arc::clone(&tree));
+    let room = ROOM.to_string();
+
+    assert!(matches!(
+        recorder.start(
+            std::slice::from_ref(&room),
+            Vec::new(),
+            None,
+            &"a-stranger".to_string()
+        ),
+        Err(shell::shell::recorder::RecorderError::NotMember { .. })
+    ));
+
+    recorder
+        .start(std::slice::from_ref(&room), Vec::new(), None, &owner())
+        .unwrap();
+    assert!(
+        tree.write().desktop.workspaces[0].revoke_capability("viewer-membership"),
+        "the room's owner removes the Viewer"
+    );
+    assert!(recorder.pump(Instant::now(), &owner()));
+    assert!(
+        !recorder.is_recording(),
+        "the recording ends with the person's access"
+    );
+    assert!(recorder.rooms().is_empty());
+    drop(broker);
+}
+
+/// A room whose administrators turned off members' recording: the
+/// recorder refuses to start and says why, and a recording running when
+/// it is turned off ends.
+#[test]
+fn a_room_that_forbids_recording_delegates_refuses_the_recorder_with_its_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
+    let socket = dir.path().join("collab.sock");
+    let tree = viewer_room_tree();
+    let broker =
+        shell::shell::collab_broker::spawn_native_harness(socket, Arc::clone(&tree), Vec::new())
+            .unwrap();
+    let recorder = Recorder::attach(&broker, Arc::clone(&tree));
+    let room = ROOM.to_string();
+
+    recorder
+        .start(std::slice::from_ref(&room), Vec::new(), None, &owner())
+        .unwrap();
+    tree.write().desktop.workspaces[0].recording_delegates_forbidden = true;
+    assert!(recorder.pump(Instant::now(), &owner()));
+    assert!(
+        !recorder.is_recording(),
+        "turning recording off ends the recording"
+    );
+
+    let refused = recorder
+        .start(std::slice::from_ref(&room), Vec::new(), None, &owner())
+        .expect_err("the room forbids it");
+    assert_eq!(
+        refused,
+        shell::shell::recorder::RecorderError::RecordingNotAllowed("Shared room".into())
+    );
+    assert!(
+        refused.to_string().contains("Members may record"),
+        "the reason names the setting that allows it: {refused}"
+    );
+    assert!(
+        tree.read().desktop.workspaces[0]
+            .capabilities
+            .iter()
+            .all(|cap| shell::shell::state::device_delegate_person(cap).is_none()),
+        "nothing is admitted"
+    );
+    drop(broker);
+}

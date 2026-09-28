@@ -556,6 +556,7 @@ impl SettingsApp {
             }
             Category::Ai => Box::new(
                 panes::ai::AiPane::new()
+                    .with_account_root(self.account_root.clone())
                     .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
@@ -1996,6 +1997,14 @@ impl Widget for SettingsApp {
         self.rect
     }
 
+    /// Advance the open pane between inputs: it re-reads state that changed
+    /// under it (an account removed elsewhere, a finished model operation).
+    fn update(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) -> bool {
+        self.shell
+            .as_mut()
+            .is_some_and(|shell| shell.update(state, path))
+    }
+
     /// Drains the selection-rebuild flag, bubbling the shell's own rebuild
     /// signal (a narrow list↔content navigation or a breakpoint cross).
     fn take_structure_dirty(&mut self) -> bool {
@@ -2725,6 +2734,45 @@ mod tests {
 
     /// The app opens on the default category unless told otherwise; a real
     /// selection change flags a rebuild and re-selecting does not.
+    /// An account removed while its pane is open leaves the pane without
+    /// waiting for a reload: the app advances the open pane between inputs.
+    #[test]
+    fn an_open_accounts_pane_follows_the_store_between_inputs() {
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = config.app().with_category(Category::ExternalAccounts);
+        let root = app.account_root.clone();
+        let id = accounts::AccountId::from("azure-openai-work");
+        let mut account =
+            accounts::Account::new(id.clone(), account_custody::providers::AZURE_OPENAI_TYPE);
+        account.display_name = "Azure OpenAI".into();
+        crate::panes::accounts::AccountsPane::commit_account(&root, account, None).unwrap();
+        layout_at(&mut app, 1200.0, 720.0);
+        let mut doc = automerge::AutoCommit::new();
+        let path = automerge::ROOT;
+        app.sync(&mut doc, &path);
+        let _ = app.take_structure_dirty();
+        assert!(
+            app.next_wake_deadline().is_some(),
+            "the open pane wakes the app to look at the store"
+        );
+
+        crate::panes::accounts::AccountsPane::remove_account(
+            &root,
+            &root.custodian(),
+            account_custody::providers::AZURE_OPENAI_TYPE,
+            id.as_str(),
+        )
+        .unwrap();
+        std::thread::sleep(
+            crate::accounts::ACCOUNT_STORE_CHECK + std::time::Duration::from_millis(50),
+        );
+        assert!(app.update(&mut doc, &path), "the pane re-reads the store");
+        assert!(
+            app.take_structure_dirty(),
+            "and rebuilds without the account"
+        );
+    }
+
     #[test]
     fn category_selection_starts_on_the_default_and_flags_rebuilds() {
         let config = crate::prefs::test_env::ScratchConfig::new();

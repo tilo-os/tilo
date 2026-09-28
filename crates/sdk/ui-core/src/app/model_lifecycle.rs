@@ -92,6 +92,7 @@ impl super::App {
         let wakes = self.take_hosted_wakes();
         let authority_changed = self.refresh_hosted_authority();
         let in_flight = !self.actions.directed_invocations.is_empty()
+            || !self.actions.held_terminals.is_empty()
             || !self.actions.bound_invocations.is_empty()
             || !self.actions.local_invocations.is_empty()
             || !self.actions.pending_application_launches.is_empty();
@@ -230,7 +231,7 @@ impl super::App {
         if !force && !self.needs_sync {
             return false;
         }
-        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        self.sync_root();
         self.invalidate_widget_resource_cache();
         self.needs_sync = false;
         true

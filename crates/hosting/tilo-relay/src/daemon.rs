@@ -386,6 +386,11 @@ impl Relay {
         .await
     }
 
+    /// Every counter, as `admin status` reports them.
+    pub fn metrics(&self) -> crate::metrics::MetricsSnapshot {
+        self.metrics.snapshot()
+    }
+
     /// Start the daemon with the given config + identity.
     ///
     /// Binds an iroh endpoint (using the persistent secret at
@@ -546,6 +551,18 @@ impl Relay {
         let metrics = Arc::new(Metrics::default());
         let revocations = Arc::new(std::sync::RwLock::new(identity.revocations.clone()));
 
+        let live_connections = Arc::new(AtomicUsize::new(0));
+        // Bound before anything is served, so an unusable metrics address
+        // fails the start instead of leaving a relay nobody can observe.
+        let metrics_listener = match cfg.metrics_listen {
+            Some(addr) => Some(tokio::net::TcpListener::bind(addr).await.map_err(|error| {
+                RelayError::Io(std::io::Error::new(
+                    error.kind(),
+                    format!("bind metrics_listen {addr}: {error}"),
+                ))
+            })?),
+            None => None,
+        };
         let handshake_trust = HandshakeTrust::new(
             &operator_trust_policy,
             &cfg.trust_policy,
@@ -576,7 +593,7 @@ impl Relay {
             direct_rooms,
             app_serving,
             limits: cfg.limits,
-            live_connections: Arc::new(AtomicUsize::new(0)),
+            live_connections: Arc::clone(&live_connections),
         };
         let discovery = DiscoveryProtocol {
             workspaces: workspaces.clone(),
@@ -642,6 +659,19 @@ impl Relay {
             &metrics,
             &revocations,
         );
+        if let Some(listener) = metrics_listener {
+            if let Ok(addr) = listener.local_addr() {
+                tracing::info!(%addr, "serving Prometheus metrics on /metrics");
+            }
+            push_peer_relay_task(
+                &peer_relay_tasks,
+                tokio::spawn(crate::metrics::serve_prometheus(
+                    listener,
+                    metrics.clone(),
+                    live_connections,
+                )),
+            );
+        }
         if cfg.services.compute {
             for workspace in workspaces.lock().await.values() {
                 workspace
@@ -2231,7 +2261,7 @@ async fn handle_conn(
             trust_policy: ctx.trust_policy,
             own_user_public_key: ctx.own_user_pk,
             own_device_cert: ctx.own_cert.clone(),
-            metrics: ctx.metrics,
+            metrics: Arc::clone(&ctx.metrics),
             own_device_public_key: ctx.own_cert.device_public_key,
             own_device_signing_key: ctx.own_sk.clone(),
             direct_rooms: ctx.direct_rooms,
@@ -2242,9 +2272,8 @@ async fn handle_conn(
         ctx.agent_reads_v1,
     ))
     .await;
-    if let Err(e) = peer_result {
-        tracing::debug!("peer session ended with error: {e}");
-    }
+    // The peer loop counted and logged why the session ended.
+    drop(peer_result);
     connection.close(0u32.into(), b"relay session ended");
     Ok(())
 }
@@ -2620,9 +2649,10 @@ async fn handle_peer_relay_envelope(
         }
         Envelope::NotAuthorised {
             workspace_id,
+            refusal,
             reason,
         } => {
-            tracing::warn!(workspace_id, %reason, "peer relay refused subscribe");
+            tracing::warn!(workspace_id, ?refusal, %reason, "peer relay refused subscribe");
         }
         Envelope::Ping => {
             let _ = client.send(Envelope::Pong);

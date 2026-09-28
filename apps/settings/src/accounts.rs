@@ -264,6 +264,91 @@ impl AccountRoot {
             tracing::warn!(target: "tilo::settings", %error, "could not recover interrupted account mutation");
         }
     }
+
+    /// What the account store file looks like on disk now: its identity,
+    /// size and modification time. Every save replaces the file atomically,
+    /// so any save changes the stamp. `None` when there is no store.
+    fn store_stamp(&self) -> Option<StoreStamp> {
+        use std::os::unix::fs::MetadataExt as _;
+        let metadata = std::fs::metadata(accounts::store_path_in(&self.path()?)).ok()?;
+        Some(StoreStamp {
+            inode: metadata.ino(),
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StoreStamp {
+    inode: u64,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+/// How often an open pane looks at the account store for a change made
+/// elsewhere.
+pub const ACCOUNT_STORE_CHECK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// An open pane's watch on the account store. Accounts are added and removed
+/// in more than one place (Settings › Accounts, the AI hub's sign-in and
+/// sign-out, resource actions, another Settings window), so every pane that
+/// shows accounts checks the store through this and re-reads it when it
+/// changed, instead of trusting what it read when it opened.
+#[derive(Clone, Debug)]
+pub struct AccountStoreWatch {
+    root: AccountRoot,
+    seen: Option<StoreStamp>,
+    next_check: std::time::Instant,
+}
+
+impl AccountStoreWatch {
+    /// Watch the store under `root`, taking its current state as seen.
+    pub fn new(root: AccountRoot) -> Self {
+        Self {
+            seen: root.store_stamp(),
+            root,
+            next_check: std::time::Instant::now() + ACCOUNT_STORE_CHECK,
+        }
+    }
+
+    /// The root this watch reads.
+    pub fn root(&self) -> &AccountRoot {
+        &self.root
+    }
+
+    /// When the pane should next wake to [`Self::changed`].
+    pub fn next_check(&self) -> std::time::Instant {
+        self.next_check
+    }
+
+    /// Take the store as it is now as seen, after the pane re-read it.
+    pub fn mark_seen(&mut self) {
+        self.seen = self.root.store_stamp();
+    }
+
+    /// Whether the store changed since it was last seen, looking at most once
+    /// per [`ACCOUNT_STORE_CHECK`]. A change is reported once.
+    pub fn changed(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        if now < self.next_check {
+            return false;
+        }
+        self.next_check = now + ACCOUNT_STORE_CHECK;
+        let stamp = self.root.store_stamp();
+        if stamp == self.seen {
+            return false;
+        }
+        self.seen = stamp;
+        true
+    }
+
+    /// Look at the store on the next [`Self::changed`] without waiting out
+    /// the interval.
+    #[cfg(test)]
+    pub fn check_now(&mut self) {
+        self.next_check = std::time::Instant::now();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -646,11 +731,14 @@ pub enum AccountKind {
     /// A Microsoft work or school account the AI hub signed in to Azure
     /// `OpenAI` with.
     AzureOpenAi,
+    /// A Forgejo repository and the access token that files issues in it,
+    /// for the feedback triage agent. The token is sealed in the vault.
+    Forgejo,
 }
 
 impl AccountKind {
     /// Every kind, in panel order.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Mail,
         Self::CalDav,
         Self::WebDav,
@@ -660,6 +748,7 @@ impl AccountKind {
         Self::Dropbox,
         Self::ICloudDrive,
         Self::AzureOpenAi,
+        Self::Forgejo,
     ];
 
     pub fn label(self) -> &'static str {
@@ -673,6 +762,7 @@ impl AccountKind {
             AccountKind::Dropbox => "Dropbox",
             AccountKind::ICloudDrive => "iCloud Drive",
             AccountKind::AzureOpenAi => "Azure OpenAI",
+            AccountKind::Forgejo => "Forgejo",
         }
     }
 
@@ -687,6 +777,7 @@ impl AccountKind {
             | AccountKind::Dropbox
             | AccountKind::ICloudDrive => "\u{f015f}", // md-cloud
             AccountKind::AzureOpenAi => "\u{f06a9}", // md-robot
+            AccountKind::Forgejo => "\u{f02a2}", // md-git
         }
     }
 
@@ -701,6 +792,7 @@ impl AccountKind {
             AccountKind::Dropbox => "dropbox",
             AccountKind::ICloudDrive => "icloud-drive",
             AccountKind::AzureOpenAi => "azure-openai",
+            AccountKind::Forgejo => "forgejo",
         }
     }
 
@@ -716,6 +808,7 @@ impl AccountKind {
             AccountKind::Dropbox => account_custody::providers::DROPBOX_TYPE,
             AccountKind::ICloudDrive => account_custody::providers::ICLOUD_DRIVE_TYPE,
             AccountKind::AzureOpenAi => account_custody::providers::AZURE_OPENAI_TYPE,
+            AccountKind::Forgejo => account_custody::forge::FORGEJO_TYPE,
         }
     }
 
@@ -795,6 +888,8 @@ pub struct AccountDirectory {
     /// Google Drive, `OneDrive`, Dropbox, `iCloud` Drive and Azure `OpenAI`
     /// accounts, straight from the canonical store.
     pub cloud: Vec<accounts::Account>,
+    /// Forgejo repositories, straight from the canonical store.
+    pub forges: Vec<accounts::Account>,
 }
 
 impl AccountDirectory {
@@ -857,6 +952,13 @@ impl AccountDirectory {
                 })
                 .cloned()
                 .collect(),
+            forges: shared
+                .list(&accounts::AccountTypeId::from(
+                    account_custody::forge::FORGEJO_TYPE,
+                ))
+                .into_iter()
+                .cloned()
+                .collect(),
         }
     }
 
@@ -868,6 +970,7 @@ impl AccountDirectory {
             && self.files.accounts.is_empty()
             && self.nextcloud.accounts.is_empty()
             && self.cloud.is_empty()
+            && self.forges.is_empty()
     }
 
     /// The uniform views for one kind, in store order.
@@ -902,6 +1005,7 @@ impl AccountDirectory {
                 .filter(|account| account.type_id.as_str() == kind.type_id())
                 .map(|account| cloud_view(kind, account))
                 .collect(),
+            AccountKind::Forgejo => self.forges.iter().map(forge_view).collect(),
         }
     }
 }
@@ -946,6 +1050,25 @@ fn nextcloud_view(a: &NextcloudAccount) -> AccountView {
         summary: format!("{} · {}", short_url(&a.server_url), svc.join(", ")),
         enabled: a.enabled,
         tint: a.tint,
+    }
+}
+
+fn forge_view(account: &accounts::Account) -> AccountView {
+    let config = account.config_as::<account_custody::forge::ForgeConfig>();
+    AccountView {
+        id: account.id.to_string(),
+        kind: AccountKind::Forgejo,
+        label: if account.display_name.is_empty() {
+            AccountKind::Forgejo.label().to_string()
+        } else {
+            account.display_name.clone()
+        },
+        summary: config.map_or_else(
+            || "Forgejo".to_string(),
+            |config| format!("{} · {}", short_url(&config.server), config.repository),
+        ),
+        enabled: account.enabled,
+        tint: account.tint,
     }
 }
 
@@ -1209,6 +1332,7 @@ pub fn sample_directory() -> AccountDirectory {
             accounts: vec![cloud],
         },
         cloud: Vec::new(),
+        forges: Vec::new(),
     }
 }
 

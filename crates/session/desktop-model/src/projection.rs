@@ -79,6 +79,108 @@ pub fn channel_class_of(doc: &AutoCommit) -> Option<collab_types::ChannelClass> 
     }
 }
 
+/// Key a room document stores whether it allows recording delegates under.
+/// Governance: only the room's authority writes it.
+pub const ROOM_RECORDING_DELEGATES_KEY: &str = "recording_delegates";
+
+/// Record whether the room allows its members' recorders to act for them
+/// (see [`crate::Workspace::recording_delegates_forbidden`]). Written by the
+/// governing machine on every projection.
+pub fn project_recording_delegates(doc: &mut AutoCommit, forbidden: bool) {
+    put_str_if_changed(
+        doc,
+        &automerge::ROOT,
+        ROOM_RECORDING_DELEGATES_KEY,
+        if forbidden { "forbid" } else { "allow" },
+    );
+}
+
+/// Whether a room document forbids recording delegates. `None` when it
+/// states nothing this build knows, which a reader leaves as it was.
+pub fn recording_delegates_forbidden_of(doc: &AutoCommit) -> Option<bool> {
+    use automerge::{ROOT, ScalarValue, Value};
+    match doc.get(&ROOT, ROOM_RECORDING_DELEGATES_KEY).ok().flatten() {
+        Some((Value::Scalar(value), _)) => match value.as_ref() {
+            ScalarValue::Str(name) if name.as_str() == "forbid" => Some(true),
+            ScalarValue::Str(name) if name.as_str() == "allow" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Key a room document stores whether the team's triage agent joins
+/// reporters' direct rooms under. Governance: only the room's authority
+/// writes it.
+pub const ROOM_TRIAGE_IN_DIRECT_ROOMS_KEY: &str = "triage_in_direct_rooms";
+
+/// Record whether the team's triage agent joins reporters' direct rooms (see
+/// [`crate::Workspace::triage_in_direct_rooms`]). Written by the governing
+/// machine on every projection.
+pub fn project_triage_in_direct_rooms(doc: &mut AutoCommit, on: bool) {
+    put_str_if_changed(
+        doc,
+        &automerge::ROOT,
+        ROOM_TRIAGE_IN_DIRECT_ROOMS_KEY,
+        if on { "on" } else { "off" },
+    );
+}
+
+/// Whether a room document has the triage agent join reporters' direct
+/// rooms. `None` when it states nothing this build knows.
+pub fn triage_in_direct_rooms_of(doc: &AutoCommit) -> Option<bool> {
+    use automerge::{ROOT, ScalarValue, Value};
+    match doc
+        .get(&ROOT, ROOM_TRIAGE_IN_DIRECT_ROOMS_KEY)
+        .ok()
+        .flatten()
+    {
+        Some((Value::Scalar(value), _)) => match value.as_ref() {
+            ScalarValue::Str(name) if name.as_str() == "on" => Some(true),
+            ScalarValue::Str(name) if name.as_str() == "off" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Key a room document stores its delegated hosts under (a JSON array of
+/// Iroh endpoint addresses). Governance, like the channel class.
+pub const ROOM_DELEGATED_HOSTS_KEY: &str = "delegated_hosts_v1";
+
+/// Record the room's delegated hosts. Written by the governing machine on
+/// every projection; an empty list is written as no key at all, so a room
+/// that never had a host carries nothing new.
+pub fn project_delegated_hosts(doc: &mut AutoCommit, hosts: &[String]) {
+    use automerge::transaction::Transactable;
+    if hosts.is_empty() {
+        if doc
+            .get(&automerge::ROOT, ROOM_DELEGATED_HOSTS_KEY)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            let _ = doc.delete(&automerge::ROOT, ROOM_DELEGATED_HOSTS_KEY);
+        }
+        return;
+    }
+    let encoded = serde_json::to_string(hosts).unwrap_or_default();
+    put_str_if_changed(doc, &automerge::ROOT, ROOM_DELEGATED_HOSTS_KEY, &encoded);
+}
+
+/// The delegated hosts a room document records; empty when it states none
+/// or states something unreadable.
+pub fn delegated_hosts_of(doc: &AutoCommit) -> Vec<String> {
+    use automerge::{ROOT, ScalarValue, Value};
+    match doc.get(&ROOT, ROOM_DELEGATED_HOSTS_KEY).ok().flatten() {
+        Some((Value::Scalar(value), _)) => match value.as_ref() {
+            ScalarValue::Str(text) => serde_json::from_str(text).unwrap_or_default(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
 /// One tab as a room's replication document carries it. Deliberately not
 /// a [`Tab`]: no field here for anything a person's own session decided.
 #[derive(Clone, Debug)]
@@ -1103,8 +1205,9 @@ pub const ROOM_RECORDS_KEY: &str = "records";
 /// Key of the withdrawal mark on a room record entry.
 pub const ROOM_RECORD_REMOVED_KEY: &str = "removed";
 
-/// Key of a room record entry's bringing-in: `"<nonce> <by> <signature>"`,
-/// or just `"<nonce>"` from a machine with nothing to sign with.
+/// Key of a room record entry's bringing-in: `"<nonce> <by> <signature>"`.
+/// An entry without a bringing-in sealed by a member who may add records is
+/// not in the room, whatever else it holds.
 pub const ROOM_RECORD_ADDED_KEY: &str = "added";
 
 /// Key of a room record entry's withdrawal seal: `"<by> <signature>"`.
@@ -1113,22 +1216,31 @@ pub const ROOM_RECORD_WITHDRAWN_KEY: &str = "withdrawn";
 /// What a machine did to a room record, for its host to seal: who acted,
 /// signed over the act. The nonce names one bringing-in, so a withdrawal
 /// seals the bringing-in it takes back and cannot be replayed on a later
-/// one.
+/// one. A bringing-in seals the record's kind too, so nobody can recast a
+/// record another member brought in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoomRecordAct<'a> {
-    Added { id: &'a str, nonce: &'a str },
-    Withdrawn { id: &'a str, nonce: &'a str },
+    Added {
+        id: &'a str,
+        kind: &'a str,
+        nonce: &'a str,
+    },
+    Withdrawn {
+        id: &'a str,
+        nonce: &'a str,
+    },
 }
 
 /// A seal a host makes for an act: `"<by> <signature>"`, or `None` when it
-/// has no identity to sign with.
+/// has no identity to sign with — and then it brings nothing into the room.
 pub type RoomRecordSeal<'s> = &'s dyn Fn(RoomRecordAct<'_>) -> Option<String>;
 
 /// A room record's bringing-in, as a room document holds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoomRecordAdded {
     pub nonce: String,
-    /// `(by, signature)`, when the machine that brought it in sealed it.
+    /// `(by, signature)`, when the value carries one; an unsealed value is
+    /// never honoured.
     pub seal: Option<(String, String)>,
 }
 
@@ -1248,8 +1360,37 @@ pub fn project_room_records(
     }
     let records_id = room_records_map(doc)?;
     for (id, kind) in held {
-        let (entry, brought_in) = match doc.get(&records_id, id.as_str()).ok().flatten() {
-            Some((_, obj)) => (obj, false),
+        let existing = doc
+            .get(&records_id, id.as_str())
+            .ok()
+            .flatten()
+            .map(|(_, entry)| entry);
+        let current_kind = existing.as_ref().and_then(|entry| entry_kind(doc, entry));
+        // Brought in again during this session after being taken out: the
+        // later act clears the mark. A record merely still held does not.
+        let re_referenced = previous.is_some_and(|previous| !previous.contains_key(id));
+        let brought_back = re_referenced
+            && existing
+                .as_ref()
+                .is_some_and(|entry| entry_removed(doc, entry));
+        // Compared before writing, like every other value here — a
+        // re-projection of unchanged state must not manufacture one.
+        let recast = existing.is_some() && current_kind.as_deref() != Some(kind.as_str());
+        if existing.is_some() && !brought_back && !recast {
+            continue;
+        }
+        // Every bringing-in is sealed by who made it, over the record and its
+        // kind; a machine with nothing to sign with brings nothing in.
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        let Some(sealed) = seal(RoomRecordAct::Added {
+            id,
+            kind,
+            nonce: &nonce,
+        }) else {
+            continue;
+        };
+        let entry = match existing {
+            Some(obj) => obj,
             None if made_by_records_genesis(&records_id) => {
                 if tilo_automerge::ApplyIncoming::apply_incoming(
                     doc,
@@ -1260,43 +1401,23 @@ pub fn project_room_records(
                     continue;
                 }
                 match doc.get(&records_id, id.as_str()).ok().flatten() {
-                    Some((_, obj)) => (obj, true),
+                    Some((_, obj)) => obj,
                     None => continue,
                 }
             }
             None => match doc.put_object(&records_id, id.as_str(), ObjType::Map) {
-                Ok(obj) => (obj, true),
+                Ok(obj) => obj,
                 Err(_) => continue,
             },
         };
-        // Compared before writing, like every other value here — a
-        // re-projection of unchanged state must not manufacture one.
-        let current = match doc.get(&entry, "kind").ok().flatten() {
-            Some((automerge::Value::Scalar(v), _)) => match v.as_ref() {
-                automerge::ScalarValue::Str(k) => Some(k.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
-        if current.as_deref() != Some(kind.as_str()) {
+        if entry_kind(doc, &entry).as_ref() != Some(kind) {
             let _ = doc.put(&entry, "kind", kind.clone());
         }
-        // Brought in again during this session after being taken out: the
-        // later act clears the mark. A record merely still held does not.
-        let re_referenced = previous.is_some_and(|previous| !previous.contains_key(id));
-        let brought_back = re_referenced && entry_removed(doc, &entry);
         if brought_back {
             let _ = doc.put(&entry, ROOM_RECORD_REMOVED_KEY, false);
         }
         // Who brought it in, sealed: whom a withdrawal is checked against.
-        if brought_in || brought_back {
-            let nonce = uuid::Uuid::new_v4().simple().to_string();
-            let added = match seal(RoomRecordAct::Added { id, nonce: &nonce }) {
-                Some(sealed) => format!("{nonce} {sealed}"),
-                None => nonce,
-            };
-            let _ = doc.put(&entry, ROOM_RECORD_ADDED_KEY, added);
-        }
+        let _ = doc.put(&entry, ROOM_RECORD_ADDED_KEY, format!("{nonce} {sealed}"));
     }
     for id in withdrawn {
         if let Some((_, entry)) = doc.get(&records_id, id.as_str()).ok().flatten()
@@ -1316,6 +1437,60 @@ pub fn project_room_records(
     Ok(())
 }
 
+/// Seal a fresh bringing-in of record `id`, as `kind`, onto its existing
+/// entry — how a room's authority vouches for a record it holds whose
+/// earlier seal no longer stands (its sealer lost the right to add records).
+/// Returns whether anything was written.
+pub fn reseal_room_record(
+    doc: &mut AutoCommit,
+    id: &str,
+    kind: &str,
+    seal: RoomRecordSeal<'_>,
+) -> bool {
+    use automerge::transaction::Transactable;
+    let Some(entry) = record_entry(doc, id) else {
+        return false;
+    };
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let Some(sealed) = seal(RoomRecordAct::Added {
+        id,
+        kind,
+        nonce: &nonce,
+    }) else {
+        return false;
+    };
+    if entry_kind(doc, &entry).as_deref() != Some(kind) {
+        let _ = doc.put(&entry, "kind", kind);
+    }
+    if entry_removed(doc, &entry) {
+        let _ = doc.put(&entry, ROOM_RECORD_REMOVED_KEY, false);
+    }
+    doc.put(&entry, ROOM_RECORD_ADDED_KEY, format!("{nonce} {sealed}"))
+        .is_ok()
+}
+
+/// Seal a withdrawal of record `id`'s bringing-in `nonce` onto its entry —
+/// how a room's authority vouches for a withdrawal whose sealer lost the
+/// right to take records out. Returns whether anything was written.
+pub fn reseal_room_record_withdrawal(
+    doc: &mut AutoCommit,
+    id: &str,
+    nonce: &str,
+    seal: RoomRecordSeal<'_>,
+) -> bool {
+    use automerge::transaction::Transactable;
+    let Some(entry) = record_entry(doc, id) else {
+        return false;
+    };
+    let Some(sealed) = seal(RoomRecordAct::Withdrawn { id, nonce }) else {
+        return false;
+    };
+    if !entry_removed(doc, &entry) {
+        let _ = doc.put(&entry, ROOM_RECORD_REMOVED_KEY, true);
+    }
+    doc.put(&entry, ROOM_RECORD_WITHDRAWN_KEY, sealed).is_ok()
+}
+
 fn strings_at(doc: &AutoCommit, entry: &automerge::ObjId, key: &str) -> Vec<String> {
     use automerge::{ScalarValue, Value};
     doc.get_all(entry, key)
@@ -1329,6 +1504,17 @@ fn strings_at(doc: &AutoCommit, entry: &automerge::ObjId, key: &str) -> Vec<Stri
             Value::Object(_) => None,
         })
         .collect()
+}
+
+fn entry_kind(doc: &AutoCommit, entry: &automerge::ObjId) -> Option<String> {
+    use automerge::{ReadDoc, ScalarValue, Value};
+    match doc.get(entry, "kind").ok().flatten() {
+        Some((Value::Scalar(v), _)) => match v.as_ref() {
+            ScalarValue::Str(k) => Some(k.to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn added_values(doc: &AutoCommit, entry: &automerge::ObjId) -> Vec<RoomRecordAdded> {
@@ -1360,15 +1546,17 @@ pub fn room_record_added(doc: &AutoCommit, id: &str) -> Vec<RoomRecordAdded> {
 
 /// Every withdrawal seal on record `id`, as `(by, signature)`.
 pub fn room_record_withdrawals(doc: &AutoCommit, id: &str) -> Vec<(String, String)> {
-    record_entry(doc, id).map_or_else(Vec::new, |entry| {
-        strings_at(doc, &entry, ROOM_RECORD_WITHDRAWN_KEY)
-            .into_iter()
-            .filter_map(|value| {
-                let (by, sig) = value.split_once(' ')?;
-                Some((by.to_string(), sig.to_string()))
-            })
-            .collect()
-    })
+    record_entry(doc, id).map_or_else(Vec::new, |entry| withdrawal_values(doc, &entry))
+}
+
+fn withdrawal_values(doc: &AutoCommit, entry: &automerge::ObjId) -> Vec<(String, String)> {
+    strings_at(doc, entry, ROOM_RECORD_WITHDRAWN_KEY)
+        .into_iter()
+        .filter_map(|value| {
+            let (by, sig) = value.split_once(' ')?;
+            Some((by.to_string(), sig.to_string()))
+        })
+        .collect()
 }
 
 /// Whether an entry is marked removed. Every concurrent value counts, so a
@@ -1393,26 +1581,44 @@ pub fn room_record_removed(doc: &AutoCommit, id: &str) -> bool {
 
 /// Read a room document's record index back as `(record id, kind)`
 /// pairs, sorted by id so two peers read one document the same way.
-/// Records marked removed are not in the room.
+/// Records marked removed are left out. This is the document as written,
+/// seals unchecked: what a room holds is what [`room_record_entries_of`]
+/// shows sealed by members who may add and take out records.
 pub fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
-    room_record_entries(doc)
+    room_record_entries_of(doc)
         .into_iter()
-        .filter(|(_, _, removed)| !removed)
-        .map(|(id, kind, _)| (id, kind))
+        .filter(|entry| !entry.removed)
+        .map(|entry| (entry.id, entry.kind))
         .collect()
 }
 
-/// Ids the room document marks removed, sorted.
+/// Ids the room document marks removed, sorted — seals unchecked, like
+/// [`room_records_of`].
 pub fn room_records_removed_of(doc: &AutoCommit) -> Vec<String> {
-    room_record_entries(doc)
+    room_record_entries_of(doc)
         .into_iter()
-        .filter(|(_, _, removed)| *removed)
-        .map(|(id, _, _)| id)
+        .filter(|entry| entry.removed)
+        .map(|entry| entry.id)
         .collect()
 }
 
-fn room_record_entries(doc: &AutoCommit) -> Vec<(String, String, bool)> {
-    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+/// One entry of a room document's record map, with the seals a host checks
+/// before it counts the record as in the room or taken out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoomRecordEntry {
+    pub id: String,
+    pub kind: String,
+    /// Whether the entry is marked removed.
+    pub removed: bool,
+    /// Every bringing-in the entry holds.
+    pub added: Vec<RoomRecordAdded>,
+    /// Every withdrawal seal, as `(by, signature)`.
+    pub withdrawn: Vec<(String, String)>,
+}
+
+/// Every entry of a room document's record map, sorted by id.
+pub fn room_record_entries_of(doc: &AutoCommit) -> Vec<RoomRecordEntry> {
+    use automerge::{ROOT, ReadDoc};
 
     let Some((_, records_id)) = doc.get(&ROOT, ROOM_RECORDS_KEY).ok().flatten() else {
         return Vec::new();
@@ -1422,17 +1628,15 @@ fn room_record_entries(doc: &AutoCommit) -> Vec<(String, String, bool)> {
         let Some((_, entry)) = doc.get(&records_id, key.as_str()).ok().flatten() else {
             continue;
         };
-        let kind = match doc.get(&entry, "kind").ok().flatten() {
-            Some((Value::Scalar(v), _)) => match v.as_ref() {
-                ScalarValue::Str(k) => k.to_string(),
-                _ => String::new(),
-            },
-            _ => String::new(),
-        };
-        let removed = entry_removed(doc, &entry);
-        out.push((key, kind, removed));
+        out.push(RoomRecordEntry {
+            kind: entry_kind(doc, &entry).unwrap_or_default(),
+            removed: entry_removed(doc, &entry),
+            added: added_values(doc, &entry),
+            withdrawn: withdrawal_values(doc, &entry),
+            id: key,
+        });
     }
-    out.sort();
+    out.sort_by(|a, b| a.id.cmp(&b.id));
     out
 }
 
@@ -1670,6 +1874,15 @@ mod tests {
     use super::*;
     use tilo_automerge::ApplyIncoming;
 
+    /// A member's seal on a room-record act; checking it is the host's job.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the shape of a host's seal, which may have nothing to sign with"
+    )]
+    fn sealed(_: RoomRecordAct<'_>) -> Option<String> {
+        Some("member signature".to_string())
+    }
+
     fn held(entry: (&str, &str)) -> std::collections::BTreeMap<String, String> {
         std::collections::BTreeMap::from([(entry.0.to_string(), entry.1.to_string())])
     }
@@ -1683,10 +1896,8 @@ mod tests {
             base.commit();
             let mut a = base.fork();
             let mut b = base.fork();
-            project_room_records(&mut a, &held(("file:/a.md", "document")), None, &|_| None)
-                .unwrap();
-            project_room_records(&mut b, &held(("file:/b.md", "document")), None, &|_| None)
-                .unwrap();
+            project_room_records(&mut a, &held(("file:/a.md", "document")), None, &sealed).unwrap();
+            project_room_records(&mut b, &held(("file:/b.md", "document")), None, &sealed).unwrap();
             a.merge_incoming(&mut b).unwrap();
             let ids: Vec<String> = room_records_of(&a).into_iter().map(|(id, _)| id).collect();
             assert_eq!(ids, ["file:/a.md", "file:/b.md"]);

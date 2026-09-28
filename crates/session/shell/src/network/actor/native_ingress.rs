@@ -513,12 +513,7 @@ impl ActorState {
         );
         self.host_sessions.insert(
             (ws, host),
-            HostRuntime {
-                actions: None,
-                session,
-                pump,
-                native_scope: Some(scope),
-            },
+            HostRuntime::new(session, pump, Some(scope), None),
         );
         self.drive_native_publication(ws);
     }

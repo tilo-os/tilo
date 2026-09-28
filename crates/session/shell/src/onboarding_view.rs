@@ -597,6 +597,10 @@ pub struct OnboardingView {
     /// re-reads the status.
     codec_changed: Arc<AtomicBool>,
     codec_watching: bool,
+    /// Whether the person will be in the Tilo Community: a community is
+    /// configured and they have not left it. Everyone is a member by
+    /// default, so the last page says so once, without asking.
+    community: bool,
 }
 
 impl OnboardingView {
@@ -820,7 +824,17 @@ impl OnboardingView {
             codec_error: None,
             codec_changed: Arc::new(AtomicBool::new(false)),
             codec_watching: false,
+            community: crate::shell::community::load().is_ok_and(|config| config.invite.is_some())
+                && settings_store::community::membership_in(&settings_store::load())
+                    == settings_store::community::Membership::Auto,
         }
+    }
+
+    /// Say on the last page that the person is in the Tilo Community, or not.
+    #[must_use]
+    pub fn with_community(mut self, member: bool) -> Self {
+        self.community = member;
+        self
     }
 
     /// Offer the media codecs step through `setup`, unless the owner already
@@ -2202,6 +2216,13 @@ impl OnboardingView {
                 t("onboarding-host-done-ready"),
             ),
         };
+        // The community line takes the place of "sharing remains off" below,
+        // so that promise moves here, still said in full.
+        let body = if self.community {
+            format!("{body} {}", t("onboarding-done-private-workspaces"))
+        } else {
+            body
+        };
         let mut page = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
@@ -2222,7 +2243,7 @@ impl OnboardingView {
             .push(paragraph(&body, theme))
             .push(Box::new(Card::titled(
                 t("onboarding-done-next-title"),
-                paragraph(&t("onboarding-done-next-body"), theme),
+                self.next_steps(theme),
             )))
             .push(Box::new(Card::titled(
                 if self.backup_was_verified {
@@ -2248,6 +2269,20 @@ impl OnboardingView {
             )));
         }
         Box::new(page)
+    }
+
+    /// What happens after setup, and that the person is in the Tilo
+    /// Community when they are: one line, not a question.
+    fn next_steps(&self, theme: &Theme) -> Box<dyn Widget> {
+        if self.community {
+            paragraph_with_id(
+                &t("onboarding-done-next-community-body"),
+                theme,
+                "onboarding.done.community",
+            )
+        } else {
+            paragraph(&t("onboarding-done-next-body"), theme)
+        }
     }
 
     /// The media codecs offer: what it enables, where it comes from, and the
@@ -5324,12 +5359,15 @@ mod tests {
             (1280.0, 720.0, Theme::high_contrast().with_ui_scale(1.25)),
         ] {
             for &(keys, action_ids, error_state) in scenarios {
+                // As an alpha user sees it: a member of the Tilo Community,
+                // which the Ready page says in one line.
                 let mut view = OnboardingView::with_minter_for_host_desktop(Box::new(|| {
                     Ok(MintedIdentity {
                         fingerprint: "ab".repeat(32),
                         path: PathBuf::from("/identity/primary.json"),
                     })
-                }));
+                }))
+                .with_community(true);
                 let mut document = AutoCommit::new();
                 for key in keys {
                     press(&mut document, key);
@@ -5559,16 +5597,21 @@ mod tests {
                 }
 
                 if view.flow().screen() == Screen::Done && view.identity_ready_page {
-                    let guidance = widget_rect("onboarding.done.backup-guidance");
-                    let max_offset = f64::from(scroll.max_offset_y());
-                    let earliest_offset = (guidance.y1 - content_viewport.y1).max(0.0);
-                    let latest_offset = (guidance.y0 - content_viewport.y0).min(max_offset);
-                    assert!(
-                        guidance.height() <= content_viewport.height()
-                            && earliest_offset <= latest_offset + 0.5,
-                        "Ready-page backup guidance must be wholly reachable rather than clipped behind the footer at {width}x{height}: guidance={guidance:?}, viewport={content_viewport:?}, max_offset={max_offset}, theme={}",
-                        theme.name,
-                    );
+                    for id in [
+                        "onboarding.done.backup-guidance",
+                        "onboarding.done.community",
+                    ] {
+                        let guidance = widget_rect(id);
+                        let max_offset = f64::from(scroll.max_offset_y());
+                        let earliest_offset = (guidance.y1 - content_viewport.y1).max(0.0);
+                        let latest_offset = (guidance.y0 - content_viewport.y0).min(max_offset);
+                        assert!(
+                            guidance.height() <= content_viewport.height()
+                                && earliest_offset <= latest_offset + 0.5,
+                            "Ready-page {id} must be wholly reachable rather than clipped behind the footer at {width}x{height}: rect={guidance:?}, viewport={content_viewport:?}, max_offset={max_offset}, theme={}",
+                            theme.name,
+                        );
+                    }
                 }
             }
         }

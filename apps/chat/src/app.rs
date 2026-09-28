@@ -934,6 +934,9 @@ pub struct ChatApp {
     synced: Option<(Vec<automerge::ChangeHash>, usize)>,
     host_focused: bool,
     pub(crate) external_services: bool,
+    /// A headless participant working through this Chat (see
+    /// [`crate::hand`]); `None` for a person's.
+    hand: Option<crate::hand::ChatHand>,
 }
 
 impl Default for ChatApp {
@@ -1002,8 +1005,15 @@ impl ChatApp {
         let content = ContentStore::memory();
         let mut app = Self::bare(content);
         app.is_live = true;
-        app.comments =
-            crate::comments::Comments::new(ui::record::RecordStore::open("so.tilo.chat"));
+        // Owner-backed: comment records are minted here, which the plain
+        // launch set (the conversation's checkout) cannot do.
+        let comments = ui::record::RecordOwners::native()
+            .open_launched("so.tilo.chat")
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "comment records unavailable in this launch");
+                ui::record::RecordStore::in_memory()
+            });
+        app.comments = crate::comments::Comments::new(comments);
         app.me = LocalIdentity::resolve();
         // Least privilege until the host hands over the real context.
         app.perms = ChatPermissions::unknown();
@@ -1027,6 +1037,14 @@ impl ChatApp {
         };
         app.perms = ChatPermissions::unknown();
         app.new_live_view()
+    }
+
+    /// Let a headless participant read this Chat and ask it for its
+    /// actions through `hand`.
+    #[must_use]
+    pub fn with_hand(mut self, hand: crate::hand::ChatHand) -> Self {
+        self.hand = Some(hand);
+        self
     }
 
     fn new_live_view(self) -> Self {
@@ -1170,6 +1188,7 @@ impl ChatApp {
             synced: None,
             host_focused: true,
             external_services: true,
+            hand: None,
         }
     }
 
@@ -1197,6 +1216,14 @@ impl ChatApp {
         self.perms.can_comment()
     }
 
+    /// Whether the local peer may not write the conversation (a Commenter, a
+    /// Contributor agent): everything it posts is then its own comment
+    /// record, in any channel. Whether it may comment at all is the
+    /// broker's to decide when the record arrives.
+    pub(crate) fn comment_only(&self) -> bool {
+        self.perms.is_known() && !self.perms.can_participate()
+    }
+
     /// The active channel, when it is a feedback channel.
     pub(crate) fn active_feedback_channel(&self) -> bool {
         self.channel(&self.active_channel)
@@ -1208,14 +1235,23 @@ impl ChatApp {
     /// asks: the record is theirs to share. Posting a message by any path
     /// (the composer, the palette, a remark from another app, an agent) ends
     /// here, so there is one place a share can be forgotten, not five.
-    /// A channel's messages: the conversation document's, and in a feedback
-    /// channel also those people wrote in their own comment records, with
-    /// the reactions their reaction records carry and the status Editors set.
+    /// A channel's messages: the conversation document's, and those people
+    /// wrote in their own comment records, with the reactions their reaction
+    /// records carry and, in a feedback channel, the status Editors set.
     pub(crate) fn channel_messages(&mut self, doc: &AutoCommit, channel: &str) -> Vec<Message> {
-        let mut messages = ChatDoc::list_messages(doc, channel);
-        if !ChatDoc::is_feedback_channel(doc, channel) {
-            return messages;
-        }
+        let messages = ChatDoc::list_messages(doc, channel);
+        self.with_record_messages(doc, channel, messages)
+    }
+
+    /// `messages`, a channel's conversation messages, with what its comment
+    /// and reaction records add (see [`Self::channel_messages`]).
+    fn with_record_messages(
+        &mut self,
+        doc: &AutoCommit,
+        channel: &str,
+        mut messages: Vec<Message>,
+    ) -> Vec<Message> {
+        let feedback = ChatDoc::is_feedback_channel(doc, channel);
         for message in &mut messages {
             for reaction in self.comments.reactions_on_conversation_message(&message.id) {
                 match message
@@ -1236,7 +1272,10 @@ impl ChatApp {
         }
         let mut commented = self.comments.messages(channel);
         for message in &mut commented {
-            message.report = ChatDoc::comment_report(doc, &message.id);
+            if feedback {
+                message.report = ChatDoc::comment_report(doc, &message.id);
+            }
+            message.approved = ChatDoc::issue_approval(doc, &message.id);
         }
         messages.extend(commented);
         messages
@@ -1261,7 +1300,10 @@ impl ChatApp {
         {
             return self.perform_as_comment(doc, send);
         }
-        let in_feedback = |channel: &str| ChatDoc::is_feedback_channel(doc, channel);
+        // Everyone's word in a feedback channel, and a comment-only
+        // participant's anywhere, is their own record.
+        let comment_only = self.comment_only();
+        let as_record = |channel: &str| comment_only || ChatDoc::is_feedback_channel(doc, channel);
         Some(match action {
             ChatAction::SendMessage {
                 channel,
@@ -1274,7 +1316,7 @@ impl ChatApp {
                 mentions,
                 reference,
                 references,
-            } if in_feedback(channel) => self.comments.post(&crate::comments::CommentMessage {
+            } if as_record(channel) => self.comments.post(&crate::comments::CommentMessage {
                 channel: channel.clone(),
                 id: id.clone(),
                 author: author.clone(),
@@ -1291,13 +1333,13 @@ impl ChatApp {
                 msg,
                 emoji,
                 user,
-            } if in_feedback(channel) => self.comments.react(msg, emoji, user, true),
+            } if as_record(channel) => self.comments.react(msg, emoji, user, true),
             ChatAction::RemoveReaction {
                 channel,
                 msg,
                 emoji,
                 user,
-            } if in_feedback(channel) => self.comments.react(msg, emoji, user, false),
+            } if as_record(channel) => self.comments.react(msg, emoji, user, false),
             ChatAction::WithdrawAttachment { msg, .. } if self.comments.holds(msg) => {
                 self.comments.withdraw(msg)
             }
@@ -1380,6 +1422,7 @@ impl ChatApp {
                 return;
             }
             Some(Err(reason)) => {
+                tracing::warn!(%reason, "a comment was not kept");
                 self.feedback.notice = Some(crate::i18n::t_args(
                     "chat-notice-failed",
                     &[("reason", ui::i18n::ArgValue::Text(reason))],
@@ -1493,7 +1536,51 @@ impl ChatApp {
                 })
                 .cloned()
                 .collect(),
+            comment_only: self.comment_only(),
         }
+    }
+
+    /// What a screen reader says for a top-level message: who wrote what,
+    /// and for a report where it stands, as its strip shows it — votes,
+    /// replies and the status Editors set.
+    fn message_access_name(&self, message: &Message) -> String {
+        let author = self.user(&message.author).map_or_else(
+            || crate::i18n::t("chat-a11y-unknown-person"),
+            |user| user.name.clone(),
+        );
+        let mut args = vec![
+            ("author", crate::i18n::text(author)),
+            ("text", crate::i18n::text(&message.text)),
+        ];
+        if !self
+            .channel(&self.active_channel)
+            .is_some_and(|channel| channel.feedback)
+        {
+            return crate::i18n::t_args("chat-a11y-message", &args);
+        }
+        args.extend([
+            (
+                "votes",
+                crate::i18n::text(crate::feedback::counted(
+                    "chat-report-votes",
+                    crate::feedback::vote_count(message),
+                )),
+            ),
+            (
+                "replies",
+                crate::i18n::text(crate::feedback::counted(
+                    "chat-replies",
+                    model::reply_count(&self.messages, &message.id),
+                )),
+            ),
+            (
+                "status",
+                crate::i18n::text(crate::feedback::status_label(&crate::feedback::status_of(
+                    message,
+                ))),
+            ),
+        ]);
+        crate::i18n::t_args("chat-a11y-report", &args)
     }
 
     /// Build the reaction action a click on `msg`/`emoji` should dispatch,
@@ -2275,21 +2362,27 @@ impl ChatApp {
                 ChatDoc::unread_count(doc, &c.id, &self.me.id)
             };
         }
-        let feedback_channels: Vec<Id> = self
+        // Read every channel's conversation messages once per reload: the
+        // comment records follow them, and the open channel, search and the
+        // workspace people directory all project from them (reading them
+        // several times dominated typing with a long history).
+        let conversation: Vec<(Id, Vec<Message>)> = self
             .channels
             .iter()
-            .filter(|c| c.feedback)
-            .map(|c| c.id.clone())
+            .map(|channel| (channel.id.clone(), ChatDoc::list_messages(doc, &channel.id)))
             .collect();
-        self.comments.follow(&feedback_channels);
-        // Read every channel's messages once per reload: the open channel,
-        // search and the workspace people directory all project from them
-        // (reading them three times dominated typing with a long history).
-        let per_channel: Vec<(Id, Vec<Message>)> = self
-            .channels
-            .clone()
+        let channels: Vec<Id> = conversation.iter().map(|(id, _)| id.clone()).collect();
+        let messages: Vec<Id> = conversation
             .iter()
-            .map(|channel| (channel.id.clone(), self.channel_messages(doc, &channel.id)))
+            .flat_map(|(_, messages)| messages.iter().map(|m| m.id.clone()))
+            .collect();
+        self.comments.follow(&channels, &messages);
+        let per_channel: Vec<(Id, Vec<Message>)> = conversation
+            .into_iter()
+            .map(|(id, messages)| {
+                let messages = self.with_record_messages(doc, &id, messages);
+                (id, messages)
+            })
             .collect();
         let active = self.active_channel.clone();
         self.messages = match per_channel.iter().find(|(id, _)| *id == active) {
@@ -2307,6 +2400,9 @@ impl ChatApp {
         // projected only from the authenticated local service response.
         self.refresh_native_streams();
         self.users = self.workspace_people_from(doc, &per_channel);
+        if let Some(hand) = &self.hand {
+            hand.publish(&self.channels, &self.search_messages);
+        }
         self.reconcile_record_sharing();
         // Load the per-surface drafts from the CRDT into the composer widgets.
         // `set_text` is a no-op when the value is unchanged, so this preserves
@@ -4061,18 +4157,8 @@ impl Widget for ChatApp {
             .iter()
             .filter(|message| message.parent.is_none())
             .map(|message| {
-                let author = self.user(&message.author).map_or_else(
-                    || crate::i18n::t("chat-a11y-unknown-person"),
-                    |user| user.name.clone(),
-                );
                 AccessNode::new(Role::ListItem)
-                    .with_name(crate::i18n::t_args(
-                        "chat-a11y-message",
-                        &[
-                            ("author", crate::i18n::text(author)),
-                            ("text", crate::i18n::text(&message.text)),
-                        ],
-                    ))
+                    .with_name(self.message_access_name(message))
                     .with_hashed_key((&message.id, "message"))
             })
             .collect();
@@ -4443,9 +4529,21 @@ impl Widget for ChatApp {
                 self.arrange_reports();
             }
             crate::actions::ChatOperation::Comment { action } => {
-                // Performed on the next sync, which holds the document the
-                // fallback needs; the comment record path needs none.
-                self.feedback.pending.push_back(*action);
+                // A comment is the author's own record, kept now: waiting for
+                // the next model pass would leave the invocation succeeded
+                // while nothing was kept, and a Chat that is not drawing may
+                // not have one for a long while. A refused comment fails the
+                // invocation with its reason. Only a comment no record can
+                // hold waits for that pass, which holds the document its
+                // conversation write needs.
+                match self.perform_as_comment(doc, &action) {
+                    Some(Ok(())) => self.reload(doc),
+                    Some(Err(reason)) => {
+                        tracing::warn!(%reason, "a comment was not kept");
+                        return Err(reason);
+                    }
+                    None => self.feedback.pending.push_back(*action),
+                }
                 self.relayout = true;
             }
             crate::actions::ChatOperation::ImportAttachment { channel, path } => {
@@ -4468,7 +4566,11 @@ impl Widget for ChatApp {
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.feedback.controls.pop_front()
+        self.feedback.controls.pop_front().or_else(|| {
+            self.hand
+                .as_ref()
+                .and_then(crate::hand::ChatHand::next_request)
+        })
     }
 
     fn joined_records(&self) -> Option<&ui::record::JoinedRecords> {
@@ -4476,18 +4578,22 @@ impl Widget for ChatApp {
     }
 
     fn permissions_changed(&mut self, permissions: &PermissionContext) {
+        if let Some(hand) = &self.hand {
+            hand.permissions_changed(permissions);
+        }
         self.perms = ChatPermissions::from_context(permissions.clone());
         self.relayout = true;
     }
 
     fn room_index_changed(&mut self, index: &AutoCommit) {
-        let channels: Vec<Id> = self
-            .channels
+        let channels: Vec<Id> = self.channels.iter().map(|c| c.id.clone()).collect();
+        let messages: Vec<Id> = self
+            .search_messages
             .iter()
-            .filter(|c| c.feedback)
-            .map(|c| c.id.clone())
+            .filter(|m| !self.comments.holds(&m.id))
+            .map(|m| m.id.clone())
             .collect();
-        self.comments.index_changed(index, &channels);
+        self.comments.index_changed(index, &channels, &messages);
         self.relayout = true;
     }
 
@@ -4511,6 +4617,10 @@ impl Widget for ChatApp {
 
     fn has_pending_control_invocation(&self) -> bool {
         !self.feedback.controls.is_empty()
+            || self
+                .hand
+                .as_ref()
+                .is_some_and(crate::hand::ChatHand::has_request)
     }
 
     fn on_control_invocation_result(
@@ -4521,6 +4631,9 @@ impl Widget for ChatApp {
         if let Err(error) = result
             && !matches!(error, tilo_actions::DoorError::ConfirmationRequired)
         {
+            if let Some(hand) = &self.hand {
+                hand.refused(address, error.to_string());
+            }
             self.feedback.notice = Some(Self::request_notice(address, &error.to_string()));
             self.relayout = true;
         }
@@ -4926,5 +5039,97 @@ mod agent_attribution_tests {
                 .any(|m| m.id == "m_person_1")
         );
         assert!(crate::doc::ChatDoc::agent_authors(&doc).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod reports_read_aloud {
+    use super::*;
+    use crate::feedback::{ReportState, ReportStatus, VOTE_EMOJI};
+    use crate::model::{ChannelKind, Reaction};
+
+    fn message(id: &str, text: &str, parent: Option<&str>) -> Message {
+        Message {
+            id: id.into(),
+            channel: "c_feedback".into(),
+            author: "u_reporter".into(),
+            ts: 1,
+            text: text.into(),
+            edited: false,
+            history: vec![],
+            parent: parent.map(Into::into),
+            reactions: vec![],
+            mentions: vec![],
+            reference: None,
+            also: Vec::new(),
+            attachment: None,
+            attachment_withdrawn: false,
+            pinned: false,
+            work: None,
+            report: None,
+            approved: None,
+        }
+    }
+
+    fn names(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+        out.extend(node.name.clone());
+        for child in &node.children {
+            names(child, out);
+        }
+    }
+
+    /// Someone who cannot see a report's strip hears where it stands: its
+    /// votes, its replies and the status Editors set.
+    #[test]
+    fn a_report_is_read_with_its_votes_replies_and_status() {
+        let mut app = ChatApp::new_ephemeral();
+        app.channels = vec![Channel {
+            id: "c_feedback".into(),
+            workspace: app.active_ws.clone(),
+            category: String::new(),
+            name: "feedback".into(),
+            topic: String::new(),
+            kind: ChannelKind::Text,
+            order: 0,
+            unread: 0,
+            archived: false,
+            feedback: true,
+        }];
+        app.active_channel = "c_feedback".into();
+        let mut report = message("m_report", "Send does nothing", None);
+        report.reactions.push(Reaction {
+            emoji: VOTE_EMOJI.into(),
+            users: vec!["u_team".into(), "u_mate".into()],
+        });
+        report.report = Some(ReportState {
+            status: ReportStatus::Planned,
+            by: "u_team".into(),
+            since: 0,
+        });
+        app.messages = vec![report, message("m_reply", "Seen it too", Some("m_report"))];
+
+        let mut read = Vec::new();
+        names(
+            &Widget::accessibility(&app).expect("chat is accessible"),
+            &mut read,
+        );
+        assert!(
+            read.iter()
+                .any(|name| name.ends_with("Send does nothing (2 votes, 1 reply, Planned)")),
+            "{read:#?}"
+        );
+
+        // An ordinary channel's messages are read as they are.
+        app.channels[0].feedback = false;
+        let mut read = Vec::new();
+        names(
+            &Widget::accessibility(&app).expect("chat is accessible"),
+            &mut read,
+        );
+        assert!(
+            read.iter()
+                .any(|name| name.ends_with(": Send does nothing")),
+            "{read:#?}"
+        );
     }
 }

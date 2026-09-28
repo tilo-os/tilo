@@ -925,6 +925,44 @@ pub struct RoomStatus {
     pub members: usize,
 }
 
+/// How often the session looks at whether it is where the person wants to be
+/// in the Tilo Community. Joins themselves back off on their own schedule
+/// ([`crate::shell::community::AutoJoin`]).
+const COMMUNITY_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The configured community's standing invitation and the room it names.
+///
+/// # Errors
+///
+/// The community is not configured, or its invitation does not validate, is
+/// not a standing one or names no room.
+fn configured_community() -> Result<(String, crate::shell::state::RoomId), String> {
+    let config = crate::shell::community::load().map_err(|error| error.to_string())?;
+    let invite = config.invite.ok_or_else(|| {
+        format!(
+            "no community invitation is configured in {}",
+            config.source.display()
+        )
+    })?;
+    let parsed = crate::network::invite::validate_invite_token(&invite)?;
+    if !parsed.standing {
+        return Err("the configured community invitation is not a standing invitation".into());
+    }
+    let room = crate::shell::state::RoomId::parse(&parsed.room_id)
+        .ok_or_else(|| "the community invitation names no room".to_string())?;
+    Ok((invite, room))
+}
+
+/// [`ShellNetwork::keep_community`]'s state.
+#[derive(Default)]
+struct CommunityRuntime {
+    auto: crate::shell::community::AutoJoin,
+    checked: Option<std::time::Instant>,
+    /// The room topic, hosts and invitation id (hex) being redeemed, so a
+    /// refusal by the community's own host is told from any other host's.
+    redeeming: Option<(u64, Vec<iroh::EndpointId>, String)>,
+}
+
 /// Messages held for devices whose identity has not arrived yet; see
 /// [`ShellNetwork`]'s `unidentified_host_messages`. Bounded per device and in
 /// the number of devices, dropping the oldest, so an unauthenticated flood
@@ -963,6 +1001,12 @@ impl UnidentifiedHostMessages {
         self.by_peer.remove(peer).map(Vec::from).unwrap_or_default()
     }
 }
+
+/// Verified recording delegations of one room, by signing device and agent.
+type RecordingDelegations = std::collections::HashMap<
+    crate::shell::state::RoomId,
+    std::collections::BTreeMap<([u8; 32], String), collab_types::RecordingDelegationV1>,
+>;
 
 /// Capability id of the membership a delegated host admission grants one
 /// person. One per person per room, so re-admission is idempotent.
@@ -1328,6 +1372,20 @@ pub struct ShellNetwork {
             std::collections::BTreeMap<[u8; 32], collab_types::HostAdmissionV1>,
         >,
     >,
+    /// Verified recording delegations per room, the latest per device and
+    /// agent, stopped ones included so an older start replayed later cannot
+    /// revive one. Re-applied whenever governance lands: the person's role and
+    /// the room's policy decide whether an active one is listed.
+    recording_delegations: Mutex<RecordingDelegations>,
+    /// The latest delegation this device signed per room and agent, so a
+    /// delegate it holds is announced once, its stop once, and a peer that
+    /// joins later is told again.
+    published_recording_delegations: Mutex<
+        std::collections::BTreeMap<
+            (crate::shell::state::RoomId, String),
+            collab_types::RecordingDelegationV1,
+        >,
+    >,
     /// Host-delivered messages from devices whose certificate has not
     /// arrived yet. A durable host replays retained state in its own order,
     /// so a room's governance may precede its author's `IdentityHello`; it is
@@ -1336,6 +1394,8 @@ pub struct ShellNetwork {
     /// Retained shell-room messages sent or received per room topic, so a
     /// room checkpoint names exactly the ones it holds.
     retained_coverage: Mutex<std::collections::HashMap<u64, crate::network::coverage::CoverageLog>>,
+    /// Keeps this session in the Tilo Community ([`Self::keep_community`]).
+    community: Mutex<CommunityRuntime>,
     /// Inbound presence updates pushed by [`Self::tick`], drained by the
     /// shell's frame-tick into `PresenceCtx::remote_cursors`.
     inbound_presence: Arc<Mutex<Vec<InboundPresence>>>,
@@ -1434,6 +1494,10 @@ pub struct InboundDocument {
     /// a live delivery: an exact op the broker already validated is handed
     /// to local apps again instead of being refused as a repeat.
     pub replayed: bool,
+    /// Delivered by a durable host rather than directly by its author: it
+    /// may be the room's retained past (a catch-up on subscribe, a queued
+    /// delta, a replay), so its age is not held against it.
+    pub history: bool,
 }
 
 /// One received piece of channel governance, addressed to a room this
@@ -1665,7 +1729,18 @@ impl ShellNetwork {
         // Enrollment-bound home peers must never race an unpinned connection.
         // The actor treats the first `(workspace, endpoint)` dial as the active
         // attempt, and an unpinned attempt deliberately cannot discover Files.
-        let mut host_addrs = configured_host_addrs()
+        let mut host_addrs = configured_host_addrs();
+        // The hosts the rooms this machine is in name as their own: a
+        // public room's relay, delegated by its authority.
+        host_addrs.extend(
+            tree.read()
+                .desktop
+                .workspaces
+                .iter()
+                .flat_map(|workspace| workspace.delegated_hosts.iter())
+                .filter_map(|host| serde_json::from_str::<iroh::EndpointAddr>(host).ok()),
+        );
+        let mut host_addrs = host_addrs
             .into_iter()
             .filter(|addr| !home_peer_ids.contains(&addr.id))
             .collect::<Vec<_>>();
@@ -1771,9 +1846,12 @@ impl ShellNetwork {
             pending_invitations_path: Some(pending_invitations_path),
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             room_admissions: Mutex::new(std::collections::HashMap::new()),
+            recording_delegations: Mutex::new(std::collections::HashMap::new()),
+            published_recording_delegations: Mutex::new(std::collections::BTreeMap::new()),
             unidentified_host_messages: Mutex::new(UnidentifiedHostMessages::default()),
             retained_coverage: Mutex::new(std::collections::HashMap::new()),
             native_enrollment: native_enrollment::State::default(),
+            community: Mutex::new(CommunityRuntime::default()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
             inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
@@ -2034,7 +2112,8 @@ impl ShellNetwork {
             | NeighbourMsg::MlsGovernance { room, .. }
             | NeighbourMsg::MlsAccessRequest { room, .. }
             | NeighbourMsg::MlsGovernanceAck { room, .. }
-            | NeighbourMsg::RoomAdmission { room, .. } => Some(room.as_str()),
+            | NeighbourMsg::RoomAdmission { room, .. }
+            | NeighbourMsg::RecordingDelegation { room, .. } => Some(room.as_str()),
             NeighbourMsg::AppDocument { cluster_id, .. }
             | NeighbourMsg::AppPresenceV2 { cluster_id, .. } => Some(cluster_id.as_str()),
             _ => None,
@@ -2046,6 +2125,14 @@ impl ShellNetwork {
 
     fn topic_for_message(&self, msg: &NeighbourMsg) -> u64 {
         Self::explicit_topic_for_message(msg).unwrap_or_else(|| self.active_ws_for_publish())
+    }
+
+    /// Who may be in `room` changed: ask the workspace hosts that refused it
+    /// for good again.
+    fn reconsider_hosts(&self, room: RoomId) {
+        let _ = self.cmd_tx.try_send(NetCmd::ReconsiderHosts {
+            ws: room_topic_id(room),
+        });
     }
 
     fn join_topic(&self, ws: u64) -> bool {
@@ -2541,6 +2628,11 @@ impl ShellNetwork {
         let wire = self.register_local_record(app_id, cluster_id, record_id);
         let route = format!("app\0{app_id}\0{wire}");
         let channel = *blake3::hash(route.as_bytes()).as_bytes();
+        tracing::debug!(
+            app_id,
+            record_id,
+            "asking the room's hosts to replay a document"
+        );
         self.join_topic(ws)
             && self
                 .cmd_tx
@@ -2573,6 +2665,10 @@ impl ShellNetwork {
     }
 
     /// Queue a received signed document for the broker's drainer.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one inbound document: its route, role, envelope and how it arrived"
+    )]
     pub fn handle_document_message(
         &self,
         peer: u64,
@@ -2581,6 +2677,7 @@ impl ShellNetwork {
         record_id: String,
         role: collab_types::Role,
         envelope: collab_types::SignedOp,
+        via_host: bool,
     ) {
         self.queue_document(InboundDocument {
             peer,
@@ -2590,6 +2687,7 @@ impl ShellNetwork {
             role,
             envelope: Box::new(envelope),
             replayed: false,
+            history: via_host,
         });
     }
 
@@ -2812,9 +2910,16 @@ impl ShellNetwork {
             |status: RoomStatus| serde_json::to_value(status).map_err(|error| error.to_string());
         match request {
             CommunityRequest::Join => status(self.join_community()?),
+            CommunityRequest::Leave => self.leave_community(),
             CommunityRequest::Status => match self.community_status()? {
                 Some(room) => status(room),
-                None => Ok(serde_json::json!({ "joined": false })),
+                None => Ok(serde_json::json!({
+                    "joined": false,
+                    "membership": settings_store::community::membership_in(
+                        &settings_store::load()
+                    )
+                    .as_str(),
+                })),
             },
             CommunityRequest::CreatePublicRoom { name } => status(self.create_public_room(&name)?),
             CommunityRequest::IssueStandingInvite {
@@ -2831,6 +2936,32 @@ impl ShellNetwork {
                     "invite_id": hex::encode(crate::network::invite::invite_id(&token)),
                     "role": role.label(),
                 }))
+            }
+            CommunityRequest::RevokeStandingInvite { room, invite_id } => {
+                let room = crate::shell::state::RoomId::parse(&room)
+                    .ok_or_else(|| format!("{room:?} is not a room id"))?;
+                let local = self
+                    .tree_handle()?
+                    .read()
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.room == room)
+                    .map(|workspace| workspace.id)
+                    .ok_or_else(|| format!("no workspace holds room {room}"))?;
+                let invite_id = invite_id.trim().to_ascii_lowercase();
+                let revoked = self.revoke_pending_invite(local, &invite_id)?;
+                Ok(serde_json::json!({
+                    "room": room.to_string(),
+                    "invite_id": invite_id,
+                    "revoked": revoked,
+                }))
+            }
+            CommunityRequest::DelegateHost { room, endpoint } => {
+                let room = crate::shell::state::RoomId::parse(&room)
+                    .ok_or_else(|| format!("{room:?} is not a room id"))?;
+                let host = self.delegate_room_host(room, &endpoint)?;
+                Ok(serde_json::json!({ "room": room.to_string(), "host": host }))
             }
             CommunityRequest::OpenTeamRoom => status(self.open_team_direct_room()?),
             CommunityRequest::OpenDirectRoom { person, label } => {
@@ -2855,6 +2986,61 @@ impl ShellNetwork {
     )]
     fn tree_handle(&self) -> Result<crate::shell::state::WorkspaceTreeHandle, String> {
         Ok(self.tree.clone())
+    }
+
+    /// Record `endpoint` (an Iroh endpoint address, as JSON — what
+    /// `tilo-relay-admin endpoint` prints) as the always-on host of the
+    /// public room `room`, which this machine governs. It becomes room
+    /// governance every member reads, and every invitation the room mints
+    /// from now on names it. Replaces any host recorded before. Returns the
+    /// address as recorded.
+    ///
+    /// # Errors
+    ///
+    /// The address does not parse, or `room` is not a public room this
+    /// machine governs and its person administers.
+    pub fn delegate_room_host(
+        &self,
+        room: crate::shell::state::RoomId,
+        endpoint: &str,
+    ) -> Result<String, String> {
+        let addr: iroh::EndpointAddr = serde_json::from_str(endpoint.trim())
+            .map_err(|error| format!("the host is not an Iroh endpoint address: {error}"))?;
+        let recorded = serde_json::to_string(&addr).map_err(|error| error.to_string())?;
+        let tree_handle = self.tree_handle()?;
+        let mut tree = tree_handle.write();
+        let governs = tree.governs_room(room);
+        let actor = crate::shell::state::local_user_id_for_room(&room);
+        let Some(workspace) = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room == room)
+        else {
+            return Err(format!("no workspace holds room {room}"));
+        };
+        if !governs || !workspace.may_administer(&actor) {
+            return Err("only the governing room administrator can delegate its host".into());
+        }
+        if workspace.channel_class != collab_types::ChannelClass::Public {
+            return Err("only a public room is delegated to a host".into());
+        }
+        if workspace.delegated_hosts != [recorded.clone()] {
+            workspace.delegated_hosts = vec![recorded.clone()];
+            tree.sync_room_doc(room);
+            tree.flush_to_disk();
+        }
+        drop(tree);
+        if let Ok(mut hosts) = self.host_addrs.lock()
+            && !hosts.iter().any(|known| known.id == addr.id)
+        {
+            hosts.push(addr.clone());
+        }
+        let _ = self.cmd_tx.try_send(NetCmd::ConnectHost {
+            addr,
+            expectation: None,
+        });
+        Ok(recorded)
     }
 
     /// Create a public room — channels signed like any other, never
@@ -2962,24 +3148,65 @@ impl ShellNetwork {
     /// ships ([`crate::shell::community`]), or report it if already joined.
     /// The room's hosts admit this device while the room's owner is away.
     ///
+    /// Everyone is a member by default ([`Self::keep_community`]); asking to
+    /// join is also the person's choice to be one again after leaving, on
+    /// every device, and asks once more after a refusal.
+    ///
     /// # Errors
     ///
     /// The community is not configured, its invitation does not validate or
     /// is not a standing one, or joining fails.
     pub fn join_community(&self) -> Result<RoomStatus, String> {
-        let config = crate::shell::community::load().map_err(|error| error.to_string())?;
-        let invite = config.invite.ok_or_else(|| {
-            format!(
-                "no community invitation is configured in {}",
-                config.source.display()
-            )
-        })?;
-        let parsed = crate::network::invite::validate_invite_token(&invite)?;
-        if !parsed.standing {
-            return Err("the configured community invitation is not a standing invitation".into());
+        use settings_store::community::{Membership, membership_in, refused_invite_in};
+        let (invite, room) = configured_community()?;
+        let settings = settings_store::load();
+        if membership_in(&settings) != Membership::Auto || refused_invite_in(&settings).is_some() {
+            settings_store::community::set_membership(Membership::Auto)
+                .map_err(|error| format!("membership not saved: {error}"))?;
         }
-        let room = crate::shell::state::RoomId::parse(&parsed.room_id)
-            .ok_or_else(|| "the community invitation names no room".to_string())?;
+        if let Ok(mut runtime) = self.community.lock() {
+            runtime.auto.reset();
+            runtime.checked = None;
+        }
+        self.enter_community(&invite, room)
+    }
+
+    /// Leave the Tilo community room and remember that the person left, so
+    /// none of their devices joins it again on its own. "Join the
+    /// community" ([`Self::join_community`]) is how they come back.
+    ///
+    /// # Errors
+    ///
+    /// The choice cannot be saved, or the room cannot be left.
+    pub fn leave_community(&self) -> Result<serde_json::Value, String> {
+        use settings_store::community::{Membership, membership_in};
+        if membership_in(&settings_store::load()) != Membership::Left {
+            settings_store::community::set_membership(Membership::Left)
+                .map_err(|error| format!("membership not saved: {error}"))?;
+        }
+        if let Ok(mut runtime) = self.community.lock() {
+            runtime.auto.reset();
+            runtime.checked = None;
+            runtime.redeeming = None;
+        }
+        if let Ok((_, room)) = configured_community()
+            && self.room_status(room).is_ok()
+        {
+            self.leave_room(room)?;
+        }
+        Ok(serde_json::json!({
+            "joined": false,
+            "membership": Membership::Left.as_str(),
+        }))
+    }
+
+    /// Hold the community room and redeem its invitation, or report it if
+    /// already held.
+    fn enter_community(
+        &self,
+        invite: &str,
+        room: crate::shell::state::RoomId,
+    ) -> Result<RoomStatus, String> {
         let tree_handle = self.tree_handle()?;
         let joined = tree_handle
             .read()
@@ -2989,9 +3216,146 @@ impl ShellNetwork {
             .any(|workspace| workspace.room == room);
         if !joined {
             let local = tree_handle.write().append_empty_workspace("Tilo Community");
-            self.accept_invite(local, &invite)?;
+            self.accept_invite(local, invite)?;
         }
         self.room_status(room)
+    }
+
+    /// Keep this session where the person wants to be in the Tilo
+    /// Community, from [`Self::tick`]. Everyone is a member by default: with
+    /// an identity and a configured community, the session joins once the
+    /// network is up, asks the community's hosts again with back-off while
+    /// they cannot be reached, and opens the private room with the Tilo
+    /// team once it is in. A person who left (`tilo.community.membership =
+    /// left`, on any device) is never joined again, and a device that
+    /// learns it leaves the room. A refusal by the community's host is
+    /// remembered for that invitation and not asked again.
+    fn keep_community(&self, now: std::time::Instant) {
+        use crate::shell::community::{Observed, Step};
+        let Ok(mut runtime) = self.community.lock() else {
+            return;
+        };
+        if runtime
+            .checked
+            .is_some_and(|checked| now.saturating_duration_since(checked) < COMMUNITY_CHECK_EVERY)
+        {
+            return;
+        }
+        runtime.checked = Some(now);
+        let Ok((invite, room)) = configured_community() else {
+            runtime.auto.next(now, &Observed::default());
+            return;
+        };
+        let invite_hex = hex::encode(crate::network::invite::invite_id(&invite));
+        let settings = settings_store::load();
+        let status = self.room_status(room).ok();
+        let observed = Observed {
+            identity: self.host_identity.is_some(),
+            invite: Some(invite_hex.clone()),
+            membership: settings_store::community::membership_in(&settings),
+            refused_invite: settings_store::community::refused_invite_in(&settings)
+                .map(str::to_string),
+            held: status.is_some(),
+            admitted: status.as_ref().is_some_and(|status| status.role.is_some()),
+        };
+        let step = runtime.auto.next(now, &observed);
+        match step {
+            Step::Wait => {}
+            Step::Join | Step::Redeem => {
+                let hosts = crate::network::invite::validate_invite_token(&invite)
+                    .map(|parsed| parsed.host_addrs.iter().map(|host| host.id).collect())
+                    .unwrap_or_default();
+                runtime.redeeming = Some((room_topic_id(room), hosts, invite_hex));
+                runtime.auto.attempted(now);
+                drop(runtime);
+                let outcome = if step == Step::Join {
+                    self.enter_community(&invite, room).map(|_| ())
+                } else {
+                    self.redeem_invite(room, &invite);
+                    self.publish_sync_requests();
+                    Ok(())
+                };
+                if let Err(error) = outcome {
+                    tracing::warn!(%error, "community: joining did not start; trying again later");
+                }
+            }
+            Step::OpenTeamRoom => {
+                runtime.auto.team_room_opened();
+                runtime.redeeming = None;
+                drop(runtime);
+                if let Err(error) = self.open_team_direct_room() {
+                    tracing::info!(%error, "community: no private room with the Tilo team");
+                }
+            }
+            Step::RecordRefusal | Step::Leave => {
+                runtime.redeeming = None;
+                drop(runtime);
+                if step == Step::RecordRefusal
+                    && let Err(error) =
+                        settings_store::community::set_refused_invite(Some(&invite_hex))
+                {
+                    tracing::warn!(%error, "community: the refusal could not be remembered");
+                }
+                if observed.held
+                    && let Err(error) = self.leave_room(room)
+                {
+                    tracing::warn!(%error, "community: could not leave the room");
+                }
+            }
+        }
+    }
+
+    /// A workspace host refused this device on room topic `ws` for good (a
+    /// busy host is asked again after a back-off). When it is the
+    /// community's host refusing the invitation being redeemed, the refusal
+    /// is final for that invitation ([`Self::keep_community`]).
+    fn note_host_refusal(&self, ws: u64, peer: iroh::EndpointId, reason: &str) {
+        let Ok(mut runtime) = self.community.lock() else {
+            return;
+        };
+        let Some((topic, hosts, invite)) = runtime.redeeming.clone() else {
+            return;
+        };
+        if topic == ws && hosts.contains(&peer) {
+            tracing::warn!(%reason, "community: the community's host refused this device");
+            runtime.auto.refused(&invite);
+            runtime.checked = None;
+        }
+    }
+
+    /// Leave `room`: its workspace goes from this person's desktop, here and
+    /// in the desktop document their devices share, and this device stops
+    /// following its topic and asking its hosts. The room goes on for its
+    /// other members.
+    ///
+    /// # Errors
+    ///
+    /// The room is not held here, or it is the last workspace.
+    pub fn leave_room(&self, room: crate::shell::state::RoomId) -> Result<(), String> {
+        let tree_handle = self.tree_handle()?;
+        if !tree_handle.write().leave_room(room) {
+            return Err(format!(
+                "room {room} is not held here, or it is the last workspace"
+            ));
+        }
+        let ws = room_topic_id(room);
+        if let Ok(mut joined) = self.joined_topics.lock() {
+            joined.remove(&ws);
+        }
+        if let Ok(mut pending) = self.pending_redemptions.lock() {
+            pending.remove(&room);
+        }
+        if let Ok(mut admissions) = self.room_admissions.lock() {
+            admissions.remove(&room);
+        }
+        if let Ok(mut delegations) = self.recording_delegations.lock() {
+            delegations.remove(&room);
+        }
+        if let Ok(mut coverage) = self.retained_coverage.lock() {
+            coverage.remove(&ws);
+        }
+        let _ = self.cmd_tx.try_send(NetCmd::LeaveWorkspace { ws });
+        Ok(())
     }
 
     /// Grant `person` (a person id) `role` in `room`, which this machine
@@ -3044,6 +3408,7 @@ impl ShellNetwork {
             tree.flush_to_disk();
         }
         self.publish_sync_requests();
+        self.reconsider_hosts(room);
         self.room_status(room)
     }
 
@@ -3093,7 +3458,28 @@ impl ShellNetwork {
         let room = crate::shell::community::team_direct_room(&me, &team).ok_or_else(|| {
             "this session is the Tilo team; it has no direct room with itself".to_string()
         })?;
-        self.open_direct_room(room, &team.person_id(), &team.label, true, &hosts)
+        // The team's choice, read from the community room's governance: its
+        // triage agent joins this room too, operated by the team.
+        let triage = config
+            .invite
+            .as_deref()
+            .and_then(|invite| crate::network::invite::validate_invite_token(invite).ok())
+            .and_then(|parsed| crate::shell::state::RoomId::parse(&parsed.room_id))
+            .is_some_and(|community| {
+                self.tree_handle().is_ok_and(|tree| {
+                    crate::shell::community::team_triages_direct_rooms(&tree.read(), community)
+                })
+            });
+        self.open_direct_room(
+            crate::shell::community::DirectRoomSetup {
+                room,
+                other: &team.person_id(),
+                label: &team.label,
+                governing: true,
+                triage,
+            },
+            &hosts,
+        )
     }
 
     /// The team's end of [`Self::open_team_direct_room`]: the direct room
@@ -3115,66 +3501,28 @@ impl ShellNetwork {
             .lock()
             .map(|hosts| hosts.clone())
             .unwrap_or_default();
-        self.open_direct_room(room, person, label, false, &hosts)
+        self.open_direct_room(
+            crate::shell::community::DirectRoomSetup {
+                room,
+                other: person,
+                label,
+                governing: false,
+                triage: false,
+            },
+            &hosts,
+        )
     }
 
     fn open_direct_room(
         &self,
-        room: crate::shell::state::RoomId,
-        other: &str,
-        label: &str,
-        governing: bool,
+        setup: crate::shell::community::DirectRoomSetup<'_>,
         hosts: &[iroh::EndpointAddr],
     ) -> Result<RoomStatus, String> {
+        let room = setup.room;
         let tree_handle = self.tree_handle()?;
         {
             let mut tree = tree_handle.write();
-            let held = tree
-                .desktop
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.room == room);
-            if !held {
-                let local = tree.append_empty_workspace(label);
-                tree.set_room(local, room);
-                if governing {
-                    // Joining a derived room surrenders governance by
-                    // default; this end creates it, so it governs it.
-                    tree.room_authority.remove(&room);
-                    let me = crate::shell::state::local_user_id_for_room(&room);
-                    if let Some(workspace) =
-                        tree.desktop.workspaces.iter_mut().find(|ws| ws.id == local)
-                    {
-                        workspace.set_owner(me);
-                    }
-                }
-                // Otherwise the other end created and governs it: `set_room`
-                // left the authority unpinned, and only the other member of
-                // the derived pair may supply its first governance.
-            }
-            // Idempotent: the creating end makes sure the other member holds
-            // Editor, whether the room is new or was opened before.
-            if governing && tree.governs_room(room) {
-                let me = crate::shell::state::local_user_id_for_room(&room);
-                let workspace = tree
-                    .desktop
-                    .workspaces
-                    .iter_mut()
-                    .find(|ws| ws.room == room)
-                    .ok_or_else(|| format!("no workspace holds room {room}"))?;
-                if workspace.role_of(&other.to_string()).is_none() {
-                    workspace
-                        .grant_as(
-                            &me,
-                            crate::shell::state::CapOverride::membership(
-                                crate::shell::state::Subject::person(other.to_string()),
-                                room.to_string(),
-                                crate::shell::state::Verb::Write,
-                            ),
-                        )
-                        .ok_or_else(|| format!("{me} may not administer room {room}"))?;
-                }
-            }
+            crate::shell::community::prepare_direct_room(&mut tree, &setup)?;
             tree.sync_room_doc(room);
             tree.seed_doc_from_cache();
             tree.flush_to_disk();
@@ -3578,11 +3926,20 @@ impl ShellNetwork {
             .dial_addr()
             .ok_or_else(|| "peer-sync is not listening yet; try again in a moment".to_string())?;
         let (token, room) = {
-            let hosts = self
+            let mut hosts = self
                 .host_addrs
                 .lock()
                 .map(|hosts| hosts.clone())
                 .unwrap_or_default();
+            // The hosts the room itself names — its governance, not this
+            // session's environment — ride in every invitation it mints.
+            for host in &ws.delegated_hosts {
+                if let Ok(addr) = serde_json::from_str::<iroh::EndpointAddr>(host)
+                    && !hosts.iter().any(|known| known.id == addr.id)
+                {
+                    hosts.push(addr);
+                }
+            }
             let pins: Vec<_> = self
                 .personal_continuity_user
                 .map(|user| {
@@ -3653,6 +4010,9 @@ impl ShellNetwork {
             crate::shell::launcher::set_trusted_identity_projection(room, &projection);
         }
         self.join_topic(room_topic_id(room));
+        // An invitation changes who may join: a host that refused the room
+        // may carry it now (its owner hosts it there before inviting).
+        self.reconsider_hosts(room);
 
         let invitee = invitee.map(str::trim).filter(|name| !name.is_empty());
         let parsed = crate::network::invite::validate_invite_token(&token)?;
@@ -3818,7 +4178,9 @@ impl ShellNetwork {
             );
             rep.tree.read().trusted_identity_projection(room)
         };
-        crate::shell::launcher::set_trusted_identity_projection(room, &projection);
+        if crate::shell::launcher::set_trusted_identity_projection(room, &projection) {
+            self.reconsider_hosts(room);
+        }
         true
     }
 
@@ -3849,9 +4211,25 @@ impl ShellNetwork {
             return Err("peer-sync command queue is full; try accepting the invite again".into());
         }
         self.publish_identity_announcement(room);
-        // Dial the authenticated address carried by the invite.
         // `validate_invite_token` already ran inside `accept_invite_into`,
         // so re-reading the token here cannot let an unverified address through.
+        self.redeem_invite(room, token);
+        replica.request_sync();
+        let outgoing = replica.drain_outgoing();
+        drop(replica);
+        for msg in outgoing {
+            let _ = self.publish_message(msg);
+        }
+        Ok(room)
+    }
+
+    /// Redeem `token` for `room`, which this session already holds: attach
+    /// it to the room's sync requests until governance arrives, ask the
+    /// room's hosts to admit this device when it is a standing invitation,
+    /// and dial the authenticated addresses it carries. Asked again when an
+    /// admission has not arrived, because the hosts may not have been
+    /// reachable the first time.
+    fn redeem_invite(&self, room: crate::shell::state::RoomId, token: &str) {
         if let Ok(parsed) = crate::network::invite::validate_invite_token(token) {
             if let Ok(mut pending) = self.pending_redemptions.lock() {
                 pending.insert(room, crate::network::invite::invite_id(token));
@@ -3887,13 +4265,6 @@ impl ShellNetwork {
                 }
             }
         }
-        replica.request_sync();
-        let outgoing = replica.drain_outgoing();
-        drop(replica);
-        for msg in outgoing {
-            let _ = self.publish_message(msg);
-        }
-        Ok(room)
     }
 
     fn publish_identity_announcement(&self, room: crate::shell::state::RoomId) {
@@ -5193,6 +5564,9 @@ impl ShellNetwork {
         // of a capability change up to date.
         self.kick_periodic_sync();
         self.refresh_home_peer_hosts_periodically();
+        self.keep_community(std::time::Instant::now());
+        self.publish_recording_delegations();
+        self.reapply_recording_delegations();
         // Hold the lock for the whole drain so a concurrent frame-tick
         // never sees half-merged events. A poisoned mutex (a prior
         // holder panicked mid-drain) just skips this tick rather than
@@ -5224,8 +5598,19 @@ impl ShellNetwork {
                 }
                 self.handle_host_ready(ws, peer);
             }
+            NetEvent::HostRefused {
+                ws,
+                peer,
+                refusal,
+                reason,
+            } => {
+                if refusal.is_final() {
+                    self.note_host_refusal(ws, peer, &reason);
+                }
+            }
             NetEvent::PeerJoined { ws, .. } => {
                 self.publish_sync_requests();
+                self.republish_recording_delegations(ws);
                 if self
                     .personal_continuity_user
                     .is_some_and(|user| ws == personal_continuity_topic_id(&user))
@@ -5928,6 +6313,15 @@ impl ShellNetwork {
             self.receive_room_admission(ws, &room, *admission);
             return;
         }
+        if let NeighbourMsg::RecordingDelegation {
+            room,
+            delegation,
+            cert,
+        } = msg
+        {
+            self.receive_recording_delegation(ws, &room, *delegation, &cert);
+            return;
+        }
         if let NeighbourMsg::IdentityHello { cert, revocations } = &msg {
             // A new hello is a full replacement attempt for this exact route.
             // Purge first so a wrong-user/revoked replacement can never leave
@@ -5999,6 +6393,7 @@ impl ShellNetwork {
             tracing::warn!(
                 peer = %peer,
                 claimed_peer,
+                kind = Self::published_kind(&msg),
                 "dropping collaboration message whose session identity does not match its authenticated transport"
             );
             return;
@@ -6043,9 +6438,10 @@ impl ShellNetwork {
             pending.remove(&room);
         }
         self.record_retained_room_message(ws, &msg);
-        self.dispatch_authorized_neighbour_msg(ws, peer, msg);
+        self.dispatch_authorized_neighbour_msg(ws, peer, msg, membership_epoch.is_none());
         if let Some(room) = governance_room {
             self.apply_room_admissions(room);
+            self.apply_recording_delegations(room);
         }
     }
 
@@ -6165,6 +6561,324 @@ impl ShellNetwork {
         }
     }
 
+    /// Record a recording delegation for `room` once it verifies: signed by
+    /// the device it names, which `cert` certifies for the person it names,
+    /// unexpired and unrevoked. The latest per device and agent is kept;
+    /// whether it is listed is [`Self::apply_recording_delegations`]'s call.
+    fn receive_recording_delegation(
+        &self,
+        ws: u64,
+        room: &str,
+        delegation: collab_types::RecordingDelegationV1,
+        cert: &tilo_user_identity::DeviceCert,
+    ) {
+        let Some(room) = RoomId::parse(room).filter(|room| !room.is_nil()) else {
+            return;
+        };
+        if room_topic_id(room) != ws
+            || delegation.workspace != ws
+            || delegation.room != room.to_string()
+        {
+            tracing::warn!(room = %room, ws, "dropping a recording delegation that names another room");
+            return;
+        }
+        let now_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
+            .unwrap_or(u64::MAX);
+        let refusal = if let Err(error) = delegation.verify() {
+            Some(error.to_string())
+        } else if cert.device_public_key != *delegation.device.as_bytes()
+            || cert.user_public_key != *delegation.person.as_bytes()
+        {
+            Some("the certificate is for another device or person".into())
+        } else if let Err(error) = tilo_user_identity::verify_device_cert_at(cert, now_ns) {
+            Some(error.to_string())
+        } else if self.peer_identities.is_revoked(
+            &cert.user_public_key,
+            &cert.device_public_key,
+            now_ns,
+        ) {
+            Some("the device is revoked".into())
+        } else {
+            None
+        };
+        if let Some(reason) = refusal {
+            tracing::warn!(room = %room, %reason, "refusing a recording delegation");
+            return;
+        }
+        if let Ok(mut delegations) = self.recording_delegations.lock() {
+            let per_room = delegations.entry(room).or_default();
+            let key = (*delegation.device.as_bytes(), delegation.agent.clone());
+            if per_room.get(&key).is_some_and(|held| {
+                held.issued_at_unix_seconds >= delegation.issued_at_unix_seconds
+            }) {
+                return;
+            }
+            per_room.insert(key, delegation);
+        }
+        self.apply_recording_delegations(room);
+    }
+
+    /// The memberships `workspace` should list for other members' recording
+    /// delegates: each active delegation whose person still holds a role
+    /// there, while the room allows recording delegates. This device's own
+    /// delegates are its local admissions, not listed twice.
+    fn wanted_recording_delegates(
+        &self,
+        workspace: &crate::shell::state::Workspace,
+        delegations: &[collab_types::RecordingDelegationV1],
+    ) -> std::collections::BTreeMap<String, crate::shell::state::CapOverride> {
+        use crate::shell::state::{CapOverride, Subject, Verb, delegate_person_stands};
+        if workspace.recording_delegates_forbidden {
+            return std::collections::BTreeMap::new();
+        }
+        let own = self
+            .host_identity
+            .as_ref()
+            .map(|identity| identity.device_signing_key.verifying_key().to_bytes());
+        delegations
+            .iter()
+            .filter(|delegation| delegation.active && Some(*delegation.device.as_bytes()) != own)
+            .filter_map(|delegation| {
+                let person = collab_types::caps::Principal::person_from_key(delegation.person)
+                    .id()
+                    .to_string();
+                if !delegate_person_stands(workspace, &person, Verb::Read) {
+                    return None;
+                }
+                let id = crate::shell::state::remote_device_delegate_id(
+                    &person,
+                    delegation.device.as_bytes(),
+                    &delegation.agent,
+                );
+                let cap = CapOverride::membership(
+                    Subject::agent(delegation.agent.clone()),
+                    workspace.room.to_string(),
+                    Verb::Read,
+                )
+                .with_id(id.clone());
+                Some((id, cap))
+            })
+            .collect()
+    }
+
+    /// Bring `room`'s listed recording delegates in line with the verified
+    /// delegations: list the ones that stand, drop the rest — stopped, a
+    /// person who no longer holds a role, a room that turned delegates off.
+    fn apply_recording_delegations(&self, room: RoomId) {
+        let delegations: Vec<collab_types::RecordingDelegationV1> = self
+            .recording_delegations
+            .lock()
+            .ok()
+            .and_then(|delegations| {
+                delegations
+                    .get(&room)
+                    .map(|per| per.values().cloned().collect())
+            })
+            .unwrap_or_default();
+        let Ok(replica) = self.replica.lock() else {
+            return;
+        };
+        let tree_handle = replica.tree.clone();
+        drop(replica);
+        let unchanged = {
+            let tree = tree_handle.read();
+            let Some(workspace) = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room == room)
+            else {
+                return;
+            };
+            let wanted = self.wanted_recording_delegates(workspace, &delegations);
+            let listed: std::collections::BTreeSet<String> = workspace
+                .capabilities
+                .iter()
+                .filter(|cap| crate::shell::state::is_remote_device_delegate(cap))
+                .map(|cap| cap.id.clone())
+                .collect();
+            drop(tree);
+            listed.len() == wanted.len() && wanted.keys().all(|id| listed.contains(id))
+        };
+        if unchanged {
+            return;
+        }
+        let mut tree = tree_handle.write();
+        let Some(workspace) = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room == room)
+        else {
+            return;
+        };
+        let wanted = self.wanted_recording_delegates(workspace, &delegations);
+        workspace
+            .capabilities
+            .retain(|cap| !crate::shell::state::is_remote_device_delegate(cap));
+        workspace.capabilities.extend(wanted.into_values());
+        tree.flush_to_disk();
+    }
+
+    /// Re-check every room holding delegations: a person removed, or the
+    /// policy turned off, on this machine changes no governance a peer sends.
+    fn reapply_recording_delegations(&self) {
+        let rooms: Vec<RoomId> = self
+            .recording_delegations
+            .lock()
+            .map(|delegations| delegations.keys().copied().collect())
+            .unwrap_or_default();
+        for room in rooms {
+            self.apply_recording_delegations(room);
+        }
+    }
+
+    /// Announce every change to the delegates this device holds for its
+    /// person: a new one as an active delegation, one no longer held as a
+    /// stop. Each is signed with this device's key and carries its person's
+    /// certificate for the room.
+    fn publish_recording_delegations(&self) {
+        let Some(identity) = self.host_identity.as_ref() else {
+            return;
+        };
+        let held: Vec<(RoomId, String, String)> = {
+            let tree = self.tree.read();
+            tree.desktop
+                .workspaces
+                .iter()
+                .filter(|workspace| {
+                    !workspace.room.is_nil()
+                        && !workspace.ephemeral
+                        && !workspace.recording_delegates_forbidden
+                })
+                .flat_map(|workspace| {
+                    workspace
+                        .capabilities
+                        .iter()
+                        .filter(|cap| crate::shell::state::is_local_device_delegate(cap))
+                        .filter_map(|cap| {
+                            let person = crate::shell::state::device_delegate_person(cap)?;
+                            if !crate::shell::state::delegate_person_stands(
+                                workspace, person, cap.verb,
+                            ) {
+                                return None;
+                            }
+                            let crate::shell::state::Subject::Principal(
+                                collab_types::caps::Principal::Agent(agent),
+                            ) = &cap.subject
+                            else {
+                                return None;
+                            };
+                            Some((workspace.room, agent.clone(), person.to_string()))
+                        })
+                })
+                .collect()
+        };
+        let Ok(mut published) = self.published_recording_delegations.lock() else {
+            return;
+        };
+        let mut announce: Vec<(RoomId, String, bool)> = Vec::new();
+        for (room, agent, person) in &held {
+            let cert = identity.material_for(room_topic_id(*room)).0;
+            let certified = collab_types::caps::Principal::person_from_key(
+                collab_types::Ed25519PublicKey::from_bytes(cert.user_public_key),
+            );
+            if certified.id() != person.as_str() {
+                continue;
+            }
+            if !published
+                .get(&(*room, agent.clone()))
+                .is_some_and(|last| last.active)
+            {
+                announce.push((*room, agent.clone(), true));
+            }
+        }
+        for ((room, agent), last) in published.iter() {
+            if last.active && !held.iter().any(|(r, a, _)| r == room && a == agent) {
+                announce.push((*room, agent.clone(), false));
+            }
+        }
+        for (room, agent, active) in announce {
+            let key = (room, agent.clone());
+            let not_before = published
+                .get(&key)
+                .map_or(0, |last| last.issued_at_unix_seconds.saturating_add(1));
+            let Some(message) =
+                Self::recording_delegation_message(identity, room, agent, active, not_before)
+            else {
+                continue;
+            };
+            let NeighbourMsg::RecordingDelegation { delegation, .. } = &message else {
+                continue;
+            };
+            let signed = (**delegation).clone();
+            if self.publish_message(message) {
+                published.insert(key, signed);
+            }
+        }
+    }
+
+    /// A signed delegation of `agent` in `room` from this device, issued no
+    /// earlier than `not_before`.
+    fn recording_delegation_message(
+        identity: &HostIdentity,
+        room: RoomId,
+        agent: String,
+        active: bool,
+        not_before: u64,
+    ) -> Option<NeighbourMsg> {
+        let ws = room_topic_id(room);
+        let cert = identity.material_for(ws).0;
+        let delegation = collab_types::RecordingDelegationV1::sign(
+            collab_types::RecordingDelegationSpec {
+                room: room.to_string(),
+                workspace: ws,
+                person: collab_types::Ed25519PublicKey::from_bytes(cert.user_public_key),
+                agent,
+                active,
+                issued_at_unix_seconds: tilo_clock::unix_now().max(not_before),
+            },
+            &identity.device_signing_key,
+        )
+        .inspect_err(|error| tracing::warn!(%error, "recording delegation could not be signed"))
+        .ok()?;
+        Some(NeighbourMsg::RecordingDelegation {
+            room: room.to_string(),
+            delegation: Box::new(delegation),
+            cert: Box::new(cert),
+        })
+    }
+
+    /// Tell a peer that joined room topic `ws` about the delegates this
+    /// device holds there, which it would otherwise learn only from a host.
+    fn republish_recording_delegations(&self, ws: u64) {
+        let Some(identity) = self.host_identity.as_ref() else {
+            return;
+        };
+        let active: Vec<collab_types::RecordingDelegationV1> = self
+            .published_recording_delegations
+            .lock()
+            .map(|published| {
+                published
+                    .iter()
+                    .filter(|((room, _), last)| room_topic_id(*room) == ws && last.active)
+                    .map(|(_, last)| last.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for delegation in active {
+            let cert = identity.material_for(ws).0;
+            let _ = self.publish_message(NeighbourMsg::RecordingDelegation {
+                room: delegation.room.clone(),
+                delegation: Box::new(delegation),
+                cert: Box::new(cert),
+            });
+        }
+    }
+
     /// One message of a channel replay this device asked for. Unlike a live
     /// delivery it is never an echo: a document this device authored is
     /// handed to its local apps too, so one that restarted re-learns the
@@ -6191,6 +6905,7 @@ impl ShellNetwork {
             return;
         }
         let Some(record_id) = self.local_record_for_wire(&app_id, &cluster_id, &record_id) else {
+            tracing::debug!(%app_id, "a replayed document names a record no local app holds");
             return;
         };
         let own = peer == self.keypair.public();
@@ -6220,8 +6935,10 @@ impl ShellNetwork {
             self.peer_document_role(&origin, &cluster_id, &app_id, &record_id, &envelope)
         };
         let Some(role) = role else {
+            tracing::debug!(%app_id, %record_id, "a replayed document's author may not write it here");
             return;
         };
+        tracing::debug!(%app_id, %record_id, own, "a host replayed a document");
         self.queue_document(InboundDocument {
             peer: peer_hash,
             app_id,
@@ -6230,6 +6947,7 @@ impl ShellNetwork {
             role,
             envelope,
             replayed: true,
+            history: true,
         });
     }
 
@@ -6244,6 +6962,7 @@ impl ShellNetwork {
         ws: u64,
         peer: iroh::EndpointId,
         msg: NeighbourMsg,
+        via_host: bool,
     ) {
         let origin = crate::shell::state::PeerOrigin::peer(&peer);
         match msg {
@@ -6292,7 +7011,7 @@ impl ShellNetwork {
                     && let Some(role) = role
                 {
                     self.handle_document_message(
-                        peer_hash, app_id, cluster_id, record_id, role, *envelope,
+                        peer_hash, app_id, cluster_id, record_id, role, *envelope, via_host,
                     );
                 }
             }
@@ -6555,6 +7274,29 @@ impl ShellNetwork {
     /// cursor, input, stream, app-presence, or scrollback state is accepted.
     /// `PermissionGrant.peer` is deliberately excluded because it names the
     /// grant's recipient rather than its publisher.
+    /// Which of the messages that name their publisher `msg` is, for a log.
+    fn published_kind(msg: &NeighbourMsg) -> &'static str {
+        match msg {
+            NeighbourMsg::PresenceMoved { .. } => "presence moved",
+            NeighbourMsg::PresenceCleared { .. } => "presence cleared",
+            NeighbourMsg::RemoteInput { .. } => "remote input",
+            NeighbourMsg::PermissionRequest { .. } => "permission request",
+            NeighbourMsg::Heartbeat { .. } => "heartbeat",
+            NeighbourMsg::MediaCapabilities { .. } => "media capabilities",
+            NeighbourMsg::AppDocument { .. } => "app document",
+            NeighbourMsg::AppPresenceV2 { .. } => "app presence",
+            NeighbourMsg::SurfaceStreamStart { .. }
+            | NeighbourMsg::SurfaceStreamEnd { .. }
+            | NeighbourMsg::SurfaceFrame { .. } => "surface stream",
+            NeighbourMsg::ScrollbackRequest { .. } | NeighbourMsg::ScrollbackResponse { .. } => {
+                "scrollback"
+            }
+            NeighbourMsg::PersonalContinuityRequest { .. }
+            | NeighbourMsg::PersonalContinuityCheckpoint { .. } => "personal continuity",
+            _ => "other",
+        }
+    }
+
     fn claimed_publisher(msg: &NeighbourMsg) -> Option<u64> {
         match msg {
             NeighbourMsg::PresenceMoved { peer, .. }
@@ -6582,7 +7324,8 @@ impl ShellNetwork {
             | NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
             | NeighbourMsg::MlsGovernanceAck { .. }
-            | NeighbourMsg::RoomAdmission { .. } => None,
+            | NeighbourMsg::RoomAdmission { .. }
+            | NeighbourMsg::RecordingDelegation { .. } => None,
         }
     }
 
@@ -6758,8 +7501,10 @@ impl ShellNetwork {
             refreshed_room.map(|room| (room, rep.tree.read().trusted_identity_projection(room)));
         let outgoing = rep.drain_outgoing();
         drop(rep);
-        if let Some((room, projection)) = refreshed_projection {
-            crate::shell::launcher::set_trusted_identity_projection(room, &projection);
+        if let Some((room, projection)) = refreshed_projection
+            && crate::shell::launcher::set_trusted_identity_projection(room, &projection)
+        {
+            self.reconsider_hosts(room);
         }
         for out_msg in outgoing {
             let _ = self.publish_message(out_msg);
@@ -7028,11 +7773,19 @@ impl ShellNetwork {
             tracing::warn!(room = %room, %error, "dropping a document op its room's class refuses");
             return None;
         }
-        if collab_types::validate_whole_document_payload_route(
-            app_id, cluster_id, record_id, envelope,
-        )
-        .is_err()
-        {
+        let payload =
+            collab_types::validate_document_payload_route(app_id, cluster_id, record_id, envelope)
+                .ok()?;
+        if matches!(
+            payload,
+            collab_types::RoutedDocumentPayload::CleartextSegment(_)
+        ) {
+            return None;
+        }
+        if crate::shell::collab_broker_capnp::room_index_comment_refused(
+            record_id, envelope, &payload,
+        ) {
+            tracing::warn!(room = %room, "dropping a comment-class room-index op that adds more than its author's own comment references");
             return None;
         }
         let artifact = envelope.artifact;
@@ -7262,9 +8015,12 @@ pub(crate) fn shell_network_for_test(
         pending_invitations_path: None,
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         room_admissions: Mutex::new(std::collections::HashMap::new()),
+        recording_delegations: Mutex::new(std::collections::HashMap::new()),
+        published_recording_delegations: Mutex::new(std::collections::BTreeMap::new()),
         unidentified_host_messages: Mutex::new(UnidentifiedHostMessages::default()),
         retained_coverage: Mutex::new(std::collections::HashMap::new()),
         native_enrollment: native_enrollment::State::default(),
+        community: Mutex::new(CommunityRuntime::default()),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
         inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
@@ -12038,6 +12794,7 @@ mod tests {
                 "uuid:9f".to_string(),
                 collab_types::Role::Editor,
                 envelope.clone(),
+                false,
             );
             let buf = buf_handle.lock().unwrap().clone();
             assert_eq!(buf.len(), 1);
@@ -12294,6 +13051,57 @@ mod tests {
             .expect("a remote-action frame was sent");
         assert_eq!(target, to_key.public(), "addressed to exactly one device");
         to.dispatch_neighbour_msg(ws, from.public(), None, msg);
+    }
+
+    #[test]
+    fn a_public_room_records_its_delegated_host_as_governance() {
+        let _env = tilo_test_env::lock();
+        let mut tree = WorkspaceTree::default();
+        let team = tree.append_empty_workspace("Team");
+        let local = tree.append_public_workspace("Community");
+        let room = tree.room_of(local).expect("room");
+        let team_room = tree.room_of(team).expect("team room");
+        let owner = crate::shell::state::local_user_id_for_room(&room);
+        for workspace in &mut tree.desktop.workspaces {
+            workspace.set_owner(owner.clone());
+        }
+        let shared = tree.shared();
+        let (net, mut commands) = shell_network_for_test(shared.clone(), 6);
+        let relay = iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x42; 32]).public())
+            .with_ip_addr("203.0.113.7:4433".parse().unwrap());
+        let endpoint = serde_json::to_string(&relay).unwrap();
+
+        assert!(net.delegate_room_host(room, "not an address").is_err());
+        assert!(
+            net.delegate_room_host(team_room, &endpoint)
+                .unwrap_err()
+                .contains("public room"),
+            "an encrypted team room is not delegated to a host"
+        );
+        let recorded = net.delegate_room_host(room, &endpoint).expect("delegated");
+        let workspace = shared
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .cloned()
+            .expect("community");
+        assert_eq!(workspace.delegated_hosts, vec![recorded.clone()]);
+        let in_document = shared
+            .write()
+            .room_docs
+            .get(&room)
+            .map(tilo_desktop_model::projection::delegated_hosts_of)
+            .unwrap_or_default();
+        assert_eq!(in_document, vec![recorded], "members read it from the room");
+        assert!(
+            std::iter::from_fn(|| commands.try_recv().ok()).any(|command| matches!(
+                command,
+                NetCmd::ConnectHost { addr, .. } if addr.id == relay.id
+            )),
+            "this machine reaches its room's host at once"
+        );
     }
 
     #[test]
@@ -12651,8 +13459,8 @@ mod tests {
         team_device: ed25519_dalek::SigningKey,
         team: Option<Arc<ShellNetwork>>,
         token: String,
-        _relay: tilo_relay::Relay,
-        _state: tempfile::TempDir,
+        relay: tilo_relay::Relay,
+        state: tempfile::TempDir,
     }
 
     #[allow(
@@ -12808,8 +13616,8 @@ mod tests {
             team_device: team.key.clone(),
             team: team_net,
             token,
-            _relay: relay,
-            _state: state,
+            relay,
+            state,
         }
     }
 
@@ -12833,6 +13641,159 @@ mod tests {
         net.accept_invite(local, &community.token)
             .expect("the standing invite is accepted");
         (net, person_root, device)
+    }
+
+    /// Point this OS at `community`'s invitation and name the person `seed`
+    /// derives, in `home`; returns the person's root.
+    fn configure_community(
+        community: &HostedCommunity,
+        home: &mut tilo_test_env::TestHome,
+        seed: u8,
+    ) -> ed25519_dalek::SigningKey {
+        let config = home.root().join("community.toml");
+        std::fs::write(
+            &config,
+            format!("[community]\ninvite = \"{}\"\n", community.token),
+        )
+        .expect("community config");
+        let person_root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        home.env()
+            .set(crate::shell::community::COMMUNITY_CONFIG_ENV, &config)
+            .set("TILO_USER_ID", person_of(&person_root));
+        person_root
+    }
+
+    /// A fresh networked session of `person_root`, not yet in the community.
+    async fn fresh_session(person_root: &ed25519_dalek::SigningKey) -> ShellNetwork {
+        let device = certified_device(
+            person_root,
+            tilo_user_identity::DeviceCapabilities::primary(),
+            "Ada",
+        );
+        let mut tree = WorkspaceTree::default();
+        tree.append_empty_workspace("Ada");
+        let net = Box::pin(networked_shell(tree, &device)).await;
+        assert!(net.join_default_workspace());
+        net
+    }
+
+    fn holds(net: &ShellNetwork, room: RoomId) -> bool {
+        workspace_state(net, room).is_some()
+    }
+
+    /// Everyone is in the Tilo Community by default: a fresh session joins
+    /// it on its own once the network is up and the host admits it. A person
+    /// who leaves, from any of their devices, is taken out and never joined
+    /// again until they choose to join.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_fresh_session_joins_the_community_and_one_who_left_is_never_rejoined() {
+        let mut home = tilo_test_env::TestHome::new().expect("test home");
+        let community = Box::pin(hosted_community(false)).await;
+        let room = community.room;
+        let person = configure_community(&community, &mut home, 0xF1);
+        let net = Box::pin(fresh_session(&person)).await;
+
+        let joined = tick_until(&net, 60, |net| {
+            net.community_status()
+                .ok()
+                .flatten()
+                .is_some_and(|status| status.role.is_some())
+        })
+        .await;
+        assert!(
+            joined,
+            "a fresh session joins the community without being asked: {:?}",
+            net.community_status()
+        );
+
+        // Left on another device: the choice roams in the person's
+        // settings, and this device follows it.
+        settings_store::community::set_membership(settings_store::community::Membership::Left)
+            .expect("leave");
+        assert!(
+            tick_until(&net, 10, |net| !holds(net, room)).await,
+            "a device that learns the person left leaves the room"
+        );
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(6) {
+            net.tick();
+            assert!(!holds(&net, room), "a person who left is never rejoined");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        let status = net
+            .join_community()
+            .expect("joining again is the person's choice");
+        assert_eq!(status.room, room.to_string());
+        assert_eq!(
+            settings_store::community::membership_in(&settings_store::load()),
+            settings_store::community::Membership::Auto
+        );
+    }
+
+    /// A session whose person left the community before it started never
+    /// joins it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_session_whose_person_left_never_joins() {
+        let mut home = tilo_test_env::TestHome::new().expect("test home");
+        let community = Box::pin(hosted_community(false)).await;
+        settings_store::community::set_membership(settings_store::community::Membership::Left)
+            .expect("left");
+        let person = configure_community(&community, &mut home, 0xF2);
+        let net = Box::pin(fresh_session(&person)).await;
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(6) {
+            net.tick();
+            assert!(!holds(&net, community.room), "never joined");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    /// The community's host refusing the invitation is final for that
+    /// invitation: the session leaves what it started, remembers the
+    /// refusal, and does not ask again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_refused_join_is_not_retried() {
+        let mut home = tilo_test_env::TestHome::new().expect("test home");
+        let community = Box::pin(hosted_community(false)).await;
+        let room = community.room;
+        let store = community
+            .state
+            .path()
+            .join("workspaces")
+            .join(room_topic_id(room).to_string());
+        let mut hosting = tilo_relay::public_room::PublicRoomHosting::load(&store)
+            .expect("hosting")
+            .expect("the room is hosted");
+        for invite in &mut hosting.invites {
+            invite.revoked = true;
+        }
+        hosting.save(&store).expect("revoke");
+        let person = configure_community(&community, &mut home, 0xF3);
+        let net = Box::pin(fresh_session(&person)).await;
+
+        let invite = hex::encode(crate::network::invite::invite_id(&community.token));
+        let refused = tick_until(&net, 60, |net| {
+            settings_store::community::refused_invite_in(&settings_store::load())
+                == Some(invite.as_str())
+                && !holds(net, room)
+        })
+        .await;
+        assert!(
+            refused,
+            "the host's refusal is remembered and the room left: held={}, settings={:?}",
+            holds(&net, room),
+            settings_store::load()
+        );
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(8) {
+            net.tick();
+            assert!(
+                !holds(&net, room),
+                "a refused invitation is not asked again"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
     }
 
     /// The acceptance path for the community room: the team creates a public
@@ -13123,6 +14084,91 @@ mod tests {
         }
     }
 
+    /// A change the broker accepted for a route while no app of this device
+    /// held it reached nobody; the app that joins the route later is served
+    /// it, with what it depends on, by the broker itself — with no other
+    /// holder and no host to replay it.
+    #[test]
+    fn an_app_joining_a_route_is_served_what_the_broker_accepted_before_it() {
+        let team_root = ed25519_dalek::SigningKey::from_bytes(&[0xB1; 32]);
+        let team_device = ed25519_dalek::SigningKey::from_bytes(&[0xB2; 32]);
+        let mut tree = WorkspaceTree::default();
+        let community = tree.append_public_workspace("Community");
+        let room = tree.room_of(community).expect("room");
+        tree.desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == community)
+            .expect("community")
+            .set_owner(person_of(&team_root));
+        tree.desktop.active = community;
+        let tree = tree.shared();
+        let dir = tempfile::tempdir().expect("scratch");
+        let socket = dir.path().join("broker.sock");
+        let handle = crate::shell::collab_broker::spawn_native_harness(
+            socket.clone(),
+            tree,
+            vec![team_device.verifying_key().to_bytes()],
+        )
+        .expect("broker");
+
+        // The team's earlier Chat left the conversation with a channel in it.
+        let app = "so.tilo.chat";
+        let record = tilo_reference::CHAT_CONVERSATION_RECORD;
+        let cluster = room.to_string();
+        let mut earlier = automerge::AutoCommit::new();
+        chat::doc::ChatDoc::seed_starter(&mut earlier, "u_team", "Team", "T");
+        chat::doc::ChatDoc::insert_channel(
+            &mut earlier,
+            "c_early",
+            "ws_home",
+            "cat_home_text",
+            "early",
+            chat::model::ChannelKind::Text,
+        );
+        let mut op = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Snapshot(earlier.save())
+                .encode()
+                .expect("typed mutation"),
+            collab_types::document_artifact_id(app, &cluster, record),
+            collab_types::Ed25519PublicKey::from_bytes(team_device.verifying_key().to_bytes()),
+            collab_types::document_attestation_id(app, &cluster, record),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+        );
+        collab_types::sign_op(&mut op, &team_device).expect("the team signs");
+        handle
+            .fanout()
+            .accept_shell_document(
+                &crate::shell::collab_broker::CrdtRoute::record(app, &cluster, record),
+                op,
+                team_root.verifying_key().to_bytes(),
+                "team",
+            )
+            .expect("the broker accepts the change while no app holds the route");
+
+        let seat = ChatSeat {
+            root: team_root,
+            device: team_device,
+            label: "Team",
+        };
+        let mut chat = seat.chat(&socket, &dir.path().join("team"), room);
+        let started = std::time::Instant::now();
+        while !chat::doc::ChatDoc::list_channels(&chat.state_mut_for_test().doc)
+            .iter()
+            .any(|channel| channel.id == "c_early")
+        {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(30),
+                "the joining Chat was never served what the broker accepted before it"
+            );
+            chat.step_headless();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        drop(handle);
+    }
+
     /// Step every app and tick every network once.
     #[allow(
         clippy::future_not_send,
@@ -13308,6 +14354,24 @@ mod tests {
             author.step_headless();
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
+        // Cara is in the room before the team writes anything, but opens
+        // Chat only afterwards: the room's live traffic reached her device
+        // while no app of hers held the conversation.
+        let (cara, cara_root, cara_device) =
+            Box::pin(join_community(&community, "Cara", 0xE9)).await;
+        let cara = Arc::new(cara);
+        let cara_person = person_of(&cara_root);
+        assert!(
+            tick_until(&cara, 60, |net| {
+                team.tick();
+                workspace_state(net, room)
+                    .is_some_and(|(_, _, roster)| roster.iter().any(|(who, _)| who == &cara_person))
+            })
+            .await,
+            "Cara is admitted: {:?}",
+            workspace_state(&cara, room)
+        );
+        let (cara_broker, cara_socket) = broker("cara", &cara, &cara_device.key);
         let mut editor = team_seat.chat(&team_socket, &dir.path().join("team"), room);
 
         let started = std::time::Instant::now();
@@ -13408,7 +14472,90 @@ mod tests {
             late.step_headless();
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        drop((team_broker, ada_broker, bea_broker));
+
+        let cara_seat = ChatSeat {
+            root: cara_root.clone(),
+            device: cara_device.key.clone(),
+            label: "Cara",
+        };
+        // Made an Editor by the owner first, as a second team member is.
+        {
+            let tree = team.tree_handle().expect("tree");
+            let mut tree = tree.write();
+            let workspace = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room == room)
+                .expect("the community room");
+            workspace
+                .grant_as(
+                    &person_of(&community.team_root),
+                    crate::shell::state::CapOverride::membership(
+                        crate::shell::state::Subject::person(cara_person.clone()),
+                        room.to_string(),
+                        crate::network::invite::InviteRole::Editor.verb(),
+                    ),
+                )
+                .expect("the owner grants Cara Editor");
+            tree.sync_room_doc(room);
+        }
+        team.publish_sync_requests();
+        assert!(
+            tick_until(&cara, 60, |net| {
+                team.tick();
+                workspace_state(net, room).is_some_and(|(_, _, roster)| {
+                    roster.iter().any(|(who, role)| {
+                        who == &cara_person && *role == crate::shell::state::CapRole::Editor
+                    })
+                })
+            })
+            .await,
+            "Cara learns she is an Editor: {:?}",
+            workspace_state(&cara, room)
+        );
+        let mut opened_late = cara_seat.chat(&cara_socket, &dir.path().join("cara"), room);
+        let started = std::time::Instant::now();
+        while !chat::doc::ChatDoc::is_feedback_channel(
+            &opened_late.state_mut_for_test().doc,
+            feedback,
+        ) {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(60),
+                "Cara's Chat, opened after the team wrote while she was in the room, never \
+                 received the conversation with its feedback channel (seeded: {})",
+                chat::doc::ChatDoc::is_seeded(&opened_late.state_mut_for_test().doc)
+            );
+            step_all(&mut [&mut editor, &mut opened_late], &[&team, &cara]).await;
+        }
+        // Cara's Chat wrote her into the roster when it opened, and she does
+        // nothing else: the team's next change still reaches her.
+        chat_invoke(
+            &team_host,
+            &team_seat,
+            room,
+            (&format!("chat.channel:{feedback}"), "unmark-feedback"),
+            &mut [&mut editor, &mut opened_late],
+            &[&team, &cara],
+        )
+        .await;
+        let started = std::time::Instant::now();
+        while chat::doc::ChatDoc::is_feedback_channel(
+            &opened_late.state_mut_for_test().doc,
+            feedback,
+        ) {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(60),
+                "Cara's Chat, which only opened, never took the team's later change"
+            );
+            step_all(&mut [&mut editor, &mut opened_late], &[&team, &cara]).await;
+        }
+        assert_eq!(
+            community.relay.metrics().peer_sessions_ended,
+            0,
+            "no device sent the host anything before its subscription was answered"
+        );
+        drop((team_broker, ada_broker, bea_broker, cara_broker));
     }
 
     /// The rooms.md rule, across two devices: a member of a room reaches the
@@ -13572,5 +14719,241 @@ mod tests {
         assert!(ada_custody.served_in(&reviewed).is_empty());
         assert!(replay.close());
         drop((ada_broker, bea_broker));
+    }
+
+    /// A room owned by `owner_root` where `viewer_root` is a Viewer.
+    fn recorded_room_tree(
+        room: RoomId,
+        owner_root: &ed25519_dalek::SigningKey,
+        viewer_root: &ed25519_dalek::SigningKey,
+        forbidden: bool,
+    ) -> WorkspaceTreeHandle {
+        use crate::shell::state::{CapOverride, Subject, Verb, Workspace, WorkspaceId};
+        let mut workspace = Workspace::new(WorkspaceId(1), "Shared");
+        workspace.room = room;
+        workspace.set_owner(person_of(owner_root));
+        workspace.grant_capability(
+            CapOverride::membership(
+                Subject::person(person_of(viewer_root)),
+                room.to_string(),
+                Verb::Read,
+            )
+            .with_id("viewer-membership"),
+        );
+        workspace.recording_delegates_forbidden = forbidden;
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.active = workspace.id;
+        tree.desktop.workspaces.push(workspace);
+        tree.shared()
+    }
+
+    fn identity_of(device: &CertifiedDevice) -> HostIdentity {
+        HostIdentity {
+            device_cert: device.cert.clone(),
+            device_signing_key: device.key.clone(),
+            workspace_device_certs: std::collections::HashMap::new(),
+            workspace_revocations: std::collections::HashMap::new(),
+            identity_paths: None,
+        }
+    }
+
+    /// The recording delegations `sent` carries, in order.
+    fn sent_delegations(sent: &mut mpsc::Receiver<NetCmd>) -> Vec<NeighbourMsg> {
+        let mut out = Vec::new();
+        while let Ok(command) = sent.try_recv() {
+            if let NetCmd::Publish {
+                msg: msg @ NeighbourMsg::RecordingDelegation { .. },
+                ..
+            } = command
+            {
+                out.push(msg);
+            }
+        }
+        out
+    }
+
+    fn lists_recorder(tree: &WorkspaceTreeHandle) -> bool {
+        tree.read().desktop.workspaces[0]
+            .agent_members()
+            .iter()
+            .any(|(agent, role)| {
+                agent == crate::shell::recorder::RECORDER_AGENT
+                    && *role == crate::shell::state::CapRole::Viewer
+            })
+    }
+
+    /// A Viewer records a shared room: their device announces its recorder,
+    /// and another member's device lists it as an agent until the Viewer
+    /// stops, the room turns delegates off, or the Viewer loses their role.
+    #[test]
+    fn a_viewers_recorder_is_listed_on_another_members_tree_until_it_stops() {
+        use crate::shell::recorder::{RECORDER_ADMISSION, RECORDER_AGENT};
+        use crate::shell::state::{CapOverride, Subject, Verb, WorkspaceId};
+        let owner_root = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
+        let viewer_root = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
+        let viewer_device = certified_device(
+            &viewer_root,
+            tilo_user_identity::DeviceCapabilities::member(),
+            "laptop",
+        );
+        let viewer_peer = iroh::SecretKey::from_bytes(&viewer_device.key.to_bytes()).public();
+        let room = RoomId::new();
+        let topic = room_topic_id(room);
+
+        let viewer_tree = recorded_room_tree(room, &owner_root, &viewer_root, false);
+        let (mut viewer_net, mut sent) = shell_network_for_test(viewer_tree.clone(), 1);
+        viewer_net.host_identity = Some(identity_of(&viewer_device));
+        let delegate = viewer_tree
+            .write()
+            .admit_device_delegate(
+                WorkspaceId(1),
+                &person_of(&viewer_root),
+                CapOverride::membership(
+                    Subject::agent(RECORDER_AGENT),
+                    room.to_string(),
+                    Verb::Read,
+                )
+                .with_id(RECORDER_ADMISSION),
+            )
+            .expect("a Viewer may delegate what they can read");
+        viewer_net.publish_recording_delegations();
+        let start = sent_delegations(&mut sent);
+        assert_eq!(start.len(), 1, "the recorder is announced");
+        viewer_net.publish_recording_delegations();
+        assert!(sent_delegations(&mut sent).is_empty(), "announced once");
+        viewer_net.republish_recording_delegations(topic);
+        assert_eq!(
+            sent_delegations(&mut sent),
+            start,
+            "a peer that joins is told again"
+        );
+
+        let member_tree = recorded_room_tree(room, &owner_root, &viewer_root, false);
+        let (member_net, _) = shell_network_for_test(member_tree.clone(), 2);
+        assert!(!lists_recorder(&member_tree));
+        member_net.dispatch_neighbour_msg(topic, viewer_peer, None, start[0].clone());
+        assert!(
+            lists_recorder(&member_tree),
+            "another member lists the Viewer's recorder as an agent"
+        );
+        let listed = crate::shell::peer_presence::room_participants(
+            &crate::shell::collab_broker::FanoutState::new(),
+            &member_tree.read().desktop.workspaces[0],
+        );
+        assert!(
+            listed.iter().any(|row| row.agent == RECORDER_AGENT),
+            "and its roster shows it while it records"
+        );
+
+        assert!(
+            viewer_tree
+                .write()
+                .revoke_device_delegate(WorkspaceId(1), &delegate)
+        );
+        viewer_net.publish_recording_delegations();
+        let stop = sent_delegations(&mut sent);
+        assert_eq!(stop.len(), 1, "stopping is announced");
+        member_net.dispatch_neighbour_msg(topic, viewer_peer, None, stop[0].clone());
+        assert!(!lists_recorder(&member_tree), "a stop takes it off");
+        member_net.dispatch_neighbour_msg(topic, viewer_peer, None, start[0].clone());
+        assert!(
+            !lists_recorder(&member_tree),
+            "an older start replayed later does not revive it"
+        );
+
+        // The room turned delegates off: refused.
+        let forbidding_tree = recorded_room_tree(room, &owner_root, &viewer_root, true);
+        let (forbidding_net, _) = shell_network_for_test(forbidding_tree.clone(), 3);
+        forbidding_net.dispatch_neighbour_msg(topic, viewer_peer, None, start[0].clone());
+        assert!(!lists_recorder(&forbidding_tree));
+
+        // Listed while the Viewer holds their role, dropped once they don't.
+        let removing_tree = recorded_room_tree(room, &owner_root, &viewer_root, false);
+        let (removing_net, _) = shell_network_for_test(removing_tree.clone(), 4);
+        removing_net.dispatch_neighbour_msg(topic, viewer_peer, None, start[0].clone());
+        assert!(lists_recorder(&removing_tree));
+        assert!(removing_tree.write().desktop.workspaces[0].revoke_capability("viewer-membership"));
+        removing_net.reapply_recording_delegations();
+        assert!(
+            !lists_recorder(&removing_tree),
+            "a delegation from someone who no longer holds a role is dropped"
+        );
+    }
+
+    /// A delegation lists nothing unless its device signed it and its
+    /// person certified that device.
+    #[test]
+    fn a_forged_or_unsigned_recording_delegation_is_refused() {
+        let owner_root = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
+        let viewer_root = ed25519_dalek::SigningKey::from_bytes(&[0x62; 32]);
+        let impostor_root = ed25519_dalek::SigningKey::from_bytes(&[0x63; 32]);
+        let viewer_device = certified_device(
+            &viewer_root,
+            tilo_user_identity::DeviceCapabilities::member(),
+            "laptop",
+        );
+        let impostor_device = certified_device(
+            &impostor_root,
+            tilo_user_identity::DeviceCapabilities::member(),
+            "other",
+        );
+        let room = RoomId::new();
+        let topic = room_topic_id(room);
+        let signed = |identity: &HostIdentity| {
+            ShellNetwork::recording_delegation_message(
+                identity,
+                room,
+                crate::shell::recorder::RECORDER_AGENT.into(),
+                true,
+                0,
+            )
+            .expect("signed")
+        };
+        let genuine = signed(&identity_of(&viewer_device));
+        let with = |edit: &dyn Fn(
+            &mut collab_types::RecordingDelegationV1,
+            &mut tilo_user_identity::DeviceCert,
+        )| {
+            let mut message = genuine.clone();
+            if let NeighbourMsg::RecordingDelegation {
+                delegation, cert, ..
+            } = &mut message
+            {
+                edit(delegation, cert);
+            }
+            message
+        };
+        // Signed by a device the impostor's root certifies, naming the
+        // Viewer as the person it acts for.
+        let mut claimed = identity_of(&impostor_device);
+        claimed.device_cert.user_public_key = viewer_root.verifying_key().to_bytes();
+        let cases = [
+            (
+                "unsigned",
+                with(&|delegation, _| {
+                    delegation.signature = collab_types::Signature::from_bytes([0; 64]);
+                }),
+            ),
+            (
+                "altered after signing",
+                with(&|delegation, _| delegation.issued_at_unix_seconds += 1),
+            ),
+            (
+                "another person's device",
+                with(&|_, cert| *cert = impostor_device.cert.clone()),
+            ),
+            ("a certificate the person never signed", signed(&claimed)),
+        ];
+        let peer = iroh::SecretKey::from_bytes(&viewer_device.key.to_bytes()).public();
+        for (case, message) in cases {
+            let tree = recorded_room_tree(room, &owner_root, &viewer_root, false);
+            let (net, _) = shell_network_for_test(tree.clone(), 5);
+            net.dispatch_neighbour_msg(topic, peer, None, message);
+            assert!(!lists_recorder(&tree), "{case} is refused");
+        }
+        let tree = recorded_room_tree(room, &owner_root, &viewer_root, false);
+        let (net, _) = shell_network_for_test(tree.clone(), 6);
+        net.dispatch_neighbour_msg(topic, peer, None, genuine);
+        assert!(lists_recorder(&tree), "the genuine one is listed");
     }
 }

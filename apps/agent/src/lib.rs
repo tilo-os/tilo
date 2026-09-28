@@ -74,6 +74,7 @@ pub mod session;
 pub mod surface;
 pub mod tools;
 pub mod transform;
+pub mod triage;
 pub mod wire;
 
 pub use session::{Config, Session};

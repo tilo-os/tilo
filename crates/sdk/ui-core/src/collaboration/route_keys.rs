@@ -195,6 +195,11 @@ impl RouteKeys {
         let Some(metadata) = envelope.encryption else {
             return match &self.keys {
                 Keys::Plain => Ok(None),
+                // Until the identity service answers, the route's class is
+                // unknown: a public room's plaintext is held like any other
+                // content, and refused as a downgrade only once the route
+                // turns out to be encrypted.
+                Keys::Pending(_) if live => Err(Unopened::Later),
                 _ if live => Err(Unopened::Never),
                 _ => Ok(None),
             };
@@ -392,6 +397,31 @@ mod tests {
             route.open(&envelope(sealed, Some(metadata)), true),
             Err(Unopened::Never)
         ));
+    }
+
+    /// Plaintext that arrives before the identity service has said what the
+    /// route is waits: a public room's opens once it is told it is public,
+    /// and an encrypted room's is refused as a downgrade once its keys come.
+    #[test]
+    fn plaintext_waits_for_the_routes_class_before_it_is_opened_or_refused() {
+        let plain = envelope(b"a member's change".to_vec(), None);
+
+        let mut public = RouteKeys::requested();
+        assert!(matches!(public.open(&plain, true), Err(Unopened::Later)));
+        public.hold_inbound(plain.clone(), "member".into());
+        public.update(Wire::Public, 0, None);
+        let held = public.take_held_inbound();
+        assert_eq!(held.len(), 1, "what waited is released");
+        assert!(matches!(public.open(&held[0].0, true), Ok(None)));
+
+        let (_, encoded) = keys(ChannelId::new());
+        let mut encrypted = RouteKeys::requested();
+        assert!(matches!(encrypted.open(&plain, true), Err(Unopened::Later)));
+        encrypted.update(Wire::Ready, 1, Some(&encoded));
+        assert!(
+            matches!(encrypted.open(&plain, true), Err(Unopened::Never)),
+            "on an encrypted route plaintext is a downgrade"
+        );
     }
 
     #[test]

@@ -424,6 +424,7 @@ impl CapnpBrokerState {
             .as_ref()
             .filter(|_| with_rows && caller.device_public_key().is_none())
             .map(|service| (service, settings_store::hardware::ShortcutConfig::load()));
+        let actor = BrokerActor::for_caller(caller);
         for (workspace, policy, now) in self.workspaces_for(caller) {
             let room = workspace.room.to_string();
             let mut live_apps = std::collections::HashSet::new();
@@ -454,7 +455,8 @@ impl CapnpBrokerState {
                                 &surface.app_id,
                                 &action.action,
                                 action.contract.permission,
-                            )
+                            ) && (!action.contract.speaks_as_participant()
+                                || self.performs_for(surface.peer_id, &actor))
                         })
                         .map(|action| {
                             action_row(
@@ -1184,11 +1186,7 @@ impl CapnpBrokerState {
             ))) => row,
             Some(Ok(ActionDirectoryBridgeResponse::Resolution(
                 runtime_collab::ActionDirectoryResolution::StaleRevision,
-            ))) => {
-                return Err(ActionHostError::InvalidRequest {
-                    reason: "the action changed since that revision; list it again".into(),
-                });
-            }
+            ))) => return Err(ActionHostError::StaleRevision),
             Some(Ok(_)) => return Err(ActionHostError::UnknownAction),
             Some(Err(error)) => return Err(bridge_error(error)),
             None => {
@@ -1403,7 +1401,7 @@ impl CapnpBrokerState {
             );
         }
         if let Some(governance) = self.services.workspace_governance.as_ref()
-            && governance.handles(&address.action)
+            && governance.handles(&address.resource, &address.action)
         {
             return self
                 .invoke_workspace_governance_action(
@@ -2094,7 +2092,7 @@ impl CapnpBrokerState {
             .invocation_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        governance.invoke(&crate::services::WorkspaceGovernanceRequest {
+        let output = governance.invoke(&crate::services::WorkspaceGovernanceRequest {
             room,
             actor,
             resource,
@@ -2108,10 +2106,7 @@ impl CapnpBrokerState {
             InvocationOwner::Local {
                 actor: actor.id.clone(),
             },
-            tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
+            tilo_actions::InvocationUpdate::Succeeded { invocation, output },
         );
         Ok(id)
     }

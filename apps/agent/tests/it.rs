@@ -22,3 +22,5 @@ pub mod harness_certificate_authority;
 pub mod presence_semantics;
 #[path = "relay_roundtrip.rs"]
 pub mod relay_roundtrip;
+#[path = "triage_live.rs"]
+pub mod triage_live;

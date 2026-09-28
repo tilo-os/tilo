@@ -75,6 +75,33 @@ fi
 need "$containerfile" 'ENTRYPOINT ["/usr/bin/tilo-home-peer"]'
 need "$compose" "./config:/etc/tilo:Z"
 need "$compose" "tilo-full-replica"
+# Room-host mode: the community relay. Its configuration is derived on every
+# start, its identity comes from a mounted secret, and its hosted rooms from
+# exported records; it never runs the Files replica.
+community="$root/community"
+need "$entrypoint" 'TILO_HOST_KIND:-home-peer}" = room-host'
+need "$entrypoint" "pair-room-host"
+need "$entrypoint" "community install --record"
+need "$entrypoint" 'trust_policy = { kind = "allow_any" }'
+need "$entrypoint" "metrics_listen"
+for path in kustomization.yaml namespace.yaml statefulset.yaml service.yaml network-policy.yaml compose.yaml README.md; do
+  [ -f "$community/$path" ] || fail "missing community/$path"
+done
+need "$community/statefulset.yaml" "value: room-host"
+need "$community/statefulset.yaml" "replicas: 1"
+need "$community/statefulset.yaml" "secretName: tilo-community-relay-identity"
+need "$community/statefulset.yaml" "readOnlyRootFilesystem: true"
+need "$community/statefulset.yaml" "path: /metrics"
+need "$community/service.yaml" "protocol: UDP"
+need "$community/compose.yaml" "TILO_HOST_KIND: room-host"
+if grep -Rqs 'sops\|kind: Secret' "$community"/*.yaml; then
+  fail "the community base carries a secret; secrets belong in the cluster overlay"
+fi
+room_host_section=$(sed -n '/^room_host() {/,/^}/p' "$entrypoint")
+if grep -Fq "fs replica" <<<"$room_host_section"; then
+  fail "a room host runs the Files replica"
+fi
+
 need "$entrypoint" "/usr/bin/fs replica"
 need "$entrypoint" "/usr/bin/tilo-relay"
 need "$entrypoint" "/usr/bin/tilo-enroll join"

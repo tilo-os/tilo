@@ -205,6 +205,76 @@ impl PublicRoomHosting {
         Ok(parsed)
     }
 
+    /// Take `incoming` — a record prepared where the owner's identity lives
+    /// (`tilo-relay-admin community export` there) — as this relay's hosting
+    /// of the room, merged into what it already holds (`existing`).
+    ///
+    /// The delegation must cover `relay_device` now, every invitation must
+    /// carry its own id, and every live one must be this room's standing
+    /// invitation from a device of its owner. The delegation is replaced;
+    /// invitations are merged by id, and a revocation on either side stays:
+    /// no record can bring a revoked invitation back. Returns the room's
+    /// workspace id and the merged record.
+    ///
+    /// # Errors
+    ///
+    /// The first failed check, or a room already hosted here for another
+    /// owner.
+    pub fn adopt(
+        existing: Option<Self>,
+        incoming: Self,
+        relay_device: [u8; 32],
+        now: SystemTime,
+    ) -> Result<(u64, Self), PublicRoomError> {
+        let workspace = Self::check_delegation(
+            &incoming.room,
+            incoming.owner,
+            &incoming.delegation,
+            relay_device,
+            now,
+        )?;
+        let now_unix = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        for invite in &incoming.invites {
+            if invite.id != hex::encode(neighbour_wire::invite::invite_id(&invite.token)) {
+                return Err(PublicRoomError::InvalidInvite(format!(
+                    "invitation {} carries another invitation's id",
+                    invite.id
+                )));
+            }
+            if !invite.revoked {
+                incoming.check_invite(&invite.token, now_unix)?;
+            }
+        }
+        let mut merged = match existing {
+            Some(existing)
+                if existing.owner != incoming.owner || existing.room != incoming.room =>
+            {
+                return Err(PublicRoomError::Delegation(format!(
+                    "room {} is already hosted here for owner {}",
+                    existing.room,
+                    hex::encode(existing.owner)
+                )));
+            }
+            Some(existing) => existing,
+            None => Self {
+                room: incoming.room.clone(),
+                owner: incoming.owner,
+                delegation: Vec::new(),
+                invites: Vec::new(),
+            },
+        };
+        merged.delegation = incoming.delegation;
+        for invite in incoming.invites {
+            match merged.invites.iter_mut().find(|held| held.id == invite.id) {
+                Some(held) => held.revoked |= invite.revoked,
+                None => merged.invites.push(invite),
+            }
+        }
+        Ok((workspace, merged))
+    }
+
     /// Everything [`Envelope::Redeem`](crate::transport::Envelope::Redeem)
     /// needs to admit `member_device` of `member_user`: the registered,
     /// unrevoked invitation `invite_id` checks out, the delegation still
@@ -455,6 +525,69 @@ mod tests {
         assert!(matches!(
             hosting.admit(id, [1; 32], [2; 32], &relay, SystemTime::now()),
             Err(PublicRoomError::Revoked)
+        ));
+    }
+
+    #[test]
+    fn an_exported_record_is_adopted_only_by_its_relay_and_never_unrevokes() {
+        let team = team();
+        let room = uuid::Uuid::new_v4().to_string();
+        let relay = ed25519_dalek::SigningKey::from_bytes(&[0x76; 32]);
+        let relay_device = relay.verifying_key().to_bytes();
+        let first = standing(&team, &room, neighbour_wire::invite::InviteRole::Commenter);
+        let second = standing(&team, &room, neighbour_wire::invite::InviteRole::Viewer);
+        let entry = |token: &str, revoked| HostedStandingInvite {
+            id: hex::encode(neighbour_wire::invite::invite_id(token)),
+            token: token.to_string(),
+            revoked,
+        };
+        let mut exported = hosting(&team, &room, &relay);
+        exported.invites.push(entry(&first, true));
+        let now = SystemTime::now();
+
+        let other = ed25519_dalek::SigningKey::from_bytes(&[0x77; 32]);
+        assert!(matches!(
+            PublicRoomHosting::adopt(
+                None,
+                exported.clone(),
+                other.verifying_key().to_bytes(),
+                now
+            ),
+            Err(PublicRoomError::Delegation(_))
+        ));
+
+        let (workspace, held) =
+            PublicRoomHosting::adopt(None, exported.clone(), relay_device, now).unwrap();
+        assert_eq!(workspace, crate::room_workspace_id(&room).unwrap());
+
+        // A later record naming the first invitation live again, plus a new
+        // one, revokes nothing new and brings nothing back.
+        let mut rotated = hosting(&team, &room, &relay);
+        rotated.invites.push(entry(&first, false));
+        rotated.invites.push(entry(&second, false));
+        let (_, held) = PublicRoomHosting::adopt(Some(held), rotated, relay_device, now).unwrap();
+        assert_eq!(held.invites.len(), 2);
+        assert!(held.invites[0].revoked, "a revocation is never undone");
+        assert!(!held.invites[1].revoked);
+
+        let mut forged = hosting(&team, &room, &relay);
+        forged.invites.push(HostedStandingInvite {
+            id: hex::encode([0; 32]),
+            ..entry(&second, false)
+        });
+        assert!(matches!(
+            PublicRoomHosting::adopt(Some(held.clone()), forged, relay_device, now),
+            Err(PublicRoomError::InvalidInvite(_))
+        ));
+
+        let stranger = Team {
+            root: ed25519_dalek::SigningKey::from_bytes(&[0x78; 32]),
+            ..self::team()
+        };
+        let foreign = hosting(&stranger, &room, &relay);
+        assert!(matches!(
+            PublicRoomHosting::adopt(Some(held), foreign, relay_device, now),
+            Err(PublicRoomError::Delegation(_))
         ));
     }
 

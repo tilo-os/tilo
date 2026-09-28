@@ -466,6 +466,82 @@ impl std::fmt::Display for PeerOrigin {
 /// projects it into governance, and a governance sync never removes it.
 pub const DELEGATED_ADMISSION_CAP_PREFIX: &str = "host-admission-";
 
+/// Id prefix of the membership a person gives an agent acting for them on
+/// their own device, such as the session recorder. It needs no room
+/// administrator, because it grants nothing the person cannot already do:
+/// its verb is bounded by the person's own role, and it stands only while
+/// that person still holds the role. Like a delegated admission it is held
+/// outside governance, and a governance sync never removes it.
+///
+/// The device the agent runs on holds `delegate-<person>:<admission id>`
+/// ([`WorkspaceTree::admit_device_delegate`]) and announces it to the room
+/// as a signed delegation; every other member lists it, once verified, as
+/// `delegate-<person>:device-<device>:<agent>`
+/// ([`remote_device_delegate_id`]). A room whose administrators turned off
+/// recording delegates ([`Workspace::recording_delegates_forbidden`]) holds
+/// neither.
+pub const DEVICE_DELEGATE_CAP_PREFIX: &str = "delegate-";
+
+/// Marks the device-delegate memberships another member's device announced.
+const REMOTE_DELEGATE_MARK: &str = "device-";
+
+/// Whether `cap` is an admission governance never carries: a host-delegated
+/// admission or a person's device delegate.
+pub fn held_outside_governance(cap: &CapOverride) -> bool {
+    cap.id.starts_with(DELEGATED_ADMISSION_CAP_PREFIX)
+        || cap.id.starts_with(DEVICE_DELEGATE_CAP_PREFIX)
+}
+
+/// The widest verb `role` grants in its room; `None` for a blocked member.
+fn role_verb(role: CapRole) -> Option<Verb> {
+    match role {
+        CapRole::Owner => Some(Verb::Admin),
+        CapRole::Editor => Some(Verb::Write),
+        CapRole::Commenter => Some(Verb::Comment),
+        CapRole::Viewer => Some(Verb::Read),
+        CapRole::Denied => None,
+    }
+}
+
+fn device_delegate_parts(cap: &CapOverride) -> Option<(&str, &str)> {
+    cap.id
+        .strip_prefix(DEVICE_DELEGATE_CAP_PREFIX)?
+        .split_once(':')
+        .filter(|(person, _)| !person.is_empty())
+}
+
+/// The person a device-delegate capability acts for, if `cap` is one.
+pub fn device_delegate_person(cap: &CapOverride) -> Option<&str> {
+    device_delegate_parts(cap).map(|(person, _)| person)
+}
+
+/// Whether `cap` is a device delegate for an agent running on this device.
+pub fn is_local_device_delegate(cap: &CapOverride) -> bool {
+    device_delegate_parts(cap).is_some_and(|(_, rest)| !rest.starts_with(REMOTE_DELEGATE_MARK))
+}
+
+/// Whether `cap` lists another member's device delegate.
+pub fn is_remote_device_delegate(cap: &CapOverride) -> bool {
+    device_delegate_parts(cap).is_some_and(|(_, rest)| rest.starts_with(REMOTE_DELEGATE_MARK))
+}
+
+/// Id under which a member lists `person`'s `agent` on `device`.
+pub fn remote_device_delegate_id(person: &str, device: &[u8; 32], agent: &str) -> String {
+    format!(
+        "{DEVICE_DELEGATE_CAP_PREFIX}{person}:{REMOTE_DELEGATE_MARK}{}:{agent}",
+        hex::encode(device)
+    )
+}
+
+/// Whether `person` still holds a role in `workspace` that allows `verb`, so
+/// a delegate acting for them with `verb` may stand.
+pub fn delegate_person_stands(workspace: &Workspace, person: &str, verb: Verb) -> bool {
+    workspace
+        .role_of(&person.to_string())
+        .and_then(role_verb)
+        .is_some_and(|held| held.implies(verb))
+}
+
 /// Who may write a room's governance — its owner and capability list —
 /// as this machine knows it. Automerge merges a map key
 /// last-writer-wins with no per-key ACL, so without this record
@@ -691,14 +767,28 @@ pub(crate) static NEXT_ID_PEER_SALT: AtomicU16 = AtomicU16::new(0);
 static ROOM_RECORD_SIGNER: std::sync::RwLock<Option<iroh::SecretKey>> =
     std::sync::RwLock::new(None);
 
+/// What a room's record map holds once its seals are checked; see
+/// [`WorkspaceTree::room_record_standing`].
+#[derive(Debug, Default)]
+struct RoomRecordStanding {
+    /// `(id, kind)` of every record in the room.
+    live: Vec<(String, String)>,
+    /// Every record taken out of it.
+    withdrawn: Vec<String>,
+}
+
 /// What a room-record seal signs: the act, the room, the record and the
 /// bringing-in it concerns — so a seal says nothing about any other.
 fn room_record_act_message(room: RoomId, act: projection::RoomRecordAct<'_>) -> Vec<u8> {
-    let (verb, id, nonce) = match act {
-        projection::RoomRecordAct::Added { id, nonce } => ("add", id, nonce),
-        projection::RoomRecordAct::Withdrawn { id, nonce } => ("withdraw", id, nonce),
-    };
-    format!("tilo.room.record.v1\0{verb}\0{room}\0{id}\0{nonce}").into_bytes()
+    match act {
+        projection::RoomRecordAct::Added { id, kind, nonce } => {
+            format!("tilo.room.record.v2\0add\0{room}\0{id}\0{kind}\0{nonce}")
+        }
+        projection::RoomRecordAct::Withdrawn { id, nonce } => {
+            format!("tilo.room.record.v2\0withdraw\0{room}\0{id}\0{nonce}")
+        }
+    }
+    .into_bytes()
 }
 
 fn seal_room_record_act(
@@ -1089,6 +1179,11 @@ impl WorkspaceTree {
 /// invitation receipts and media policy read from a room document's
 /// governance keys. See [`WorkspaceTree::governance_of`].
 type RoomGovernance = tilo_peer_state::room::RoomGovernance;
+
+/// Recording-delegate policy, triage-agent admission to direct rooms and
+/// delegated hosts read from a room document's governance keys. See
+/// [`WorkspaceTree::room_policy_in`].
+type RoomPolicy = (Option<bool>, Option<bool>, Vec<String>);
 
 impl WorkspaceTree {
     pub(crate) fn installed_native_owner(
@@ -1746,12 +1841,17 @@ impl WorkspaceTree {
         let name = ws.name.clone();
         let owner = ws.owner.clone();
         let channel_class = ws.channel_class;
-        // Delegated admissions are records of their own; projecting them
-        // would republish every member of a public room with each change.
+        let recording_delegates_forbidden = ws.recording_delegates_forbidden;
+        let triage_in_direct_rooms = ws.triage_in_direct_rooms;
+        let delegated_hosts = ws.delegated_hosts.clone();
+        // Admissions held outside governance are not the room's to carry:
+        // a delegated admission is a record of its own, and projecting them
+        // would republish every member of a public room with each change;
+        // a person's device delegate is theirs, on their device.
         let caps: Vec<CapOverride> = ws
             .capabilities
             .iter()
-            .filter(|cap| !cap.id.starts_with(DELEGATED_ADMISSION_CAP_PREFIX))
+            .filter(|cap| !held_outside_governance(cap))
             .cloned()
             .collect();
         let tasks = ws.tasks.clone();
@@ -1784,6 +1884,16 @@ impl WorkspaceTree {
             signer
                 .as_ref()
                 .map(|key| seal_room_record_act(key, room, act))
+        };
+        // First projection this session: a withdrawal already in the
+        // document applies to a copy still held here. This projection takes
+        // nothing out itself, so reading before it is the same as after.
+        let first_withdrawn: Vec<String> = match (
+            self.desktop.room_records_projected.get(&room),
+            self.room_docs.get(&room),
+        ) {
+            (None, Some(doc)) => self.room_record_standing(room, doc).withdrawn,
+            _ => Vec::new(),
         };
 
         // The cache contains no media definitions. Preserve the admitted field
@@ -1839,13 +1949,9 @@ impl WorkspaceTree {
         if let Err(err) = projection::project_room_records(doc, &held, previous, &seal) {
             tracing::error!(?err, "room doc: records map");
         }
-        // First projection this session: a withdrawal already in the
-        // document applies to a copy still held here.
-        if previous.is_none() {
-            for id in projection::room_records_removed_of(doc) {
-                if held.contains_key(&id) {
-                    self.desktop.room_records_withdrawn.push((room, id));
-                }
+        for id in first_withdrawn {
+            if held.contains_key(&id) {
+                self.desktop.room_records_withdrawn.push((room, id));
             }
         }
         self.desktop
@@ -1916,6 +2022,9 @@ impl WorkspaceTree {
             }
         }
         projection::project_channel_class(doc, channel_class);
+        projection::project_recording_delegates(doc, recording_delegates_forbidden);
+        projection::project_triage_in_direct_rooms(doc, triage_in_direct_rooms);
+        projection::project_delegated_hosts(doc, &delegated_hosts);
         Self::project_peer_names(doc, &peer_names);
         Self::project_peer_identities(doc, &peer_identities);
         let _ = tilo_resource::history::commit_stamped(doc);
@@ -1929,7 +2038,76 @@ impl WorkspaceTree {
         }
         doc.reset_diff_cursor();
         self.room_docs.insert(room, candidate);
+        // With the new governance in place, vouch again for the room's
+        // records under it.
+        self.confirm_room_records(room, &held);
+        if let Some(doc) = self.room_docs.get_mut(&room) {
+            let _ = tilo_resource::history::commit_stamped(doc);
+            doc.reset_diff_cursor();
+        }
         true
+    }
+
+    /// As `room`'s authority, vouch for what the room's records say once the
+    /// governance just projected holds: a record this machine holds whose
+    /// bringing-in no longer stands — its sealer has lost the right to add
+    /// records — is sealed afresh, and a withdrawal this machine followed
+    /// whose seal no longer stands is sealed afresh too. So a demotion never
+    /// takes a record out of the room, or puts one back, for anybody.
+    fn confirm_room_records(
+        &mut self,
+        room: RoomId,
+        held: &std::collections::BTreeMap<String, String>,
+    ) {
+        let Some(doc) = self.room_docs.get(&room) else {
+            return;
+        };
+        let standing = self.room_record_standing(room, doc);
+        let mut bring_in: Vec<(String, String)> = Vec::new();
+        let mut take_out: Vec<(String, String)> = Vec::new();
+        for entry in projection::room_record_entries_of(doc) {
+            let live = standing.live.iter().any(|(id, _)| *id == entry.id);
+            let withdrawn = standing.withdrawn.contains(&entry.id);
+            match held.get(&entry.id) {
+                Some(kind) if !entry.removed && !live && !withdrawn => {
+                    bring_in.push((entry.id, kind.clone()));
+                }
+                // Taken out by a member with standing when they sealed it:
+                // this machine followed, and nothing it has yet to fold in
+                // brings the record back.
+                None if entry.removed
+                    && live
+                    && self.withdrawal_genuine(room, doc, &entry)
+                    && !self
+                        .desktop
+                        .room_records_inbound
+                        .iter()
+                        .any(|(r, id, _)| *r == room && *id == entry.id) =>
+                {
+                    if let Some((nonce, _)) = self.sealed_bringing_ins(room, doc, &entry).first() {
+                        take_out.push((entry.id.clone(), (*nonce).to_string()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if bring_in.is_empty() && take_out.is_empty() {
+            return;
+        }
+        let Some(signer) = self.room_record_signer() else {
+            return;
+        };
+        let seal =
+            |act: projection::RoomRecordAct<'_>| Some(seal_room_record_act(&signer, room, act));
+        let Some(doc) = self.room_docs.get_mut(&room) else {
+            return;
+        };
+        for (id, kind) in bring_in {
+            projection::reseal_room_record(doc, &id, &kind, &seal);
+        }
+        for (id, nonce) in take_out {
+            projection::reseal_room_record_withdrawal(doc, &id, &nonce, &seal);
+        }
     }
 
     /// Key the room document stores its peers' names under.
@@ -2030,11 +2208,18 @@ impl WorkspaceTree {
         &self,
         room: RoomId,
     ) -> std::collections::BTreeMap<String, GovernedPeerIdentity> {
+        self.room_docs
+            .get(&room)
+            .map(Self::peer_identities_of)
+            .unwrap_or_default()
+    }
+
+    /// The certified identities a room document carries, each checked.
+    fn peer_identities_of(
+        doc: &AutoCommit,
+    ) -> std::collections::BTreeMap<String, GovernedPeerIdentity> {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
         let mut out = std::collections::BTreeMap::new();
-        let Some(doc) = self.room_docs.get(&room) else {
-            return out;
-        };
         let Some((_, object)) = doc
             .get(&ROOT, Self::ROOM_PEER_IDENTITIES_KEY)
             .ok()
@@ -2183,6 +2368,20 @@ impl WorkspaceTree {
         doc.and_then(projection::channel_class_of)
     }
 
+    /// The recording-delegate policy, triage-agent admission and delegated
+    /// hosts a room document's governance states. Governed beside
+    /// [`Self::governance_of`]: only the room's authority may write them.
+    fn room_policy_in(doc: Option<&AutoCommit>) -> RoomPolicy {
+        let Some(doc) = doc else {
+            return (None, None, Vec::new());
+        };
+        (
+            projection::recording_delegates_forbidden_of(doc),
+            projection::triage_in_direct_rooms_of(doc),
+            projection::delegated_hosts_of(doc),
+        )
+    }
+
     /// Current heads of `room`'s replication document — the baseline a
     /// peer sends so the answer carries only what it's missing. Empty
     /// for a room this machine is not in.
@@ -2263,7 +2462,11 @@ impl WorkspaceTree {
         let after = Self::governance_of(Some(candidate));
         let class_before = Self::channel_class_in(self.room_docs.get(&room));
         let class_after = Self::channel_class_in(Some(candidate));
-        if before == after && class_before == class_after {
+        if before == after
+            && class_before == class_after
+            && Self::room_policy_in(self.room_docs.get(&room))
+                == Self::room_policy_in(Some(candidate))
+        {
             return false;
         }
         // A room's channel class is fixed once governance has stated it —
@@ -2468,15 +2671,17 @@ impl WorkspaceTree {
     /// Diffs `candidate`'s room-record index against what's already held
     /// for `room`, queues the difference for the shell to fold in (see
     /// [`Self::take_inbound_room_records`]), and reports whether
-    /// anything arrived.
+    /// anything arrived. Only what the seals bear out counts: an entry no
+    /// member who may add records brought in is not in the room, and a
+    /// withdrawal nobody with standing sealed takes nothing out.
     fn queue_inbound_records(&mut self, room: RoomId, candidate: &AutoCommit) -> bool {
         // The difference from what's already held is what a peer
         // brought — queued for the shell to fold in, since the tree
         // can't reach the room's own index.
-        let arrived = projection::room_records_of(candidate);
+        let standing = self.room_record_standing(room, candidate);
         let already = self.desktop.room_records_held.get(&room);
         let mut inbound: Vec<(RoomId, String, String)> = Vec::new();
-        for (id, kind) in arrived {
+        for (id, kind) in standing.live {
             let known = already.and_then(|h| h.get(&id));
             if known.map(std::string::String::as_str) != Some(kind.as_str()) {
                 inbound.push((room, id.clone(), kind));
@@ -2484,7 +2689,7 @@ impl WorkspaceTree {
         }
         // And what a peer took out, which a copy still held here follows.
         let mut withdrawn: Vec<(RoomId, String)> = Vec::new();
-        for id in projection::room_records_removed_of(candidate) {
+        for id in standing.withdrawn {
             if already.is_some_and(|held| held.contains_key(&id)) {
                 withdrawn.push((room, id));
             }
@@ -2495,99 +2700,250 @@ impl WorkspaceTree {
         records_changed
     }
 
-    /// True (and logs a warning) if `candidate` withdraws a room record
-    /// nobody with standing withdrew. A withdrawal stands on its seal, not
-    /// on who relayed it: it must be signed by the member who brought the
-    /// record in (their sealed bringing-in names them), by the room's
-    /// authority, or by a member the room lets edit. Automerge has no
-    /// per-key ACL, so the check is on the batch, like governance.
-    fn record_withdrawal_refused(&self, room: RoomId, candidate: &AutoCommit) -> bool {
-        let before: std::collections::BTreeSet<String> = self
-            .room_docs
-            .get(&room)
-            .map(projection::room_records_removed_of)
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-        for id in projection::room_records_removed_of(candidate) {
-            if before.contains(&id) {
+    /// What `doc`'s record map holds for `room`, by its seals: the records in
+    /// the room, and those taken out of it.
+    ///
+    /// A record is in the room when a member who may add records (see
+    /// [`Self::member_may_edit_room`]) sealed a bringing-in of it, as that
+    /// kind, that no withdrawal with standing takes back. A withdrawal has
+    /// standing when it is sealed over that bringing-in by who made it, or
+    /// by a member who may edit the room. Everything else in the map —
+    /// unsealed entries, marks, seals by anyone else — is ignored.
+    fn room_record_standing(&self, room: RoomId, doc: &AutoCommit) -> RoomRecordStanding {
+        let mut standing = RoomRecordStanding::default();
+        for entry in projection::room_record_entries_of(doc) {
+            let brought_in = self.sealed_bringing_ins(room, doc, &entry);
+            if brought_in.is_empty() {
                 continue;
             }
-            let added = projection::room_record_added(candidate, &id);
-            let withdrawals = projection::room_record_withdrawals(candidate, &id);
-            let stands = added.iter().any(|added| {
-                let bringer = added.seal.as_ref().and_then(|(by, sig)| {
+            let taken_back = brought_in
+                .iter()
+                .any(|(nonce, by)| self.withdrawal_stands(room, doc, &entry, nonce, by));
+            if taken_back {
+                standing.withdrawn.push(entry.id);
+            } else {
+                standing.live.push((entry.id, entry.kind));
+            }
+        }
+        standing
+    }
+
+    /// `(nonce, by)` of every bringing-in of `entry` sealed, over its
+    /// current kind, by a member who may add records to `room`.
+    fn sealed_bringing_ins<'e>(
+        &self,
+        room: RoomId,
+        doc: &AutoCommit,
+        entry: &'e projection::RoomRecordEntry,
+    ) -> Vec<(&'e str, &'e str)> {
+        entry
+            .added
+            .iter()
+            .filter_map(|added| {
+                let (by, sig) = added.seal.as_ref()?;
+                let act = projection::RoomRecordAct::Added {
+                    id: &entry.id,
+                    kind: &entry.kind,
+                    nonce: &added.nonce,
+                };
+                (room_record_seal_holds(room, act, by, sig)
+                    && self.member_may_edit_room(room, doc, by))
+                .then_some((added.nonce.as_str(), by.as_str()))
+            })
+            .collect()
+    }
+
+    /// Whether a withdrawal of `entry`'s bringing-in `nonce`, made by
+    /// `bringer`, is sealed by `bringer` or by a member who may edit `room`.
+    fn withdrawal_stands(
+        &self,
+        room: RoomId,
+        doc: &AutoCommit,
+        entry: &projection::RoomRecordEntry,
+        nonce: &str,
+        bringer: &str,
+    ) -> bool {
+        entry.withdrawn.iter().any(|(by, sig)| {
+            room_record_seal_holds(
+                room,
+                projection::RoomRecordAct::Withdrawn {
+                    id: &entry.id,
+                    nonce,
+                },
+                by,
+                sig,
+            ) && (by == bringer || self.member_may_edit_room(room, doc, by))
+        })
+    }
+
+    /// True (and logs a warning) if `candidate` changes the room's records
+    /// with a seal that could never have been genuine: an entry it brings
+    /// in, recasts or brings back with no new bringing-in, a new bringing-in
+    /// or a newly marked withdrawal that is unsealed, whose signature does
+    /// not verify, or whose sealer is neither the room's authority nor a
+    /// member certified in it. Automerge has no per-key ACL, so the check is
+    /// on the batch, like governance.
+    ///
+    /// Whether the sealer may add or take out records is judged on read
+    /// instead ([`Self::room_record_standing`]), never here: a member who
+    /// could when they sealed may have lost the right since, and refusing
+    /// the whole batch then would keep every newcomer from syncing the room.
+    /// Such an entry is ignored, the rest applies, and the room's authority
+    /// seals it afresh if it still holds it ([`Self::confirm_room_records`]).
+    fn room_records_change_refused(&self, room: RoomId, candidate: &AutoCommit) -> bool {
+        let before: std::collections::BTreeMap<String, projection::RoomRecordEntry> = self
+            .room_docs
+            .get(&room)
+            .map(projection::room_record_entries_of)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| (entry.id.clone(), entry))
+            .collect();
+        for entry in projection::room_record_entries_of(candidate) {
+            let prior = before.get(&entry.id);
+            let fresh: Vec<&projection::RoomRecordAdded> = entry
+                .added
+                .iter()
+                .filter(|added| prior.is_none_or(|prior| !prior.added.contains(added)))
+                .collect();
+            let genuine = |added: &projection::RoomRecordAdded| {
+                added.seal.as_ref().is_some_and(|(by, sig)| {
                     room_record_seal_holds(
                         room,
                         projection::RoomRecordAct::Added {
-                            id: &id,
+                            id: &entry.id,
+                            kind: &entry.kind,
+                            nonce: &added.nonce,
+                        },
+                        by,
+                        sig,
+                    ) && self.known_in_room(room, candidate, by)
+                })
+            };
+            let needs_bringing_in = match prior {
+                None => true,
+                Some(prior) => prior.kind != entry.kind || (prior.removed && !entry.removed),
+            };
+            if !fresh.iter().all(|added| genuine(added)) || (needs_bringing_in && fresh.is_empty())
+            {
+                tracing::warn!(
+                    target: "shell::state",
+                    room = %room,
+                    record = %entry.id,
+                    "room sync refused: a record is brought into the room without a genuine seal",
+                );
+                return true;
+            }
+            let newly_removed = entry.removed && prior.is_none_or(|prior| !prior.removed);
+            if newly_removed && !self.withdrawal_genuine(room, candidate, &entry) {
+                tracing::warn!(
+                    target: "shell::state",
+                    room = %room,
+                    record = %entry.id,
+                    "room sync refused: a record is taken out of the room without a genuine seal",
+                );
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Whether `entry` carries a withdrawal sealed, over one of its
+    /// bringing-ins, by anyone in `room` — genuine, whether or not its sealer
+    /// may take records out.
+    fn withdrawal_genuine(
+        &self,
+        room: RoomId,
+        doc: &AutoCommit,
+        entry: &projection::RoomRecordEntry,
+    ) -> bool {
+        entry.withdrawn.iter().any(|(by, sig)| {
+            self.known_in_room(room, doc, by)
+                && entry.added.iter().any(|added| {
+                    room_record_seal_holds(
+                        room,
+                        projection::RoomRecordAct::Withdrawn {
+                            id: &entry.id,
                             nonce: &added.nonce,
                         },
                         by,
                         sig,
                     )
-                    .then_some(by.as_str())
-                });
-                withdrawals.iter().any(|(by, sig)| {
-                    room_record_seal_holds(
-                        room,
-                        projection::RoomRecordAct::Withdrawn {
-                            id: &id,
-                            nonce: &added.nonce,
-                        },
-                        by,
-                        sig,
-                    ) && (bringer == Some(by.as_str())
-                        || self.may_withdraw_any_room_record(room, by))
                 })
-            });
-            if stands {
-                continue;
-            }
-            tracing::warn!(
-                target: "shell::state",
-                room = %room,
-                record = %id,
-                "room sync refused: a record's withdrawal is not sealed by who brought it in, the room's authority or an editor",
-            );
-            return true;
-        }
-        false
+        })
     }
 
-    /// Whether the member whose device is `endpoint` may take any record out
-    /// of `room`: the room's authority, or someone the room lets edit.
-    fn may_withdraw_any_room_record(&self, room: RoomId, endpoint: &str) -> bool {
-        let authority = match self.room_authority(room) {
+    /// Whether `endpoint` is `room`'s authority.
+    fn is_room_authority(&self, room: RoomId, endpoint: &str) -> bool {
+        match self.room_authority(room) {
             RoomAuthority::Peer(peer) => peer == PeerOrigin::peer_id(endpoint),
             RoomAuthority::Local => self
                 .room_record_signer()
                 .is_some_and(|key| key.public().to_string() == endpoint),
             RoomAuthority::Unpinned => false,
+        }
+    }
+
+    /// The certified identity of the member whose device is `endpoint`, from
+    /// what this machine holds or what `doc`'s governance carries.
+    fn room_member_identity(
+        &self,
+        room: RoomId,
+        doc: &AutoCommit,
+        endpoint: &str,
+    ) -> Option<GovernedPeerIdentity> {
+        self.room_peer_identities
+            .get(&room)
+            .and_then(|identities| identities.get(endpoint))
+            .cloned()
+            .or_else(|| Self::peer_identities_of(doc).remove(endpoint))
+    }
+
+    /// Whether `endpoint` is anyone in `room` at all: its authority, or a
+    /// member certified in it, whatever their role.
+    fn known_in_room(&self, room: RoomId, doc: &AutoCommit, endpoint: &str) -> bool {
+        self.is_room_authority(room, endpoint)
+            || self.room_member_identity(room, doc, endpoint).is_some()
+    }
+
+    /// Whether the member whose device is `endpoint` may add records to
+    /// `room` and take any out: the room's authority, or someone the room
+    /// lets edit. Identities and capabilities are read from `doc` as well as
+    /// from what this machine already holds, so a member admitted in the
+    /// same batch is known.
+    fn member_may_edit_room(&self, room: RoomId, doc: &AutoCommit, endpoint: &str) -> bool {
+        if self.is_room_authority(room, endpoint) {
+            return true;
+        }
+        let Some(identity) = self.room_member_identity(room, doc, endpoint) else {
+            return false;
         };
-        authority
-            || self
-                .room_peer_identities
-                .get(&room)
-                .and_then(|identities| identities.get(endpoint))
-                .zip(self.workspace_in_room(room))
-                .is_some_and(|(identity, workspace)| {
-                    let collab_types::Principal::Person(person) =
-                        collab_types::Principal::person_from_key(
-                            collab_types::Ed25519PublicKey::from_bytes(
-                                identity.device_cert.user_public_key,
-                            ),
-                        )
-                    else {
-                        return false;
-                    };
-                    let actor = workspace.actor_for_person(&person);
-                    workspace.allows(&actor, &ResourceRef::Workspace, Verb::Write)
-                })
+        let Some(workspace) = self.workspace_in_room(room) else {
+            return false;
+        };
+        let (_, _, caps) = Self::extract_governed_fields(doc);
+        let mut governed;
+        let workspace = if caps.is_empty() {
+            workspace
+        } else {
+            governed = workspace.clone();
+            governed.capabilities.retain(held_outside_governance);
+            governed
+                .capabilities
+                .extend(caps.into_iter().filter(|cap| !held_outside_governance(cap)));
+            &governed
+        };
+        let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
+            collab_types::Ed25519PublicKey::from_bytes(identity.device_cert.user_public_key),
+        ) else {
+            return false;
+        };
+        let actor = workspace.actor_for_person(&person);
+        workspace.allows(&actor, &ResourceRef::Workspace, Verb::Write)
     }
 
     /// Whether this machine may take `record` out of `room`: it brought it
-    /// in, by its own seal, or it governs the room.
+    /// in, by its own seal, or it may edit the room.
     pub fn may_withdraw_room_record(&self, room: RoomId, record: &str) -> bool {
         if self.governs_room(room) {
             return true;
@@ -2595,31 +2951,34 @@ impl WorkspaceTree {
         let Some(doc) = self.room_docs.get(&room) else {
             return true;
         };
-        let added = projection::room_record_added(doc, record);
-        if added.is_empty() {
+        let Some(entry) = projection::room_record_entries_of(doc)
+            .into_iter()
+            .find(|entry| entry.id == record)
+        else {
             // Not in the room at all: nothing to take out.
             return true;
-        }
+        };
         let Some(me) = self
             .room_record_signer()
             .map(|key| key.public().to_string())
         else {
             return false;
         };
-        added.iter().any(|added| {
+        entry.added.iter().any(|added| {
             added.seal.as_ref().is_some_and(|(by, sig)| {
                 by == &me
                     && room_record_seal_holds(
                         room,
                         projection::RoomRecordAct::Added {
                             id: record,
+                            kind: &entry.kind,
                             nonce: &added.nonce,
                         },
                         by,
                         sig,
                     )
             })
-        }) || self.may_withdraw_any_room_record(room, &me)
+        }) || self.member_may_edit_room(room, doc, &me)
     }
 
     /// Merge a peer's changes to `room` into the cached workspace, and
@@ -2701,12 +3060,16 @@ impl WorkspaceTree {
         if self.owned_contents_conflict(room, &candidate, from) {
             return Ok(false);
         }
-        if self.record_withdrawal_refused(room, &candidate) {
+        if self.room_records_change_refused(room, &candidate) {
             return Ok(false);
         }
 
         let (name, owner, caps) = Self::extract_governed_fields(&candidate);
         let channel_class = projection::channel_class_of(&candidate);
+        let recording_delegates_forbidden =
+            projection::recording_delegates_forbidden_of(&candidate);
+        let triage_in_direct_rooms = projection::triage_in_direct_rooms_of(&candidate);
+        let delegated_hosts = projection::delegated_hosts_of(&candidate);
         let mut tasks = projection::workspace_tasks_of(&candidate);
         let shortcuts = projection::workspace_shortcuts_of(&candidate);
         let mut schedule_claims = projection::schedule_claims_of(&candidate);
@@ -2736,7 +3099,9 @@ impl WorkspaceTree {
         if self.room_authority(room) == RoomAuthority::Unpinned
             && (Self::governance_of(self.room_docs.get(&room))
                 != Self::governance_of(Some(&candidate))
-                || Self::channel_class_in(self.room_docs.get(&room)) != channel_class)
+                || Self::channel_class_in(self.room_docs.get(&room)) != channel_class
+                || Self::room_policy_in(self.room_docs.get(&room))
+                    != Self::room_policy_in(Some(&candidate)))
         {
             tracing::info!(
                 target: "shell::state",
@@ -2779,16 +3144,33 @@ impl WorkspaceTree {
             ws.channel_class = class;
             fields_changed = true;
         }
+        if let Some(forbidden) = recording_delegates_forbidden
+            && ws.recording_delegates_forbidden != forbidden
+        {
+            ws.recording_delegates_forbidden = forbidden;
+            fields_changed = true;
+        }
+        if let Some(on) = triage_in_direct_rooms
+            && ws.triage_in_direct_rooms != on
+        {
+            ws.triage_in_direct_rooms = on;
+            fields_changed = true;
+        }
+        // Governance: the document's list is the room's, replaced whole.
+        if ws.delegated_hosts != delegated_hosts {
+            ws.delegated_hosts = delegated_hosts;
+            fields_changed = true;
+        }
         // Replaced rather than merged: a revoked capability is simply
         // absent from the peer's document, so carrying the local list
-        // over would let it survive. Delegated admissions are the one
-        // exception: governance never carries them.
+        // over would let it survive. Admissions held outside governance
+        // are the one exception: governance never carries them.
         let mut sorted = caps;
-        sorted.retain(|cap| !cap.id.starts_with(DELEGATED_ADMISSION_CAP_PREFIX));
+        sorted.retain(|cap| !held_outside_governance(cap));
         sorted.extend(
             ws.capabilities
                 .iter()
-                .filter(|cap| cap.id.starts_with(DELEGATED_ADMISSION_CAP_PREFIX))
+                .filter(|cap| held_outside_governance(cap))
                 .cloned(),
         );
         sorted.sort_by(|a, b| a.id.cmp(&b.id));
@@ -3202,6 +3584,162 @@ impl WorkspaceTree {
         self.doc_insert_capability(workspace_id, &stored);
         self.flush_to_disk();
         Some(id)
+    }
+
+    /// Admit an agent to `workspace_id` as `person`'s delegate on this device,
+    /// with no administrator's grant: `cap` must name an agent, cover the
+    /// room, and ask no more than `person`'s own role allows, and the room
+    /// must allow recording delegates. Kept on this device and on disk,
+    /// never in governance; the network announces it to the room (see
+    /// [`DEVICE_DELEGATE_CAP_PREFIX`]). Returns the capability id, or `None`
+    /// when refused.
+    pub fn admit_device_delegate(
+        &mut self,
+        workspace_id: WorkspaceId,
+        person: &UserId,
+        cap: CapOverride,
+    ) -> Option<String> {
+        if !matches!(&cap.subject, Subject::Principal(Principal::Agent(_)))
+            || cap.effect != Effect::Grant
+            || person.contains(':')
+            || cap.id.starts_with(REMOTE_DELEGATE_MARK)
+        {
+            return None;
+        }
+        let ws = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)?;
+        let covers_this_room = match &cap.scope {
+            Scope::Room(room) => *room == ws.room.to_string(),
+            _ => false,
+        };
+        if !covers_this_room
+            || ws.recording_delegates_forbidden
+            || !delegate_person_stands(ws, person, cap.verb)
+        {
+            return None;
+        }
+        let id = format!("{DEVICE_DELEGATE_CAP_PREFIX}{person}:{}", cap.id);
+        ws.grant_capability(cap.with_id(id.clone()));
+        self.flush_to_disk();
+        Some(id)
+    }
+
+    /// Take back a device delegate's admission; see
+    /// [`Self::admit_device_delegate`]. Only this device holds it, so only
+    /// this device removes it; the network announces that it stopped.
+    pub fn revoke_device_delegate(&mut self, workspace_id: WorkspaceId, cap_id: &str) -> bool {
+        if !cap_id.starts_with(DEVICE_DELEGATE_CAP_PREFIX) {
+            return false;
+        }
+        let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+        else {
+            return false;
+        };
+        if !ws.revoke_capability(cap_id) {
+            return false;
+        }
+        self.flush_to_disk();
+        true
+    }
+
+    /// Have the team's triage agent join reporters' direct rooms, or not, in
+    /// the community room `workspace_id`, as `actor`, one of its
+    /// administrators, on the machine that governs the room. Room
+    /// governance, projected into the room document so every reporter's
+    /// device reads it. `false` when `actor` may not, or nothing changed.
+    pub fn set_triage_in_direct_rooms(
+        &mut self,
+        workspace_id: WorkspaceId,
+        actor: &UserId,
+        on: bool,
+    ) -> bool {
+        let Some(room) = self.room_of(workspace_id) else {
+            return false;
+        };
+        if !room.is_nil() && !self.governs_room(room) {
+            return false;
+        }
+        let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+        else {
+            return false;
+        };
+        if !ws.may_administer(actor) || ws.triage_in_direct_rooms == on {
+            return false;
+        }
+        ws.triage_in_direct_rooms = on;
+        self.sync_room_doc(room);
+        self.seed_doc_from_cache();
+        self.flush_to_disk();
+        true
+    }
+
+    /// Allow or forbid recording delegates in `workspace_id` as `actor`, one of
+    /// its administrators, on the machine that governs the room. Room
+    /// governance: projected into the room document, so every member's
+    /// device refuses a delegation while it is off, and this device drops its
+    /// own delegates at once. `false` when `actor` may not, or nothing
+    /// changed.
+    pub fn set_recording_delegates_allowed(
+        &mut self,
+        workspace_id: WorkspaceId,
+        actor: &UserId,
+        allowed: bool,
+    ) -> bool {
+        let Some(room) = self.room_of(workspace_id) else {
+            return false;
+        };
+        if !room.is_nil() && !self.governs_room(room) {
+            return false;
+        }
+        let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+        else {
+            return false;
+        };
+        if !ws.may_administer(actor) || ws.recording_delegates_forbidden != allowed {
+            return false;
+        }
+        ws.recording_delegates_forbidden = !allowed;
+        if !allowed {
+            ws.revoke_matching(is_local_device_delegate);
+        }
+        self.sync_room_doc(room);
+        self.seed_doc_from_cache();
+        self.flush_to_disk();
+        true
+    }
+
+    /// Whether `agent` acts in `workspace` as a delegate on this device that
+    /// still stands: the room allows recording delegates, and the person it
+    /// acts for still holds a role that allows what they delegated. A person
+    /// removed or blocked takes their delegate with them.
+    pub fn local_delegate_stands(workspace: &Workspace, agent: &str) -> bool {
+        !workspace.recording_delegates_forbidden
+            && workspace
+                .capabilities
+                .iter()
+                .filter(|cap| {
+                    matches!(&cap.subject, Subject::Principal(Principal::Agent(a)) if a == agent)
+                        && is_local_device_delegate(cap)
+                })
+                .any(|cap| {
+                    device_delegate_person(cap)
+                        .is_some_and(|person| delegate_person_stands(workspace, person, cap.verb))
+                })
     }
 
     /// Revoke a capability in `workspace_id`, mirroring the removal to
@@ -3967,8 +4505,11 @@ impl WorkspaceTree {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
+            recording_delegates_forbidden: false,
+            triage_in_direct_rooms: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
+            delegated_hosts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
             hidden: false,
@@ -4147,8 +4688,11 @@ impl WorkspaceTree {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class,
+            recording_delegates_forbidden: false,
+            triage_in_direct_rooms: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
+            delegated_hosts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
             hidden: false,
@@ -4226,6 +4770,37 @@ impl WorkspaceTree {
         let workspace = self.desktop.workspaces.remove(index);
         self.forget_workspace_state(&workspace);
         self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
+        true
+    }
+
+    /// Leave the durable room `room`: its workspace and everything this tree
+    /// held for it go, here and in the desktop document, and the change is
+    /// persisted. The room itself goes on for its other members. The last
+    /// durable workspace is never left, so there is always one to show.
+    pub fn leave_room(&mut self, room: RoomId) -> bool {
+        let durable = self
+            .desktop
+            .workspaces
+            .iter()
+            .filter(|workspace| !workspace.ephemeral)
+            .count();
+        let Some(index) = self
+            .desktop
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.room == room && !workspace.ephemeral)
+        else {
+            return false;
+        };
+        if durable < 2 {
+            return false;
+        }
+        let workspace = self.desktop.workspaces.remove(index);
+        tilo_desktop_model::desktop_doc::remove_workspace(&mut self.doc, workspace.id);
+        self.forget_workspace_state(&workspace);
+        tilo_desktop_model::desktop_doc::set_active(&mut self.doc, self.desktop.active);
+        self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
+        self.flush_to_disk();
         true
     }
 
@@ -5856,16 +6431,71 @@ mod automerge_foundation_tests {
     }
 
     /// Two trees in one room, so a record-index claim can be read back
-    /// from the side that did not make it.
+    /// from the side that did not make it. Both are certified members the
+    /// room lets edit, so each may bring records in.
     fn two_in_a_room() -> (WorkspaceTree, WorkspaceTree, RoomId) {
+        let (mut host, guest, room) = two_in_a_room_unadmitted();
+        let host_device = host.room_record_signer().expect("a device key");
+        admit(&mut host, &host_device, 90, "Quinten", Verb::Write);
+        let guest_device = guest.room_record_signer().expect("a device key");
+        admit(&mut host, &guest_device, 91, "Xaver", Verb::Write);
+        (host, guest, room)
+    }
+
+    /// Two trees in one room, neither certified in it.
+    fn two_in_a_room_unadmitted() -> (WorkspaceTree, WorkspaceTree, RoomId) {
         let mut host = WorkspaceTree::bootstrap_demo();
         host.set_room_record_signer_override(iroh::SecretKey::generate());
         let host_ws = host.desktop.workspaces[0].id;
         let room = host.room_of(host_ws).expect("bootstrap mints a room");
         host.adopt_ownerless_workspaces(&"quinten".to_string());
-
         let guest = joiner(room, "xaver");
         (host, guest, room)
+    }
+
+    /// Certify `device` in the room `host` governs as a person of its own
+    /// (their root key made from `seed`) and give that person `verb`,
+    /// returning the grant's id.
+    fn admit(
+        host: &mut WorkspaceTree,
+        device: &iroh::SecretKey,
+        seed: u8,
+        name: &str,
+        verb: Verb,
+    ) -> String {
+        let room = host.desktop.workspaces[0].room;
+        let root_key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let mut certificate = tilo_user_identity::DeviceCert {
+            user_public_key: root_key.verifying_key().to_bytes(),
+            device_public_key: *device.public().as_bytes(),
+            device_label: format!("{name}'s laptop"),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
+        let endpoint = device.public().to_string();
+        assert!(host.name_peer(room, &"quinten".to_string(), &endpoint, name));
+        assert!(host.certify_peer_identity(room, &endpoint, certificate));
+        let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
+            collab_types::Ed25519PublicKey::from_bytes(root_key.verifying_key().to_bytes()),
+        ) else {
+            unreachable!("a person key names a person")
+        };
+        let grant = host
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room == room)
+            .expect("the host's workspace")
+            .grant_capability(CapOverride::membership(
+                Subject::person(person),
+                room.to_string(),
+                verb,
+            ));
+        host.sync_room_doc(room);
+        grant
     }
 
     /// Another machine in `room`, with its own device key.
@@ -6372,6 +7002,69 @@ mod automerge_foundation_tests {
         }
     }
 
+    /// Whether a room allows recording delegates is its governance: its
+    /// administrator sets it on the machine that governs it, it reaches
+    /// every member, and while it is off no member's device admits one.
+    #[test]
+    fn the_recording_delegates_policy_is_governance_that_reaches_members() {
+        let (mut host, mut guest, room) = two_in_a_room();
+        let host_ws = host.desktop.workspaces[0].id;
+        let guest_ws = guest
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .expect("the guest's workspace")
+            .id;
+        let collab_types::Principal::Person(member) =
+            collab_types::Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(
+                ed25519_dalek::SigningKey::from_bytes(&[91; 32])
+                    .verifying_key()
+                    .to_bytes(),
+            ))
+        else {
+            unreachable!("a person key names a person")
+        };
+        let recorder = || {
+            CapOverride::membership(Subject::agent("recorder"), room.to_string(), Verb::Read)
+                .with_id("agent-member:recorder:observer")
+        };
+        assert!(
+            !host.set_recording_delegates_allowed(host_ws, &member, false),
+            "a member who does not administer the room cannot turn it off"
+        );
+        assert!(host.set_recording_delegates_allowed(host_ws, &"quinten".to_string(), false));
+        ship(&mut host, &mut guest, room, 1);
+        let held = |tree: &WorkspaceTree| {
+            tree.desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room == room)
+                .expect("in the room")
+                .recording_delegates_forbidden
+        };
+        assert!(held(&guest), "the policy reaches the member");
+        assert!(
+            guest
+                .admit_device_delegate(guest_ws, &member, recorder())
+                .is_none(),
+            "no delegate while the room forbids them"
+        );
+        assert!(
+            !guest.set_recording_delegates_allowed(guest_ws, &"quinten".to_string(), true),
+            "a member's machine does not govern the room"
+        );
+
+        assert!(host.set_recording_delegates_allowed(host_ws, &"quinten".to_string(), true));
+        ship(&mut host, &mut guest, room, 1);
+        assert!(!held(&guest));
+        assert!(
+            guest
+                .admit_device_delegate(guest_ws, &member, recorder())
+                .is_some()
+        );
+    }
+
     /// Taking a record back reaches a member who already holds its
     /// reference, and that member's copy follows: removing the reference
     /// removes access, as rooms.md says. The bytes they synced stay theirs.
@@ -6413,7 +7106,9 @@ mod automerge_foundation_tests {
     /// batch that tries is refused whole, like a governance forgery.
     #[test]
     fn only_who_brought_a_record_in_may_take_it_out() {
-        let (mut host, mut guest, room) = two_in_a_room();
+        let (mut host, _editor, room) = two_in_a_room();
+        // A member the room does not let edit.
+        let mut guest = joiner(room, "yara");
         host.set_room_records(room, held(("file:/docs/plan.md", "document")));
         ship(&mut host, &mut guest, room, 1);
         guest.take_inbound_room_records();
@@ -6505,36 +7200,7 @@ mod automerge_foundation_tests {
         let record = "file:/docs/from-xaver.md";
         let (mut host, _adder, mut editor, room) = a_record_brought_in_by_one_of_three(record);
         let device = editor.room_record_signer().expect("a device key");
-        let root_key = ed25519_dalek::SigningKey::from_bytes(&[97; 32]);
-        let mut certificate = tilo_user_identity::DeviceCert {
-            user_public_key: root_key.verifying_key().to_bytes(),
-            device_public_key: *device.public().as_bytes(),
-            device_label: "Yara's laptop".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
-        let endpoint = device.public().to_string();
-        assert!(host.name_peer(room, &"quinten".to_string(), &endpoint, "Yara"));
-        assert!(host.certify_peer_identity(room, &endpoint, certificate));
-        let collab_types::Principal::Person(yara) = collab_types::Principal::person_from_key(
-            collab_types::Ed25519PublicKey::from_bytes(root_key.verifying_key().to_bytes()),
-        ) else {
-            unreachable!("a person key names a person")
-        };
-        let workspace = host
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.room == room)
-            .expect("the host's workspace");
-        workspace.grant_capability(CapOverride::membership(
-            Subject::person(yara),
-            room.to_string(),
-            Verb::Write,
-        ));
+        admit(&mut host, &device, 97, "Yara", Verb::Write);
 
         editor.set_room_records(room, std::collections::BTreeMap::new());
         ship(&mut editor, &mut host, room, 3);
@@ -6543,6 +7209,196 @@ mod automerge_foundation_tests {
             projection::room_record_removed(doc, record),
             "an editor's withdrawal stands"
         );
+    }
+
+    /// A Commenter in the room, beside its host.
+    fn a_room_with_a_commenter() -> (WorkspaceTree, WorkspaceTree, RoomId) {
+        let (mut host, _editor, room) = two_in_a_room();
+        let mut commenter = joiner(room, "carol");
+        let device = commenter.room_record_signer().expect("a device key");
+        admit(&mut host, &device, 92, "Carol", Verb::Comment);
+        host.set_room_records(room, held(("file:/docs/plan.md", "document")));
+        ship(&mut host, &mut commenter, room, 1);
+        assert_eq!(commenter.take_inbound_room_records().len(), 1);
+        commenter.set_room_records(room, held(("file:/docs/plan.md", "document")));
+        commenter.sync_room_doc(room);
+        (host, commenter, room)
+    }
+
+    fn entry_ids(doc: &AutoCommit) -> Vec<String> {
+        projection::room_record_entries_of(doc)
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect()
+    }
+
+    /// A Commenter writes only their own comment records, Comment-class;
+    /// bringing references into the room's records is not theirs to do, so
+    /// a room of thousands of Commenters cannot be spammed with them.
+    #[test]
+    fn a_commenter_cannot_bring_records_into_the_room() {
+        let (mut host, mut commenter, room) = a_room_with_a_commenter();
+        let spam: std::collections::BTreeMap<String, String> = (0..50)
+            .map(|n| (format!("file:/spam/{n}.md"), "document".to_string()))
+            .chain([("file:/docs/plan.md".to_string(), "document".to_string())])
+            .collect();
+        commenter.set_room_records(room, spam);
+        ship(&mut commenter, &mut host, room, 2);
+        assert!(host.take_inbound_room_records().is_empty());
+        assert_eq!(live_in(&host, room), plan());
+
+        // Nor by anyone the host passes the room on to.
+        let mut newcomer = joiner(room, "zoe");
+        let device = newcomer.room_record_signer().expect("a device key");
+        admit(&mut host, &device, 93, "Zoe", Verb::Comment);
+        ship(&mut host, &mut newcomer, room, 1);
+        assert_eq!(
+            newcomer.take_inbound_room_records(),
+            vec![(
+                room,
+                "file:/docs/plan.md".to_string(),
+                "document".to_string()
+            )]
+        );
+    }
+
+    fn live_in(tree: &WorkspaceTree, room: RoomId) -> Vec<(String, String)> {
+        tree.room_record_standing(room, tree.room_docs.get(&room).expect("a room document"))
+            .live
+    }
+
+    fn plan() -> Vec<(String, String)> {
+        vec![("file:/docs/plan.md".to_string(), "document".to_string())]
+    }
+
+    /// Nor may a Commenter take out, or recast, a record somebody else
+    /// brought in.
+    #[test]
+    fn a_commenter_cannot_withdraw_or_recast_anothers_record() {
+        let (mut host, mut commenter, room) = a_room_with_a_commenter();
+        assert!(!commenter.may_withdraw_room_record(room, "file:/docs/plan.md"));
+
+        commenter.set_room_records(room, held(("file:/docs/plan.md", "script")));
+        ship(&mut commenter, &mut host, room, 2);
+        assert!(host.take_inbound_room_records().is_empty());
+        // The host still holds the record as it was, and vouches for it.
+        host.sync_room_doc(room);
+        assert_eq!(live_in(&host, room), plan());
+        ship(&mut host, &mut commenter, room, 1);
+
+        commenter.set_room_records(room, std::collections::BTreeMap::new());
+        ship(&mut commenter, &mut host, room, 2);
+        assert!(host.take_withdrawn_room_records().is_empty());
+        assert_eq!(live_in(&host, room), plan());
+    }
+
+    /// An editor who brought records in and is then demoted takes nothing
+    /// out of the room: the host vouches afresh for what it holds. And a
+    /// newcomer still syncs the room whole — an entry whose sealer lost the
+    /// right to add records is ignored, never a reason to refuse the rest.
+    #[test]
+    fn a_demoted_editors_records_stay_and_newcomers_still_sync() {
+        let (mut host, mut editor, room) = two_in_a_room_unadmitted();
+        let host_device = host.room_record_signer().expect("a device key");
+        admit(&mut host, &host_device, 90, "Quinten", Verb::Write);
+        let editor_device = editor.room_record_signer().expect("a device key");
+        let grant = admit(&mut host, &editor_device, 91, "Xaver", Verb::Write);
+        ship(&mut host, &mut editor, room, 1);
+
+        let kept = "file:/docs/kept.md";
+        let dropped = "file:/docs/never-folded-in.md";
+        editor.set_room_records(
+            room,
+            [kept, dropped]
+                .into_iter()
+                .map(|id| (id.to_string(), "document".to_string()))
+                .collect(),
+        );
+        ship(&mut editor, &mut host, room, 2);
+        assert_eq!(host.take_inbound_room_records().len(), 2);
+        // The host's index folds in only one of them.
+        host.set_room_records(room, held((kept, "document")));
+
+        assert!(
+            host.desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room == room)
+                .expect("the host's workspace")
+                .revoke_capability(&grant)
+        );
+        host.sync_room_doc(room);
+        assert_eq!(
+            live_in(&host, room),
+            vec![(kept.to_string(), "document".to_string())],
+            "what the host holds stays; the rest is no longer vouched for"
+        );
+
+        let mut newcomer = joiner(room, "zoe");
+        let device = newcomer.room_record_signer().expect("a device key");
+        admit(&mut host, &device, 93, "Zoe", Verb::Comment);
+        ship(&mut host, &mut newcomer, room, 1);
+        let doc = newcomer.room_docs.get(&room).expect("the newcomer synced");
+        assert_eq!(
+            entry_ids(doc),
+            vec![kept.to_string(), dropped.to_string()],
+            "the whole batch applied"
+        );
+        assert_eq!(
+            newcomer.take_inbound_room_records(),
+            vec![(room, kept.to_string(), "document".to_string())]
+        );
+    }
+
+    /// An entry with no seal, or with a seal lifted from another record, is
+    /// refused however it arrives — and not read as in the room.
+    #[test]
+    fn an_unsealed_or_forged_room_record_is_refused_and_ignored() {
+        use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+        let (mut host, _commenter, room) = a_room_with_a_commenter();
+        let genuine = projection::room_record_added(
+            host.room_docs.get(&room).expect("a room document"),
+            "file:/docs/plan.md",
+        );
+        let (by, sig) = genuine[0].seal.clone().expect("the host sealed it");
+        for added in [
+            "0123456789abcdef".to_string(),
+            format!("0123456789abcdef {by} {sig}"),
+            format!("{} {by} {sig}", genuine[0].nonce),
+        ] {
+            let mut forged = host
+                .room_docs
+                .get(&room)
+                .expect("a room document")
+                .clone()
+                .with_actor(automerge::ActorId::random());
+            let base = forged.get_heads();
+            let (_, records) = forged.get(&ROOT, "records").unwrap().expect("a record map");
+            let entry = forged
+                .put_object(&records, "file:/docs/forged.md", ObjType::Map)
+                .unwrap();
+            forged.put(&entry, "kind", "document").unwrap();
+            forged.put(&entry, "added", added.as_str()).unwrap();
+            assert!(
+                host.room_record_standing(room, &forged)
+                    .live
+                    .iter()
+                    .all(|(id, _)| id != "file:/docs/forged.md"),
+                "{added:?} is not read as a bringing-in"
+            );
+            let changes: Vec<Vec<u8>> = forged
+                .get_changes(&base)
+                .into_iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect();
+            host.apply_room_changes(room, &changes, &PeerOrigin::hub(4))
+                .expect("merges or refuses");
+            let doc = host.room_docs.get(&room).expect("a room document");
+            assert!(
+                !entry_ids(doc).contains(&"file:/docs/forged.md".to_string()),
+                "{added:?} is refused"
+            );
+        }
     }
 
     #[test]
@@ -7246,7 +8102,7 @@ mod automerge_foundation_tests {
     fn root_signed_governance_projects_identity_and_additive_revocation() {
         // Phase `governed_name_and_root_signed_endpoint_project_human_and_device`.
         {
-            let (mut host, mut guest, room) = two_in_a_room();
+            let (mut host, mut guest, room) = two_in_a_room_unadmitted();
             let device_secret = iroh::SecretKey::generate();
             let endpoint = device_secret.public();
             let root_key = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
@@ -7317,7 +8173,7 @@ mod automerge_foundation_tests {
 
         // Phase `root_signed_room_revocation_is_additive_and_prevents_rename_resurrection`.
         {
-            let (mut host, _guest, room) = two_in_a_room();
+            let (mut host, _guest, room) = two_in_a_room_unadmitted();
             let device_secret = iroh::SecretKey::generate();
             let endpoint = device_secret.public();
             let root_key = ed25519_dalek::SigningKey::from_bytes(&[96; 32]);
@@ -7875,8 +8731,11 @@ mod active_group_tests {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
+            recording_delegates_forbidden: false,
+            triage_in_direct_rooms: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
+            delegated_hosts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
             hidden: false,
@@ -8370,8 +9229,11 @@ mod active_workspace_peer_count_tests {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
+            recording_delegates_forbidden: false,
+            triage_in_direct_rooms: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
+            delegated_hosts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
             hidden: false,

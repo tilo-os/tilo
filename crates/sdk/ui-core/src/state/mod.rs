@@ -1249,6 +1249,23 @@ impl State {
         self.undo.rebase(&mut self.doc);
     }
 
+    /// Whether no local edit is open: nothing uncommitted, and nothing
+    /// committed past the undo baseline that an action has yet to claim.
+    pub(crate) fn edits_settled(&self) -> bool {
+        self.doc.pending_ops() == 0
+            && owned_restore::same_frontier(&self.undo.last_heads, &self.doc.base_heads())
+    }
+
+    /// Take what the app wrote while no edit was open — a first-run
+    /// scaffold, its person in a shared roster — as the baseline undo and
+    /// remote merges compare against. It is the document's upkeep, not an
+    /// action: left past the baseline it would look like typing still in
+    /// flight and hold every remote change back until the next action.
+    /// What goes out is unaffected; the outbound frontier still sends it.
+    pub(crate) fn settle_upkeep(&mut self) {
+        self.undo.rebase(&mut self.doc);
+    }
+
     /// Serialize the changes made since the last `save/save_incremental` call.
     /// The returned bytes can be fed into another peer's `load_incremental`
     /// to replay just the delta — the basic building block of efficient

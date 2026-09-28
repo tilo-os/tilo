@@ -413,6 +413,7 @@ activity-capability-every-type = jede Ressource vom Typ { $kind }
 activity-capability-one-artifact = ein Artefakt
 activity-capability-one-shared-file = eine geteilte Datei
 activity-capability-network = Netzwerk { $host }
+activity-capability-agent = den Agenten { $agent } bedienen
 activity-capability-role = { $role ->
         [owner] Eigentümer
         [editor] Bearbeitende

@@ -177,8 +177,11 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
         .unwrap();
     assert!(matches!(
     tilo_test_env::within("a message on alice_client", alice_client.recv()).await,
-    Some(Envelope::NotAuthorised { workspace_id: 701, reason })
-            if reason == "workspace membership changed"
+    Some(Envelope::NotAuthorised {
+        workspace_id: 701,
+        refusal: tilo_relay::transport::Refusal::NotMember,
+        reason,
+    }) if reason == "workspace membership changed"
     ));
     assert!(
         tokio::time::timeout(Duration::from_millis(400), bob_client.recv())

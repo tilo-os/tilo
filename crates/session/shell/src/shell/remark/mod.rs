@@ -80,6 +80,8 @@ pub enum DestinationKind {
         channel: String,
         /// The standing invite has been redeemed.
         joined: bool,
+        /// The person left the community; sending joins it again.
+        left: bool,
     },
     /// Privately, to one person or agent the author shares a room with.
     Person { person: String, is_agent: bool },
@@ -141,6 +143,8 @@ pub struct CommunityRoom {
     pub channel: String,
     pub label: String,
     pub joined: bool,
+    /// The person left the community (`tilo.community.membership`).
+    pub left: bool,
 }
 
 impl Directory {
@@ -169,6 +173,7 @@ impl Directory {
                     room: community.room.clone(),
                     channel: community.channel.clone(),
                     joined: community.joined,
+                    left: community.left,
                 },
             });
         }
@@ -872,6 +877,7 @@ mod tests {
                 channel: "c_feedback".into(),
                 label: "Tilo Community".into(),
                 joined: true,
+                left: false,
             }),
             people: vec![
                 RoomMember::new(ADA, "Ada", false),

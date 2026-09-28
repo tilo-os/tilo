@@ -46,12 +46,21 @@ agent-provider-config = { path = "../../crates/agent/provider-config" }
 # The descriptor client for the desktop-owned hosted model gateway. This has
 # no vault access and never exposes a bearer token to the agent process.
 tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
+# Triage files an approved issue through the accounts service, which holds
+# the team's forge token; the agent never does.
+tilo-account-service = { path = "../../crates/system/account-service" }
+atomic-file = { path = "../../crates/system/atomic-file" }
+# The review floor: what a drafted issue must never carry.
+tilo-feedback-review = { path = "../../crates/collab/feedback-review" }
 qdoc = { path = "../../crates/doc/qdoc" }
 tilo-content = { path = "../../crates/system/content" }
 tilo-resource = { path = "../../crates/sdk/tilo-resource" }
 automerge.workspace = true
 tilo-automerge.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+# A triage session's device, in its room lease claim.
+hex.workspace = true
 uuid.workspace = true
 anyhow.workspace = true
 clap.workspace = true
@@ -68,6 +77,8 @@ tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ed25519-dalek.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
+# The accounts service in-process, over a fake forge, for the filing tests.
+account-custody = { path = "../../crates/system/account-custody", features = ["fake-forge"] }
 
 [[test]]
 name = "it"

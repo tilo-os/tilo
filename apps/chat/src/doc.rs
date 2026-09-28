@@ -1456,6 +1456,15 @@ impl ChatDoc {
                     let _ = doc.put(&a, "record", json.as_str());
                 }
             }
+            // One atomic value for the same reason: an Editor approves the
+            // draft as written, never a merge of two drafts' fields.
+            Attachment::Issue(issue) => {
+                let _ = doc.put(&a, "kind", "issue");
+                let _ = doc.put(&a, "name", issue.title.as_str());
+                if let Ok(json) = serde_json::to_string(issue) {
+                    let _ = doc.put(&a, "issue", json.as_str());
+                }
+            }
         }
     }
 
@@ -1685,6 +1694,7 @@ impl ChatDoc {
                 valid_name(name) && valid_blob(blob) && *size > 0 && *size <= MAX_ATTACHMENT_BYTES
             }
             Attachment::Record(record) => record.is_valid(),
+            Attachment::Issue(issue) => issue.is_valid(),
         }
     }
 
@@ -2275,6 +2285,45 @@ impl ChatDoc {
         }
     }
 
+    /// Approve the issue drafted on message `msg_id`. The first approval is
+    /// the one that counts: a second Editor approving again changes nothing,
+    /// and nothing that is not a drafted issue can be approved.
+    pub fn approve_issue(
+        doc: &mut AutoCommit,
+        channel: &str,
+        msg_id: &str,
+        approval: &crate::feedback::IssueApproval,
+    ) {
+        if !Self::valid_message_id(msg_id) || Self::issue_approval(doc, msg_id).is_some() {
+            return;
+        }
+        // A draft in the conversation document must be one; a draft in an
+        // agent's own comment record is out of this document's sight, and the
+        // agent files only its own drafts, so the approval is kept by id.
+        if let Some(block) = Self::find_message_obj(doc, channel, msg_id)
+            && !matches!(
+                Self::read_attachment(doc, &block),
+                Some(Attachment::Issue(_))
+            )
+        {
+            return;
+        }
+        let issues = get_or_map(doc, &ROOT, "issues");
+        if let Ok(json) = serde_json::to_string(approval) {
+            let _ = doc.put(&issues, msg_id, json.as_str());
+        }
+    }
+
+    /// The approval of the issue drafted on message `msg_id`, if any.
+    pub fn issue_approval(
+        doc: &AutoCommit,
+        msg_id: &str,
+    ) -> Option<crate::feedback::IssueApproval> {
+        let issues = map_at(doc, &ROOT, "issues")?;
+        let raw = read_str(doc, &issues, msg_id)?;
+        serde_json::from_str(&raw).ok()
+    }
+
     /// The status of a report that lives in its author's comment record.
     pub fn comment_report(doc: &AutoCommit, msg_id: &str) -> Option<crate::feedback::ReportState> {
         let reports = map_at(doc, &ROOT, "reports")?;
@@ -2676,8 +2725,10 @@ impl ChatDoc {
         let mut out = Vec::new();
         for m in rows {
             let parent = read_str(doc, &m, "parent").unwrap_or_default();
+            let id = read_str(doc, &m, "id").unwrap_or_default();
             out.push(Message {
-                id: read_str(doc, &m, "id").unwrap_or_default(),
+                approved: Self::issue_approval(doc, &id),
+                id,
                 channel: channel.to_string(),
                 author: read_str(doc, &m, "author").unwrap_or_default(),
                 ts: read_i64_coerced(doc, &m, "ts").unwrap_or(0),
@@ -2831,6 +2882,10 @@ impl ChatDoc {
             "record" => read_str(doc, &a, "record")
                 .and_then(|raw| serde_json::from_str(&raw).ok())
                 .map(|record| Attachment::Record(Box::new(record))),
+            "issue" => read_str(doc, &a, "issue")
+                .and_then(|raw| serde_json::from_str::<crate::feedback::IssueDraft>(&raw).ok())
+                .filter(crate::feedback::IssueDraft::is_valid)
+                .map(|issue| Attachment::Issue(Box::new(issue))),
             _ => None,
         }
     }

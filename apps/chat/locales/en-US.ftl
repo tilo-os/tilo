@@ -66,13 +66,13 @@ chat-session-redactions = { $count ->
     [one] { $count } redaction
    *[other] { $count } redactions
 }
-chat-session-replay = Replay
+chat-session-replay = Replay recording
 chat-session-withdraw = Withdraw
 chat-session-withdrawn = Withdrawn from this room. Anyone who already opened it keeps their copy.
 chat-record-title = Report
 
 # What could not be done, in the reader's words.
-chat-notice-replay-unavailable = Replay isn't available: { $reason }
+chat-notice-replay-unavailable = Replay recording isn't available: { $reason }
 chat-notice-share-failed = The recording wasn't shared into this room: { $reason }
 chat-notice-unshare-failed = This room still references the recording: { $reason }
 chat-notice-open-failed = Couldn't open it: { $reason }
@@ -271,6 +271,7 @@ chat-a11y-app-inbox = Inbox: conversations across Tilo workspaces
 chat-a11y-app-channels = Channels in the current Tilo workspace
 chat-a11y-messages = Messages
 chat-a11y-message = { $author }: { $text }
+chat-a11y-report = { $author }: { $text } ({ $votes }, { $replies }, { $status })
 chat-a11y-unknown-person = Unknown person
 
 # Accessible names of the app's controls.
@@ -334,6 +335,7 @@ chat-undo-pin-message = Pin message
 chat-undo-unpin-message = Unpin message
 chat-undo-update-agent-work = Update agent work
 chat-undo-set-report-status = Set report status
+chat-undo-approve-issue = Approve drafted issue
 chat-undo-withdraw-attachment = Withdraw attachment
 chat-undo-make-feedback-channel = Make feedback channel
 chat-undo-make-ordinary-channel = Make ordinary channel
@@ -424,6 +426,8 @@ chat-action-reply-in-thread = Reply in thread
 chat-action-reveal-message = Reveal message
 chat-action-reveal-shared-message = Reveal shared message
 chat-action-set-report-status = Set report status
+chat-action-approve-issue = Approve drafted issue
+chat-issue-draft-meta = Drafted issue · filed once an Editor approves it
 chat-action-share-record-into-this-room = Share record into this room
 chat-action-show-author = Show author
 chat-action-sort-and-filter-reports = Sort and filter reports

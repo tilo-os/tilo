@@ -466,7 +466,7 @@ pub fn validate_inbound_op(
         return Err(ValidationError::OutsideValidityWindow);
     }
 
-    validate_authorized_op(op, ra.role, channel_state)
+    validate_authorized_op(op, ra.role, channel_state, Arrival::Live)
 }
 
 /// Validate an op whose author and role were established by a certified
@@ -501,7 +501,43 @@ pub fn validate_admitted_inbound_op(
         return Err(ValidationError::OutsideValidityWindow);
     }
 
-    validate_authorized_op(op, role, channel_state)
+    validate_authorized_op(op, role, channel_state, Arrival::Live)
+}
+
+/// [`validate_admitted_inbound_op`] for an op a durable host replays from the
+/// room's retained history. History is old by nature: a member who opens an
+/// app an hour after a channel was made must still learn it, so the op may
+/// be of any age, though never dated beyond `max_clock_skew` into the
+/// future. It may also arrive behind a later live op from the same author,
+/// so an earlier sequence number is accepted and never moves that author's
+/// sequence back. Signature, role, capability, clearance and redaction are
+/// checked exactly as for a live op.
+///
+/// # Errors
+///
+/// As [`validate_admitted_inbound_op`], without the lower age bound and the
+/// replayed-sequence refusal.
+pub fn validate_admitted_history_op(
+    op: &SignedOp,
+    role: Role,
+    channel_state: &mut ChannelState,
+    now: SystemTime,
+    max_clock_skew: Duration,
+) -> Result<(), ValidationError> {
+    verify_op(op).map_err(ValidationError::BadOpSignature)?;
+    let latest = now.checked_add(max_clock_skew).unwrap_or(now);
+    if op.timestamp > latest {
+        return Err(ValidationError::OutsideValidityWindow);
+    }
+
+    validate_authorized_op(op, role, channel_state, Arrival::History)
+}
+
+/// How an op reached this peer: live, or replayed from retained history.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Arrival {
+    Live,
+    History,
 }
 
 /// Checks shared by attestation-authorised and certified-roster-authorised
@@ -510,6 +546,7 @@ fn validate_authorized_op(
     op: &SignedOp,
     role: Role,
     channel_state: &mut ChannelState,
+    arrival: Arrival,
 ) -> Result<(), ValidationError> {
     // Steps 5, 5a: role table + capability overrides.
     check_op_permission(op, role, channel_state)?;
@@ -523,6 +560,7 @@ fn validate_authorized_op(
     let last = channel_state.last_seq_per_author.get(&op.author).copied();
     if let Some(prev) = last
         && op.seq <= prev
+        && arrival == Arrival::Live
     {
         return Err(ValidationError::ReplaySeq {
             seen: prev,
@@ -550,8 +588,10 @@ fn validate_authorized_op(
         }
     }
 
-    // All checks passed. Bump replay sequence.
-    channel_state.last_seq_per_author.insert(op.author, op.seq);
+    // All checks passed. Bump replay sequence; history never moves it back.
+    if last.is_none_or(|prev| op.seq > prev) {
+        channel_state.last_seq_per_author.insert(op.author, op.seq);
+    }
     Ok(())
 }
 

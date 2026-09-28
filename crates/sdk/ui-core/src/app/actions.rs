@@ -1752,24 +1752,47 @@ impl App {
                 // broker admission and is deliberately rejected there.
                 return;
             }
-            Err(error) => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: crate::bound_dispatch::door_error_code(&error).to_string(),
-                    message: error.to_string(),
-                    details: None,
-                    retryable: false,
-                },
-            },
+            Err(error) => {
+                tracing::warn!(
+                    resource = %address.resource,
+                    action = %address.action,
+                    %error,
+                    "refused an action the broker directed here"
+                );
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: crate::bound_dispatch::door_error_code(&error).to_string(),
+                        message: error.to_string(),
+                        details: None,
+                        retryable: false,
+                    },
+                }
+            }
         };
         // A terminal must follow the document commands it covers: queue every
         // changed owned record first, or retire the transport as uncertain.
-        if update.is_terminal() && !self.queue_documents_before_terminal() {
-            return;
+        if update.is_terminal() {
+            match self.queue_documents_before_terminal() {
+                crate::app::document_routes::TerminalPublication::Queued => {}
+                crate::app::document_routes::TerminalPublication::AwaitingRoute => {
+                    self.hold_terminal(id, update);
+                    return;
+                }
+                crate::app::document_routes::TerminalPublication::Failed => return,
+            }
         }
-        self.collaboration
+        if !self
+            .collaboration
             .manager
-            .send(CollabRequest::UpdateInvocation { id, update });
+            .send(CollabRequest::UpdateInvocation { id, update })
+        {
+            tracing::warn!(
+                resource = %address.resource,
+                action = %address.action,
+                "could not report an action's outcome to the broker"
+            );
+        }
     }
 
     fn resolve_resource_invocation<'a>(
@@ -3363,11 +3386,59 @@ impl App {
         clippy::too_many_lines,
         reason = "directed and local terminal delivery share the existing status sweep"
     )]
+    fn hold_terminal(&mut self, wire_id: u64, update: tilo_actions::InvocationUpdate) {
+        self.actions.held_terminals.push(crate::app::HeldTerminal {
+            wire_id,
+            update,
+            since: crate::time::now(),
+        });
+    }
+
+    /// Report held terminals once the routes they wait for are joined. A
+    /// route that never becomes publishable retires the transport as
+    /// uncertain, as any other refused publication does.
+    fn release_held_terminals(&mut self) -> bool {
+        const JOIN_WAIT: crate::time::Duration = crate::time::Duration::from_secs(20);
+        if self.actions.held_terminals.is_empty() {
+            return false;
+        }
+        let publication = self.queue_documents_before_terminal();
+        let expired = self
+            .actions
+            .held_terminals
+            .iter()
+            .any(|held| held.since.elapsed() >= JOIN_WAIT);
+        match publication {
+            crate::app::document_routes::TerminalPublication::AwaitingRoute if !expired => false,
+            crate::app::document_routes::TerminalPublication::AwaitingRoute => {
+                self.actions.held_terminals.clear();
+                self.fail_awaited_publication();
+                true
+            }
+            crate::app::document_routes::TerminalPublication::Failed => {
+                self.actions.held_terminals.clear();
+                true
+            }
+            crate::app::document_routes::TerminalPublication::Queued => {
+                for held in std::mem::take(&mut self.actions.held_terminals) {
+                    self.collaboration
+                        .manager
+                        .send(CollabRequest::UpdateInvocation {
+                            id: held.wire_id,
+                            update: held.update,
+                        });
+                }
+                true
+            }
+        }
+    }
+
     fn poll_directed_invocations(&mut self) -> bool {
         // A broker disconnect cannot leave an admitted launcher action
         // Accepted forever. Draining the bounded table also makes late or
         // duplicate receipts inert because their request ids are gone.
         let mut changed = self.fail_pending_application_launches_on_disconnect();
+        changed |= self.release_held_terminals();
         let invocations = self
             .actions
             .directed_invocations
@@ -3430,15 +3501,28 @@ impl App {
                     },
                 };
             }
-            if update.is_terminal() && !self.queue_documents_before_terminal() {
-                // Keep admitted lifecycle state; do not poll the completed
-                // operation again or fabricate a no-effect refusal.
-                changed = true;
-                break;
+            let mut held = false;
+            if update.is_terminal() {
+                match self.queue_documents_before_terminal() {
+                    crate::app::document_routes::TerminalPublication::Queued => {}
+                    crate::app::document_routes::TerminalPublication::AwaitingRoute => held = true,
+                    crate::app::document_routes::TerminalPublication::Failed => {
+                        // Keep admitted lifecycle state; do not poll the
+                        // completed operation again or fabricate a no-effect
+                        // refusal.
+                        changed = true;
+                        break;
+                    }
+                }
             }
             if update.is_terminal() {
                 self.actions.bound_invocations.remove(&invocation);
                 self.actions.directed_invocations.remove(&invocation);
+            }
+            if held {
+                self.hold_terminal(pending.wire_id, update);
+                changed = true;
+                continue;
             }
             self.collaboration
                 .manager
@@ -3735,12 +3819,19 @@ impl App {
         &self,
         mut resource: tilo_actions::Resource,
     ) -> Option<tilo_actions::Resource> {
+        // The app whose actions these are is the one this app collaborates
+        // as: the broker decides by the route's app, and so does this. For a
+        // launched app that is its own package; a headless participant
+        // running an app for an agent collaborates as that app.
+        let app_id = self
+            .collaboration
+            .manager
+            .requested_primary_route()
+            .map_or_else(crate::collaboration::local_app_id, |route| {
+                route.app_id.clone()
+            });
         resource.actions.retain(|action| {
-            crate::bound_dispatch::permits_local_action(
-                &self.permission_ctx,
-                &crate::collaboration::local_app_id(),
-                action,
-            )
+            crate::bound_dispatch::permits_local_action(&self.permission_ctx, &app_id, action)
         });
         resource.children = resource
             .children

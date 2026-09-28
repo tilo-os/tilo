@@ -41,11 +41,16 @@ pub(crate) fn merge_committed(
             "Finish the current edit before receiving remote changes".into(),
         ));
     }
-    // Decode into a clone first so malformed incremental data cannot partly
-    // mutate the real owner. Merge preserves actor, causal history and identity.
-    let mut incoming = match mutation {
-        DocumentMutation::Snapshot(bytes) => AutoCommit::load(bytes)
-            .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?,
+    let before = super::sorted_heads(doc.base_heads());
+    // Decode into a copy first so malformed data cannot partly mutate the
+    // real owner. Merge preserves actor, causal history and identity.
+    match mutation {
+        DocumentMutation::Snapshot(bytes) => {
+            let mut incoming = AutoCommit::load(bytes)
+                .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
+            doc.merge_incoming(&mut incoming)
+                .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
+        }
         DocumentMutation::Incremental(bytes) => {
             // Automerge's incremental loader accepts a valid prefix on partial
             // parse errors, so the whole stream is first loaded strictly on its
@@ -55,16 +60,24 @@ pub(crate) fn merge_committed(
                 Ok(_) | Err(automerge::AutomergeError::MissingDeps) => {}
                 Err(error) => return Err(RemoteApplyError::InvalidMutation(error.to_string())),
             }
-            let mut incoming = doc.clone();
-            incoming
+            doc.clone()
                 .load_incoming(bytes)
                 .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
-            incoming
+            // Loaded into the owner itself, not merged from the copy: a
+            // change whose dependencies are still in flight waits in the
+            // document and applies once they arrive, where a merge would
+            // carry only what the copy could already apply and drop it.
+            doc.load_incoming(bytes)
+                .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
+            let waiting = doc.get_missing_deps(&[]);
+            if !waiting.is_empty() {
+                tracing::debug!(
+                    waiting_on = ?waiting,
+                    "a remote change waits for changes this copy lacks"
+                );
+            }
         }
-    };
-    let before = super::sorted_heads(doc.base_heads());
-    doc.merge_incoming(&mut incoming)
-        .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
+    }
     Ok(before != super::sorted_heads(doc.base_heads()))
 }
 fn mutation_bytes(mutation: &DocumentMutation) -> usize {
@@ -380,5 +393,41 @@ mod round2_tests {
         assert!(queue.admit(fresh));
         queue.pop_applied();
         assert!(queue.failure.is_none());
+    }
+}
+
+#[cfg(test)]
+mod arrival_order_tests {
+    use super::*;
+    use automerge::ReadDoc;
+
+    /// A peer's second change can arrive before its first; neither is lost,
+    /// and the second shows as soon as the first lands.
+    #[test]
+    fn a_change_that_arrives_before_its_dependency_applies_once_it_lands() {
+        let mut peer = AutoCommit::new();
+        peer.put(automerge::ROOT, "base", "shared").unwrap();
+        peer.commit();
+        let mut doc = AutoCommit::load(&peer.save()).unwrap();
+        let shared = peer.get_heads();
+        peer.put(automerge::ROOT, "first", "1").unwrap();
+        peer.commit();
+        let after_first = peer.get_heads();
+        peer.put(automerge::ROOT, "second", "2").unwrap();
+        peer.commit();
+        let first = peer.get_changes(&shared)[0].raw_bytes().to_vec();
+        let second = DocumentMutation::Incremental(peer.save_after(&after_first));
+
+        assert!(
+            !merge_committed(&mut doc, &second).unwrap(),
+            "nothing to show yet"
+        );
+        assert!(doc.get(automerge::ROOT, "second").unwrap().is_none());
+        assert!(merge_committed(&mut doc, &DocumentMutation::Incremental(first)).unwrap());
+        assert!(doc.get(automerge::ROOT, "first").unwrap().is_some());
+        assert!(
+            doc.get(automerge::ROOT, "second").unwrap().is_some(),
+            "the change that came early was kept and applied"
+        );
     }
 }

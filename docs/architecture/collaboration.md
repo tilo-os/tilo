@@ -111,9 +111,30 @@ takes:
 - **The room index takes one kind of comment change.** A comment is found
   through the app's room index (`ui::record::room::comments_on`). The one index
   change signed `Comment` adds entries naming comment records the signer owns.
-  Brokers hold no document, so they check only the role. The receiving SDK
-  checks the shape: it replays the change's operations against its index and
-  refuses anything else (`room::comment_references_only`).
+  Brokers hold no document, yet they check the shape from the change alone:
+  every operation must add such an entry to the index every room shares
+  (`room::comment_references_delta`), or the op is refused before it travels
+  on. Only an MLS-encrypted payload is left to the receiver. The receiving SDK
+  also replays the change's operations against its index and refuses anything
+  else (`room::comment_references_only`).
+- **The shell's room records are sealed per entry.** A room document's
+  `records` map, which lists the records a room holds, travels between shells
+  with no per-change signature. So each entry carries its own seal instead.
+  Its `added` value is signed by the device of the member who brought the
+  record in, over the room, the record, its kind and a nonce. A withdrawal is
+  signed over that nonce. An entry counts only when its bringing-in is sealed
+  by the room's authority or by a member the room lets edit. A withdrawal
+  counts only when it is sealed by whoever brought the record in or by such a
+  member. Anything else is ignored on read. A batch is refused whole
+  (`WorkspaceTree::apply_room_changes`) only for a seal that can never have
+  been genuine: an entry brought in, recast, restored or withdrawn with no
+  seal at all, with a signature that does not verify, or signed by someone who
+  is not in the room. Whether the sealer may add records is never grounds for
+  refusal, because an editor who sealed an entry may since have been demoted,
+  and refusing then would keep every newcomer from syncing. The room's
+  authority instead seals afresh any record it holds, and any withdrawal it
+  followed, whose seal no longer stands. A Commenter therefore brings no
+  references into a room and takes none out.
 - **Governance, compaction and redaction operations** are signed with their own
   classes, which the role table grants to the owner only.
 

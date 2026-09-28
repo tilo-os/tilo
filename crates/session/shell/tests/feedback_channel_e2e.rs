@@ -21,8 +21,8 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use shell::shell::remote_actions::BrokerActionHost;
 use shell::shell::state::{RoomId, Workspace, WorkspaceId, WorkspaceTree};
 use tilo_actions::remote::{
-    ActionHost as _, Caller, CatalogueQuery, InvokeArgument, InvokeRequest, PendingPoll,
-    RemoteActionTarget,
+    ActionHost as _, ActionHostError, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
+    PendingPoll, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 
@@ -167,47 +167,56 @@ fn catalogue_revision(
 }
 
 /// Invoke through the broker as `person` and run the apps until the
-/// invocation ends. The answer is the terminal update.
+/// invocation ends. The answer is the terminal update. Like any caller, it
+/// lists the catalogue again when the provider moved on from the revision the
+/// action was chosen at — another member's change arriving in between.
 fn invoke(
     host: &BrokerActionHost,
     person: &Person,
     provider: &str,
     resource: &str,
     action: &str,
-    argument: InvokeArgument,
+    argument: &InvokeArgument,
     apps: &mut [&mut ui::App],
 ) -> Result<InvocationUpdate, String> {
-    let revision = catalogue_revision(host, person, provider, apps);
-    let invocation = InvocationId::new();
-    let mut pending = host.invoke(
-        &person.caller(),
-        InvokeRequest {
-            invocation,
-            target: RemoteActionTarget {
-                provider: provider.to_owned(),
-                address: ActionAddress::new(resource, action),
-            },
-            argument,
-            context: None,
-            confirmation: None,
-            revision: Some(revision),
-        },
-    );
     let started = Instant::now();
-    loop {
-        match pending.poll_ready() {
-            PendingPoll::Ready(result) => {
-                result.map_err(|error| error.to_string())?;
-                break;
+    let invocation = 'admitted: loop {
+        let revision = catalogue_revision(host, person, provider, apps);
+        let invocation = InvocationId::new();
+        let mut pending = host.invoke(
+            &person.caller(),
+            InvokeRequest {
+                invocation,
+                target: RemoteActionTarget {
+                    provider: provider.to_owned(),
+                    address: ActionAddress::new(resource, action),
+                },
+                argument: argument.clone(),
+                context: None,
+                confirmation: None,
+                revision: Some(revision),
+            },
+        );
+        loop {
+            match pending.poll_ready() {
+                PendingPoll::Ready(Err(ActionHostError::StaleRevision))
+                    if started.elapsed() < Duration::from_secs(20) =>
+                {
+                    continue 'admitted;
+                }
+                PendingPoll::Ready(result) => {
+                    result.map_err(|error| error.to_string())?;
+                    break 'admitted invocation;
+                }
+                PendingPoll::Abandoned => return Err("the invocation was abandoned".into()),
+                PendingPoll::Waiting => {}
             }
-            PendingPoll::Abandoned => return Err("the invocation was abandoned".into()),
-            PendingPoll::Waiting => {}
+            if started.elapsed() > Duration::from_secs(20) {
+                return Err(format!("{resource}/{action} unanswered"));
+            }
+            step(apps);
         }
-        if started.elapsed() > Duration::from_secs(20) {
-            return Err(format!("{resource}/{action} unanswered"));
-        }
-        step(apps);
-    }
+    };
     loop {
         if let Some(state) = host.observe(&person.caller(), &invocation)
             && state.is_terminal()
@@ -331,7 +340,7 @@ fn a_commenter_reports_votes_and_replies_and_an_editor_follows_and_triages() {
             &team_chat,
             &format!("chat.workspace:{workspace_id}"),
             "add-feedback-channel",
-            InvokeArgument::None,
+            &InvokeArgument::None,
             &mut [&mut editor],
         ),
         "adding #feedback",
@@ -344,7 +353,7 @@ fn a_commenter_reports_votes_and_replies_and_an_editor_follows_and_triages() {
             &team_chat,
             &format!("chat.channel:{feedback}"),
             "mark-feedback",
-            InvokeArgument::None,
+            &InvokeArgument::None,
             &mut [&mut editor],
         ),
         "marking #feedback",
@@ -386,7 +395,7 @@ fn a_commenter_reports_votes_and_replies_and_an_editor_follows_and_triages() {
             &reporter_chat,
             &format!("chat.channel:{feedback}"),
             "post",
-            InvokeArgument::Text("Send does nothing when the To field ends with a comma".into()),
+            &InvokeArgument::Text("Send does nothing when the To field ends with a comma".into()),
             &mut [&mut editor, &mut author],
         ),
         "posting a report",
@@ -448,7 +457,7 @@ fn a_commenter_reports_votes_and_replies_and_an_editor_follows_and_triages() {
             &reporter_chat,
             &format!("chat.message:{report_id}"),
             "vote",
-            InvokeArgument::None,
+            &InvokeArgument::None,
             &mut [&mut editor, &mut author],
         ),
         "voting",
@@ -460,7 +469,7 @@ fn a_commenter_reports_votes_and_replies_and_an_editor_follows_and_triages() {
             &reporter_chat,
             &format!("chat.message:{report_id}"),
             "reply",
-            InvokeArgument::Text("It also happens with a trailing space".into()),
+            &InvokeArgument::Text("It also happens with a trailing space".into()),
             &mut [&mut editor, &mut author],
         ),
         "replying",
@@ -500,7 +509,7 @@ fn a_commenter_reports_votes_and_replies_and_an_editor_follows_and_triages() {
         &reporter_chat,
         &format!("chat.message:{report_id}"),
         "set-status",
-        InvokeArgument::Json(serde_json::Map::from_iter([(
+        &InvokeArgument::Json(serde_json::Map::from_iter([(
             "status".to_string(),
             serde_json::Value::String("wont_fix".into()),
         )])),
@@ -528,7 +537,7 @@ fn a_commenter_reports_votes_and_replies_and_an_editor_follows_and_triages() {
             &team_chat,
             &format!("chat.message:{report_id}"),
             "set-status",
-            InvokeArgument::Json(serde_json::Map::from_iter([
+            &InvokeArgument::Json(serde_json::Map::from_iter([
                 (
                     "status".to_string(),
                     serde_json::Value::String("fixed".into()),

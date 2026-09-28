@@ -47,6 +47,12 @@ const MAX_RETAINED_DIRECTORY_PAGES: usize = 64;
 /// A stalled LocalSet/capability must not leave a palette-owned oneshot alive
 /// forever. Retrying after this deadline remains bounded by the bridge queue.
 const DIRECTORY_PAGE_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a directory page answers the same query before the app is asked
+/// again. An app's directory moves on with its content (a message arriving,
+/// a vote) without republishing its surface, so a page read once would
+/// otherwise describe the moment it was read for as long as the query lasts.
+/// The page keeps answering while its successor is on the way.
+const DIRECTORY_PAGE_FRESH: Duration = Duration::from_secs(2);
 
 #[cfg(test)]
 thread_local! {
@@ -81,12 +87,29 @@ struct PendingDirectoryPage {
     initial_page: bool,
 }
 
+/// One exact directory action, addressed by publisher, actor, the revision it
+/// was named at, resource and action.
+type DirectoryTargetKey = (u64, String, String, String, String);
+
+/// Most exact directory actions resolved or resolving at once.
+const MAX_DIRECTORY_TARGETS: usize = 32;
+
+/// An exact directory action being re-resolved by its owner, or resolved.
+enum DirectoryTarget {
+    Resolving {
+        receiver: Pending<Result<CataloguePage, ActionHostError>>,
+        deadline: Instant,
+    },
+    Resolved(Box<tilo_actions::ActionDescriptor>),
+}
+
 /// Whether a refusal means the cached page no longer describes the
 /// directory: the row went away, its revision moved on, or the owner did.
 fn invalidates_directory_cache(error: &ActionHostError) -> bool {
     matches!(
         error,
         ActionHostError::UnknownAction
+            | ActionHostError::StaleRevision
             | ActionHostError::InvalidRequest { .. }
             | ActionHostError::Unavailable { .. }
     )
@@ -250,7 +273,13 @@ pub struct LiveAppActionsProvider {
     /// like every other caller's.
     host: BrokerActionHost,
     directory_pages: RefCell<HashMap<DirectoryCacheKey, CataloguePage>>,
+    /// When each page the app answered was read, for [`DIRECTORY_PAGE_FRESH`].
+    directory_page_read: RefCell<HashMap<DirectoryCacheKey, Instant>>,
     directory_pending: RefCell<HashMap<DirectoryCacheKey, PendingDirectoryPage>>,
+    /// Actions on a resource a directory page named, addressed exactly
+    /// rather than found on a page: a resource's `open` row names it, and
+    /// its other actions are resolved against the owner on demand.
+    directory_targets: RefCell<HashMap<DirectoryTargetKey, DirectoryTarget>>,
     /// The palette owns at most one needle's directory projection.
     /// Keeping previous query terms made rapid typing retain unbounded pages
     /// and receivers even though no result could ever be rendered again.
@@ -431,7 +460,9 @@ impl LiveAppActionsProvider {
             broker,
             host,
             directory_pages: RefCell::new(HashMap::new()),
+            directory_page_read: RefCell::new(HashMap::new()),
             directory_pending: RefCell::new(HashMap::new()),
+            directory_targets: RefCell::new(HashMap::new()),
             directory_query: RefCell::new(None),
             resource_kinds: vec![
                 ResourceKind::Action,
@@ -693,11 +724,17 @@ impl LiveAppActionsProvider {
                 {
                     pages.remove(&evicted);
                 }
+                self.directory_page_read
+                    .borrow_mut()
+                    .insert(key.clone(), now);
                 pages.insert(key, page);
                 if initial_page {
                     self.directory_epoch.fetch_add(1, Ordering::Relaxed);
                 }
             }
+            self.directory_page_read
+                .borrow_mut()
+                .retain(|key, _| pages.contains_key(key));
             // A later page appends after a retained cursor. Drop only the
             // projection so that cursor can continue at its prior offset;
             // the source revision deliberately remains stable.
@@ -748,6 +785,7 @@ impl LiveAppActionsProvider {
         if self.directory_surfaces_generation.replace(generation) != generation {
             self.directory_pages.borrow_mut().clear();
             self.directory_pending.borrow_mut().clear();
+            self.directory_targets.borrow_mut().clear();
             self.auxiliary_snapshot.borrow_mut().take();
             self.directory_epoch.fetch_add(1, Ordering::Relaxed);
         }
@@ -1264,9 +1302,13 @@ impl LiveAppActionsProvider {
             needle.to_string(),
             cursor.to_vec(),
         );
-        if self.directory_pages.borrow().contains_key(&key)
-            || self.directory_pending.borrow().contains_key(&key)
-        {
+        let fresh = self.directory_pages.borrow().contains_key(&key)
+            && self
+                .directory_page_read
+                .borrow()
+                .get(&key)
+                .is_none_or(|read| read.elapsed() < DIRECTORY_PAGE_FRESH);
+        if fresh || self.directory_pending.borrow().contains_key(&key) {
             return;
         }
         let query = CatalogueQuery {
@@ -1553,6 +1595,99 @@ impl LiveAppActionsProvider {
                 Ok(InvocationDisposition::Pending(ticket))
             })),
         })
+    }
+
+    /// The app moved on from `revision`: its pages from then describe actions
+    /// it no longer resolves, so the next search asks it afresh.
+    fn forget_directory_revision(&self, peer_id: u64, actor: &str, revision: &str) {
+        let before = self.directory_pages.borrow().len();
+        self.directory_pages
+            .borrow_mut()
+            .retain(|(peer, cached_actor, _, _), page| {
+                *peer != peer_id || cached_actor != actor || page.revision != revision
+            });
+        if self.directory_pages.borrow().len() != before {
+            self.auxiliary_snapshot.borrow_mut().take();
+            self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// The descriptor of one action on a resource the directory named, as its
+    /// owner resolves it at `revision`. Never waits: the first call asks the
+    /// owner and answers `None`, as does every call until the owner answers.
+    fn resolve_directory_target(
+        &self,
+        root: &ActionDirectoryRoot,
+        actor: &str,
+        revision: &str,
+        address: tilo_actions::ActionAddress,
+    ) -> Option<tilo_actions::ActionDescriptor> {
+        let key = (
+            root.peer_id,
+            actor.to_string(),
+            revision.to_string(),
+            address.resource.clone(),
+            address.action.clone(),
+        );
+        let mut targets = self.directory_targets.borrow_mut();
+        let now = Instant::now();
+        let resolved = match targets.get_mut(&key) {
+            Some(DirectoryTarget::Resolved(descriptor)) => return Some((**descriptor).clone()),
+            Some(DirectoryTarget::Resolving { receiver, deadline }) => {
+                match receiver.poll_ready() {
+                    PendingPoll::Ready(Ok(page)) if !page.stale_cursor => {
+                        page.rows.into_iter().find_map(|row| {
+                            row.action
+                                .filter(|descriptor| descriptor.address == address)
+                        })
+                    }
+                    PendingPoll::Waiting if now < *deadline => return None,
+                    PendingPoll::Ready(Ok(_)) => {
+                        self.forget_directory_revision(root.peer_id, actor, revision);
+                        None
+                    }
+                    PendingPoll::Ready(Err(error)) => {
+                        tracing::debug!(%error, resource = %address.resource, action = %address.action, "a directory action did not resolve");
+                        if invalidates_directory_cache(&error) {
+                            self.forget_directory_revision(root.peer_id, actor, revision);
+                        }
+                        None
+                    }
+                    PendingPoll::Abandoned | PendingPoll::Waiting => None,
+                }
+            }
+            None => {
+                if targets.len() >= MAX_DIRECTORY_TARGETS {
+                    targets.clear();
+                }
+                let caller = Caller::local_person(actor).in_room(&root.cluster_id);
+                let receiver = self.host.query(
+                    &caller,
+                    CatalogueQuery {
+                        provider: Some(root.peer_id.to_string()),
+                        target: Some(address),
+                        revision: Some(revision.to_string()),
+                        max_results: 1,
+                        ..CatalogueQuery::default()
+                    },
+                );
+                targets.insert(
+                    key,
+                    DirectoryTarget::Resolving {
+                        receiver,
+                        deadline: deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
+                    },
+                );
+                return None;
+            }
+        };
+        if let Some(descriptor) = resolved {
+            targets.insert(key, DirectoryTarget::Resolved(Box::new(descriptor.clone())));
+            return Some(descriptor);
+        }
+        // Refused, gone or unanswered: the next call asks again.
+        targets.remove(&key);
+        None
     }
 
     fn directory_resource_result(
@@ -2103,7 +2238,18 @@ impl SearchProvider for LiveAppActionsProvider {
                         .then(|| (descriptor.clone(), needle.clone(), cursor.clone()))
                 })
             },
-        )?;
+        );
+        let Some(cached) = cached else {
+            let descriptor = self.resolve_directory_target(
+                &root,
+                &actor,
+                revision,
+                tilo_actions::ActionAddress::new(resource, action),
+            )?;
+            return self
+                .directory_action_result(&root, revision, &descriptor, "", &actor, &[])
+                .filter(|result| result.id == id);
+        };
         self.directory_action_result(&root, revision, &cached.0, &cached.1, &actor, &cached.2)
             .filter(|result| result.id == id)
     }
@@ -2740,6 +2886,49 @@ mod tests {
         }
     }
 
+    /// A search's page describes the app when it was read. An app whose
+    /// content moves on (a reply arriving) without republishing its surface
+    /// is asked again once the page is no longer fresh, and the old page keeps
+    /// answering until the new one arrives.
+    #[test]
+    fn a_page_no_longer_fresh_is_read_again_and_answers_meanwhile() {
+        let provider = LiveAppActionsProvider::new(
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+        );
+        provider.set_directory_query("reply");
+        let key: DirectoryCacheKey = (7, "actor-a".into(), "reply".into(), Vec::new());
+        provider
+            .directory_pages
+            .borrow_mut()
+            .insert(key.clone(), page(Vec::new(), Vec::new()));
+        provider
+            .directory_page_read
+            .borrow_mut()
+            .insert(key.clone(), Instant::now());
+        provider.request_directory_page(7, "room", "actor-a", "reply", &[], "");
+        assert!(
+            provider.directory_pending.borrow().is_empty(),
+            "a fresh page answers the query without asking the app"
+        );
+
+        let read = Instant::now()
+            .checked_sub(super::DIRECTORY_PAGE_FRESH * 2)
+            .expect("the clock is past two freshness periods");
+        provider
+            .directory_page_read
+            .borrow_mut()
+            .insert(key.clone(), read);
+        provider.request_directory_page(7, "room", "actor-a", "reply", &[], "");
+        assert!(
+            provider.directory_pending.borrow().contains_key(&key),
+            "a page past its freshness is read again"
+        );
+        assert!(
+            provider.directory_pages.borrow().contains_key(&key),
+            "and keeps answering until its successor arrives"
+        );
+    }
+
     #[test]
     fn an_app_republishing_its_surface_refreshes_the_same_query() {
         let provider = LiveAppActionsProvider::new(
@@ -2917,6 +3106,142 @@ mod tests {
             assert_eq!(first.results[0].title, "Open first");
             assert_eq!(second.results[0].title, "Open second");
             assert_ne!(first.results[0].id, second.results[0].id);
+        }
+
+        // Phase `an_action_on_a_named_resource_resolves_against_its_owner`.
+        {
+            let chrome = chrome();
+            let broker = broker_for(&chrome);
+            let provider = LiveAppActionsProvider::new(broker.clone());
+            let chrome = chrome.borrow();
+            let cluster_id = chrome.tree().desktop.workspaces[0].room.to_string();
+            let actor = chrome.local_user_for_room(&chrome.tree().desktop.workspaces[0].room);
+            broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+                peer_id: 9,
+                app_id: "so.tilo.remote".into(),
+                cluster_id,
+                record_id: "root".into(),
+            }]);
+            let doc = AutoCommit::new();
+            // A page named `resource:vote` by its `open` row only; `vote` is
+            // on no page at all.
+            let id = format!(
+                "directory{ID_SEPARATOR}9{ID_SEPARATOR}r1{ID_SEPARATOR}resource:vote{ID_SEPARATOR}vote"
+            );
+            assert!(
+                provider.resolve(&id, context("", &chrome, &doc)).is_none(),
+                "the owner is asked, never waited for"
+            );
+            let key = (
+                9,
+                actor.clone(),
+                "r1".to_string(),
+                "resource:vote".to_string(),
+                "vote".to_string(),
+            );
+            assert!(
+                matches!(
+                    provider.directory_targets.borrow().get(&key),
+                    Some(super::DirectoryTarget::Resolving { .. })
+                ),
+                "resolving the exact action is under way"
+            );
+            let (owner, answer) = pending();
+            provider.directory_targets.borrow_mut().insert(
+                key,
+                super::DirectoryTarget::Resolving {
+                    receiver: answer,
+                    deadline: Instant::now() + Duration::from_secs(60),
+                },
+            );
+            assert!(provider.resolve(&id, context("", &chrome, &doc)).is_none());
+            owner.complete(Ok(page(
+                vec![CatalogueRow {
+                    provider: "9".into(),
+                    app_id: "so.tilo.remote".into(),
+                    parent_resource: "resource:vote".into(),
+                    resource: CatalogueResource {
+                        id: "resource:vote".into(),
+                        kind: "fixture".into(),
+                        label: "Fixture".into(),
+                        presentation: None,
+                        sensitivity: tilo_actions::Sensitivity::Public,
+                    },
+                    action: Some(exported("Vote for this report", "vote")),
+                    has_children: false,
+                    visibility: None,
+                }],
+                Vec::new(),
+            )));
+            let resolved = provider
+                .resolve(&id, context("", &chrome, &doc))
+                .expect("the owner's answer resolves the action");
+            assert_eq!(resolved.id, id);
+            assert_eq!(resolved.title, "Vote for this report");
+            assert!(
+                provider.resolve(&id, context("", &chrome, &doc)).is_some(),
+                "and it stays resolved at that revision"
+            );
+
+            // An owner that does not offer the action leaves nothing behind.
+            let missing = format!(
+                "directory{ID_SEPARATOR}9{ID_SEPARATOR}r1{ID_SEPARATOR}resource:vote{ID_SEPARATOR}delete"
+            );
+            let missing_key = (
+                9,
+                actor,
+                "r1".to_string(),
+                "resource:vote".to_string(),
+                "delete".to_string(),
+            );
+            provider.directory_targets.borrow_mut().insert(
+                missing_key.clone(),
+                super::DirectoryTarget::Resolving {
+                    receiver: tilo_actions::remote::Pending::ready(Ok(page(
+                        Vec::new(),
+                        Vec::new(),
+                    ))),
+                    deadline: Instant::now() + Duration::from_secs(60),
+                },
+            );
+            assert!(
+                provider
+                    .resolve(&missing, context("", &chrome, &doc))
+                    .is_none()
+            );
+            assert!(
+                !provider
+                    .directory_targets
+                    .borrow()
+                    .contains_key(&missing_key)
+            );
+
+            // An app that moved on from the revision a search named makes
+            // that search's pages stale: they are forgotten, so the next
+            // search reads the current revision instead of naming the old
+            // one forever.
+            provider.directory_pages.borrow_mut().insert(
+                (9, missing_key.1.clone(), "report".into(), Vec::new()),
+                page(Vec::new(), Vec::new()),
+            );
+            provider.directory_targets.borrow_mut().insert(
+                missing_key,
+                super::DirectoryTarget::Resolving {
+                    receiver: tilo_actions::remote::Pending::ready(Err(
+                        ActionHostError::StaleRevision,
+                    )),
+                    deadline: Instant::now() + Duration::from_secs(60),
+                },
+            );
+            assert!(
+                provider
+                    .resolve(&missing, context("", &chrome, &doc))
+                    .is_none()
+            );
+            assert!(
+                provider.directory_pages.borrow().is_empty(),
+                "the stale search page is forgotten"
+            );
         }
 
         // Phase `cold_public_action_page_does_not_start_a_surface_clone_or_index_build`.

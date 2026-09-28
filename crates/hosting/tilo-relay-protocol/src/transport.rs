@@ -105,6 +105,30 @@ pub struct ContentEndpointRequest {
 /// for a CRDT delta.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
+/// Why a relay refused a device a workspace, as far as asking again goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Refusal {
+    /// This relay does not carry the workspace. It will not start to until
+    /// its operator binds it, so asking again changes nothing.
+    NotHosted,
+    /// The device is not a member and was not admitted: no membership, or
+    /// an invitation this relay does not accept. Only a change to the
+    /// membership or the invitation can change the answer.
+    NotMember,
+    /// A passing condition — the workspace is full, or the relay failed to
+    /// read its own state. Asking again later may succeed.
+    Busy,
+}
+
+impl Refusal {
+    /// Whether the same request will keep being refused until the device's
+    /// configuration or membership changes.
+    #[must_use]
+    pub const fn is_final(self) -> bool {
+        matches!(self, Self::NotHosted | Self::NotMember)
+    }
+}
+
 /// One message on the post-handshake stream.
 ///
 /// Encoded via postcard's default enum representation: a compact
@@ -186,6 +210,8 @@ pub enum Envelope {
     NotAuthorised {
         /// Workspace id.
         workspace_id: u64,
+        /// Whether asking again can help, and when.
+        refusal: Refusal,
         /// Human-readable reason (for tracing / logging).
         reason: String,
     },
@@ -363,9 +389,10 @@ mod tests {
             (
                 Envelope::NotAuthorised {
                     workspace_id: 7,
+                    refusal: Refusal::NotMember,
                     reason: "no".into(),
                 },
-                vec![5, 7, 2, 110, 111],
+                vec![5, 7, 1, 2, 110, 111],
             ),
             (Envelope::Ping, vec![6]),
             (Envelope::Pong, vec![7]),

@@ -133,6 +133,14 @@ open Notes from search, create one note, move between its window and Files, and
 open History once. That short loop exercises search, the strip, app state, and
 undo without asking you to configure collaboration first.
 
+## Telling us what you found
+
+Press **Super+M** to say something about any part of any app, privately to
+the Tilo team or publicly in the Tilo Community. Nothing is sent until you
+have reviewed it. [Sending feedback about Tilo](feedback-for-alpha-users.md)
+explains recording, redaction, the community, and what replay means for your
+privacy.
+
 ## If something fails
 
 Do not repeat a disk operation until you understand whether the destination was

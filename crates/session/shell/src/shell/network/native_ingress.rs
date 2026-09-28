@@ -119,6 +119,7 @@ impl ShellNetwork {
                 record_id.clone(),
                 role,
                 (**envelope).clone(),
+                false,
             );
         }
     }

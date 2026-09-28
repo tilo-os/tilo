@@ -45,6 +45,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+pub mod community;
 pub mod continuity;
 pub mod day_schedule;
 pub mod display_identify;

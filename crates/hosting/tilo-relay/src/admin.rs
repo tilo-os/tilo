@@ -112,6 +112,17 @@ enum Cmd {
     /// this relay admit people through the room's standing invitation.
     #[command(subcommand)]
     Community(CommunityCmd),
+    /// Print where clients dial this relay: its Iroh endpoint address as the
+    /// JSON `TILO_COLLAB_HOSTS` entries take, derived from the device key in
+    /// `identity_root`. Works before the relay ever ran, so the address a
+    /// standing invitation carries can name a relay that is not yet deployed.
+    Endpoint {
+        /// A public `IP:PORT` reaching this relay's `iroh_listen` port (a
+        /// load balancer or a static address). Repeat for more; without any,
+        /// clients find the relay by its id through Iroh discovery alone.
+        #[arg(long = "addr")]
+        addrs: Vec<std::net::SocketAddr>,
+    },
     /// Publish a `RevocationEntry` for a device pubkey (hex-encoded, 32 bytes).
     ///
     /// Signs with the user root held by the personal identity in
@@ -145,10 +156,17 @@ enum Cmd {
 ///      connect (every room stays gated by its own membership).
 ///   4. In the owner's shell, mint the room's standing invitation with this
 ///      relay as its host, then `community add-invite --room ROOM TOKEN` here.
-///   5. Ship TOKEN (e.g. in `tilo-community.toml`); anyone redeems it.
+///   5. Ship TOKEN (in the image's `community.toml`); anyone redeems it.
 ///
 /// `community revoke-invite` stops further redemptions at once; people already
 /// admitted stay members. `community status` shows what is hosted.
+///
+/// When the owner's identity and the serving relay are on different machines
+/// (a hosted production relay), steps 2 and 4 run against a copy of the
+/// relay's configuration on the owner's machine, and the result travels as
+/// one record: `community export --room ROOM` there, `community install
+/// --record FILE` on the serving relay. Only public material moves: the
+/// delegation and the invitations, never the owner's root.
 #[derive(Subcommand)]
 enum CommunityCmd {
     /// Bind a public room here and store its owner's delegation.
@@ -196,6 +214,25 @@ enum CommunityCmd {
         /// The hosted room's UUID.
         #[arg(long)]
         room: String,
+    },
+    /// Print a hosted room's record — its owner, the delegation and every
+    /// standing invitation with its revocation — as JSON for `community
+    /// install` on the relay that serves it. Holds no secret.
+    Export {
+        /// The hosted room's UUID.
+        #[arg(long)]
+        room: String,
+    },
+    /// Host a public room from a record `community export` wrote elsewhere.
+    ///
+    /// The delegation must name this relay's device; every live invitation
+    /// must be the room's standing invitation from a device of its owner.
+    /// Binds the room, replaces the delegation and merges the invitations:
+    /// a revocation on either side stays. Running it again is a no-op.
+    Install {
+        /// The exported record (JSON).
+        #[arg(long)]
+        record: PathBuf,
     },
 }
 
@@ -278,7 +315,39 @@ fn run() -> anyhow::Result<()> {
             reason,
         } => cmd_revoke_device(&cli.config, &identity_dir, &device_pubkey_hex, &reason),
         Cmd::Community(cmd) => cmd_community(&cli.config, cmd),
+        Cmd::Endpoint { addrs } => cmd_endpoint(&cli.config, &addrs),
     }
+}
+
+fn relay_device_cert(cfg: &RelayConfig) -> anyhow::Result<tilo_user_identity::DeviceCert> {
+    let paths = tilo_user_identity::IdentityPaths::under(&cfg.identity_root);
+    tilo_user_identity::persist::read_device_cert(&paths.device_cert).with_context(|| {
+        format!(
+            "read this relay's device certificate {}",
+            paths.device_cert.display()
+        )
+    })
+}
+
+fn cmd_endpoint(config: &std::path::Path, addrs: &[std::net::SocketAddr]) -> anyhow::Result<()> {
+    let cfg = load(config)?;
+    let paths = tilo_user_identity::IdentityPaths::under(&cfg.identity_root);
+    let device_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+        .with_context(|| {
+            format!(
+                "read this relay's device key {}",
+                paths.device_privkey.display()
+            )
+        })?;
+    let id = iroh::EndpointId::from_bytes(&tilo_relay::daemon::relay_service_node_id(&device_key))
+        .context("derive the relay's endpoint id")?;
+    let addr = addrs
+        .iter()
+        .fold(iroh::EndpointAddr::new(id), |addr, socket| {
+            addr.with_ip_addr(*socket)
+        });
+    println!("{}", serde_json::to_string(&addr)?);
+    Ok(())
 }
 
 fn hosted_room_store(
@@ -382,7 +451,56 @@ fn cmd_community(config: &std::path::Path, cmd: CommunityCmd) -> anyhow::Result<
             println!("admitted devices {}", store.load_membership()?.len());
             Ok(())
         }
+        CommunityCmd::Export { room } => {
+            let cfg = load(config)?;
+            let (_, store) = hosted_room_store(&cfg, &room)?;
+            let hosting = load_hosting(&store, &room)?;
+            println!("{}", serde_json::to_string_pretty(&hosting)?);
+            Ok(())
+        }
+        CommunityCmd::Install { record } => cmd_community_install(config, &record),
     }
+}
+
+fn cmd_community_install(config: &std::path::Path, record: &std::path::Path) -> anyhow::Result<()> {
+    let bytes = std::fs::read(record).with_context(|| format!("read {}", record.display()))?;
+    let incoming: tilo_relay::public_room::PublicRoomHosting = serde_json::from_slice(&bytes)
+        .with_context(|| format!("{} is not a hosted room record", record.display()))?;
+    let mut cfg = load(config)?;
+    let relay_cert = relay_device_cert(&cfg)?;
+    let room = incoming.room.clone();
+    let workspace_id = tilo_relay::room_workspace_id(&room)
+        .with_context(|| format!("invalid room UUID {room:?}"))?;
+    let added = cfg.add_workspace(workspace_id, false);
+    let store = tilo_relay::store::WorkspaceStore::open(&cfg.state_root, workspace_id, false)?;
+    let existing = tilo_relay::public_room::PublicRoomHosting::load(store.root())?;
+    let (_, merged) = tilo_relay::public_room::PublicRoomHosting::adopt(
+        existing.clone(),
+        incoming,
+        relay_cert.device_public_key,
+        std::time::SystemTime::now(),
+    )?;
+    if added {
+        cfg.save(config)?;
+    }
+    if existing.as_ref() == Some(&merged) {
+        println!("room {room} is already hosted here exactly as the record says");
+    } else {
+        merged.save(store.root())?;
+        let (revoked, live): (Vec<_>, Vec<_>) =
+            merged.invites.iter().partition(|invite| invite.revoked);
+        println!(
+            "hosting public room {room} as workspace {workspace_id} for owner {}: \
+             {} live and {} revoked standing invitations",
+            hex::encode(merged.owner),
+            live.len(),
+            revoked.len()
+        );
+    }
+    if added {
+        println!("restart tilo-relay to serve the newly bound room");
+    }
+    Ok(())
 }
 
 fn cmd_community_host(

@@ -90,10 +90,16 @@ async fn a_full_workspace_refuses_a_new_subscriber_but_not_a_returning_one() {
     match subscribe(&third).await {
         Envelope::NotAuthorised {
             workspace_id,
+            refusal,
             reason,
         } => {
             assert_eq!(workspace_id, WS);
             assert_eq!(reason, "workspace subscriber limit reached");
+            assert_eq!(
+                refusal,
+                tilo_relay::transport::Refusal::Busy,
+                "a full workspace may take the device once a slot frees"
+            );
         }
         other => panic!("a third subscriber must be refused, got {other:?}"),
     }

@@ -78,6 +78,7 @@ async fn recv_delta_into(session: &RelayCoeditSession, doc: &mut AutoCommit) {
             | Inbound::Presence { .. }
             | Inbound::RemoteAction { .. }
             | Inbound::Replayed { .. } => {}
+            Inbound::Refused { reason, .. } => panic!("the host refused the session: {reason}"),
         }
     }
     panic!("no document delta arrived");
@@ -350,7 +351,8 @@ async fn catch_up_first_connection(
             }
             other @ (Inbound::Presence { .. }
             | Inbound::RemoteAction { .. }
-            | Inbound::Replayed { .. }) => {
+            | Inbound::Replayed { .. }
+            | Inbound::Refused { .. }) => {
                 panic!("unexpected inbound {other:?}")
             }
         }

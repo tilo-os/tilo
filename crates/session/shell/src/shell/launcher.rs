@@ -1077,22 +1077,26 @@ pub fn write_trusted_identities_projection(
 
 /// Publish a complete accepted room-governance projection for later Files
 /// launches. Callers derive this from `WorkspaceTree`'s accepted room document,
-/// never Contacts or presence.
+/// never Contacts or presence. Answers whether the room's projection changed,
+/// which is whether who may be in the room did.
 pub fn set_trusted_identity_projection(
     room: RoomId,
     projection: &tilo_user_identity::TrustedIdentityProjectionV2,
-) {
+) -> bool {
     if projection.validate().is_err() {
-        return;
+        return false;
     }
-    if let Ok(mut projections) = TRUSTED_IDENTITY_PROJECTIONS.lock() {
-        projections.insert(room, projection.clone());
-    }
+    let changed = TRUSTED_IDENTITY_PROJECTIONS
+        .lock()
+        .is_ok_and(|mut projections| {
+            projections.insert(room, projection.clone()).as_ref() != Some(projection)
+        });
     // Existing Files sandboxes bind the containing directory, so this atomic
     // replacement becomes visible to them as well as to later launches.
     if let Err(error) = write_trusted_identities_projection(room, projection) {
         tracing::warn!(%room, %error, "could not publish live governed identity projection");
     }
+    changed
 }
 
 fn stage_current_trusted_identities(room: RoomId) -> std::io::Result<PathBuf> {
@@ -1731,6 +1735,35 @@ pub fn build_workspace_agent_command(
     identity_path: Option<&Path>,
     agent_id: &str,
 ) -> LaunchCommand {
+    build_managed_agent_command(
+        app,
+        launcher_bin,
+        room,
+        identity_path,
+        agent_id,
+        ManagedAgentWork::TaskRuns,
+    )
+}
+
+/// What a desktop-managed agent session does once it has joined its room.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ManagedAgentWork {
+    /// Run Task Center leases the broker addresses to it.
+    TaskRuns,
+    /// Triage feedback: the community room's `#feedback`, or a reporter's
+    /// direct room with the team.
+    Triage { direct: bool },
+}
+
+/// [`build_workspace_agent_command`] for any [`ManagedAgentWork`].
+pub fn build_managed_agent_command(
+    app: &InstalledApp,
+    launcher_bin: &Path,
+    room: RoomId,
+    identity_path: Option<&Path>,
+    agent_id: &str,
+    work: ManagedAgentWork,
+) -> LaunchCommand {
     let mut command = build_launch_command_for(
         app,
         launcher_bin,
@@ -1754,8 +1787,14 @@ pub fn build_workspace_agent_command(
         WORKSPACE_AGENT_PACKAGE_ID.into(),
         "--name".into(),
         agent_id.to_string(),
-        "--task-runs".into(),
     ]);
+    match work {
+        ManagedAgentWork::TaskRuns => command.args.push("--task-runs".into()),
+        ManagedAgentWork::Triage { direct } => command.args.extend([
+            "--triage".into(),
+            if direct { "direct" } else { "community" }.into(),
+        ]),
+    }
     command.managed_agent_id = Some(agent_id.to_string());
     command
 }
@@ -1908,6 +1947,21 @@ pub fn launch_workspace_agent(
     agent_id: &str,
     workspace: &Workspace,
 ) -> Result<InstalledApp, LaunchError> {
+    launch_managed_agent(agent_id, workspace, ManagedAgentWork::TaskRuns)
+}
+
+/// [`launch_workspace_agent`] for any [`ManagedAgentWork`]. Task runs need
+/// an administrator; triage needs someone the room lets operate the agent,
+/// which includes its administrators.
+///
+/// # Errors
+///
+/// As [`launch_workspace_agent`].
+pub fn launch_managed_agent(
+    agent_id: &str,
+    workspace: &Workspace,
+    work: ManagedAgentWork,
+) -> Result<InstalledApp, LaunchError> {
     let agent_id = agent_id.trim();
     if workspace
         .role_of_agent(agent_id)
@@ -1917,7 +1971,14 @@ pub fn launch_workspace_agent(
             agent_id: agent_id.to_string(),
         });
     }
-    if !workspace.may_administer(&crate::shell::state::local_user_id()) {
+    let me = crate::shell::state::local_user_id();
+    let authorized = match work {
+        ManagedAgentWork::TaskRuns => workspace.may_administer(&me),
+        ManagedAgentWork::Triage { .. } => {
+            workspace.may_operate_agent_at(&me, agent_id, tilo_clock::unix_now())
+        }
+    };
+    if !authorized {
         return Err(LaunchError::AgentLaunchNotAuthorized);
     }
     let app = installed_apps()?
@@ -1947,7 +2008,7 @@ pub fn launch_workspace_agent(
             package_id: app.package_id,
         });
     }
-    execute_workspace_agent(app, agent_id, workspace)
+    execute_workspace_agent(app, agent_id, workspace, work)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1955,6 +2016,7 @@ fn execute_workspace_agent(
     _app: InstalledApp,
     _agent_id: &str,
     _workspace: &Workspace,
+    _work: ManagedAgentWork,
 ) -> Result<InstalledApp, LaunchError> {
     Err(LaunchError::ProviderUnavailable {
         provider: "workspace process service",
@@ -1966,6 +2028,7 @@ fn execute_workspace_agent(
     app: InstalledApp,
     agent_id: &str,
     workspace: &Workspace,
+    work: ManagedAgentWork,
 ) -> Result<InstalledApp, LaunchError> {
     let launcher_bin = selected_execution_program()?;
     let identity_path = crate::identity_registry::selected_identity_path(
@@ -1974,12 +2037,13 @@ fn execute_workspace_agent(
     .map_err(|error| LaunchError::IdentityUnavailable {
         detail: error.to_string(),
     })?;
-    let command = build_workspace_agent_command(
+    let command = build_managed_agent_command(
         &app,
         &launcher_bin,
         workspace.room,
         identity_path.as_deref(),
         agent_id,
+        work,
     );
     if let Err(detail) = spawn_detached(app.clone(), command) {
         return Err(LaunchError::AgentLaunchWorkerUnavailable { detail });

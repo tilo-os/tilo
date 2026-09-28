@@ -1,10 +1,10 @@
-//! What people write in a feedback channel lives in records they own.
+//! What people write as comments lives in records they own.
 //!
-//! A public feedback channel is written to by Commenters, who may change no
-//! shared document but their own comment records (`collab_types::comment`).
-//! So in a feedback channel a message, a reply and a person's reactions are
-//! each a comment record of its author's device, discoverable through the
-//! room's index:
+//! A Commenter (a person who joined a public room, a Contributor agent) may
+//! change no shared document but their own comment records
+//! (`collab_types::comment`). So what a comment-only participant writes, in
+//! any channel, and what anyone writes in a feedback channel is a comment
+//! record of its author's device, discoverable through the room's index:
 //!
 //! - a report is a comment on the channel's record ([`channel_record`]);
 //! - a reply is a comment on the message it answers;
@@ -114,16 +114,18 @@ impl Comments {
         self.joined.comment_author().is_some()
     }
 
-    /// Remember the room's index and follow what it lists on `channels`.
-    pub fn index_changed(&mut self, index: &AutoCommit, channels: &[String]) {
+    /// Remember the room's index and follow what it lists on `channels`
+    /// and on the conversation's `messages`.
+    pub fn index_changed(&mut self, index: &AutoCommit, channels: &[String], messages: &[String]) {
         self.index = Some(index.clone());
-        self.follow(channels);
+        self.follow(channels, messages);
     }
 
-    /// Join the reports on `channels`, their replies and reactions. Own
-    /// records stay joined whatever the index says: the index delta that
-    /// brings them in may not have been sent yet.
-    pub fn follow(&mut self, channels: &[String]) {
+    /// Join the comment records on `channels` and on the conversation
+    /// document's `messages` (posts, replies, reactions), and the replies and
+    /// reactions on those in turn. Own records stay joined whatever the index
+    /// says: the index delta that brings them in may not have been sent yet.
+    pub fn follow(&mut self, channels: &[String], messages: &[String]) {
         let Some(index) = &self.index else {
             return;
         };
@@ -133,24 +135,38 @@ impl Comments {
             .into_iter()
             .filter(|c| self.joined.may_write(&c.id))
             .collect();
-        let mut parents: Vec<RecordId> =
-            channels.iter().filter_map(|c| channel_record(c)).collect();
-        let mut seen = 0usize;
-        while let Some(parent) = parents.pop() {
-            for checkout in ui::record::room::comments_on(index, &parent) {
+        let mut parents: std::collections::HashSet<RecordId> = channels
+            .iter()
+            .filter_map(|c| channel_record(c))
+            .chain(
+                messages
+                    .iter()
+                    .filter_map(|m| conversation_message_record(m)),
+            )
+            .collect();
+        // One pass over the index, then threads resolved in memory: a reply
+        // is followed once the message it answers is.
+        let all = ui::record::room::comments_where(index, |_| true);
+        loop {
+            let mut grew = false;
+            for checkout in &all {
+                let Some(parent) = checkout.id.comment_parent() else {
+                    continue;
+                };
+                if !parents.contains(&parent) || wanted.iter().any(|w| w.id == checkout.id) {
+                    continue;
+                }
                 if checkout.kind.as_str() == MESSAGE_KIND {
-                    parents.push(checkout.id.clone());
+                    parents.insert(checkout.id.clone());
                 }
-                if !wanted.iter().any(|w| w.id == checkout.id) {
-                    wanted.push(checkout);
-                }
+                wanted.push(checkout.clone());
+                grew = true;
             }
-            seen += 1;
-            if seen > ui::record::MAX_JOINED_RECORDS {
+            if !grew || wanted.len() > ui::record::MAX_JOINED_RECORDS {
                 break;
             }
         }
-        // Package-document messages are commented on too (reactions).
+        wanted.truncate(ui::record::MAX_JOINED_RECORDS);
         let _ = self.joined.join(&wanted);
         self.reindex();
     }
@@ -214,6 +230,7 @@ impl Comments {
                 pinned: false,
                 work: None,
                 report: None,
+                approved: None,
             });
         }
         out.sort_by(|a, b| a.ts.cmp(&b.ts).then_with(|| a.id.cmp(&b.id)));
@@ -551,7 +568,8 @@ mod tests {
             &theirs.id,
             &theirs.kind
         ));
-        app.comments.index_changed(&index, &["c_fb".to_string()]);
+        app.comments
+            .index_changed(&index, &["c_fb".to_string()], &[]);
         let joined = app.comments.joined();
         assert!(joined.contains(&theirs.id));
         assert!(!joined.may_write(&theirs.id), "followed, never written");

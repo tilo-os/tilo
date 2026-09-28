@@ -2113,6 +2113,10 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                             // Channel replays answer a member that asked for
                             // one; the session peer asks for none.
                             Inbound::Replayed {..} => continue,
+                            Inbound::Refused {refusal, reason} => {
+                                tracing::warn!(?refusal, %reason, "the relay refused the session peer");
+                                continue;
+                            }
                             Inbound::Ready {..} => unreachable!(),
                         };
                         let inbound_bytes = bytes.len();

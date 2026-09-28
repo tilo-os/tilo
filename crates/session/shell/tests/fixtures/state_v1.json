@@ -107,6 +107,7 @@
         }
       ],
       "channel_class": "encrypted",
+      "recording_delegates_forbidden": false,
       "permission_profiles": [],
       "default_apps": {
         "policy": {},
@@ -166,6 +167,7 @@
       "ownership_transfer_cancellations": [],
       "capabilities": [],
       "channel_class": "encrypted",
+      "recording_delegates_forbidden": false,
       "permission_profiles": [],
       "default_apps": {
         "policy": {},

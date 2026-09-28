@@ -689,7 +689,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
        fi \
     && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p tilo-rollback -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-pdf -p tilo-app-package-cli -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p system-extension -p compat-service -p account-custody" \
     # Select the shipped executables explicitly: --bins also links shell dev tools.
-    && RELEASE_BINS="--bin fs --bin terminal --bin file-explorer --bin settings --bin tilo-model-manager --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-account-credential" \
+    && RELEASE_BINS="--bin fs --bin terminal --bin file-explorer --bin settings --bin tilo-model-manager --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-account-credential --bin tilo-account-service" \
     && build_phase rust-release \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
@@ -701,7 +701,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          --bin tilo-windows-vm-control --bin tilo-windows-rail \
     && build_phase rust-output-validation \
     && missing=0 \
-    && for b in shell tilo-projector tilo-pdf-helper fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control terminal file-explorer settings tilo-model-manager tilo-model-gateway tilo-greeter tilo-installer tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential; do \
+    && for b in shell tilo-projector tilo-pdf-helper fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control terminal file-explorer settings tilo-model-manager tilo-model-gateway tilo-greeter tilo-installer tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential tilo-account-service; do \
          case "${TILO_PREBUILT_DESKTOP}:$b" in 1:shell|1:tilo-launcher|1:tilo-unlock-helper) continue ;; esac; \
          if [ ! -x "target/release/$b" ]; then \
            printf 'Required build output is missing: %s\n' "$b" >&2; missing=1; \
@@ -759,6 +759,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/tilo-windows-rail \
           target/release/tilo-windows-runtime \
           target/release/tilo-account-credential \
+          target/release/tilo-account-service \
           /out/ \
     && ln -s app /out/store \
     && ln -s tilo /out/system \
@@ -1814,6 +1815,8 @@ COPY \
     os/usr/lib/systemd/user/tilo-models.socket \
     os/usr/lib/systemd/user/tilo-model-gateway.service \
     os/usr/lib/systemd/user/tilo-model-gateway.socket \
+    os/usr/lib/systemd/user/tilo-account-service.service \
+    os/usr/lib/systemd/user/tilo-account-service.socket \
     os/usr/lib/systemd/user/tilo-app-host.service \
     os/usr/lib/systemd/user/tilo-app-host.socket \
     /usr/lib/systemd/user/
@@ -1911,6 +1914,7 @@ RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
               /usr/libexec/tilo-doubletake-test-receiver \
               /usr/libexec/tilo-fluxcast \
               /usr/libexec/tilo-account-credential \
+              /usr/libexec/tilo-account-service \
     && { [ ! -e /usr/bin/browser ] || chmod 755 /usr/bin/browser; } \
     && missing="$(ldd /usr/bin/shell | awk '/not found/ { print $1 }')" \
     && { if [ -n "$missing" ]; then \
@@ -1994,8 +1998,18 @@ COPY os/usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-tilo-live-i
 # is a principal rather than a key.
 COPY os/usr/share/tilo/fs-capabilities.json /usr/share/tilo/fs-capabilities.json
 # The Tilo community room's standing invitation and the Tilo team principal,
-# read by the shell for public and private feedback.
+# read by the shell for public and private feedback. A published image
+# (TILO_REQUIRE_COMMUNITY=1) refuses the empty placeholder; a development
+# image may ship it. CI may materialize TILO_COMMUNITY_TOML over the file first.
 COPY os/usr/share/tilo/community.toml /usr/share/tilo/community.toml
+ARG TILO_REQUIRE_COMMUNITY=0
+RUN --network=none \
+    --mount=type=bind,source=dist/community-config.sh,target=/tmp/community-config.sh,ro \
+    if [ "$TILO_REQUIRE_COMMUNITY" = 1 ]; then \
+      bash /tmp/community-config.sh check --require /usr/share/tilo/community.toml; \
+    else \
+      bash /tmp/community-config.sh check /usr/share/tilo/community.toml; \
+    fi
 # Git compares only the stat fields that sync between devices (mtime and
 # size, not inode or ctime), so a synced repository is clean everywhere
 # without re-hashing; see the snippet and docs/device-local-state.md.
@@ -2387,6 +2401,7 @@ RUN systemctl enable greetd.service && \
     systemctl --global enable tilo-identity.service && \
     systemctl --global enable tilo-models.socket && \
     systemctl --global enable tilo-model-gateway.socket && \
+    systemctl --global enable tilo-account-service.socket && \
     systemctl --global enable tilo-app-host.socket && \
     systemctl --global enable tilo-ush.socket && \
     systemctl --global enable tilo-fs-recipient.socket && \

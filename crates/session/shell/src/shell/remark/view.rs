@@ -404,8 +404,10 @@ fn destination_icon(option: &DestinationOption) -> Icon {
 fn destination_detail(option: &DestinationOption) -> String {
     match &option.kind {
         DestinationKind::Team { .. } => t("remark-dest-team-detail"),
-        DestinationKind::Community { joined: true, .. } => t("remark-dest-community-detail"),
-        DestinationKind::Community { .. } => t("remark-dest-community-join"),
+        // Everyone is a member by default; only a person who left is told
+        // that sending joins again.
+        DestinationKind::Community { left: true, .. } => t("remark-dest-community-join"),
+        DestinationKind::Community { .. } => t("remark-dest-community-detail"),
         DestinationKind::Room { .. } => t("remark-dest-room-detail"),
         DestinationKind::Person { is_agent: true, .. } => t_args(
             "remark-dest-agent-detail",
@@ -3205,6 +3207,33 @@ pub struct StateNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A member is told who sees a public remark; only a person who left
+    /// the community is told that sending joins it again.
+    #[test]
+    fn the_community_destination_says_what_is_true_for_the_person() {
+        let community = |joined, left| DestinationOption {
+            id: "community".into(),
+            label: "Tilo Community".into(),
+            kind: DestinationKind::Community {
+                room: "room".into(),
+                channel: "c".into(),
+                joined,
+                left,
+            },
+        };
+        let member = t("remark-dest-community-detail");
+        assert_eq!(destination_detail(&community(true, false)), member);
+        assert_eq!(
+            destination_detail(&community(false, false)),
+            member,
+            "a member the host has not admitted yet is still a member"
+        );
+        assert_eq!(
+            destination_detail(&community(false, true)),
+            t("remark-dest-community-join")
+        );
+    }
 
     #[test]
     fn every_target_names_the_action_a_click_on_it_runs() {

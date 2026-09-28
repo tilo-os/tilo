@@ -76,6 +76,13 @@ pub struct RelayConfig {
     #[serde(default = "default_iroh_listen")]
     pub iroh_listen: SocketAddr,
 
+    /// Where to serve the live counters as Prometheus text on `GET /metrics`
+    /// (plain HTTP). Unset serves nothing; the counters are still written to
+    /// `<state_root>/metrics.json` for `tilo-relay status`. Bind it to an
+    /// address only the scraper can reach: it carries counts, never content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics_listen: Option<SocketAddr>,
+
     /// Which peers this relay accepts. Defaults to the matching-
     /// user policy — only peers whose cert chains to the same user
     /// identity as this relay's cert.
@@ -306,6 +313,7 @@ impl Default for RelayConfig {
             full_replica_status: default_full_replica_status(),
             home_peer_bundle: default_home_peer_bundle(),
             iroh_listen: default_iroh_listen(),
+            metrics_listen: None,
             trust_policy: TrustPolicy::default(),
             device_role: default_device_role(),
             services: default_services(),

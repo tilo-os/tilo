@@ -222,6 +222,7 @@ members = [
 
     # System
     "crates/system/account-custody",
+    "crates/system/account-service",
     "crates/system/accounts",
     "crates/system/advisory-lock",
     "crates/system/app-state",

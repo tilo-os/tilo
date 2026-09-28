@@ -73,6 +73,9 @@ async fn native_ready(owner: &mut SessionOwner, session: &mut NativeSubscription
                 Inbound::Ready { .. } => {}
                 Inbound::Presence { .. } => panic!("unexpected presence"),
                 Inbound::RemoteAction { .. } | Inbound::Replayed { .. } => {}
+                Inbound::Refused { refusal, reason } => {
+                    panic!("relay refused the session: {refusal:?}: {reason}")
+                }
             }
         }
     })
@@ -195,6 +198,9 @@ async fn replay(session: &RelayCoeditSession, peers: &mut [&mut StatePeer]) -> O
                 Inbound::Ready { .. } => return output,
                 Inbound::Presence { .. } => panic!("unexpected presence"),
                 Inbound::RemoteAction { .. } | Inbound::Replayed { .. } => {}
+                Inbound::Refused { refusal, reason } => {
+                    panic!("relay refused the session: {refusal:?}: {reason}")
+                }
             }
         }
     })

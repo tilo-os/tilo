@@ -398,6 +398,12 @@ pub enum NetCmd {
         host: uuid::Uuid,
         rooms: Vec<uuid::Uuid>,
     },
+    /// Who may be in `ws` changed — an invitation issued, a role granted, a
+    /// member's device certified. Ask every workspace host that refused the
+    /// room for good again, now.
+    ReconsiderHosts {
+        ws: WorkspaceId,
+    },
 }
 
 /// Concrete data-plane route for one workspace-control session.
@@ -427,6 +433,15 @@ pub enum NetEvent {
     HostReady {
         ws: WorkspaceId,
         peer: PeerId,
+    },
+    /// A workspace host refused this device's subscription to the workspace,
+    /// for `reason`: it does not carry the room, would not admit this device
+    /// with the invitation it presented, or is busy (`refusal` says which).
+    HostRefused {
+        ws: WorkspaceId,
+        peer: PeerId,
+        refusal: tilo_relay_protocol::transport::Refusal,
+        reason: String,
     },
     Msg {
         ws: WorkspaceId,
@@ -596,6 +611,11 @@ enum HostEvent {
         author: EndpointId,
         msg: NeighbourMsg,
     },
+    /// The host refused the room, for `reason`; `Closed` follows.
+    Refused {
+        refusal: tilo_relay_protocol::transport::Refusal,
+        reason: String,
+    },
     Closed,
 }
 
@@ -609,6 +629,110 @@ struct HostRuntime {
     actions: Option<tokio::task::JoinHandle<()>>,
     session: Arc<RelayCoeditSession>,
     pump: tokio::task::JoinHandle<()>,
+    /// Whether the host has answered the subscription. Until it has, the
+    /// host would take anything sent on the session as a protocol breach
+    /// and end it: presence is dropped, everything else waits here.
+    ready: std::sync::atomic::AtomicBool,
+    held: Mutex<Vec<HostSend>>,
+}
+
+/// One thing to send on a workspace host session.
+enum HostSend {
+    Checkpoint {
+        channel: [u8; 32],
+        entry: [u8; 32],
+        coverage: tilo_relay::Coverage,
+        body: Vec<u8>,
+    },
+    Retained {
+        channel: [u8; 32],
+        entry: [u8; 32],
+        body: Vec<u8>,
+    },
+    Presence(Vec<u8>),
+    Replay([u8; 32]),
+    RemoteAction {
+        target: [u8; 32],
+        frame: Vec<u8>,
+    },
+}
+
+/// Most sends a host session holds while it waits for its subscription.
+const MAX_HELD_HOST_SENDS: usize = 1024;
+
+impl HostRuntime {
+    fn new(
+        session: Arc<RelayCoeditSession>,
+        pump: tokio::task::JoinHandle<()>,
+        native_scope: Option<Arc<native_ingress::Scope>>,
+        actions: Option<tokio::task::JoinHandle<()>>,
+    ) -> Self {
+        Self {
+            native_scope,
+            actions,
+            session,
+            pump,
+            ready: std::sync::atomic::AtomicBool::new(false),
+            held: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Send now on a subscribed session; before that, hold it (presence,
+    /// which is only ever current, is dropped instead).
+    fn send(&self, send: HostSend) -> Result<(), tilo_relay::CoeditError> {
+        if self.ready.load(Ordering::Acquire) {
+            return self.send_now(send);
+        }
+        if matches!(send, HostSend::Presence(_)) {
+            return Ok(());
+        }
+        if let Ok(mut held) = self.held.lock()
+            && held.len() < MAX_HELD_HOST_SENDS
+        {
+            held.push(send);
+        }
+        Ok(())
+    }
+
+    fn send_now(&self, send: HostSend) -> Result<(), tilo_relay::CoeditError> {
+        match send {
+            HostSend::Checkpoint {
+                channel,
+                entry,
+                coverage,
+                body,
+            } => self
+                .session
+                .publish_covering_checkpoint(channel, entry, coverage, body),
+            HostSend::Retained {
+                channel,
+                entry,
+                body,
+            } => self.session.publish_retained_entry(channel, entry, body),
+            HostSend::Presence(payload) => self.session.publish_presence(payload),
+            HostSend::Replay(channel) => self.session.request_channel_replay(channel),
+            HostSend::RemoteAction { target, frame } => {
+                self.session.publish_remote_action(target, frame)
+            }
+        }
+    }
+
+    /// The host answered the subscription: send what waited for it, in
+    /// order.
+    fn become_ready(&self, ws: WorkspaceId) {
+        let held = self
+            .held
+            .lock()
+            .map(|mut held| std::mem::take(&mut *held))
+            .unwrap_or_default();
+        self.ready.store(true, Ordering::Release);
+        tracing::debug!(ws, held = held.len(), "subscribed at a workspace host");
+        for send in held {
+            if let Err(error) = self.send_now(send) {
+                tracing::warn!(ws, %error, "a workspace host send that waited for its subscription failed");
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -852,6 +976,8 @@ struct ActorState {
     /// Standing invitations to redeem at hosts before subscribing, per room
     /// topic, until a host's subscription for that room succeeds.
     host_redemptions: HashMap<WorkspaceId, [u8; 32]>,
+    /// When each room is next asked for at each host.
+    host_retries: super::host_retry::HostRetries,
     content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
     peers_seen: HashMap<(WorkspaceId, EndpointId), PeerMembership>,
     next_membership_epoch: u64,
@@ -1064,6 +1190,7 @@ impl ActorState {
                     }
                 }
                 self.subscribers.remove(&ws);
+                self.host_redemptions.remove(&ws);
                 self.peers_seen.retain(|(peer_ws, _), _| *peer_ws != ws);
                 self.pending_surface_frames.remove(&ws);
                 if let Some(task) = self.surface_fanout_tasks.remove(&ws) {
@@ -1164,7 +1291,7 @@ impl ActorState {
             Some(NetCmd::ReplayChannel { ws, channel }) => {
                 for ((session_ws, _), runtime) in &self.host_sessions {
                     if *session_ws == ws
-                        && let Err(error) = runtime.session.request_channel_replay(channel)
+                        && let Err(error) = runtime.send(HostSend::Replay(channel))
                     {
                         tracing::warn!(ws, %error, "workspace host channel replay request failed");
                     }
@@ -1286,6 +1413,9 @@ impl ActorState {
                 }
                 self.lookup.add_endpoint_info(addr.clone());
                 self.hosts.insert(id, (addr.clone(), expectation.clone()));
+                // Named again, perhaps configured anew: every room is worth
+                // asking it for once more.
+                self.host_retries.reconsider_host(id);
                 let Some(identity) = self.host_identity.as_ref() else {
                     tracing::warn!(peer = %id, "cannot connect workspace host without a device certificate");
                     return true;
@@ -1308,44 +1438,60 @@ impl ActorState {
                         self.action_broker
                             .as_ref()
                             .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
+                        &self.host_retries,
                     );
                 }
             }
             Some(NetCmd::DisconnectHost { id }) => self.teardown_host(id, true),
+            Some(NetCmd::ReconsiderHosts { ws }) => {
+                self.host_retries.reconsider_room(ws);
+                self.schedule_room_at_hosts(ws);
+            }
             Some(NetCmd::RedeemAtHosts { ws, invite_id }) => {
                 self.host_redemptions.insert(ws, invite_id);
-                if let Some(identity) = self.host_identity.as_ref()
-                    && self.topics.contains_key(&ws)
-                    && !self.native_routes.contains(ws)
-                {
-                    for (addr, expectation) in self.hosts.values().cloned() {
-                        schedule_host_topic(
-                            &self.endpoint,
-                            identity,
-                            ws,
-                            addr,
-                            expectation,
-                            Some(invite_id),
-                            &self.internal_tx,
-                            &self.host_sessions,
-                            &mut self.connecting_hosts,
-                            &mut self.content_discovery_tasks,
-                            self.action_broker
-                                .as_ref()
-                                .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
-                        );
-                    }
-                }
+                self.host_retries.reconsider_room(ws);
+                self.schedule_room_at_hosts(ws);
             }
             None => return false,
         }
         true
     }
 
+    /// Ask every workspace host for `ws` that is due to be asked.
+    fn schedule_room_at_hosts(&mut self, ws: WorkspaceId) {
+        let Some(identity) = self.host_identity.as_ref() else {
+            return;
+        };
+        if !self.topics.contains_key(&ws) || self.native_routes.contains(ws) {
+            return;
+        }
+        let action_v2 = self
+            .action_broker
+            .as_ref()
+            .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws));
+        for (addr, expectation) in self.hosts.values().cloned() {
+            schedule_host_topic(
+                &self.endpoint,
+                identity,
+                ws,
+                addr,
+                expectation,
+                self.host_redemptions.get(&ws).copied(),
+                &self.internal_tx,
+                &self.host_sessions,
+                &mut self.connecting_hosts,
+                &mut self.content_discovery_tasks,
+                action_v2,
+                &self.host_retries,
+            );
+        }
+    }
+
     /// Stop relay sessions and discovery tasks for one host.  `remove_content`
     /// is reserved for an explicit enrolled-home-peer removal: an address
     /// refresh must never revoke a still-valid Files hydration source.
     fn teardown_host(&mut self, id: EndpointId, remove_content: bool) {
+        self.host_retries.reconsider_host(id);
         let enrolled_home_peer = self
             .hosts
             .remove(&id)
@@ -1854,8 +2000,10 @@ impl ActorState {
             .filter(|((session_ws, _), _)| *session_ws == ws)
             .any(|(_, runtime)| {
                 runtime
-                    .session
-                    .publish_remote_action(*target.as_bytes(), frame.clone())
+                    .send(HostSend::RemoteAction {
+                        target: *target.as_bytes(),
+                        frame: frame.clone(),
+                    })
                     .is_ok()
             });
         if !relayed {
@@ -1928,6 +2076,7 @@ impl ActorState {
     /// to keep that dispatcher short.
     async fn handle_join_workspace(&mut self, ws: WorkspaceId, on_event: mpsc::Sender<NetEvent>) {
         self.subscribers.insert(ws, on_event);
+        self.host_retries.reconsider_room(ws);
         if let std::collections::hash_map::Entry::Vacant(e) = self.topics.entry(ws) {
             let bootstrap = self.peers.keys().copied().collect();
             match self.gossip.subscribe(topic_id(ws), bootstrap).await {
@@ -1973,6 +2122,7 @@ impl ActorState {
                     self.action_broker
                         .as_ref()
                         .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
+                    &self.host_retries,
                 );
             }
         }
@@ -2396,53 +2546,54 @@ impl ActorState {
                     self.internal_tx.clone(),
                     None,
                 );
-                self.host_sessions.insert(
-                    (ws, peer),
-                    HostRuntime {
-                        native_scope: None,
-                        actions: self
-                            .action_broker
-                            .as_ref()
-                            .and_then(|(queue, host, rooms)| {
-                                // State-only/pinned compatibility and relay-role
-                                // certificates never advertise an effect endpoint.
-                                if self
-                                    .hosts
-                                    .get(&peer)
-                                    .and_then(|(_, expected)| expected.as_ref())
-                                    .is_none()
-                                    || self.host_identity.as_ref().is_none_or(|identity| {
-                                        identity.material_for(ws).0.capabilities.can_act_as_host
-                                    })
-                                {
-                                    return None;
-                                }
-                                let room = *rooms.get(&ws)?;
-                                let (queue, host, session, tx) = (
-                                    queue.clone(),
-                                    *host,
-                                    session.clone(),
-                                    self.internal_tx.clone(),
-                                );
-                                Some(tokio::spawn(async move {
-                                    let generation = Arc::downgrade(&session);
-                                    let _ = queue.serve(session, room, host).await;
-                                    let _ = tx
-                                        .send(InternalEvent::ActionClosed {
-                                            ws,
-                                            peer,
-                                            session: generation,
-                                        })
-                                        .await;
-                                }))
-                            }),
-                        session,
-                        pump,
-                    },
-                );
+                tracing::debug!(ws, peer = %peer, "connected to a workspace host");
+                let actions = self
+                    .action_broker
+                    .as_ref()
+                    .and_then(|(queue, host, rooms)| {
+                        // State-only/pinned compatibility and relay-role
+                        // certificates never advertise an effect endpoint.
+                        if self
+                            .hosts
+                            .get(&peer)
+                            .and_then(|(_, expected)| expected.as_ref())
+                            .is_none()
+                            || self.host_identity.as_ref().is_none_or(|identity| {
+                                identity.material_for(ws).0.capabilities.can_act_as_host
+                            })
+                        {
+                            return None;
+                        }
+                        let room = *rooms.get(&ws)?;
+                        let (queue, host, session, tx) = (
+                            queue.clone(),
+                            *host,
+                            session.clone(),
+                            self.internal_tx.clone(),
+                        );
+                        Some(tokio::spawn(async move {
+                            let generation = Arc::downgrade(&session);
+                            let _ = queue.serve(session, room, host).await;
+                            let _ = tx
+                                .send(InternalEvent::ActionClosed {
+                                    ws,
+                                    peer,
+                                    session: generation,
+                                })
+                                .await;
+                        }))
+                    });
+                self.host_sessions
+                    .insert((ws, peer), HostRuntime::new(session, pump, None, actions));
             }
             Err(error) => {
-                tracing::warn!(ws, peer = %peer, %error, "workspace host connection failed");
+                let wait = self.host_retries.failed(
+                    ws,
+                    peer,
+                    Instant::now(),
+                    super::host_retry::entropy(),
+                );
+                tracing::warn!(ws, peer = %peer, %error, ?wait, "workspace host connection failed");
             }
         }
     }
@@ -2453,6 +2604,10 @@ impl ActorState {
         let mapped = match event {
             HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
             HostEvent::Ready => {
+                self.host_retries.succeeded(ws, peer);
+                if let Some(runtime) = self.host_sessions.get(&(ws, peer)) {
+                    runtime.become_ready(ws);
+                }
                 // Enrolled home peers never redeem; a provider host's ready
                 // subscription means the redemption (if any) went through.
                 if self
@@ -2490,10 +2645,29 @@ impl ActorState {
                 peer: author,
                 msg,
             }),
+            HostEvent::Refused { refusal, reason } => {
+                if self.host_retries.refused(ws, peer, refusal) {
+                    tracing::info!(
+                        ws,
+                        peer = %peer,
+                        ?refusal,
+                        "not asking the workspace host for this room again until its membership or the host changes"
+                    );
+                }
+                Some(NetEvent::HostRefused {
+                    ws,
+                    peer,
+                    refusal,
+                    reason,
+                })
+            }
             HostEvent::Closed => {
                 if let Some(runtime) = self.host_sessions.remove(&(ws, peer)) {
                     runtime.pump.abort();
                 }
+                // Parked pairs stay parked; anything else backs off.
+                self.host_retries
+                    .failed(ws, peer, Instant::now(), super::host_retry::entropy());
                 Some(NetEvent::PeerLeft {
                     ws,
                     peer,
@@ -2572,6 +2746,7 @@ impl ActorState {
                         self.action_broker
                             .as_ref()
                             .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
+                        &self.host_retries,
                     );
                 }
             }
@@ -2588,7 +2763,10 @@ impl ActorState {
         };
         if let Ok(bytes) = postcard::to_allocvec(&msg) {
             for topic in self.topics.values() {
-                let _ = topic.sender.broadcast(Bytes::from(bytes.clone())).await;
+                let _ = topic
+                    .sender
+                    .broadcast_neighbors(Bytes::from(bytes.clone()))
+                    .await;
             }
         }
         // What this machine can encode and decode rides along with every
@@ -2599,7 +2777,10 @@ impl ActorState {
         );
         if let Ok(bytes) = postcard::to_allocvec(&advert) {
             for topic in self.topics.values() {
-                let _ = topic.sender.broadcast(Bytes::from(bytes.clone())).await;
+                let _ = topic
+                    .sender
+                    .broadcast_neighbors(Bytes::from(bytes.clone()))
+                    .await;
             }
         }
     }
@@ -2653,12 +2834,12 @@ impl ActorState {
         let Some((channel, _)) = retention(&hello, false) else {
             return;
         };
-        if let Err(error) = runtime.session.publish_covering_checkpoint(
+        if let Err(error) = runtime.send(HostSend::Checkpoint {
             channel,
-            retained_entry_id(&hello),
-            tilo_relay::Coverage::Supersedes,
-            bytes,
-        ) {
+            entry: retained_entry_id(&hello),
+            coverage: tilo_relay::Coverage::Supersedes,
+            body: bytes,
+        }) {
             tracing::warn!(ws, %error, "could not retain this device's identity at the host");
         }
     }
@@ -3078,6 +3259,7 @@ async fn run(
         action_broker: None,
         connecting_hosts: HashSet::new(),
         host_redemptions: HashMap::new(),
+        host_retries: super::host_retry::HostRetries::new(heartbeat_interval),
         content_discovery_tasks: HashMap::new(),
         peers_seen: HashMap::new(),
         next_membership_epoch: 0,
@@ -3254,20 +3436,20 @@ async fn publish_with(
             if *session_ws != ws {
                 continue;
             }
-            let result = match (retention, entry) {
-                (Some((channel, Retention::Checkpoint)), Some(entry)) => {
-                    runtime.session.publish_covering_checkpoint(
-                        channel,
-                        entry,
-                        host_coverage(&msg, host.covers),
-                        bytes.clone(),
-                    )
-                }
-                (Some((channel, Retention::Delta)), Some(entry)) => runtime
-                    .session
-                    .publish_retained_entry(channel, entry, bytes.clone()),
-                _ => runtime.session.publish_presence(bytes.clone()),
-            };
+            let result = runtime.send(match (retention, entry) {
+                (Some((channel, Retention::Checkpoint)), Some(entry)) => HostSend::Checkpoint {
+                    channel,
+                    entry,
+                    coverage: host_coverage(&msg, host.covers),
+                    body: bytes.clone(),
+                },
+                (Some((channel, Retention::Delta)), Some(entry)) => HostSend::Retained {
+                    channel,
+                    entry,
+                    body: bytes.clone(),
+                },
+                _ => HostSend::Presence(bytes.clone()),
+            });
             if let Err(error) = result {
                 tracing::warn!(ws, %error, "workspace host publish failed");
             }
@@ -3275,7 +3457,12 @@ async fn publish_with(
     }
     if broadcast_gossip {
         if let Some(topic) = topics.get(&ws) {
-            if let Err(error) = topic.sender.broadcast(Bytes::from(bytes)).await {
+            // Direct neighbours only. A receiver holds a message to the
+            // endpoint that delivered it, so a copy another peer forwarded is
+            // refused — and gossip, having seen that copy, would never
+            // deliver the author's own. Peers beyond the neighbourhood are
+            // reached through the workspace host.
+            if let Err(error) = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await {
                 tracing::warn!(ws, %error, "iroh gossip publish failed");
             }
         } else if host_sessions
@@ -3331,6 +3518,7 @@ fn schedule_host_topic(
     connecting: &mut HashSet<(WorkspaceId, EndpointId)>,
     content_discovery_tasks: &mut HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
     action_v2: bool,
+    retries: &super::host_retry::HostRetries,
 ) {
     let host = addr.id;
     if let Some(expectation) = expectation.clone()
@@ -3388,7 +3576,10 @@ fn schedule_host_topic(
         });
         content_discovery_tasks.insert((ws, host), task);
     }
-    if sessions.contains_key(&(ws, host)) || !connecting.insert((ws, host)) {
+    if sessions.contains_key(&(ws, host))
+        || !retries.due(ws, host, Instant::now())
+        || !connecting.insert((ws, host))
+    {
         return;
     }
     let endpoint = endpoint.clone();
@@ -3628,6 +3819,59 @@ fn noted_content_peer_removals() -> &'static Mutex<Vec<EndpointId>> {
 /// The host-message fingerprint that bypasses duplicate suppression.
 const UNDEDUPLICATED: [u8; 32] = [0; 32];
 
+/// Hand a channel replay's deltas to the actor, in order. `false` once the
+/// actor is gone.
+async fn forward_replayed(
+    ws: WorkspaceId,
+    host: EndpointId,
+    session: &Arc<RelayCoeditSession>,
+    tx: &mpsc::Sender<InternalEvent>,
+    deltas: Vec<([u8; 32], Vec<u8>)>,
+) -> bool {
+    for (author, data) in deltas {
+        let (Ok(author), Ok(msg)) = (EndpointId::from_bytes(&author), postcard::from_bytes(&data))
+        else {
+            continue;
+        };
+        let event = HostEvent::Replayed { author, msg };
+        if tx
+            .send(InternalEvent::Host {
+                ws,
+                peer: host,
+                session: Arc::downgrade(session),
+                event,
+            })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Log a host's refusal once per room and reason: the actor asks again
+/// after a back-off (or, for a final refusal, once the room or host
+/// changes), and the host says it again.
+fn note_host_refusal(
+    ws: WorkspaceId,
+    host: EndpointId,
+    refusal: tilo_relay_protocol::transport::Refusal,
+    reason: &str,
+) {
+    static REFUSALS: std::sync::OnceLock<Mutex<std::collections::HashSet<(WorkspaceId, String)>>> =
+        std::sync::OnceLock::new();
+    let first = REFUSALS
+        .get_or_init(Mutex::default)
+        .lock()
+        .is_ok_and(|mut seen| seen.insert((ws, reason.to_owned())));
+    if first {
+        tracing::warn!(ws, host = %host, ?refusal, %reason, "the workspace host refused this device");
+    } else {
+        tracing::debug!(ws, host = %host, ?refusal, %reason, "the workspace host refused this device");
+    }
+}
+
 fn spawn_host_pump(
     ws: WorkspaceId,
     host: EndpointId,
@@ -3643,6 +3887,20 @@ fn spawn_host_pump(
                     replay = false;
                     HostEvent::Ready
                 }
+                HostInbound::Refused { refusal, reason } => {
+                    note_host_refusal(ws, host, refusal, &reason);
+                    let _ = tx
+                        .send(InternalEvent::Host {
+                            ws,
+                            peer: host,
+                            session: Arc::downgrade(&session),
+                            event: HostEvent::Refused { refusal, reason },
+                        })
+                        .await;
+                    // A refused session carries nothing; publishing on it
+                    // would only have the host end it as a protocol breach.
+                    break;
+                }
                 HostInbound::RemoteAction { from, frame } => {
                     let Ok(author) = EndpointId::from_bytes(&from) else {
                         continue;
@@ -3654,25 +3912,8 @@ fn spawn_host_pump(
                     }
                 }
                 HostInbound::Replayed { deltas, .. } => {
-                    for (author, data) in deltas {
-                        let (Ok(author), Ok(msg)) =
-                            (EndpointId::from_bytes(&author), postcard::from_bytes(&data))
-                        else {
-                            continue;
-                        };
-                        let event = HostEvent::Replayed { author, msg };
-                        if tx
-                            .send(InternalEvent::Host {
-                                ws,
-                                peer: host,
-                                session: Arc::downgrade(&session),
-                                event,
-                            })
-                            .await
-                            .is_err()
-                        {
-                            return;
-                        }
+                    if !forward_replayed(ws, host, &session, &tx, deltas).await {
+                        return;
                     }
                     continue;
                 }
@@ -4702,6 +4943,9 @@ mod tests {
                             &mut connecting,
                             &mut discoveries,
                             false,
+                            &crate::network::host_retry::HostRetries::new(Duration::from_millis(
+                                100,
+                            )),
                         );
                         let rejected = matches!(
                         tilo_test_env::within("a message on rx", rx.recv()).await,
@@ -5191,6 +5435,94 @@ mod tests {
             }
         }
         (cmd_a, rx_a, cmd_b, rx_b)
+    }
+
+    /// A relay that does not carry a room says so once; the actor then stops
+    /// asking it for that room, however many retry rounds pass, until the
+    /// room's membership changes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_host_that_does_not_carry_a_room_is_not_asked_again_until_the_room_changes() {
+        const TEST_HEARTBEAT: Duration = Duration::from_millis(50);
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let (host_key, host_cert) = enrol(&root, DeviceCapabilities::host(), "host");
+        // Someone else's device, as a community relay admits them: any
+        // certified device may connect, and no room of theirs is bound.
+        let stranger = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let (key, cert) = enrol(&stranger, DeviceCapabilities::primary(), "a");
+        let state = tempfile::tempdir().unwrap();
+        let relay = Relay::start(
+            RelayConfig {
+                state_root: state.path().to_path_buf(),
+                trust_policy: tilo_relay::policy::TrustPolicy::AllowAny,
+                ..RelayConfig::default()
+            },
+            RelayIdentity {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_signing_key: host_key,
+                device_cert: host_cert,
+                revocations: RevocationList::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let (endpoint, lookup) = identified_endpoint(&key).await;
+        let (cmd, _task) = Actor::spawn_with_heartbeat(
+            endpoint,
+            lookup,
+            Some(HostIdentity {
+                device_cert: cert,
+                device_signing_key: key,
+                workspace_device_certs: HashMap::new(),
+                workspace_revocations: HashMap::new(),
+                identity_paths: None,
+            }),
+            Arc::new(Mutex::new(Vec::new())),
+            TEST_HEARTBEAT,
+        );
+        let (events, _rx) = mpsc::channel(16);
+        cmd.send(NetCmd::JoinWorkspace {
+            ws: 42,
+            on_event: events,
+        })
+        .await
+        .unwrap();
+        cmd.send(NetCmd::ConnectHost {
+            addr: relay.node_addr(),
+            expectation: None,
+        })
+        .await
+        .unwrap();
+        let attempts = || relay.metrics().conns_authed;
+        timeout(Duration::from_secs(10), async {
+            while attempts() == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the actor asks the relay for the room");
+
+        // Forty retry rounds: the old cadence would have asked forty times.
+        tokio::time::sleep(TEST_HEARTBEAT * 40).await;
+        assert_eq!(
+            attempts(),
+            1,
+            "a relay that does not carry the room is asked once, not every round"
+        );
+
+        cmd.send(NetCmd::ReconsiderHosts { ws: 42 }).await.unwrap();
+        timeout(Duration::from_secs(10), async {
+            while attempts() < 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("a membership change asks the relay again");
+        tokio::time::sleep(TEST_HEARTBEAT * 20).await;
+        assert_eq!(
+            attempts(),
+            2,
+            "and it is parked again after the same answer"
+        );
     }
 
     /// A chat record in a feedback room: remarks retained on the host, then

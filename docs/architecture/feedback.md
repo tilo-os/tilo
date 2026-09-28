@@ -76,6 +76,41 @@ revokes it. That is the recording indicator, the consent boundary and the
 revocation path, all existing ones. It is admitted only to rooms the user
 chose to record.
 
+Recording does not need a room administrator. In a room the user
+administers, on the machine that governs it, the recorder's admission is an
+ordinary agent grant in the room's governance. Anywhere else, including a
+shared room the user only views, it is the user's **device delegate**
+(`WorkspaceTree::admit_device_delegate`). That is a membership held on the
+user's own device and never written into governance, like a host-delegated
+admission. It asks no more than the user's own role allows. It stands only
+while the user keeps that role, so a person who is removed takes the
+recorder with them.
+
+Everyone in the room still sees it. The device announces the delegate as a
+`RecordingDelegationV1` (`collab_types::recording_delegation`). The record
+is signed with the device key and carries the person's certificate for that
+device. It travels like a host admission: on the room's topic, retained by
+its hosts, and told again to a peer that joins. Every member checks the
+following before listing the recorder as an agent in its roster and
+collaborator popover:
+
+- the signature;
+- that the certificate is the person's, unexpired and unrevoked;
+- that the person still holds a role in the room;
+- that the room allows recording delegates.
+
+Stopping publishes a signed stop, which takes the recorder off every list.
+An older start replayed later cannot revive it, because the latest record
+per device, agent and room is the one that holds. Members re-check the
+records whenever governance changes, so a person who loses their role drops
+off.
+
+Whether a room allows recording delegates is room governance: Workspace
+Settings › Agents › **Members may record**, on by default. It is projected
+and replicated like the rest of governance. While it is off, members'
+devices refuse the delegation, and the recording device refuses to start
+and says why. A recording that is running when it is turned off ends.
+
 A room's app routes are encrypted channels, so what the recorder sees is
 ciphertext until it is opened. The shell's participants (the recorder, a
 replay peer, record custody) reach a channel's content keys the way an app
@@ -280,6 +315,36 @@ How the pieces fit:
   team)`. The shell reads the team principal from
   `/usr/share/tilo/community.toml`, or from `TILO_COMMUNITY_CONFIG`. The host
   binds that pair's room on first use and admits exactly those two people.
+- **Member by default.** Being in the community is the point of the alpha,
+  so nobody is asked. Once a session has an identity, a community is
+  configured and the network is up, the shell redeems the standing invitation
+  and opens the team's direct room (`ShellNetwork::keep_community`, the one
+  path native, other distros and hosted sessions share). It asks the hosts
+  again with back-off while they cannot be reached. A refusal by the
+  community's host is final for that invitation
+  (`tilo.community.refused_invite`); a release that ships another one is
+  asked once more. First setup says it in one line.
+- **Leaving.** `tilo.community.membership` (`auto` or `left`) is the person's
+  choice, kept in the settings store as a personal setting, so it follows
+  them to every device. A device that learns `left` leaves the room: its
+  workspace goes from the desktop and the device stops following it. Nothing
+  joins it again until the person chooses "Join the community". Both are
+  offered as shell actions (`community.leave`, `community.join`), in
+  Settings > Users and as `tilo-control community leave|join`.
+
+The real community is stood up and run by `scripts/community-ops/tilo-community`
+on the team's own release desktop. The governance acts are admin-gated actions
+of that desktop, offered in the palette and, for agents and peers holding
+Admin, through the action broker: create the public room, delegate it to its
+host, mint and revoke its standing invitation, and make someone an Editor.
+The tool names each act and then checks what it produced. The delegated
+host is room governance (`delegated_hosts_v1`, written only by the room's
+authority), and every invitation the room mints names it. It does the pairing, delegation and deployment bundle itself, with the
+release binaries, and the team's root never leaves the desktop. The relay
+(`os/containers/tilo-relay/community`) receives only its paired room-host
+identity and a public record of what it hosts (`tilo-relay-admin community
+export` / `install`). `community.toml` is a build input: release images and
+packages refuse to build without a configured one.
 
 Votes are reactions: Commenter already means "comment or reaction". Status
 (open, planned, fixed in generation N) is a typed chat action that only an
@@ -288,11 +353,104 @@ image generation, so the reporter is told when their build contains the fix.
 
 ## Triage
 
-The triage agent is an ordinary agent member of the community room and of each
-private direct room. It has the Contributor capability bundle, scoped to the
-feedback channel. It reads remarks the way `apps/agent` already does, with the
-reference as an address rather than prose. It groups duplicates, replies with
-links to earlier reports, and drafts forge issues that a person approves.
+The triage agent (`tilo-agent --triage`, `apps/agent/src/triage`) is an
+ordinary agent member of the community room and of each private direct room.
+It is not a backend:
+
+- **Membership.** Workspace Settings › Agents › *Add the triage agent*
+  admits it through the ordinary agent admission flow, with the Contributor
+  bundle (`workspace_settings::triage_agent_grants`): a membership that lets
+  it comment, and `Comment` on Chat. The grant is on Chat, not on
+  `#feedback`, because a channel is not an artifact a capability can name.
+  What the agent writes is one comment record per reply, each its own
+  artifact, and in a direct room it answers conversation messages rather
+  than a channel. It runs from a team device (only an administrator may
+  launch a delegated agent session) and shows with the `AGENT` label.
+  Removing it revokes those grants; the broker tells its Chat at once, and
+  the agent stops.
+- **How it acts.** It runs Chat headless as its own participant. It reads
+  what that Chat holds (`chat::hand`): each report's address (`reference`),
+  its recording's summary and its thread, never its prose as an instruction.
+  It acts only by asking that Chat for its own published actions. A
+  participant that may not write the conversation writes comment records in
+  every channel, so the agent's replies are its own records, in `#feedback`
+  and in a direct room alike. The broker checks them like any member's, and
+  the agent can never write the conversation: no status, no approval.
+- **In direct rooms.** The team decides in the community room's governance,
+  with a switch its administrators set beside the agent ("Triage in direct
+  rooms"). The switch is on once the agent is added. A reporter's device
+  reads the setting when it first creates its direct room with the team. If
+  the switch is on, the device admits the triage agent there, with the same
+  Contributor grants. It also gives the team an operator grant: `Write` on
+  exactly that agent in exactly that room (`Scope::Agent`). With that grant
+  the team may launch the agent without administering the room. The reporter
+  owns the room, so the agent shows with its `AGENT` label and the note "The
+  Tilo team's triage agent helps sort reports here". The reporter can remove
+  it like any agent, and removing it also revokes the operator grant. The
+  agent is only admitted when the room is created, so a removal sticks.
+- **Always running.** Nobody launches the agent per room. The Tilo team's
+  desktop keeps it running (`shell::triage_runtime`, using the same
+  managed-agent launch path as Task Center agents) in every room that admits
+  it and lets the team operate it: the community room and each direct room.
+  A room that appears with those grants gets the agent. A room that loses
+  them does not get it back, and the agent there stops as soon as the broker
+  says it was removed. A reporter's desktop never starts it, even though the
+  reporter administers their own room. Filing uses the team's one connected
+  forge account unless the agent is told another.
+- **One session per room.** Every team device keeps the agent running, so the
+  room's presence settles which session triages (`triage::lease`).
+  - **Claim:** a session that triages a room states
+    `triage-lease:<device>:<since>` as its presence status there and restates
+    it every few seconds. The same agent on another device is the same
+    participant, so presence hears these statuses as siblings.
+  - **New session:** it first watches the room. If it hears a live claim from
+    another device, it ends, and its desktop tries again later.
+  - **Ties:** otherwise it claims, and triages once the claim has stood. The
+    earliest live claim holds the room; the lowest device wins a tie, and a
+    session behind another claim ends.
+  - **Failover:** a claim that is not restated expires. The next session a
+    desktop starts then takes the room over.
+- **Nobody speaks through its Chat.** Chat's posting actions carry the
+  participant tag (`ActionSpec::as_participant`). The broker delivers such an
+  action only when the caller is the participant the app runs for, so a
+  reporter cannot post in the agent's name by invoking the agent's Chat.
+
+What it does, one report at a time, oldest first:
+
+- **Duplicates.** A report that matches an earlier one gets a reply in its
+  thread that links the earlier report and suggests "duplicate of". The match
+  weighs the reference target, the app, the recording's apps and layer, and
+  word overlap. A model, when there is one, decides among the candidates the
+  structure found; it can name no other. The status stays an Editor's.
+- **Drafts.** Any other report gets a reply that carries a drafted forge
+  issue (`Attachment::Issue`). The draft holds a title, the report's words,
+  its address, and the recording's facts: apps, steps, layer and generation.
+  Everything in it passes the review floor again, the people the report
+  mentions are declared personal, and who reported it is left out.
+- **Filing.** An Editor approves a draft with Chat's `approve-issue`. That
+  action writes the conversation document, which only an Editor may write.
+  The agent then files exactly that draft through the accounts service, over
+  the descriptor the launcher hands it (`accounts = "optional@1"`). The
+  service holds the vault and the network, and files with the team's
+  `forgejo` account, which Settings › Accounts › Forgejo adds with its token
+  in the vault. The agent then replies with the issue's address.
+- **At most once.** Before it files, the agent writes a durable intent: the
+  approved draft it is about to file. The issue carries a marker made of the
+  room and the draft. Custody searches for that marker before it files, and
+  returns the issue it finds instead of filing another. An agent that stopped
+  between filing and replying finds its intent and the issue, and only
+  replies.
+
+Each reply carries an address: another report for a suggestion, a draft for
+a draft, a `forge.issue` for a filing. These addresses are how the agent
+knows what it already did, after a restart or next to another copy of
+itself.
+
+The model is reached through the AI hub under the `feedback.triage` task.
+Public `#feedback` content is open. A direct room's content is asked for as
+sensitive (`assign::resolve_for`), so it runs on this device unless the
+person allowed otherwise. Without a model, triage keeps working: the
+deterministic match decides, and the draft comes from a template.
 
 ## Verification
 

@@ -41,6 +41,9 @@ import time
 REPO = pathlib.Path(__file__).resolve().parents[2]
 TARGET = REPO / "target" / "debug"
 DATA = REPO / "target" / "feedback-dev"
+# Packaged worktree apps outlive `down --purge`: they are build output, keyed
+# by the sources they were built from, not community state.
+APPS = REPO / "target" / "feedback-dev-apps"
 # Unix sockets are capped near 108 bytes, so everything with a socket lives
 # under the short per-user runtime directory, not the worktree.
 RUNTIME = pathlib.Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "tilo-feedback-dev"
@@ -58,6 +61,24 @@ WINDOW_TITLES = {
 OPTIONAL_SESSIONS = ("teammate",)
 RELAY_PORT = int(os.environ.get("FEEDBACK_DEV_RELAY_PORT", "47831"))
 MIN_AVAILABLE_MIB = int(os.environ.get("FEEDBACK_DEV_MIN_MIB", "3072"))
+# Sessions that dial the relay directly (TILO_COLLAB_HOSTS). None: every one.
+COLLAB_HOST_SESSIONS: tuple[str, ...] | None = None
+
+
+def use_location(data: pathlib.Path, runtime: pathlib.Path, keyring_password: str,
+                 collab_host_sessions: tuple[str, ...] | None = None) -> None:
+    """Run these steps somewhere else, as a library.
+
+    `scripts/community-ops/tilo-community` stands up the production
+    community with the same steps, keeping the team's identity in its own
+    custody directory and keyring password rather than this tool's.
+    """
+    global DATA, RUNTIME, STATE, KEYRING_PASSWORD, COLLAB_HOST_SESSIONS
+    DATA = data
+    RUNTIME = runtime
+    STATE = data / "state.json"
+    KEYRING_PASSWORD = keyring_password
+    COLLAB_HOST_SESSIONS = collab_host_sessions
 
 BINARIES = (
     "shell", "tilo-control", "tilo-launcher", "tilo-relay", "tilo-relay-admin",
@@ -83,6 +104,8 @@ feedback-dev: a local Tilo community for testing feedback
   3. Stand it up:                  feedback-dev up --headless     (automation)
                                    feedback-dev up --nested       (two windows)
   4. See what runs and where:      feedback-dev status
+     Check the report flow:        feedback-dev check   (a report, its vote, reply and status
+                                   reach everyone; the team replays a recording)
   5. Drive a shell semantically:   feedback-dev ctl team -- community status
                                    feedback-dev ctl reporter -- community team-room
      (any `tilo-control` arguments after `--`; see `tilo-control --help`)
@@ -394,7 +417,7 @@ def session_env(name: str, headless: bool) -> dict:
     if trusted_publishers(name).exists():
         env["TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE"] = str(trusted_publishers(name))
     endpoint = load_state().get("relay_endpoint")
-    if endpoint:
+    if endpoint and (COLLAB_HOST_SESSIONS is None or name in COLLAB_HOST_SESSIONS):
         env["TILO_COLLAB_HOSTS"] = json.dumps([endpoint])
     if headless:
         env["TILO_HEADLESS_SIZE"] = "1280x800"
@@ -533,7 +556,7 @@ def ci_apps(run: str) -> Apps:
     """
     if not run.isdigit():
         raise Fix(f"`{run}` is not a run number", "fgj run list --workflow release-apps.yml")
-    dest = DATA / "apps" / f"ci-{run}"
+    dest = APPS / f"ci-{run}"
     archive = dest / "tilo-apps-x86_64.zip"
     if not archive.exists():
         say(f"downloading the apps release-apps run #{run} built")
@@ -566,30 +589,109 @@ def ci_apps(run: str) -> Apps:
     return runtime_apps(packages, unpacked / "runtime")
 
 
+def app_sources(app: str) -> list[str]:
+    """Every workspace path the thin package of `app` is built from: the app,
+    the runtime it links against, their path dependencies, and the build
+    scripts. Read from the manifests themselves: cargo would wait on any other
+    cargo on this machine holding its locks."""
+    import tomllib
+    root = tomllib.loads((REPO / "Cargo.toml").read_text())
+    workspace_paths = {
+        name: REPO / spec["path"]
+        for name, spec in root.get("workspace", {}).get("dependencies", {}).items()
+        if isinstance(spec, dict) and "path" in spec
+    }
+    def manifest(directory: pathlib.Path) -> dict:
+        return tomllib.loads((directory / "Cargo.toml").read_text())
+    def path_dependencies(directory: pathlib.Path) -> list[pathlib.Path]:
+        data = manifest(directory)
+        tables = [data.get("dependencies", {}), data.get("build-dependencies", {})]
+        tables += [target.get(key, {}) for target in data.get("target", {}).values()
+                   for key in ("dependencies", "build-dependencies")]
+        found = []
+        for table in tables:
+            for name, spec in table.items():
+                if not isinstance(spec, dict):
+                    continue
+                if "path" in spec:
+                    found.append((directory / spec["path"]).resolve())
+                elif spec.get("workspace") and name in workspace_paths:
+                    found.append(workspace_paths[name].resolve())
+        return found
+    runtime = next(
+        (path.parent for path in REPO.glob("crates/**/Cargo.toml")
+         if "target" not in path.parts and manifest(path.parent).get("package", {}).get("name") == "runtime-dylib"),
+        None,
+    )
+    pending = [REPO / "apps" / app, *([runtime] if runtime else [])]
+    seen: set[pathlib.Path] = set()
+    while pending:
+        directory = pending.pop().resolve()
+        if directory in seen or not (directory / "Cargo.toml").exists():
+            continue
+        seen.add(directory)
+        pending.extend(path_dependencies(directory))
+    dirs = sorted(str(directory.relative_to(REPO)) for directory in seen)
+    # Vendored crates patch the registry graph; any may be in it.
+    return [*dirs, "vendor", "Cargo.lock", "Cargo.toml", "os/scripts/build-thin-apps.sh", "tools/ci"]
+
+
+def app_fingerprint(app: str) -> str:
+    """A digest of `app`'s sources as they are in the worktree, committed or
+    not, and of the packaging tools."""
+    import hashlib
+    paths = app_sources(app)
+    digest = hashlib.sha256()
+    staged = subprocess.run(["git", "-C", str(REPO), "ls-files", "-s", "--", *paths],
+                            capture_output=True, check=True).stdout
+    digest.update(staged)
+    changed = subprocess.run(
+        ["git", "-C", str(REPO), "ls-files", "-z", "-m", "-o", "--exclude-standard", "--", *paths],
+        capture_output=True, check=True,
+    ).stdout.split(b"\0")
+    for name in sorted(filter(None, changed)):
+        path = REPO / name.decode()
+        digest.update(name)
+        digest.update(path.read_bytes() if path.is_file() else b"-")
+    for tool in ("tilo-app", "tilo-app-package", "tilo-runtime-bundle"):
+        stat = (TARGET / tool).stat()
+        digest.update(f"{tool}:{stat.st_size}:{stat.st_mtime_ns}".encode())
+    return digest.hexdigest()
+
+
 def package_apps(rebuild: bool) -> Apps:
+    """This worktree's apps, packaged thin. Packaged once and kept; with
+    `rebuild`, packaged again only when their sources changed since."""
     packages = []
     for app in WORKTREE_APPS:
-        out = DATA / "apps" / f"{app}.tapp"
+        out = APPS / f"{app}.tapp"
         packages.append(out)
+        stamp = APPS / f"{app}.sources"
         if out.exists() and not rebuild:
+            continue
+        fingerprint = app_fingerprint(app)
+        if out.exists() and stamp.exists() and stamp.read_text() == fingerprint:
+            say(f"apps/{app} is unchanged since it was packaged; keeping {out.name}")
             continue
         say(f"packaging apps/{app} from this worktree (built by rcargo)")
         out.parent.mkdir(parents=True, exist_ok=True)
-        log = DATA / "apps" / f"{app}.log"
+        stamp.unlink(missing_ok=True)
+        log = APPS / f"{app}.log"
         with open(log, "wb") as output:
             # Thin, against a runtime bundle baked from this same build — the
             # shipped apps' shape; `tilo-app package --help` explains it.
             result = subprocess.run(
                 [binary("tilo-app"), "package", str(REPO / "apps" / app),
                  "--output", str(out), "--force",
-                 "--runtime-out", str(DATA / "apps" / "runtime")],
+                 "--runtime-out", str(APPS / "runtime")],
                 env={**os.environ, "CARGO": "rcargo", "TILO_PKG": binary("tilo-app-package"),
                      "BUNDLE_BIN": binary("tilo-runtime-bundle")},
                 cwd=REPO, stdout=output, stderr=subprocess.STDOUT, timeout=3600,
             )
         if result.returncode != 0:
             raise Fix(f"packaging apps/{app} failed:\n{tail(log)}", f"see {log}")
-    return runtime_apps(packages, DATA / "apps" / "runtime")
+        stamp.write_text(fingerprint)
+    return runtime_apps(packages, APPS / "runtime")
 
 
 def trusted_publishers(name: str) -> pathlib.Path:
@@ -757,7 +859,7 @@ def start_relay(restart: bool = False) -> dict:
         endpoint_file.unlink(missing_ok=True)
         say("starting the relay")
         spawn("relay", [binary("tilo-relay"), "--config", str(relay_config()), "run"],
-              {**os.environ, "TILO_RELAY_LOG": "tilo_relay=info,warn"}, relay_dir() / "log")
+              {**os.environ, "TILO_RELAY_LOG": os.environ.get("FEEDBACK_DEV_RELAY_LOG", "tilo_relay=info,warn")}, relay_dir() / "log")
     for _ in range(120):
         if endpoint_file.exists():
             endpoint = json.loads(endpoint_file.read_text())
@@ -820,10 +922,12 @@ def ensure_invite(room: str) -> str:
     return invite
 
 
-def write_community_config(invite: str) -> None:
-    path = DATA / "community.toml"
+def write_community_config(invite: str, path: pathlib.Path | None = None,
+                           header: str = "# Written by scripts/feedback-dev/feedback-dev; "
+                                         "read by both shells.\n") -> None:
+    path = path or DATA / "community.toml"
     text = (
-        "# Written by scripts/feedback-dev/feedback-dev; read by both shells.\n"
+        header +
         "[community]\n"
         f'invite = "{invite}"\n\n'
         "[team]\n"
@@ -913,13 +1017,21 @@ def active_room(name: str) -> str | None:
 
 
 def activate_room(name: str, room: str) -> None:
-    """Step through the top bar's workspace switcher until `room` is active."""
-    tree = state_dump(name).get("workspace_tree", {})
-    count = len(tree.get("desktop", tree).get("workspaces", []))
-    for _ in range(count + 1):
-        if active_room(name) == room:
+    """Step through the top bar's workspace switcher until `room` is active:
+    its arrows move one workspace back (up) or on (down), without wrapping."""
+    for _ in range(12):
+        tree = state_dump(name).get("workspace_tree", {})
+        desktop = tree.get("desktop", tree)
+        rooms = [workspace.get("room") for workspace in desktop.get("workspaces", [])]
+        active = next((workspace.get("room") for workspace in desktop.get("workspaces", [])
+                       if workspace.get("id") == desktop.get("active")), None)
+        if active == room:
             return
-        answer(name, {"op": "click_named", "name": "topbar_workspace_down"})
+        if room not in rooms or active not in rooms:
+            time.sleep(0.5)
+            continue
+        arrow = "down" if rooms.index(room) > rooms.index(active) else "up"
+        answer(name, {"op": "click_named", "name": f"topbar_workspace_{arrow}"})
         time.sleep(0.3)
     raise Fix(f"the {name} shell never made room {room} its active workspace",
               f"feedback-dev ctl {name} -- state-dump --pretty")
@@ -937,7 +1049,7 @@ def chat_action(name: str, resource: str, action: str, query: str) -> dict | Non
     return None
 
 
-def ensure_chat(name: str, room: str) -> None:
+def ensure_chat(name: str, room: str, where: str = "the community room") -> None:
     """Chat running in `room` in this shell, opened as a person would."""
     activate_room(name, room)
     def running_here() -> bool:
@@ -948,7 +1060,7 @@ def ensure_chat(name: str, room: str) -> None:
         if running_here():
             return
         time.sleep(1.0)
-    say(f"opening Chat in the community room in the {name} shell")
+    say(f"opening Chat in {where} in the {name} shell")
     # The shell indexes its applications in the background from startup.
     for _ in range(120):
         if running_here():
@@ -1038,6 +1150,204 @@ def reporter_sees_feedback(room: str) -> None:
     ensure_chat("reporter", room)
     until_chat_offers("reporter", f"chat.channel:{FEEDBACK_CHANNEL}", "post", "feedback",
                       "the reporter seeing #feedback")
+
+
+def chat_tree(name: str) -> str:
+    """The semantic tree of `name`'s Chat, as text."""
+    apps = answer(name, {"op": "inspect_apps"}).get("apps", [])
+    peers = [app["peer"] for app in apps if app.get("app_id") == "so.tilo.chat"]
+    if not peers:
+        return ""
+    result = subprocess.run(
+        [sys.executable, str(pathlib.Path(__file__).resolve()), "ctl", name, "--",
+         "inspect", "tree", str(peers[0]), "--depth", "64"],
+        capture_output=True, text=True, timeout=60,
+    )
+    return result.stdout
+
+
+def open_feedback(name: str, room: str) -> None:
+    ensure_chat(name, room)
+    invoke_chat(name, f"chat.channel:{FEEDBACK_CHANNEL}", "open", "feedback")
+
+
+SEP = "\x1f"
+
+
+def directory_message(name: str, text: str, timeout: float = 90.0) -> tuple[str, str, str]:
+    """The message carrying `text`, as `name`'s Chat directory names it to a
+    search: its publisher, the directory revision and the message id."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for row in app_actions(name, text):
+            fields = row["id"].split(SEP)
+            if len(fields) == 5 and fields[0] == "directory" and fields[3].startswith("chat.message:"):
+                return fields[1], fields[2], fields[3].removeprefix("chat.message:")
+        time.sleep(1.0)
+    raise Fix(f"a search in the {name}'s Chat never found the message {text!r}",
+              f"feedback-dev ctl {name} -- actions list {text.split()[0]!r}")
+
+
+def act_on(name: str, text: str, resource: str, action: str, args: dict, what: str) -> None:
+    """`name` runs `action` on `resource` — the message a search for `text`
+    finds, or a part of it — as the palette offers it."""
+    last = None
+    for _ in range(90):
+        peer, revision, _ = directory_message(name, text)
+        response = control(name, {"op": "actions_invoke", "provider": "app-actions",
+                                  "id": SEP.join(("directory", peer, revision, resource, action)),
+                                  "args": args})
+        if "err" not in response:
+            say(f"check: the {name} {what}")
+            return
+        last = response["err"]
+        # The owner resolves an action the search did not list on demand, and
+        # an earlier change moves the directory's revision on.
+        if last.get("code") != "unknown_action":
+            break
+        time.sleep(1.0)
+    raise Fix(f"the {name} could not {what}: [{last.get('code')}] {last.get('message')}",
+              f"see {session_dir(name) / 'log'}")
+
+
+def until_everyone_sees(people: list[str], what: str, seen) -> None:
+    waiting = set(people)
+    for _ in range(120):
+        for name in sorted(waiting):
+            if seen(name):
+                say(f"check: the {name} sees {what}")
+                waiting.discard(name)
+        if not waiting:
+            return
+        time.sleep(1.0)
+    raise Fix(f"{what} never showed for: {', '.join(sorted(waiting))}",
+              f"grep 'not kept\\|did not complete\\|refused' {DATA}/*/log")
+
+
+def shell_action(name: str, action: str, args: dict | None = None) -> None:
+    answer(name, {"op": "actions_invoke", "provider": "actions", "id": action, "args": args or {}})
+
+
+def remark_state(name: str) -> dict:
+    return state_dump(name).get("chrome", {}).get("remark", {})
+
+
+def until_remark(name: str, what: str, done) -> dict:
+    for _ in range(120):
+        state = remark_state(name)
+        if state.get("sending", {}).get("state") == "failed":
+            raise Fix(f"the {name}'s remark failed while {what}: {state.get('sending')}",
+                      f"see {session_dir(name) / 'log'}")
+        if done(state):
+            return state
+        time.sleep(1.0)
+    raise Fix(f"the {name}'s remark never finished {what}: {json.dumps(state)[:400]}",
+              f"feedback-dev ctl {name} -- state-dump --pretty")
+
+
+def home_room(name: str) -> str:
+    """The first workspace of `name` that is neither the community room nor
+    its private room with the team: the person's own."""
+    state = load_state()
+    tree = state_dump(name).get("workspace_tree", {})
+    for workspace in tree.get("desktop", tree).get("workspaces", []):
+        room = workspace.get("room")
+        if room and room not in (state.get("room"), state.get("private_room")):
+            return room
+    raise Fix(f"the {name} has no workspace of its own", f"feedback-dev ctl {name} -- state-dump --pretty")
+
+
+def send_recording(name: str, text: str) -> None:
+    """What the hand test does with Super+M and "Use the last 2 minutes": in
+    a workspace of one's own, say something about the app in front, with the
+    recording of what just happened, reviewed, to the community's #feedback."""
+    home = home_room(name)
+    activate_room(name, home)
+    shell_action(name, "feedback.recent-buffer.set", {"enabled": True})
+    ensure_chat(name, home, "their own workspace")
+    invoke_chat(name, "chat.channel:c_general", "open", "general")
+    time.sleep(2.0)
+    shell_action(name, "remark.open")
+    until_remark(name, "opening on the app in front", lambda state: state.get("context"))
+    shell_action(name, "remark.pick.done")
+    shell_action(name, "remark.text.set", {"text": text})
+    shell_action(name, "remark.record.recent")
+    until_remark(name, "keeping the recording",
+                 lambda state: state.get("flow", {}).get("state") == "attached")
+    shell_action(name, "remark.review.open")
+    until_remark(name, "walking through the recording",
+                 lambda state: (state.get("review") or {}).get("steps"))
+    shell_action(name, "remark.review.close")
+    shell_action(name, "remark.destination.set", {"id": "community"})
+    shell_action(name, "remark.send")
+    until_remark(name, "sending", lambda state: (state.get("last") or {}).get("state") == "sent")
+    say(f"check: the {name} sent a remark with its recording to #feedback")
+
+
+def replay_state(name: str) -> dict:
+    return state_dump(name).get("chrome", {}).get("replay") or {}
+
+
+def cmd_check(_: argparse.Namespace) -> None:
+    """The hand test, done by machine: the reporter posts in #feedback and
+    everyone in the room sees it; the team votes, the teammate (an Editor)
+    replies and sets its status, and everyone sees where it stands; the
+    reporter sends a remark with a recording, and the team replays it."""
+    state = load_state()
+    room = state.get("room")
+    if not room or not running("reporter") or not running("team"):
+        raise Fix("the community is not up", "feedback-dev up --headless --ci-apps RUN")
+    people = [name for name in ("reporter", "team", "teammate") if running(name)]
+    triager = "teammate" if "teammate" in people else "team"
+    for name in people:
+        open_feedback(name, room)
+    stamp = time.strftime("%H:%M:%S")
+    report = f"feedback-dev check {stamp}: Send does nothing on a trailing comma"
+    say("the reporter posts a report in #feedback")
+    row = None
+    for _ in range(60):
+        row = chat_action("reporter", f"chat.channel:{FEEDBACK_CHANNEL}", "post", "feedback")
+        if row:
+            break
+        time.sleep(1.0)
+    if not row:
+        raise Fix("the reporter's Chat offers no `post` in #feedback", "feedback-dev ctl reporter -- actions list feedback")
+    answer("reporter", {"op": "actions_invoke", "provider": row["provider"], "id": row["id"],
+                        "args": {"value": report}})
+    until_everyone_sees(people, "the report", lambda name: report in chat_tree(name))
+
+    _, _, message = directory_message("team", report)
+    reply = f"feedback-dev check {stamp}: seen it, on it"
+    act_on("team", report, f"chat.message:{message}", "vote", {}, "votes for the report")
+    act_on(triager, report, f"chat.message:{message}", "reply", {"value": reply},
+           "replies in the report's thread")
+    act_on(triager, report, f"chat.message:{message}", "set-status", {"status": "planned"},
+           "sets the report's status to planned")
+    standing = f"{report} (1 vote, 1 reply, Planned)"
+    until_everyone_sees(people, "the vote, the reply and the status",
+                        lambda name: standing in chat_tree(name))
+    until_everyone_sees(people, "what the reply says",
+                        lambda name: any(row["id"].startswith("directory" + SEP)
+                                         for row in app_actions(name, reply)))
+
+    remark = f"feedback-dev check {stamp}: a recording of what just happened"
+    send_recording("reporter", remark)
+    until_everyone_sees([name for name in people if name != "reporter"], "the remark",
+                        lambda name: remark in chat_tree(name))
+    _, _, recorded = directory_message("team", remark)
+    act_on("team", remark, f"chat.attachment:{recorded}", "replay", {}, "replays the recording")
+    for _ in range(90):
+        replay = replay_state("team")
+        if replay.get("steps"):
+            say(f"check: the team replays the recording ({len(replay['steps'])} steps)")
+            break
+        time.sleep(1.0)
+    else:
+        raise Fix(f"the team's replay never loaded the recording: {json.dumps(replay_state('team'))[:400]}",
+                  f"see {session_dir('team') / 'log'}")
+    shell_action("team", "replay.close")
+    say("check: ok — the report reached everyone; its vote, reply and status did too; "
+        "the team replayed the reporter's recording")
 
 
 # ------------------------------------------------------------- commands ----
@@ -1190,8 +1500,11 @@ def main() -> int:
     up.add_argument("--worktree-apps", action="store_true",
                     help="package and install this worktree's chat into both sessions")
     up.add_argument("--rebuild-apps", action="store_true",
-                    help="repackage this worktree's apps (chat) even if a package exists")
+                    help="repackage this worktree's apps (chat) when their sources changed "
+                         "since they were last packaged (packages outlive `down --purge`)")
     sub.add_parser("status", help="what runs, the room, each shell's community status")
+    sub.add_parser("check", help="the reporter posts in #feedback, the team votes, replies and sets "
+                                 "its status, the team replays a recording; everyone must see it all")
     ctl = sub.add_parser("ctl", help="run tilo-control against one shell")
     ctl.add_argument("session", choices=SESSIONS)
     ctl.add_argument("rest", nargs=argparse.REMAINDER)
@@ -1205,6 +1518,8 @@ def main() -> int:
             return 1 if doctor() else 0
         elif args.command == "up":
             cmd_up(args)
+        elif args.command == "check":
+            cmd_check(args)
         elif args.command == "status":
             cmd_status(args)
         elif args.command == "ctl":

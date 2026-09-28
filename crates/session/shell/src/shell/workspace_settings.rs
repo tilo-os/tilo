@@ -1609,6 +1609,10 @@ fn scope_phrase(scope: &Scope, object: bool) -> String {
             "workspace-settings-scope-record",
             vec![("id", short_id(record).into())],
         ),
+        Scope::Agent(agent) => (
+            "workspace-settings-scope-agent",
+            vec![("agent", agent.as_str().into())],
+        ),
         Scope::Device(device) => match device_scope_key(device) {
             Some(key) => (key, Vec::new()),
             None => return device.clone(),
@@ -2192,10 +2196,17 @@ pub fn remove_agent(ws: &mut Workspace, actor: &UserId, agent: &str) -> CapEdit 
     if !ws.may_administer(actor) {
         return CapEdit::default();
     }
+    // A member's recording delegate is not the room's to take back one by
+    // one: it is announced from their device and re-listed while it stands.
+    // "Members may record" is what refuses it.
     let ids: Vec<String> = ws
         .capabilities
         .iter()
-        .filter(|cap| subject_is_agent(&cap.subject, agent))
+        .filter(|cap| {
+            (subject_is_agent(&cap.subject, agent)
+                || matches!(&cap.scope, Scope::Agent(operated) if operated == agent))
+                && !crate::shell::state::held_outside_governance(cap)
+        })
         .map(|cap| cap.id.clone())
         .collect();
     let mut edit = CapEdit::default();
@@ -2238,6 +2249,13 @@ pub struct AgentRow {
     /// Set when the agent is a service member: a cloud or relay identity
     /// admitted to the room's encrypted channels with a stated purpose.
     pub service: Option<crate::shell::service_members::ServiceMember>,
+    /// Set when the agent is here only as members' recording delegates,
+    /// which the room controls with "Members may record", not per row:
+    /// such a row offers no Review or Remove.
+    pub delegated: bool,
+    /// Someone the room lets operate this agent (`Scope::Agent`): the team,
+    /// for its triage agent in a reporter's direct room.
+    pub operated: bool,
     pub row_rect: Rect,
     pub role_rect: Rect,
     pub review_rect: Rect,
@@ -2409,6 +2427,57 @@ pub fn admit_agent(
     edit
 }
 
+/// The feedback triage agent's name as a room admits it.
+pub const TRIAGE_AGENT: &str = "triage";
+
+/// Chat's package id, whose comment records the triage agent writes.
+const CHAT_APP_ID: &str = "so.tilo.chat";
+
+/// What a room grants the feedback triage agent: the Contributor bundle,
+/// scoped to Chat. A room membership that lets it comment, and `Comment` on
+/// Chat, so it may write its own comment records (its replies) and take
+/// Chat's comment-level actions such as `remark`. Nothing that writes the
+/// conversation, so it can never set a status or approve an issue; removing
+/// the agent revokes both.
+///
+/// Scoped to Chat rather than to the `#feedback` channel: a channel is not an
+/// artifact a capability can name. What the agent writes is one comment
+/// record per reply, each its own artifact, and in a direct room it replies
+/// to conversation messages rather than to a channel, so no single artifact
+/// covers its work.
+pub fn triage_agent_grants(room: &str, agent: &str) -> Vec<CapOverride> {
+    vec![
+        CapOverride::membership(
+            Subject::agent(agent),
+            room,
+            AgentAuthorityPreset::Contributor.admission_verb(),
+        )
+        .with_id(format!(
+            "agent-member:{agent}:{}",
+            AgentAuthorityPreset::Contributor.id()
+        )),
+        CapOverride::grant(
+            Subject::agent(agent),
+            Scope::App(CHAT_APP_ID.into()),
+            Verb::Comment,
+        )
+        .with_id(format!("agent-grant:{agent}:chat")),
+    ]
+}
+
+/// What a reporter's direct room grants the team so it can run its triage
+/// agent there without administering the room: `Write` on exactly that
+/// agent in exactly that room. The reporter sees it with the room's other
+/// grants and can revoke it; removing the agent revokes it too.
+pub fn triage_operator_grant(room: &str, agent: &str, team: &str) -> CapOverride {
+    CapOverride::grant(
+        Subject::person(team),
+        Scope::Agent(agent.to_string()),
+        Verb::Write,
+    )
+    .with_id(format!("agent-operator:{agent}:{team}@{room}"))
+}
+
 /// Geometry for the always-visible entry point into the guided setup.
 pub fn agents_add_rect(pane_rect: Rect) -> Rect {
     Rect::new(
@@ -2416,6 +2485,148 @@ pub fn agents_add_rect(pane_rect: Rect) -> Rect {
         pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
         pane_rect.x0 + PANE_PAD_X + 132.0,
         pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + AGENT_ONBOARDING_HEIGHT,
+    )
+}
+
+/// Geometry for the room's switch that allows or forbids members' recorders,
+/// beside the setup entry point.
+pub fn recording_delegates_rect(pane_rect: Rect) -> Rect {
+    let add = agents_add_rect(pane_rect);
+    Rect::new(add.x1 + 12.0, add.y0, add.x1 + 12.0 + 236.0, add.y1)
+}
+
+/// The shared switch inside a room-switch row, at its own size and at the
+/// row's trailing edge.
+pub fn recording_delegates_switch_rect(row: Rect) -> Rect {
+    ui::widget::ToggleFace::trailing(row, false).rect()
+}
+
+/// Paint the "Members may record" row: its label and the shared switch,
+/// on while the room allows its members' recorders. The whole row is the
+/// hit target.
+fn draw_recording_delegates_switch(
+    scene: &mut Scene,
+    transform: Affine,
+    row: Rect,
+    ws: &Workspace,
+    is_owner: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    draw_room_switch(
+        scene,
+        transform,
+        row,
+        (
+            &t("workspace-settings-recording-toggle"),
+            !ws.recording_delegates_forbidden,
+        ),
+        is_owner,
+        text_renderer,
+        theme,
+    );
+}
+
+/// A labelled room-governance switch filling `row`: the label, and the
+/// shared switch at the trailing edge. Only an administrator may flip it.
+fn draw_room_switch(
+    scene: &mut Scene,
+    transform: Affine,
+    row: Rect,
+    (label, on): (&str, bool),
+    is_owner: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let tokens = &theme.tokens;
+    let size = tokens.typography.scale.sm;
+    let label = elide(
+        label,
+        size,
+        (recording_delegates_switch_rect(row).x0 - row.x0 - 10.0).max(0.0),
+        text_renderer,
+    );
+    text_renderer.draw_text(
+        scene,
+        &label,
+        size,
+        if is_owner {
+            tokens.colors.text_primary
+        } else {
+            tokens.colors.text_dim
+        },
+        at(transform, row.x0, row.center().y - f64::from(size) * 0.65),
+        None,
+    );
+    ui::widget::Toggle::paint(
+        scene,
+        transform,
+        theme,
+        &ui::widget::ToggleFace::trailing(row, on).disabled(!is_owner),
+    );
+}
+
+/// The Agents pane's entry points: the guided setup, and the feedback triage
+/// agent — adding it through the same admission flow, or once it is here,
+/// the team's choice whether it also joins reporters' direct rooms.
+fn draw_agent_add_buttons(
+    scene: &mut Scene,
+    transform: Affine,
+    (pane_rect, ws): (Rect, &Workspace),
+    is_owner: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    draw_primary_button(
+        scene,
+        transform,
+        agents_add_rect(pane_rect),
+        &t("workspace-settings-add-agent"),
+        is_owner,
+        text_renderer,
+        theme,
+    );
+    if triage_agent_admitted(ws) {
+        draw_room_switch(
+            scene,
+            transform,
+            agents_add_triage_rect(pane_rect),
+            (
+                &t("workspace-settings-triage-direct-rooms"),
+                ws.triage_in_direct_rooms,
+            ),
+            is_owner,
+            text_renderer,
+            theme,
+        );
+    } else {
+        draw_primary_button(
+            scene,
+            transform,
+            agents_add_triage_rect(pane_rect),
+            &t("workspace-settings-add-triage-agent"),
+            is_owner,
+            text_renderer,
+            theme,
+        );
+    }
+}
+
+/// Whether the room admits the team's triage agent.
+pub fn triage_agent_admitted(ws: &Workspace) -> bool {
+    ws.role_of_agent(TRIAGE_AGENT)
+        .is_some_and(|role| role != CapRole::Denied)
+}
+
+/// Geometry for adding the feedback triage agent, after the room's
+/// recording switch.
+pub fn agents_add_triage_rect(pane_rect: Rect) -> Rect {
+    let recording = recording_delegates_rect(pane_rect);
+    Rect::new(
+        recording.x1 + 12.0,
+        recording.y0,
+        recording.x1 + 12.0 + 196.0,
+        recording.y1,
     )
 }
 
@@ -2470,12 +2681,31 @@ pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
         let preset = agent_authority_preset(ws, &agent);
         let service =
             crate::shell::service_members::service_purpose(ws, &agent, tilo_clock::unix_now());
+        let delegated = ws
+            .capabilities
+            .iter()
+            .filter(|cap| cap.is_room_membership() && subject_is_agent(&cap.subject, &agent))
+            .all(|cap| {
+                cap.id
+                    .starts_with(crate::shell::state::DEVICE_DELEGATE_CAP_PREFIX)
+            });
+        let (review_rect, remove_rect) = if delegated {
+            (Rect::ZERO, Rect::ZERO)
+        } else {
+            (review_rect, remove_rect)
+        };
+        let operated = ws
+            .capabilities
+            .iter()
+            .any(|cap| matches!(&cap.scope, Scope::Agent(operated) if *operated == agent));
         rows.push(AgentRow {
             agent,
             role,
             grant_count,
             preset,
             service,
+            delegated,
+            operated,
             row_rect,
             role_rect,
             review_rect,
@@ -2977,12 +3207,20 @@ pub fn draw_agents_pane(
         text_renderer,
         theme,
     );
+    draw_recording_delegates_switch(
+        scene,
+        transform,
+        recording_delegates_rect(pane_rect),
+        ws,
+        is_owner,
+        text_renderer,
+        theme,
+    );
     if rows.is_empty() {
-        draw_primary_button(
+        draw_agent_add_buttons(
             scene,
             transform,
-            agents_add_rect(pane_rect),
-            &t("workspace-settings-add-agent"),
+            (pane_rect, ws),
             is_owner,
             text_renderer,
             theme,
@@ -3027,11 +3265,10 @@ pub fn draw_agents_pane(
         text_renderer,
         theme,
     );
-    draw_primary_button(
+    draw_agent_add_buttons(
         scene,
         transform,
-        agents_add_rect(pane_rect),
-        &t("workspace-settings-add-agent"),
+        (pane_rect, ws),
         is_owner,
         text_renderer,
         theme,
@@ -3131,19 +3368,7 @@ fn draw_agent_row(
         at(transform, text_x, row.row_rect.y0 + 12.0),
         None,
     );
-    let admission = agent_admission_label(row.role);
-    let detail = if let Some(service) = &row.service {
-        service_member_detail(service)
-    } else {
-        t_args(
-            "workspace-settings-agent-detail",
-            &[
-                ("admission", admission.into()),
-                ("profile", row.preset.label().into()),
-                ("count", row.grant_count.into()),
-            ],
-        )
-    };
+    let detail = agent_row_detail(row);
     let detail_size = tokens.typography.scale.xs;
     let detail = elide(&detail, detail_size, text_max, text_renderer);
     text_renderer.draw_text(
@@ -3166,6 +3391,9 @@ fn draw_agent_row(
         text_renderer,
         theme,
     );
+    if row.delegated {
+        return;
+    }
     Button::paint(
         scene,
         transform,
@@ -3184,6 +3412,27 @@ fn draw_agent_row(
         text_renderer,
         theme,
     );
+}
+
+/// The line under an agent row's name: what a service member is for, that a
+/// recording delegate is the room policy's, or what the agent may do.
+fn agent_row_detail(row: &AgentRow) -> String {
+    if let Some(service) = &row.service {
+        service_member_detail(service)
+    } else if row.delegated {
+        t("workspace-settings-agent-delegated")
+    } else if row.operated && row.agent == TRIAGE_AGENT {
+        t("workspace-settings-agent-triage-note")
+    } else {
+        t_args(
+            "workspace-settings-agent-detail",
+            &[
+                ("admission", agent_admission_label(row.role).into()),
+                ("profile", row.preset.label().into()),
+                ("count", row.grant_count.into()),
+            ],
+        )
+    }
 }
 
 fn agent_admission_label(role: CapRole) -> String {
@@ -5125,6 +5374,79 @@ mod agents_pane_tests {
         )
         .expect("owner grants scoped access");
         ws
+    }
+
+    /// A member's recording delegate is controlled by "Members may record":
+    /// its row offers no Remove that the next re-apply would undo, and
+    /// removing the agent leaves the delegates alone.
+    #[test]
+    fn a_recording_delegate_row_offers_no_reverting_remove() {
+        let mut ws = Workspace::new(WorkspaceId::from(18), "recorded");
+        ws.set_owner(OWNER);
+        let delegate =
+            crate::shell::state::remote_device_delegate_id("viewer", &[7; 32], "recorder");
+        ws.grant_capability(
+            CapOverride::membership(Subject::agent("recorder"), ws.room.to_string(), Verb::Read)
+                .with_id(delegate.clone()),
+        );
+        let rows = agents_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0));
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].delegated);
+        assert_eq!(rows[0].remove_rect, Rect::ZERO, "no Remove to offer");
+        assert_eq!(rows[0].review_rect, Rect::ZERO);
+
+        let edit = remove_agent(&mut ws, &OWNER.to_string(), "recorder");
+        assert!(edit.revoked.is_empty());
+        assert!(ws.capabilities.iter().any(|cap| cap.id == delegate));
+
+        // The room's own grant to the same agent is still the room's.
+        ws.grant_as(
+            &OWNER.to_string(),
+            CapOverride::membership(Subject::agent("recorder"), ws.room.to_string(), Verb::Read)
+                .with_id("agent-member:recorder:observer"),
+        )
+        .expect("owner admits the recorder");
+        let rows = agents_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0));
+        assert!(!rows[0].delegated);
+        assert!(rows[0].remove_rect.area() > 0.0);
+        let edit = remove_agent(&mut ws, &OWNER.to_string(), "recorder");
+        assert_eq!(
+            edit.revoked,
+            vec!["agent-member:recorder:observer".to_string()]
+        );
+    }
+
+    /// The triage agent is added as a Contributor on Chat: listed with the
+    /// agents, able to comment and never to write, and removing it takes
+    /// every grant with it.
+    #[test]
+    fn the_triage_agent_is_a_chat_contributor_that_removal_revokes() {
+        let mut ws = Workspace::new(WorkspaceId::from(19), "triage-test");
+        ws.set_owner(OWNER);
+        for cap in triage_agent_grants(&ws.room.to_string(), TRIAGE_AGENT) {
+            ws.grant_as(&OWNER.to_string(), cap)
+                .expect("owner admits the triage agent");
+        }
+        assert_eq!(ws.role_of_agent(TRIAGE_AGENT), Some(CapRole::Commenter));
+        assert_eq!(
+            agent_authority_preset(&ws, TRIAGE_AGENT),
+            AgentAuthorityPreset::Contributor
+        );
+        let actor = ws.actor_for_agent(TRIAGE_AGENT);
+        let chat = ResourceRef::App("so.tilo.chat".into());
+        assert!(ws.allows(&actor, &chat, Verb::Comment));
+        assert!(!ws.allows(&actor, &chat, Verb::Write), "never an Editor");
+        assert!(
+            !ws.allows(
+                &actor,
+                &ResourceRef::App("so.tilo.notes".into()),
+                Verb::Comment
+            ),
+            "nothing beyond Chat"
+        );
+        let removed = remove_agent(&mut ws, &OWNER.to_string(), TRIAGE_AGENT);
+        assert_eq!(removed.revoked.len(), 2);
+        assert_eq!(ws.role_of_agent(TRIAGE_AGENT), None);
     }
 
     #[test]

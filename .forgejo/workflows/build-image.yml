@@ -987,6 +987,22 @@ jobs:
           fi
           echo "TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${key,,}" >> "$GITHUB_ENV"
 
+      # The community room's standing invitation and the team principal ship in
+      # the image (os/usr/share/tilo/community.toml). The TILO_COMMUNITY_TOML
+      # repository variable, when set, replaces the checked-in file. A
+      # publication refuses the empty placeholder here, before hours of
+      # building; the image build repeats the check (TILO_REQUIRE_COMMUNITY).
+      - name: Load the community configuration
+        shell: bash
+        env:
+          TILO_COMMUNITY_TOML: ${{ vars.TILO_COMMUNITY_TOML }}
+          PUBLISH: ${{ steps.release-mode.outputs.publish }}
+        run: |
+          set -euo pipefail
+          args=(materialize)
+          [[ $PUBLISH != true ]] || args+=(--require)
+          dist/community-config.sh "${args[@]}" os/usr/share/tilo/community.toml
+
       # The generation number sealed into the UKI's command line, which bounded
       # rollback binds every unseal to. It has to advance by exactly one per
       # published image: the retention window is arithmetic on it, and the floor is
@@ -1327,6 +1343,7 @@ jobs:
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && '8' || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+            TILO_REQUIRE_COMMUNITY=${{ steps.release-mode.outputs.publish == 'true' && '1' || '0' }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
             TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
@@ -1405,6 +1422,7 @@ jobs:
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && '8' || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+            TILO_REQUIRE_COMMUNITY=${{ steps.release-mode.outputs.publish == 'true' && '1' || '0' }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
             TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
@@ -1514,6 +1532,7 @@ jobs:
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && '8' || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+            TILO_REQUIRE_COMMUNITY=${{ steps.release-mode.outputs.publish == 'true' && '1' || '0' }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
             TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}

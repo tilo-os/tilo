@@ -215,24 +215,31 @@ pub struct WorkspaceGovernanceRequest<'a> {
     pub invocation: tilo_actions::InvocationId,
 }
 
-/// Workspace governance (permission profiles) owned by a host that holds the
-/// workspace's capability authority. Its actions are offered through the
-/// broker's remote-action catalogue under the workspace provider.
+/// Workspace governance (permission profiles, public-room governance) owned
+/// by a host that holds the workspace's capability authority. Its actions are
+/// offered through the broker's remote-action catalogue under the workspace
+/// provider.
 pub trait WorkspaceGovernanceServices: Send + Sync {
     /// The application id governance actions are checked against.
     fn app_id(&self) -> &str;
-    /// Whether `action` is one of this service's governance actions.
-    fn handles(&self, action: &str) -> bool;
+    /// Whether `action` on `resource` is one of this service's governance
+    /// actions.
+    fn handles(&self, resource: &str, action: &str) -> bool;
     /// Every governance action of `workspace`, before the caller's
     /// permission check.
     fn descriptors(&self, workspace: &Workspace) -> Vec<tilo_actions::ActionDescriptor>;
-    /// Validate and apply one governance action, recording its effect.
+    /// Validate and apply one governance action, recording its effect. The
+    /// output is what the action answers (a new room's id, a minted
+    /// invitation), empty for one that only changes the workspace.
     ///
     /// # Errors
     ///
     /// Returns a refusal when the caller may not act, confirmation is
     /// missing, or the action cannot be applied.
-    fn invoke(&self, request: &WorkspaceGovernanceRequest<'_>) -> Result<(), String>;
+    fn invoke(
+        &self,
+        request: &WorkspaceGovernanceRequest<'_>,
+    ) -> Result<tilo_actions::ActionOutput, String>;
 }
 /// One checked change to a workspace's saved shortcuts. The broker mints
 /// `invocation` and has checked the change against what `actor` is offered.

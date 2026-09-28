@@ -23,7 +23,7 @@ use crate::persistence::{ReplayAdvance, ReplayHandle, ReplayTicket, WrittenBatch
 use crate::store::StoreError;
 use crate::store::bounded::WorkLimit;
 use crate::store::replay::Step;
-use crate::transport::Envelope;
+use crate::transport::{Envelope, Refusal};
 use crate::workspace::{SharedWorkspace, Subscriber};
 use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction, UnavailableReason};
 use tilo_delivery_protocol::transport_v2::{ActionCapability, EnvelopeV2, SessionReader};
@@ -693,9 +693,22 @@ fn finish_peer_outcome(
     match outcome {
         // A superseded session is a normal handover, not a failure.
         Ok(()) | Err(PeerError::Superseded) => Ok(()),
+        // A device that broke the protocol, or a store that failed it, is
+        // ended for a reason the operator must be able to read.
+        Err(error @ (PeerError::Protocol(_) | PeerError::Store(_))) => {
+            metrics.inc_subscriber_dropped();
+            metrics.inc_peer_sessions_ended();
+            tracing::warn!(
+                device = %hex::encode(&device[..4]),
+                %error,
+                "ended a peer session"
+            );
+            Err(error)
+        }
+        // A connection that went away is ordinary.
         Err(error) => {
             metrics.inc_subscriber_dropped();
-            tracing::warn!(
+            tracing::debug!(
                 device = %hex::encode(&device[..4]),
                 %error,
                 "peer session ended with error"
@@ -1596,17 +1609,24 @@ async fn handle_redeem(
     workspace_id: u64,
     invite_id: [u8; 32],
 ) -> Envelope {
-    let refuse = |reason: String| Envelope::NotAuthorised {
+    let refuse = |refusal: Refusal, reason: String| Envelope::NotAuthorised {
         workspace_id,
+        refusal,
         reason,
     };
     // A federating relay speaks for other devices; only a device may redeem
     // for itself.
     if peer.role != crate::auth::PeerRole::Device {
-        return refuse("only a device may redeem an invitation for itself".into());
+        return refuse(
+            Refusal::NotMember,
+            "only a device may redeem an invitation for itself".into(),
+        );
     }
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
-        return refuse("workspace not bound on this relay".into());
+        return refuse(
+            Refusal::NotHosted,
+            "workspace not bound on this relay".into(),
+        );
     };
     match redeem(peer, session, &ws, workspace_id, invite_id).await {
         Ok(()) => {
@@ -1618,9 +1638,9 @@ async fn handle_redeem(
             );
             Envelope::Admitted { workspace_id }
         }
-        Err(reason) => {
+        Err((refusal, reason)) => {
             tracing::info!(workspace_id, %reason, "refused a standing-invitation redemption");
-            refuse(reason)
+            refuse(refusal, reason)
         }
     }
 }
@@ -1636,13 +1656,20 @@ async fn redeem(
     ws: &SharedWorkspace,
     workspace_id: u64,
     invite_id: [u8; 32],
-) -> Result<(), String> {
+) -> Result<(), (Refusal, String)> {
+    let busy = |error: &dyn std::fmt::Display| (Refusal::Busy, error.to_string());
+    let refused = |error: crate::public_room::PublicRoomError| {
+        (redemption_refusal(&error), error.to_string())
+    };
     let (store, revision) = {
         let wr = crate::workspace_io::fresh_membership(ws)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| busy(&error))?;
         if wr.governed_access {
-            return Err("room admission is governed by its owner, not delegated".into());
+            return Err((
+                Refusal::NotMember,
+                "room admission is governed by its owner, not delegated".into(),
+            ));
         }
         // Already admitted: its admission is retained in the room, so a
         // reconnecting member costs no re-signing and no fan-out.
@@ -1655,9 +1682,9 @@ async fn redeem(
         crate::public_room::PublicRoomHosting::load(store.root())
     })
     .await
-    .map_err(|_| "redemption failed".to_string())?
-    .map_err(|error| error.to_string())?
-    .ok_or_else(|| crate::public_room::PublicRoomError::NotHosted.to_string())?;
+    .map_err(|_| (Refusal::Busy, "redemption failed".to_string()))?
+    .map_err(refused)?
+    .ok_or_else(|| refused(crate::public_room::PublicRoomError::NotHosted))?;
     let admission = hosting
         .admit(
             invite_id,
@@ -1666,13 +1693,13 @@ async fn redeem(
             session.own_device_signing_key,
             std::time::SystemTime::now(),
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(refused)?;
     let (envelope, _) = crate::public_room::admission_envelope(
         workspace_id,
         *session.own_device_public_key,
         admission,
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| busy(&error))?;
     enqueue_state(
         ws,
         envelope,
@@ -1681,10 +1708,22 @@ async fn redeem(
         session.metrics.clone(),
     )
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| busy(&error))?;
     crate::workspace_io::admit_member(ws, peer.device_public_key, revision)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| busy(&error))
+}
+
+/// Whether a refused redemption can succeed when asked again unchanged.
+fn redemption_refusal(error: &crate::public_room::PublicRoomError) -> Refusal {
+    use crate::public_room::PublicRoomError as E;
+    match error {
+        E::NotHosted => Refusal::NotHosted,
+        E::UnknownInvite | E::Revoked | E::InvalidInvite(_) | E::Delegation(_) => {
+            Refusal::NotMember
+        }
+        E::Admission(_) | E::Store(_) | E::Json(_) => Refusal::Busy,
+    }
 }
 
 /// How a subscriber's replay capture finished.
@@ -1732,6 +1771,7 @@ async fn handle_subscribe(
     let Some(ws) = ws else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
+            refusal: Refusal::NotHosted,
             reason: "workspace not bound on this relay".into(),
         }));
     };
@@ -1748,6 +1788,7 @@ async fn handle_subscribe(
     {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
+            refusal: Refusal::NotMember,
             reason: "cross-user certificates cannot federate relay rooms".into(),
         }));
     }
@@ -1758,6 +1799,7 @@ async fn handle_subscribe(
     {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
+            refusal: Refusal::Busy,
             reason: "workspace subscriber limit reached".into(),
         }));
     }
@@ -1788,6 +1830,7 @@ async fn handle_subscribe(
         } else {
             return Ok(Some(Envelope::NotAuthorised {
                 workspace_id,
+                refusal: Refusal::NotMember,
                 reason: "device not in workspace membership".into(),
             }));
         }
@@ -4756,6 +4799,7 @@ async fn handle_delta(
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
+            refusal: Refusal::NotHosted,
             reason: "workspace not bound on this relay".into(),
         }));
     };
@@ -4770,6 +4814,7 @@ async fn handle_delta(
     let Some(source) = authorized_state_source(&ws, peer, session).await? else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
+            refusal: Refusal::NotMember,
             reason: "workspace membership changed".into(),
         }));
     };
@@ -4821,6 +4866,7 @@ async fn handle_delta_prefix(
     let Some(workspace) = session.workspaces.lock().await.get(workspace_id).cloned() else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,
+            refusal: Refusal::NotHosted,
             reason: "workspace not bound on this relay".into(),
         }));
     };
@@ -4837,6 +4883,7 @@ async fn handle_delta_prefix(
     let Some(source) = authorized_state_source(&workspace, peer, session).await? else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,
+            refusal: Refusal::NotMember,
             reason: "workspace membership changed".into(),
         }));
     };
@@ -5127,6 +5174,7 @@ async fn handle_sync_request(
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
+            refusal: Refusal::NotHosted,
             reason: "workspace not bound on this relay".into(),
         }));
     };
@@ -5134,6 +5182,7 @@ async fn handle_sync_request(
     if !session_peer_authorized(peer, session) || !state_member(&wr, peer) {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
+            refusal: Refusal::NotMember,
             reason: "device not in workspace membership".into(),
         }));
     }

@@ -389,6 +389,7 @@ activity-capability-every-type = every { $kind }
 activity-capability-one-artifact = one artifact
 activity-capability-one-shared-file = one shared file
 activity-capability-network = network { $host }
+activity-capability-agent = operating the agent { $agent }
 activity-capability-role = { $role ->
         [owner] owners
         [editor] editors

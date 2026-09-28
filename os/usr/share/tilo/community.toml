@@ -8,7 +8,8 @@
 [community]
 # The Tilo Community room's standing invitation. Its signed host addresses
 # say where the room is served; redeeming it admits this device as a
-# Commenter. `tilo-control community join` redeems it.
+# Commenter. Every session redeems it on its own once it is online, unless
+# the person left the community.
 invite = ""
 
 [team]

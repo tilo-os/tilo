@@ -65,6 +65,7 @@ pub mod doc;
 pub mod events;
 pub mod feedback;
 pub mod geometry;
+pub mod hand;
 pub mod i18n;
 pub mod identity;
 pub mod images;

@@ -2836,6 +2836,15 @@ impl ChatApp {
             Attachment::File { name, size, .. } => {
                 Self::draw_file_attachment(paint, name, *size, layout);
             }
+            Attachment::Issue(issue) => {
+                Self::draw_chip(
+                    paint,
+                    "#",
+                    &issue.title,
+                    &crate::i18n::t("chat-issue-draft-meta"),
+                    layout,
+                );
+            }
             Attachment::Record(_) => {}
         }
     }
@@ -3058,6 +3067,17 @@ impl ChatApp {
         size: u64,
         layout: AttachmentLayout,
     ) {
+        Self::draw_chip(paint, "📄", name, &file_chip_meta(name, size), layout);
+    }
+
+    /// A one-line attachment chip: a glyph, a title and a line of detail.
+    fn draw_chip(
+        paint: PaintContext<'_>,
+        glyph: &str,
+        name: &str,
+        meta: &str,
+        layout: AttachmentLayout,
+    ) {
         let PaintContext {
             scene,
             transform: tf,
@@ -3077,12 +3097,12 @@ impl ChatApp {
             chip.y1 - 11.0 * scale,
         );
         fill_round(scene, tf, icon, 8.0, c.accent[5]);
-        let (iw, ih) = tr.measure("📄", 16.0, None);
+        let (iw, ih) = tr.measure(glyph, 16.0, None);
         text(
             scene,
             tr,
             tf,
-            "📄",
+            glyph,
             16.0,
             Color::WHITE,
             icon.center().x - f64::from(iw) / 2.0,
@@ -3101,12 +3121,11 @@ impl ChatApp {
             chip.x0 + 56.0 * scale.min(1.2),
             chip.center().y - 14.0 * scale,
         );
-        let meta = file_chip_meta(name, size);
         label(
             scene,
             tr,
             tf,
-            &meta,
+            meta,
             11.0,
             c.text_dim,
             chip.x0 + 56.0 * scale.min(1.2),
@@ -4499,7 +4518,7 @@ fn attachment_card_size(att: &Attachment, max_w: f64, scale: f64) -> (f64, f64) 
     match att {
         Attachment::Image { w, h, .. } => image_thumb_size(*w, *h, max_w),
         Attachment::Video { w, h, .. } => video_card_size(*w, *h, max_w),
-        Attachment::File { .. } => (max_w.min(360.0), 58.0 * scale),
+        Attachment::File { .. } | Attachment::Issue(_) => (max_w.min(360.0), 58.0 * scale),
         Attachment::Record(_) => (record_card_w(max_w), record_card_h_scaled(scale)),
     }
 }
@@ -4509,7 +4528,10 @@ fn attachment_card_size(att: &Attachment, max_w: f64, scale: f64) -> (f64, f64) 
 fn attachment_flow_height(att: &Attachment, max_w: f64, scale: f64) -> f64 {
     let (_, card_h) = attachment_card_size(att, max_w, scale);
     card_h
-        + if matches!(att, Attachment::File { .. } | Attachment::Record(_)) {
+        + if matches!(
+            att,
+            Attachment::File { .. } | Attachment::Record(_) | Attachment::Issue(_)
+        ) {
             12.0 * scale
         } else {
             24.0 * scale

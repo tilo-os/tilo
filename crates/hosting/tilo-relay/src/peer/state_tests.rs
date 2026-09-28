@@ -2051,6 +2051,20 @@ fn superseded_peer_outcome_is_quiet_but_protocol_failure_is_counted() {
         .is_err()
     );
     assert_eq!(metrics.snapshot().subscriber_dropped, 1);
+    assert_eq!(metrics.snapshot().peer_sessions_ended, 1);
+
+    assert!(
+        finish_peer_outcome(
+            Err(PeerError::Io(std::io::Error::from(
+                std::io::ErrorKind::ConnectionReset
+            ))),
+            &metrics,
+            &[7; 32],
+        )
+        .is_err()
+    );
+    assert_eq!(metrics.snapshot().subscriber_dropped, 2);
+    assert_eq!(metrics.snapshot().peer_sessions_ended, 1);
 }
 
 #[tokio::test]

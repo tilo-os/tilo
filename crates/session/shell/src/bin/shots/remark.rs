@@ -55,6 +55,7 @@ pub fn apply(driver: &mut ShellDriver, step: &RemarkStep) {
                     channel: tilo_reference::FEEDBACK_CHANNEL.into(),
                     label: "Tilo Community #feedback".into(),
                     joined: true,
+                    left: false,
                 }),
                 people: vec![
                     tilo_reference::RoomMember::new("u_9a0b1c2d3e4f5061", "Ada Lovelace", false),

@@ -517,6 +517,9 @@ pub struct AiPane {
     state: AiState,
     /// A `--shots` or test fixture: never re-read from disk.
     fixture: bool,
+    /// The account store a provider's sign-in is read from, watched so an
+    /// account removed anywhere shows here while the pane is open.
+    accounts: Option<crate::accounts::AccountStoreWatch>,
     revision: u64,
     notice: Option<String>,
     probed: Arc<Mutex<BTreeMap<String, ProviderHealth>>>,
@@ -538,9 +541,49 @@ impl AiPane {
     pub fn new() -> Self {
         let control: Arc<dyn LocalModelControl> = Arc::new(ModelManagerCli);
         let state = AiState::load(control.snapshot());
-        let mut pane = Self::from_parts(control, state, false);
+        let mut pane = Self::from_parts(control, state, false)
+            .with_account_root(crate::accounts::AccountRoot::live());
         pane.start_probe();
         pane
+    }
+
+    /// Read and watch providers' account sign-in in the stores under `root`.
+    #[must_use]
+    pub fn with_account_root(mut self, root: crate::accounts::AccountRoot) -> Self {
+        self.state.accounts = crate::ai_settings::provider_accounts(&root.store());
+        self.accounts = Some(crate::accounts::AccountStoreWatch::new(root));
+        self
+    }
+
+    /// How the pane now shows `profile` signed in.
+    #[cfg(test)]
+    pub(crate) fn account_sign_in_for_test(
+        &self,
+        profile: &ProviderProfile,
+    ) -> crate::ai_settings::AccountSignIn {
+        self.state.account_sign_in(profile)
+    }
+
+    /// Look at the account store on the next update without waiting.
+    #[cfg(test)]
+    pub(crate) fn check_account_store_now(&mut self) {
+        if let Some(watch) = &mut self.accounts {
+            watch.check_now();
+        }
+    }
+
+    /// Re-read the providers' accounts when the store changed since the pane
+    /// last looked.
+    fn account_store_changed(&mut self) -> bool {
+        let Some(watch) = &mut self.accounts else {
+            return false;
+        };
+        if !watch.changed() {
+            return false;
+        }
+        self.state.accounts = crate::ai_settings::provider_accounts(&watch.root().store());
+        self.structure_dirty = true;
+        true
     }
 
     /// A pane over a fixed `state`, for `--shots` and tests.
@@ -555,6 +598,7 @@ impl AiPane {
             control,
             state,
             fixture,
+            accounts: None,
             revision: REVISION.load(Ordering::Relaxed),
             notice: None,
             probed: Arc::new(Mutex::new(BTreeMap::new())),
@@ -645,6 +689,10 @@ impl AiPane {
         let health = std::mem::take(&mut self.state.health);
         self.state = AiState::load(snapshot);
         self.state.health = health;
+        if let Some(watch) = &mut self.accounts {
+            self.state.accounts = crate::ai_settings::provider_accounts(&watch.root().store());
+            watch.mark_seen();
+        }
         self.last_poll = Instant::now();
         self.structure_dirty = true;
     }
@@ -2011,6 +2059,7 @@ impl Widget for AiPane {
     }
 
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+        let accounts_changed = self.account_store_changed();
         let revision = REVISION.load(Ordering::Relaxed);
         if revision != self.revision {
             self.revision = revision;
@@ -2041,7 +2090,19 @@ impl Widget for AiPane {
             self.refresh(true);
             return true;
         }
-        busy
+        busy || accounts_changed
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        let own = self
+            .accounts
+            .as_ref()
+            .map(crate::accounts::AccountStoreWatch::next_check);
+        let composed = self
+            .composed
+            .as_ref()
+            .and_then(|composed| composed.next_wake_deadline());
+        own.into_iter().chain(composed).min()
     }
 
     fn build_layout(

@@ -1,0 +1,694 @@
+#!/usr/bin/env python3
+"""tilo-community — stand up and run the real Tilo Community.
+
+The operator's procedure from nothing to a live community. It runs on the
+team's own Tilo desktop (a release build), signed in as the team identity:
+
+  * the governance acts — creating the Tilo Community public room, minting,
+    rotating and revoking its standing invitation, making teammates Editors
+    — are the desktop's own admin-gated palette actions, which this tool
+    names for you to run (Ctrl+K), and then checks from what they produced;
+  * everything around them it does itself with the release binaries: pairing
+    the relay as the team's room host (`tilo-enroll pair-room-host` /
+    `approve-room-host`), the relay's delegation (`tilo-relay-admin community
+    host`, signed in the team's own session), the hosted-room record, the
+    deployment bundle, and the `community.toml` every Tilo image and
+    desktop-session package ships.
+
+Every step is idempotent: `up` again resumes where it stopped and says what
+it is waiting for.
+
+Subcommands: guide | decisions | doctor | up | bundle | status |
+rotate-invite | revoke-invite | grant-editor | renew-delegation | verify.
+`tilo-community guide` explains the procedure; every error names its fix.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import os
+import pathlib
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+
+REPO = pathlib.Path(__file__).resolve().parents[2]
+SHIPPED = REPO / "os" / "usr" / "share" / "tilo" / "community.toml"
+CHECK = REPO / "dist" / "community-config.sh"
+RELAY_CONFIG_IN_CONTAINER = "/etc/tilo/relay.toml"
+ROOM_NAME = "Tilo Community"
+PAIRING_PORT = 45831
+HEADER = (
+    "# Where this release finds the Tilo community and the Tilo team.\n"
+    "#\n"
+    "# Written by scripts/community-ops/tilo-community; read by the shell\n"
+    "# (crates/session/shell/src/shell/community.rs). Public: a standing\n"
+    "# invitation and a public key. Change it with `tilo-community\n"
+    "# rotate-invite`, never by hand.\n\n"
+)
+
+DECISIONS = """\
+Decisions and credentials only you can provide (nothing here picks them):
+
+  1. The team identity: who owns the Tilo Community room. Recommended: a
+     dedicated "Tilo team" identity, created by the first run of a Tilo
+     desktop kept for this. Its user root owns the room and is the "Tilo
+     team" every reporter's private room is with. A founder's personal
+     identity would put a person's root behind the room.
+  2. Where that root lives: the team desktop's own custody (its identity
+     record, its keyring, its disk encryption). Choose the machine, who can
+     sign in, and how its identity is backed up. Losing it loses the room's
+     ownership for good. TILO_COMMUNITY_CUSTODY (0700, not in a repository)
+     holds only the relay's staging: its identity and the hosted-room record.
+  3. Where the relay runs: the prod Kubernetes cluster (base in
+     os/containers/tilo-relay/community, an overlay in the infra repo), the
+     Oregon EKS cluster, or a VM with Podman (community/compose.yaml).
+  4. The public endpoint: a static IP and UDP port (4433) reaching the relay,
+     given as --public-addr IP:PORT. Every shipped image names it in its
+     invitation, so it must stay stable (a reserved IP / Elastic IP);
+     changing it means rotate-invite and a new release.
+  5. Custody of the relay's identity: its paired device key goes into the
+     deployment's secret store (a SOPS secret in the infra repo, or the VM's
+     identity/ directory). Choose who can decrypt it.
+  6. Who reads private feedback: every reporter's private room is with the
+     team identity, so the team desktop (or teammates' desktops joined to the
+     team identity as its devices) must run. Who triages in public: each
+     teammate made an Editor (`grant-editor PERSON`).
+  7. Delegation lifetime: none (default; revoke the relay's device to end
+     it) or --delegation-days N with renew-delegation before it lapses.
+  8. Monitoring: where Prometheus scrapes the relay's metrics port (9464).
+  9. Shipping the config: commit os/usr/share/tilo/community.toml (it is
+     public), or set the TILO_COMMUNITY_TOML repository variable; release
+     builds refuse to publish without one.
+"""
+
+GUIDE = """\
+tilo-community: the real Tilo Community, from nothing to live
+
+Run it on the team's Tilo desktop, signed in as the team identity, from a
+checkout of this repository (it writes os/usr/share/tilo/community.toml).
+
+  0. Decide (`tilo-community decisions`), then
+       export TILO_COMMUNITY_CUSTODY=/secure/path/tilo-community   # 0700
+  1. Check this machine:          tilo-community doctor
+  2. Pair the relay, derive its public endpoint, wait for the room:
+       tilo-community up --public-addr IP:4433
+     It prints the palette actions to run in this desktop (Ctrl+K):
+     "Create a public room"; in it, "Delegate this public room to its host"
+     (the room records the relay, so every invitation names it) and "Mint
+     this public room's standing invitation" (which copies the invitation).
+     Agents and peers with Admin in the room reach the same actions through
+     the action broker.
+  3. Hand it the invitation (it checks the room, owner and relay in it,
+     signs the relay's delegation and writes community.toml + the bundle):
+       tilo-community up --invite "$(wl-paste)"
+  4. Deploy the relay with the bundle (see
+     os/containers/tilo-relay/community/README.md) and commit
+     os/usr/share/tilo/community.toml.
+  5. Once the relay answers, check it serves what was prepared:
+       tilo-community status --relay-exec "kubectl -n tilo-community exec tilo-community-relay-0 --"
+     and add #feedback in Chat as `up` says.
+
+Later:
+  rotate-invite            how to mint a new invitation beside the current one;
+                           then `up --invite TOKEN` ships it
+  revoke-invite ID         stop redeeming ID in the record, and the palette
+                           action that stops it at this desktop
+  grant-editor PERSON      the palette action that makes a teammate an Editor
+  renew-delegation [--days N]  re-sign the relay's delegation
+  bundle                   rewrite the deployment bundle from custody
+  verify                   a brand-new device joins through the shipped
+                           invitation (a development build's check: it drives
+                           a headless shell, see scripts/feedback-dev)
+
+After each change, redeploy the records (the relay installs them on start);
+a new community.toml needs a new image release.
+"""
+
+
+class Fix(Exception):
+    """A failure with the one thing to do about it."""
+
+    def __init__(self, problem: str, fix: str):
+        super().__init__(problem)
+        self.problem = problem
+        self.fix = fix
+
+
+def say(message: str) -> None:
+    print(f"tilo-community: {message}", flush=True)
+
+
+def palette(title: str, *lines: str) -> None:
+    print(f"\n  In this desktop, as the team: Ctrl+K, \"{title}\"")
+    for line in lines:
+        print(f"      {line}")
+    print()
+
+
+# ------------------------------------------------------------- location ----
+
+def custody() -> pathlib.Path:
+    value = os.environ.get("TILO_COMMUNITY_CUSTODY", "").strip()
+    if not value:
+        raise Fix("TILO_COMMUNITY_CUSTODY is not set",
+                  "choose where the relay's staging lives (`tilo-community decisions`, 2) and export it")
+    path = pathlib.Path(value).expanduser().resolve()
+    if path == REPO or REPO in path.parents:
+        raise Fix(f"{path} is inside the repository", "keep custody outside any checkout")
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.chmod(0o700)
+    return path
+
+
+def state_path() -> pathlib.Path:
+    return custody() / "state.json"
+
+
+def load_state() -> dict:
+    try:
+        return json.loads(state_path().read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(state: dict) -> None:
+    path = state_path()
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2) + "\n")
+    tmp.replace(path)
+
+
+def relay_dir() -> pathlib.Path:
+    return custody() / "relay"
+
+
+def relay_identity() -> pathlib.Path:
+    return relay_dir() / "identity-root"
+
+
+def relay_config() -> pathlib.Path:
+    return relay_dir() / "relay.toml"
+
+
+def deploy_dir() -> pathlib.Path:
+    return custody() / "deploy"
+
+
+def team_identity_dir(args: argparse.Namespace | None = None) -> pathlib.Path:
+    given = getattr(args, "identity_dir", None) if args else None
+    if given:
+        return pathlib.Path(given)
+    config = os.environ.get("XDG_CONFIG_HOME") or str(pathlib.Path.home() / ".config")
+    return pathlib.Path(config) / "tilo" / "identity"
+
+
+def team_identity_root(args: argparse.Namespace | None = None) -> pathlib.Path:
+    given = getattr(args, "identity_root", None) if args else None
+    return pathlib.Path(given or os.environ.get("TILO_IDENTITY_ROOT") or "/var/lib/tilo")
+
+
+def team_person(args: argparse.Namespace) -> str:
+    record = team_identity_dir(args) / "primary.json"
+    pubkey = team_identity_root(args) / "user-identity" / "pubkey.bin"
+    if not record.exists() or not pubkey.exists():
+        raise Fix(
+            f"no team identity here ({record}, {pubkey})",
+            "sign in to this Tilo desktop as the team identity (its first run creates it), "
+            "or pass --identity-dir/--identity-root",
+        )
+    return pubkey.read_bytes().hex()
+
+
+# ------------------------------------------------------------- binaries ----
+
+def tool(name: str) -> str:
+    directory = os.environ.get("TILO_COMMUNITY_BIN")
+    if directory:
+        path = pathlib.Path(directory) / name
+        if path.is_file():
+            return str(path)
+        raise Fix(f"{name} is not in TILO_COMMUNITY_BIN={directory}", "point it at a directory holding the release binaries")
+    found = shutil.which(name)
+    if not found:
+        raise Fix(f"{name} is not installed", "run this on a Tilo desktop (the image ships it), or set TILO_COMMUNITY_BIN")
+    return found
+
+
+def run(argv: list[str], what: str, timeout: int = 120) -> str:
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    if result.returncode != 0:
+        raise Fix(f"{what} failed:\n{result.stdout}{result.stderr}".rstrip(), "see the message above")
+    return result.stdout
+
+
+def relay_admin(*args: str) -> str:
+    return run([tool("tilo-relay-admin"), "--config", str(relay_config()), *args],
+               f"tilo-relay-admin {' '.join(args[:2])}")
+
+
+# --------------------------------------------------------------- invite ----
+
+def decode_invite(token: str) -> dict:
+    token = token.strip()
+    try:
+        data = json.loads(base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)))
+    except (ValueError, UnicodeDecodeError):
+        raise Fix("that is not a Tilo invitation", "paste exactly what the palette copied") from None
+    if not isinstance(data, dict) or "room_id" not in data:
+        raise Fix("that is not a Tilo invitation", "paste exactly what the palette copied")
+    return data
+
+
+def key_hex(value) -> str | None:
+    if isinstance(value, list) and len(value) == 32:
+        return bytes(value).hex()
+    if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{64}", value):
+        return value.lower()
+    return None
+
+
+def check_invite(token: str, team: str, endpoint: dict) -> dict:
+    """What the invitation says, checked against the team and the relay."""
+    data = decode_invite(token)
+    if not data.get("standing"):
+        raise Fix("that invitation is single-use, not the room's standing invitation",
+                  "run \"Mint this public room's standing invitation\" in the Tilo Community workspace")
+    owner = key_hex((data.get("owner_device_cert") or {}).get("user_public_key"))
+    if owner != team:
+        raise Fix(f"that invitation was minted by {owner}, not this desktop's team identity {team}",
+                  "mint it here, signed in as the team")
+    hosts = {host.get("id") for host in data.get("host_addrs") or [] if isinstance(host, dict)}
+    if endpoint["id"] not in hosts:
+        raise Fix(
+            "that invitation does not name the relay, so nobody could join while this desktop is away",
+            "run \"Delegate this public room to its host\" as `up` printed, then mint again",
+        )
+    return data
+
+
+# ---------------------------------------------------------------- steps ----
+
+def pair_relay(args: argparse.Namespace) -> None:
+    root = relay_identity()
+    if (root / "device" / "cert.bin").exists():
+        return
+    say("pairing the relay as the team's room host (pair-room-host + approve-room-host)")
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    log = relay_dir() / "enroll.log"
+    with open(log, "ab") as out:
+        pair = subprocess.Popen(
+            [tool("tilo-enroll"), "pair-room-host", "--identity-root", str(root),
+             "--label", "Tilo community host", "--timeout", "90"],
+            stdout=out, stderr=subprocess.STDOUT, start_new_session=True,
+        )
+        time.sleep(1.0)
+        approve = subprocess.run(
+            [tool("tilo-enroll"), "approve-room-host",
+             "--identity-root", str(team_identity_root(args)),
+             "--identity-dir", str(team_identity_dir(args)), "--timeout", "60"],
+            stdout=out, stderr=subprocess.STDOUT, timeout=120,
+        )
+        try:
+            pair.wait(timeout=90)
+        except subprocess.TimeoutExpired:
+            pair.kill()
+    if approve.returncode != 0 or pair.returncode != 0 or not (root / "device" / "cert.bin").exists():
+        raise Fix(f"the relay did not pair (approve={approve.returncode}, pair={pair.returncode}); see {log}",
+                  f"the pairing port {PAIRING_PORT}/udp must be free (`ss -ulpn | grep {PAIRING_PORT}`)")
+
+
+def write_relay_config() -> None:
+    state = relay_dir() / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    text = "".join(f'{key} = "{value}"\n' for key, value in (
+        ("identity_root", relay_identity()),
+        ("state_root", state),
+        ("full_replica_status", state / "full-replica-status.json"),
+        ("home_peer_bundle", state / "no-home-peer.toml"),
+        ("iroh_listen", "127.0.0.1:0"),
+    )) + 'trust_policy = { kind = "allow_any" }\n'
+    # The staging copy never runs; `community host` adds the room binding.
+    if not relay_config().exists():
+        relay_config().write_text(text)
+
+
+def ensure_endpoint(addrs: list[str]) -> dict:
+    state = load_state()
+    if addrs and state.get("public_addrs") not in (None, addrs) and state.get("invite"):
+        raise Fix(f"the shipped invitation names {state['public_addrs']}, not {addrs}",
+                  "keep the address, or change it and then rotate-invite and release")
+    addrs = addrs or state.get("public_addrs") or []
+    if not addrs:
+        raise Fix("no public address for the relay", "tilo-community up --public-addr IP:4433")
+    argv = ["endpoint"]
+    for addr in addrs:
+        argv += ["--addr", addr]
+    endpoint = json.loads(relay_admin(*argv))
+    if state.get("relay_endpoint") != endpoint or state.get("public_addrs") != addrs:
+        state.update(relay_endpoint=endpoint, public_addrs=addrs)
+        save_state(state)
+    return endpoint
+
+
+def ensure_delegation(args: argparse.Namespace, room: str, days: int | None, force: bool = False) -> None:
+    state = load_state()
+    if not force and state.get("room") == room and state.get("delegated") and state.get("delegation_days") == days:
+        return
+    say("signing the relay's delegation with the team's root (in this session)")
+    argv = ["community", "host", "--room", room, "--owner-identity-dir", str(team_identity_dir(args))]
+    if days:
+        argv += ["--expires-in-days", str(days)]
+    relay_admin(*argv)
+    state.update(room=room, delegated=True, delegation_days=days)
+    save_state(state)
+
+
+def adopt_invite(token: str, data: dict) -> None:
+    state = load_state()
+    room = state["room"]
+    invite_id = run([tool("tilo-relay-admin"), "--config", str(relay_config()),
+                     "community", "add-invite", "--room", room, token.strip()],
+                    "registering the standing invitation")
+    ids = re.findall(r"[0-9a-f]{64}", invite_id)
+    new_id = ids[0] if ids else ""
+    previous = state.get("invite_id")
+    if previous and previous != new_id:
+        retired = state.setdefault("retired_invites", [])
+        if previous not in retired:
+            retired.append(previous)
+        say(f"rotated: {new_id} ships next; {previous} stays live until `revoke-invite {previous}`")
+    state.update(invite=token.strip(), invite_id=new_id, invite_expiry=data.get("expiry_unix_seconds"))
+    save_state(state)
+
+
+def write_configs(team: str) -> None:
+    state = load_state()
+    text = (HEADER + "[community]\n" f'invite = "{state["invite"]}"\n\n'
+            "[team]\n" f'user_public_key = "{team}"\n' 'label = "Tilo team"\n')
+    for path in (custody() / "community.toml", SHIPPED):
+        if not path.exists() or path.read_text() != text:
+            path.write_text(text)
+
+
+def bundle() -> pathlib.Path:
+    state = load_state()
+    room = state.get("room")
+    if not room or not state.get("delegated"):
+        raise Fix("nothing is hosted yet", "tilo-community up")
+    out = deploy_dir()
+    identity, records = out / "identity", out / "records"
+    for directory in (out, identity, records):
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root = relay_identity()
+    for source, name, mode in (
+        (root / "device-private" / "keypair.bin", "device-keypair.bin", 0o600),
+        (root / "device" / "cert.bin", "device-cert.bin", 0o644),
+        (root / "user-identity" / "pubkey.bin", "user-pubkey.bin", 0o644),
+    ):
+        target = identity / name
+        shutil.copyfile(source, target)
+        target.chmod(mode)
+    for stale in records.glob("*.json"):
+        stale.unlink()
+    (records / f"{room}.json").write_text(relay_admin("community", "export", "--room", room))
+    (out / "endpoint.json").write_text(json.dumps(state["relay_endpoint"]) + "\n")
+    if (custody() / "community.toml").exists():
+        shutil.copyfile(custody() / "community.toml", out / "community.toml")
+    return out
+
+
+def print_deploy(out: pathlib.Path, first: bool) -> None:
+    print(f"""
+Deployment bundle: {out}
+  identity/   the relay's paired identity (secret; never the team root)
+  records/    what it hosts (public, signed by the team)
+  endpoint.json, community.toml
+
+Kubernetes (infra repo overlay of os/containers/tilo-relay/community):
+  kubectl create secret generic tilo-community-relay-identity -n tilo-community \\
+      --from-file={out}/identity --dry-run=client -o yaml \\
+      > clusters/<cluster>/apps/tilo-community-relay/relay-identity.sops.yaml
+  sops -e -i clusters/<cluster>/apps/tilo-community-relay/relay-identity.sops.yaml
+  cp {out}/records/*.json clusters/<cluster>/apps/tilo-community-relay/records/
+Podman VM: copy identity/ and records/ next to community/compose.yaml.
+""")
+    if first:
+        print("Then commit os/usr/share/tilo/community.toml, deploy, and run\n"
+              "  tilo-community status --relay-exec CMD\n")
+    else:
+        print("Redeploy the records (the relay installs them on start); commit\n"
+              "os/usr/share/tilo/community.toml if it changed.\n")
+
+
+def feedback_steps(room: str) -> None:
+    palette("feedback", "in the Tilo Community workspace, with Chat open there:",
+            "Chat's \"Add feedback channel\", then \"Mark as feedback channel\" on #feedback",
+            f"(room {room}; do it once — the channel lives in the room)")
+
+
+# ------------------------------------------------------------- commands ----
+
+def cmd_up(args: argparse.Namespace) -> None:
+    team = team_person(args)
+    pair_relay(args)
+    write_relay_config()
+    endpoint = ensure_endpoint(args.public_addr or [])
+    state = load_state()
+    if not args.invite and not state.get("invite"):
+        say("the relay is paired")
+        palette("Create a public room", f"name: {ROOM_NAME}; confirm", "(copies the new room's id)")
+        palette("Delegate this public room to its host",
+                f"in the {ROOM_NAME} workspace; confirm; endpoint:",
+                json.dumps(endpoint, separators=(",", ":")),
+                "(the room records its relay; every invitation it mints names it)")
+        palette("Mint this public room's standing invitation",
+                f"in the {ROOM_NAME} workspace; role commenter; confirm",
+                "(copies the invitation)")
+        print("Then:  tilo-community up --invite \"$(wl-paste)\"\n")
+        return
+    token = args.invite or state["invite"]
+    data = check_invite(token, team, endpoint)
+    room = data["room_id"]
+    if state.get("room") not in (None, room):
+        raise Fix(f"that invitation is for room {room}, but the community is room {state['room']}",
+                  "mint it in the Tilo Community workspace")
+    ensure_delegation(args, room, args.delegation_days if args.delegation_days is not None
+                      else state.get("delegation_days"))
+    if args.invite:
+        adopt_invite(token, data)
+    write_configs(team)
+    out = bundle()
+    state = load_state()
+    say(f"room {room} is owned by the team {team}")
+    say(f"standing invitation {state['invite_id']} names {state['public_addrs']}")
+    feedback_steps(room)
+    print_deploy(out, first=True)
+
+
+def cmd_bundle(_: argparse.Namespace) -> None:
+    print_deploy(bundle(), first=False)
+
+
+def relay_side(exec_prefix: str, room: str) -> str:
+    argv = [*shlex.split(exec_prefix), "tilo-relay-admin", "--config", RELAY_CONFIG_IN_CONTAINER,
+            "community", "status", "--room", room]
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise Fix(f"the relay did not answer `community status`:\n{result.stdout}{result.stderr}",
+                  "check --relay-exec reaches the running relay container")
+    return result.stdout
+
+
+def cmd_status(args: argparse.Namespace) -> None:
+    state = load_state()
+    ok = True
+    print(f"custody:  {custody()}")
+    for key in ("room", "invite_id", "public_addrs", "delegation_days", "retired_invites"):
+        if key in state:
+            print(f"{key}: {state[key]}")
+    room = state.get("room")
+    if not room or not state.get("delegated"):
+        raise Fix("nothing is hosted yet", "tilo-community up")
+    staged = relay_admin("community", "status", "--room", room)
+    print("prepared record:\n  " + staged.strip().replace("\n", "\n  "))
+    if args.relay_exec:
+        served = relay_side(args.relay_exec, room)
+        print("serving relay:\n  " + served.strip().replace("\n", "\n  "))
+        wanted = {line for line in staged.splitlines() if line.startswith(("invite ", "owner ", "delegation "))}
+        held = {line for line in served.splitlines() if line.startswith(("invite ", "owner ", "delegation "))}
+        if wanted != held:
+            ok = False
+            print("MISMATCH: the relay serves another delegation or invitations than prepared; redeploy the records")
+    shipped = SHIPPED.read_text() if SHIPPED.exists() else ""
+    prepared = (custody() / "community.toml").read_text() if (custody() / "community.toml").exists() else ""
+    if not prepared or shipped != prepared:
+        ok = False
+        print(f"MISMATCH: {SHIPPED.relative_to(REPO)} is not the prepared community.toml")
+    check = subprocess.run(["bash", str(CHECK), "check", "--require", str(SHIPPED)],
+                           capture_output=True, text=True)
+    print(f"release gate: {'ok' if check.returncode == 0 else (check.stdout + check.stderr).strip()}")
+    ok &= check.returncode == 0
+    if not ok:
+        raise Fix("the community is not fully in place", "see the lines above")
+    say("status: ok")
+
+
+def cmd_rotate(_: argparse.Namespace) -> None:
+    state = load_state()
+    if not state.get("invite"):
+        raise Fix("there is no invitation to rotate", "tilo-community up")
+    palette("Mint this public room's standing invitation",
+            f"in the {ROOM_NAME} workspace; role commenter; confirm", "(copies the invitation)")
+    print(f"Then:  tilo-community up --invite \"$(wl-paste)\"\n"
+          f"It ships the new one; {state['invite_id']} stays live until you revoke it.\n")
+
+
+def cmd_revoke(args: argparse.Namespace) -> None:
+    state = load_state()
+    room = state.get("room")
+    invite_id = args.invite_id.strip().lower()
+    if not room:
+        raise Fix("nothing is hosted yet", "tilo-community up")
+    if invite_id == state.get("invite_id") and not args.force:
+        raise Fix(f"{invite_id} is the invitation community.toml ships: revoking it stops every new user joining",
+                  "tilo-community rotate-invite first (or pass --force in an emergency)")
+    relay_admin("community", "revoke-invite", "--room", room, invite_id)
+    print_deploy(bundle(), first=False)
+    palette("Revoke a standing invitation", f"in the {ROOM_NAME} workspace",
+            f"invite_id: {invite_id}; confirm",
+            "(this desktop stops redeeming it too)")
+    say(f"revoked {invite_id} in the record; redeploy the records so the relay stops redeeming it")
+
+
+def cmd_grant(args: argparse.Namespace) -> None:
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", args.person):
+        raise Fix("a person id is 64 hex characters", "ask the teammate for their person id")
+    palette("Make someone an Editor of this public room", f"in the {ROOM_NAME} workspace",
+            f"person: {args.person.lower()}; confirm")
+
+
+def cmd_renew(args: argparse.Namespace) -> None:
+    state = load_state()
+    room = state.get("room")
+    if not room:
+        raise Fix("nothing is hosted yet", "tilo-community up")
+    team_person(args)
+    ensure_delegation(args, room, args.days, force=True)
+    print_deploy(bundle(), first=False)
+
+
+def cmd_verify(args: argparse.Namespace) -> None:
+    """A brand-new device joins through the shipped invitation — driven
+    through a development build's headless shell (scripts/feedback-dev)."""
+    import importlib.machinery
+    import importlib.util
+    path = REPO / "scripts" / "feedback-dev" / "feedback-dev"
+    loader = importlib.machinery.SourceFileLoader("feedback_dev", str(path))
+    spec = importlib.util.spec_from_loader("feedback_dev", loader)
+    fd = importlib.util.module_from_spec(spec)
+    loader.exec_module(fd)
+    state = load_state()
+    if not state.get("room") or not (custody() / "community.toml").exists():
+        raise Fix("there is no community to join yet", "tilo-community up")
+    data = custody() / "verify"
+    data.mkdir(mode=0o700, exist_ok=True)
+    shutil.copyfile(custody() / "community.toml", data / "community.toml")
+    runtime = pathlib.Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "tilo-community-verify"
+    fd.use_location(data, runtime, "tilo-community-verify", collab_host_sessions=())
+    try:
+        apps = fd.ci_apps(args.ci_apps) if args.ci_apps else fd.NO_APPS
+        fd.provision("reporter")
+        fd.install_apps("reporter", apps)
+        fd.start_shell("reporter", headless=True)
+        status = fd.join_community("reporter", state["room"])
+        if apps.packages:
+            fd.reporter_sees_feedback(state["room"])
+    except fd.Fix as problem:
+        raise Fix(problem.problem, problem.fix) from None
+    finally:
+        fd.stop("reporter")
+    say(f"verify: a new device joined the {status['channel_class']} room as {status['role']}")
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    problems = []
+    try:
+        custody()
+    except Fix as problem:
+        problems.append(problem)
+    for name in ("tilo-enroll", "tilo-relay-admin"):
+        try:
+            tool(name)
+        except Fix as problem:
+            problems.append(problem)
+    try:
+        say(f"team identity {team_person(args)}")
+    except Fix as problem:
+        problems.append(problem)
+    busy = subprocess.run(["ss", "-ulpn"], capture_output=True, text=True).stdout
+    if f":{PAIRING_PORT} " in busy and not (relay_identity() / "device" / "cert.bin").exists():
+        problems.append(Fix(f"the pairing port {PAIRING_PORT}/udp is in use",
+                            f"close the other pairing (`ss -ulpn | grep {PAIRING_PORT}`)"))
+    if not CHECK.exists():
+        problems.append(Fix(f"{CHECK} is missing", "update this checkout"))
+    for problem in problems:
+        print(f"  FAIL  {problem.problem}\n        fix: {problem.fix}")
+    if not problems:
+        print("  ok    custody, release tools, team identity and pairing port")
+    return 1 if problems else 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="tilo-community", description=__doc__.split("\n\n")[0])
+    parser.add_argument("--identity-dir", help="the team's identity directory (default ~/.config/tilo/identity)")
+    parser.add_argument("--identity-root", help="the team's identity root (default $TILO_IDENTITY_ROOT or /var/lib/tilo)")
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("guide", help="the whole procedure")
+    sub.add_parser("decisions", help="what only you can decide or provide")
+    sub.add_parser("doctor", help="check custody, tools, team identity and port")
+    up = sub.add_parser("up", help="pair, derive, check the invitation, sign, bundle (idempotent)")
+    up.add_argument("--public-addr", action="append", metavar="IP:PORT",
+                    help="where UDP reaches the deployed relay; repeat for more")
+    up.add_argument("--invite", metavar="TOKEN", help="the standing invitation the palette copied")
+    up.add_argument("--delegation-days", type=int, metavar="N",
+                    help="end the relay's delegation after N days (default: never)")
+    sub.add_parser("bundle", help="rewrite the deployment bundle from custody")
+    status = sub.add_parser("status", help="prepared record, serving relay, shipped config")
+    status.add_argument("--relay-exec", metavar="CMD", help="prefix that runs a command in the relay container")
+    sub.add_parser("rotate-invite", help="how to mint and ship a new standing invitation")
+    revoke = sub.add_parser("revoke-invite", help="stop redeeming a standing invitation")
+    revoke.add_argument("invite_id")
+    revoke.add_argument("--force", action="store_true", help="even the one community.toml ships")
+    grant = sub.add_parser("grant-editor", help="the palette action that makes a teammate an Editor")
+    grant.add_argument("person", help="the teammate's person id (hex user key)")
+    renew = sub.add_parser("renew-delegation", help="re-sign the relay's delegation")
+    renew.add_argument("--days", type=int, metavar="N", help="its new lifetime (default: never ends)")
+    verify = sub.add_parser("verify", help="a new device joins through the shipped invitation (development build)")
+    verify.add_argument("--ci-apps", metavar="RUN", help="also check it sees #feedback")
+    args = parser.parse_args()
+    try:
+        if args.command == "guide":
+            print(GUIDE)
+        elif args.command == "decisions":
+            print(DECISIONS)
+        elif args.command == "doctor":
+            return cmd_doctor(args)
+        else:
+            {
+                "up": cmd_up, "bundle": cmd_bundle, "status": cmd_status,
+                "rotate-invite": cmd_rotate, "revoke-invite": cmd_revoke, "grant-editor": cmd_grant,
+                "renew-delegation": cmd_renew, "verify": cmd_verify,
+            }[args.command](args)
+    except Fix as problem:
+        print(f"tilo-community: {problem.problem}\n  fix: {problem.fix}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

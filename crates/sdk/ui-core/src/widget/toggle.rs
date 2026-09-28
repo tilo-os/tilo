@@ -367,6 +367,20 @@ pub struct ToggleFace {
 }
 
 impl ToggleFace {
+    /// The switch at its own size, centred vertically at the trailing edge of
+    /// `row`: how a host painting a settings row places a switch without
+    /// sizing one itself.
+    pub fn trailing(row: Rect, on: bool) -> Self {
+        let (width, height) = (f64::from(TRACK_WIDTH), f64::from(TRACK_HEIGHT));
+        let top = row.center().y - height / 2.0;
+        Self::new(Rect::new(row.x1 - width, top, row.x1, top + height), on)
+    }
+
+    /// Where the face is painted.
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
+
     pub fn new(rect: Rect, on: bool) -> Self {
         Self {
             rect,

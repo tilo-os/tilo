@@ -28,6 +28,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::shell::state::WorkspaceAuthority as _;
+
 /// Where the OS image ships the community configuration.
 pub const DEFAULT_COMMUNITY_CONFIG: &str = "/usr/share/tilo/community.toml";
 /// Names a community configuration to use instead of the shipped one.
@@ -109,12 +111,35 @@ pub enum CommunityConfigError {
 }
 
 /// The configuration file this device uses: `TILO_COMMUNITY_CONFIG` when set
-/// and non-empty, otherwise the shipped one.
+/// and non-empty, otherwise the shipped one — `/usr/share/tilo`, or, for a
+/// package installed under another prefix (Nix), the first
+/// `tilo/community.toml` in `XDG_DATA_DIRS`.
 #[must_use]
 pub fn config_path() -> PathBuf {
-    std::env::var_os(COMMUNITY_CONFIG_ENV)
-        .filter(|value| !value.is_empty())
-        .map_or_else(|| PathBuf::from(DEFAULT_COMMUNITY_CONFIG), PathBuf::from)
+    resolve_config_path(
+        std::env::var_os(COMMUNITY_CONFIG_ENV),
+        std::env::var_os("XDG_DATA_DIRS").as_deref(),
+    )
+}
+
+fn resolve_config_path(
+    configured: Option<std::ffi::OsString>,
+    data_dirs: Option<&std::ffi::OsStr>,
+) -> PathBuf {
+    if let Some(path) = configured.filter(|value| !value.is_empty()) {
+        return PathBuf::from(path);
+    }
+    let shipped = PathBuf::from(DEFAULT_COMMUNITY_CONFIG);
+    if shipped.exists() {
+        return shipped;
+    }
+    data_dirs
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join("tilo").join("community.toml"))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or(shipped)
 }
 
 /// Read [`config_path`]. A file that does not exist is an unconfigured
@@ -195,8 +220,393 @@ pub fn team_direct_room(me: &str, team: &TeamPrincipal) -> Option<crate::shell::
     crate::shell::state::RoomId::parse(&room.room_id())
 }
 
+/// Everyone is in the community by default. How long the shell waits before
+/// asking again when a join has not gone through yet (offline, or the host
+/// not reached), doubling up to [`AUTO_JOIN_MAX_BACKOFF`].
+pub const AUTO_JOIN_FIRST_BACKOFF: std::time::Duration = std::time::Duration::from_secs(2);
+/// The longest wait between two join attempts.
+pub const AUTO_JOIN_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// What the session knows about the community when it decides what to do.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Observed {
+    /// The session has a certified identity to join with.
+    pub identity: bool,
+    /// The id (hex) of the configured standing invitation, if any.
+    pub invite: Option<String>,
+    /// The person's remembered choice.
+    pub membership: settings_store::community::Membership,
+    /// The invitation the community's host refused, as remembered.
+    pub refused_invite: Option<String>,
+    /// This session holds the community room.
+    pub held: bool,
+    /// This session holds a role in it: the host admitted it.
+    pub admitted: bool,
+}
+
+/// The next thing the shell does about the community.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// Nothing, for now.
+    Wait,
+    /// Redeem the standing invitation: the session is not in the room.
+    Join,
+    /// Ask the room's hosts again: the session holds the room, but the host
+    /// has not admitted it yet.
+    Redeem,
+    /// Open the private room with the Tilo team, once.
+    OpenTeamRoom,
+    /// Leave the room: the person left, or its host refused this device.
+    Leave,
+    /// Remember that the host refused the invitation, then leave.
+    RecordRefusal,
+}
+
+/// Keeps a session in the Tilo Community without asking: it joins once the
+/// session has an identity and the network is up, retries with back-off
+/// while the host cannot be reached, never re-joins a person who left, and
+/// takes a refusal by the host as final for that invitation. Pure: the
+/// caller observes, performs the step and reports back.
+#[derive(Clone, Debug)]
+pub struct AutoJoin {
+    invite: Option<String>,
+    due: Option<std::time::Instant>,
+    backoff: std::time::Duration,
+    team_room_opened: bool,
+    refused: Option<String>,
+}
+
+impl Default for AutoJoin {
+    fn default() -> Self {
+        Self {
+            invite: None,
+            due: None,
+            backoff: AUTO_JOIN_FIRST_BACKOFF,
+            team_room_opened: false,
+            refused: None,
+        }
+    }
+}
+
+impl AutoJoin {
+    /// Decide the next step. A different invitation (a new release) starts
+    /// over.
+    pub fn next(&mut self, now: std::time::Instant, observed: &Observed) -> Step {
+        use settings_store::community::Membership;
+        if self.invite != observed.invite {
+            *self = Self {
+                invite: observed.invite.clone(),
+                ..Self::default()
+            };
+        }
+        let Some(invite) = observed.invite.as_deref() else {
+            return Step::Wait;
+        };
+        if !observed.identity {
+            return Step::Wait;
+        }
+        if observed.membership == Membership::Left {
+            return if observed.held {
+                Step::Leave
+            } else {
+                Step::Wait
+            };
+        }
+        if self.refused.as_deref() == Some(invite)
+            && observed.refused_invite.as_deref() != Some(invite)
+        {
+            return Step::RecordRefusal;
+        }
+        if observed.refused_invite.as_deref() == Some(invite) {
+            return if observed.held && !observed.admitted {
+                Step::Leave
+            } else {
+                Step::Wait
+            };
+        }
+        if observed.admitted {
+            self.due = None;
+            self.backoff = AUTO_JOIN_FIRST_BACKOFF;
+            return if self.team_room_opened {
+                Step::Wait
+            } else {
+                Step::OpenTeamRoom
+            };
+        }
+        if self.due.is_some_and(|due| now < due) {
+            return Step::Wait;
+        }
+        if observed.held {
+            Step::Redeem
+        } else {
+            Step::Join
+        }
+    }
+
+    /// A join or redemption was attempted at `now`: the next one waits,
+    /// longer each time until the host admits the session.
+    pub fn attempted(&mut self, now: std::time::Instant) {
+        self.due = now.checked_add(self.backoff);
+        self.backoff = self.backoff.saturating_mul(2).min(AUTO_JOIN_MAX_BACKOFF);
+    }
+
+    /// The team room was opened, or cannot be (no team configured, or this
+    /// session is the team); either way it is not tried again.
+    pub fn team_room_opened(&mut self) {
+        self.team_room_opened = true;
+    }
+
+    /// The community's host refused the invitation `invite` (hex).
+    pub fn refused(&mut self, invite: &str) {
+        self.refused = Some(invite.to_string());
+    }
+
+    /// The person chose to join again, or to leave: whatever was pending
+    /// starts over.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// How a direct room is set up on this end.
+#[derive(Clone, Copy)]
+pub struct DirectRoomSetup<'a> {
+    pub room: crate::shell::state::RoomId,
+    /// The other member of the pair: the team, from a reporter's end.
+    pub other: &'a str,
+    pub label: &'a str,
+    /// This end creates and governs the room (the reporter's end).
+    pub governing: bool,
+    /// Admit the team's triage agent, operated by the team, when the room is
+    /// created here. Once only: a room that already exists is left as its
+    /// owner made it, so an agent the reporter removed stays removed.
+    pub triage: bool,
+}
+
+/// Whether the team has its triage agent join reporters' direct rooms, as
+/// the community room `community` says: its governance turns it on, and the
+/// agent is admitted there.
+pub fn team_triages_direct_rooms(
+    tree: &crate::shell::state::WorkspaceTree,
+    community: crate::shell::state::RoomId,
+) -> bool {
+    tree.desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == community)
+        .is_some_and(|workspace| {
+            workspace.triage_in_direct_rooms
+                && workspace
+                    .role_of_agent(crate::shell::workspace_settings::TRIAGE_AGENT)
+                    .is_some_and(|role| role != collab_types::role::Role::Denied)
+        })
+}
+
+/// Hold the direct room in `tree`, as [`DirectRoomSetup`] says: a new room
+/// is created, and on the governing end owned here, with the other member an
+/// Editor and, when asked, the team's triage agent admitted with the team as
+/// its operator.
+///
+/// # Errors
+///
+/// When this end governs the room and may not administer it.
+pub fn prepare_direct_room(
+    tree: &mut crate::shell::state::WorkspaceTree,
+    setup: &DirectRoomSetup<'_>,
+) -> Result<(), String> {
+    use crate::shell::state::{CapOverride, Subject, Verb};
+    let room = setup.room;
+    let held = tree
+        .desktop
+        .workspaces
+        .iter()
+        .any(|workspace| workspace.room == room);
+    let me = crate::shell::state::local_user_id_for_room(&room);
+    if !held {
+        let local = tree.append_empty_workspace(setup.label);
+        tree.set_room(local, room);
+        if setup.governing {
+            // Joining a derived room surrenders governance by default; this
+            // end creates it, so it governs it.
+            tree.room_authority.remove(&room);
+            if let Some(workspace) = tree.desktop.workspaces.iter_mut().find(|ws| ws.id == local) {
+                workspace.set_owner(me.clone());
+                if setup.triage {
+                    let room_id = room.to_string();
+                    let agent = crate::shell::workspace_settings::TRIAGE_AGENT;
+                    for cap in
+                        crate::shell::workspace_settings::triage_agent_grants(&room_id, agent)
+                            .into_iter()
+                            .chain(std::iter::once(
+                                crate::shell::workspace_settings::triage_operator_grant(
+                                    &room_id,
+                                    agent,
+                                    setup.other,
+                                ),
+                            ))
+                    {
+                        workspace
+                            .grant_as(&me, cap)
+                            .ok_or_else(|| format!("{me} may not administer room {room}"))?;
+                    }
+                }
+            }
+        }
+        // Otherwise the other end created and governs it: `set_room` left the
+        // authority unpinned, and only the other member of the derived pair
+        // may supply its first governance.
+    }
+    // Idempotent: the creating end makes sure the other member holds Editor,
+    // whether the room is new or was opened before.
+    if setup.governing && tree.governs_room(room) {
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.room == room)
+            .ok_or_else(|| format!("no workspace holds room {room}"))?;
+        if workspace.role_of(&setup.other.to_string()).is_none() {
+            workspace
+                .grant_as(
+                    &me,
+                    CapOverride::membership(
+                        Subject::person(setup.other.to_string()),
+                        room.to_string(),
+                        Verb::Write,
+                    ),
+                )
+                .ok_or_else(|| format!("{me} may not administer room {room}"))?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    /// With the team's choice on, a reporter's new direct room admits the
+    /// triage agent with the team as its operator; the team may launch it
+    /// there; the reporter removes it, and opening the room again does not
+    /// bring it back.
+    #[test]
+    fn a_reporters_direct_room_admits_the_team_triage_agent_once() {
+        use crate::shell::state::{RoomId, WorkspaceTree};
+        use crate::shell::workspace_settings::{TRIAGE_AGENT, remove_agent};
+        const TEAM: &str = "team-person";
+        let room = RoomId::parse("7a1a9e00-0000-4c0d-9a11-0000000000d1").expect("room id");
+        let setup = super::DirectRoomSetup {
+            room,
+            other: TEAM,
+            label: "Tilo team",
+            governing: true,
+            triage: true,
+        };
+        let mut tree = WorkspaceTree::default();
+        super::prepare_direct_room(&mut tree, &setup).expect("the room is created");
+        let me = crate::shell::state::local_user_id_for_room(&room);
+        let now = tilo_clock::unix_now();
+        {
+            let ws = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|ws| ws.room == room)
+                .expect("the room is held");
+            assert_eq!(
+                ws.role_of_agent(TRIAGE_AGENT),
+                Some(collab_types::role::Role::Commenter)
+            );
+            assert!(ws.may_operate_agent_at(&TEAM.to_string(), TRIAGE_AGENT, now));
+            assert!(
+                !ws.may_operate_agent_at(&TEAM.to_string(), "recorder", now),
+                "the operator grant names exactly the triage agent"
+            );
+            assert!(
+                !ws.may_administer(&TEAM.to_string()),
+                "the team operates its agent without governing the room"
+            );
+        }
+
+        let ws = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.room == room)
+            .expect("the room is held");
+        let removed = remove_agent(ws, &me, TRIAGE_AGENT);
+        assert_eq!(
+            removed.revoked.len(),
+            3,
+            "membership, Chat and the operator grant"
+        );
+        assert!(!ws.may_operate_agent_at(&TEAM.to_string(), TRIAGE_AGENT, now));
+
+        super::prepare_direct_room(&mut tree, &setup).expect("opened again");
+        let ws = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|ws| ws.room == room)
+            .expect("the room is held");
+        assert_eq!(ws.role_of_agent(TRIAGE_AGENT), None, "a removal sticks");
+        assert!(
+            ws.role_of(&TEAM.to_string()).is_some(),
+            "the team is still a member"
+        );
+    }
+
+    /// The team is an Editor of a reporter's direct room, not its
+    /// administrator, yet the action broker admits its session launching the
+    /// triage agent there because the room named it the agent's operator; no
+    /// other agent, and not after the reporter removed it.
+    #[test]
+    fn the_team_launches_its_triage_agent_in_a_reporters_room_as_its_operator() {
+        use crate::shell::state::{RoomId, WorkspaceTree};
+        use crate::shell::workspace_settings::{TRIAGE_AGENT, remove_agent};
+        use tilo_action_broker::collab_broker_capnp::{
+            admit_agent_delegation_for_test, principal_id_for_root,
+        };
+        let team_root = [45; 32];
+        let team = principal_id_for_root(team_root);
+        let room = RoomId::parse("7a1a9e00-0000-4c0d-9a11-0000000000d2").expect("id");
+        let cluster = room.to_string();
+        let mut tree = WorkspaceTree::default();
+        super::prepare_direct_room(
+            &mut tree,
+            &super::DirectRoomSetup {
+                room,
+                other: &team,
+                label: "Tilo team",
+                governing: true,
+                triage: true,
+            },
+        )
+        .expect("the reporter's end creates the room");
+        assert!(
+            admit_agent_delegation_for_test(&tree.desktop, &cluster, team_root, "scribe")
+                .expect("the team is a member")
+                .is_err(),
+            "only the agent it operates"
+        );
+        admit_agent_delegation_for_test(&tree.desktop, &cluster, team_root, TRIAGE_AGENT)
+            .expect("the team is a member")
+            .expect("the operator launches the triage agent");
+
+        let reporter = crate::shell::state::local_user_id_for_room(&room);
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.room == room)
+            .expect("the room");
+        remove_agent(workspace, &reporter, TRIAGE_AGENT);
+        assert!(
+            admit_agent_delegation_for_test(&tree.desktop, &cluster, team_root, TRIAGE_AGENT)
+                .expect("the team stays a member")
+                .is_err(),
+            "a removed agent cannot be launched"
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -237,6 +647,35 @@ mod tests {
     }
 
     #[test]
+    fn the_override_wins_and_another_prefix_is_found_through_xdg_data_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            resolve_config_path(Some("/dev/community.toml".into()), None),
+            PathBuf::from("/dev/community.toml")
+        );
+        if Path::new(DEFAULT_COMMUNITY_CONFIG).exists() {
+            return; // this machine ships one, which wins over any prefix
+        }
+        let shipped = dir.path().join("share/tilo/community.toml");
+        std::fs::create_dir_all(shipped.parent().unwrap()).unwrap();
+        std::fs::write(&shipped, "").unwrap();
+        let dirs = std::env::join_paths([
+            PathBuf::from("relative/share"),
+            dir.path().join("empty"),
+            dir.path().join("share"),
+        ])
+        .unwrap();
+        assert_eq!(
+            resolve_config_path(Some("".into()), Some(dirs.as_os_str())),
+            shipped
+        );
+        assert_eq!(
+            resolve_config_path(None, None),
+            PathBuf::from(DEFAULT_COMMUNITY_CONFIG)
+        );
+    }
+
+    #[test]
     fn an_invalid_team_key_or_an_unknown_field_is_an_error_not_a_guess() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("community.toml");
@@ -250,5 +689,101 @@ mod tests {
             load_from(&path),
             Err(CommunityConfigError::Parse { .. })
         ));
+    }
+
+    fn observed(held: bool, admitted: bool) -> Observed {
+        Observed {
+            identity: true,
+            invite: Some("aa".into()),
+            held,
+            admitted,
+            ..Observed::default()
+        }
+    }
+
+    #[test]
+    fn a_fresh_session_joins_retries_with_back_off_then_opens_the_team_room_once() {
+        let start = std::time::Instant::now();
+        let mut auto = AutoJoin::default();
+        assert_eq!(auto.next(start, &observed(false, false)), Step::Join);
+        auto.attempted(start);
+        assert_eq!(auto.next(start, &observed(true, false)), Step::Wait);
+        let first = start + AUTO_JOIN_FIRST_BACKOFF;
+        assert_eq!(auto.next(first, &observed(true, false)), Step::Redeem);
+        auto.attempted(first);
+        assert_eq!(
+            auto.next(first + AUTO_JOIN_FIRST_BACKOFF, &observed(true, false)),
+            Step::Wait,
+            "the wait doubles while the host is out of reach"
+        );
+        let mut later = first;
+        for _ in 0..20 {
+            later += AUTO_JOIN_MAX_BACKOFF;
+            assert_eq!(auto.next(later, &observed(true, false)), Step::Redeem);
+            auto.attempted(later);
+        }
+        assert_eq!(
+            auto.next(later + AUTO_JOIN_MAX_BACKOFF / 2, &observed(true, false)),
+            Step::Wait,
+            "and stops growing at the cap"
+        );
+        assert_eq!(auto.next(later, &observed(true, true)), Step::OpenTeamRoom);
+        auto.team_room_opened();
+        assert_eq!(auto.next(later, &observed(true, true)), Step::Wait);
+    }
+
+    #[test]
+    fn nothing_happens_without_an_identity_or_an_invitation() {
+        let now = std::time::Instant::now();
+        let mut auto = AutoJoin::default();
+        let mut no_identity = observed(false, false);
+        no_identity.identity = false;
+        assert_eq!(auto.next(now, &no_identity), Step::Wait);
+        let mut no_invite = observed(false, false);
+        no_invite.invite = None;
+        assert_eq!(auto.next(now, &no_invite), Step::Wait);
+    }
+
+    #[test]
+    fn a_person_who_left_is_never_joined_again() {
+        let mut auto = AutoJoin::default();
+        let mut left = observed(false, false);
+        left.membership = settings_store::community::Membership::Left;
+        let mut now = std::time::Instant::now();
+        for _ in 0..100 {
+            assert_eq!(auto.next(now, &left), Step::Wait);
+            now += AUTO_JOIN_MAX_BACKOFF;
+        }
+        left.held = true;
+        left.admitted = true;
+        assert_eq!(
+            auto.next(now, &left),
+            Step::Leave,
+            "a device that learns the choice leaves the room"
+        );
+    }
+
+    #[test]
+    fn a_refusal_is_final_until_the_invitation_changes() {
+        let mut now = std::time::Instant::now();
+        let mut auto = AutoJoin::default();
+        assert_eq!(auto.next(now, &observed(false, false)), Step::Join);
+        auto.attempted(now);
+        auto.refused("aa");
+        assert_eq!(auto.next(now, &observed(true, false)), Step::RecordRefusal);
+        let mut refused = observed(true, false);
+        refused.refused_invite = Some("aa".into());
+        assert_eq!(auto.next(now, &refused), Step::Leave);
+        refused.held = false;
+        for _ in 0..100 {
+            now += AUTO_JOIN_MAX_BACKOFF;
+            assert_eq!(auto.next(now, &refused), Step::Wait, "never asked again");
+        }
+        refused.invite = Some("bb".into());
+        assert_eq!(
+            auto.next(now, &refused),
+            Step::Join,
+            "a different invitation is asked once more"
+        );
     }
 }

@@ -310,6 +310,10 @@ async fn main() -> Result<()> {
                         | Inbound::RemoteAction { .. }
                         | Inbound::Replayed { .. },
                     ) => {}
+                    Some(Inbound::Refused { refusal, reason }) => {
+                        eprintln!("The relay refused this workspace ({refusal:?}): {reason}");
+                        connected.store(false, Ordering::Relaxed);
+                    }
                     Some(inbound @ (Inbound::Delta { .. } | Inbound::Presence { .. })) => {
                         received.fetch_add(1, Ordering::Relaxed);
                         let (origin, bytes) = match inbound {
@@ -317,7 +321,8 @@ async fn main() -> Result<()> {
                             Inbound::Presence { author, payload } => (tilo_peer_state::TransportOrigin::UntrustedPresence(author), payload),
                             Inbound::Ready { .. }
                             | Inbound::RemoteAction { .. }
-                            | Inbound::Replayed { .. } => continue,
+                            | Inbound::Replayed { .. }
+                            | Inbound::Refused { .. } => continue,
                         };
                         let result = postcard::from_bytes(&bytes).map_err(anyhow::Error::from)
                             .and_then(|message| replica::handle(&mut application, &native.key, origin, message))

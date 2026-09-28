@@ -3376,7 +3376,7 @@ impl App {
             self.needs_sync = true;
         }
         if self.needs_sync {
-            self.root_widget.sync(&mut self.state.doc, &self.state.root);
+            self.sync_root();
             self.invalidate_widget_resource_cache();
             self.needs_sync = false;
         }

@@ -19,6 +19,7 @@ use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 use agent_provider_config::assign::{Layer, Resolution};
+use agent_provider_config::tasks::PrivacyClass;
 use agent_provider_config::{EndpointLocation, ModelDescriptor, ModelOptions, ProviderProtocol};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -221,15 +222,18 @@ pub enum Request {
         at_unix_ms: Option<u64>,
     },
     /// One bounded, single-shot text transformation for tilo-agent
-    /// (`agent.transform`): a system instruction and one input, answered
-    /// with the model's text. No tools, no conversation, no provider
-    /// envelope: the gateway resolves the task, builds the provider request
-    /// itself, caps its size, output and deadline, and returns only the
-    /// answer text.
+    /// (`agent.transform`, `feedback.triage`): a system instruction and one
+    /// input, answered with the model's text. No tools, no conversation, no
+    /// provider envelope: the gateway resolves the task, builds the provider
+    /// request itself, caps its size, output and deadline, and returns only
+    /// the answer text. `content` says how private the input is; it can
+    /// raise the task's class, never lower it.
     Transform {
         task: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,
+        #[serde(default)]
+        content: PrivacyClass,
         instructions: String,
         input: String,
         max_output_tokens: u32,
@@ -723,10 +727,38 @@ pub fn transform(
     max_output_tokens: u32,
     timeout: Duration,
 ) -> Result<String, ClientError> {
+    transform_for(
+        task,
+        agent,
+        PrivacyClass::Open,
+        instructions,
+        input,
+        max_output_tokens,
+        timeout,
+    )
+}
+
+/// [`transform`] over `content` at least as private as the given class: a
+/// sensitive input is served on this device unless the person allowed
+/// otherwise for the task.
+///
+/// # Errors
+///
+/// As [`transform`].
+pub fn transform_for(
+    task: &str,
+    agent: Option<&str>,
+    content: PrivacyClass,
+    instructions: &str,
+    input: &str,
+    max_output_tokens: u32,
+    timeout: Duration,
+) -> Result<String, ClientError> {
     let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
     let response = request(Request::Transform {
         task: task.to_string(),
         agent: agent.map(str::to_string),
+        content,
         instructions: instructions.to_string(),
         input: input.to_string(),
         max_output_tokens,

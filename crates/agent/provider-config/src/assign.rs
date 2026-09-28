@@ -271,6 +271,9 @@ pub enum Layer {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resolution {
     pub task: &'static TaskSpec,
+    /// The class this resolution honoured: the task's own, or stricter when
+    /// the request said its content is more private ([`resolve_for`]).
+    pub privacy: PrivacyClass,
     pub profile: ProviderProfile,
     pub model: ModelDescriptor,
     pub options: ModelOptions,
@@ -369,11 +372,30 @@ pub fn resolve(
     task_id: &str,
     agent: Option<&str>,
 ) -> Result<Resolution, ResolveError> {
+    resolve_for(inputs, consumer, task_id, agent, PrivacyClass::Open)
+}
+
+/// [`resolve`] for a request whose content is at least as private as
+/// `content`. The request can raise the task's class, never lower it: a
+/// triage of public reports stays [`PrivacyClass::Open`], the same task over
+/// a private conversation resolves as [`PrivacyClass::Sensitive`] and so on
+/// this device unless the person allowed otherwise.
+///
+/// # Errors
+///
+/// As [`resolve`].
+pub fn resolve_for(
+    inputs: &Inputs<'_>,
+    consumer: &Consumer,
+    task_id: &str,
+    agent: Option<&str>,
+    content: PrivacyClass,
+) -> Result<Resolution, ResolveError> {
     let task = tasks::task(task_id).ok_or(ResolveError::UnknownTask)?;
     if !task.admits(consumer) {
         return Err(ResolveError::NotConsumer);
     }
-    resolve_task(inputs, task, agent)
+    resolve_task_for(inputs, task, agent, content)
 }
 
 /// [`resolve`] without the consumer check, for Settings to show what each
@@ -387,22 +409,37 @@ pub fn resolve_task(
     task: &'static TaskSpec,
     agent: Option<&str>,
 ) -> Result<Resolution, ResolveError> {
+    resolve_task_for(inputs, task, agent, PrivacyClass::Open)
+}
+
+/// [`resolve_task`] for content at least as private as `content`.
+///
+/// # Errors
+///
+/// Returns [`ResolveError`] when no layer can serve the task.
+pub fn resolve_task_for(
+    inputs: &Inputs<'_>,
+    task: &'static TaskSpec,
+    agent: Option<&str>,
+    content: PrivacyClass,
+) -> Result<Resolution, ResolveError> {
+    let privacy = task.privacy.max(content);
     if task.per_agent
         && let Some(assignment) = agent.and_then(|agent| inputs.assignments.agent(agent, task.id))
     {
-        return honour(inputs.config, task, assignment, Layer::Agent);
+        return honour(inputs.config, task, privacy, assignment, Layer::Agent);
     }
     if let Some(assignment) = inputs.assignments.tasks.get(task.id) {
-        return honour(inputs.config, task, assignment, Layer::Task);
+        return honour(inputs.config, task, privacy, assignment, Layer::Task);
     }
     let (assignment, layer) = match inputs.assignments.preset {
         Some(preset) => (
-            preset_assignment(inputs, preset, task)?,
+            preset_for(inputs, preset, task, privacy)?,
             Layer::Preset(preset),
         ),
-        None => (recommended_assignment(inputs, task)?, Layer::Recommended),
+        None => (recommended_for(inputs, task, privacy)?, Layer::Recommended),
     };
-    honour(inputs.config, task, &assignment, layer)
+    honour(inputs.config, task, privacy, &assignment, layer)
 }
 
 /// Check an explicit assignment before Settings writes it, returning the
@@ -417,12 +454,13 @@ pub fn check_assignment(
     task: &'static TaskSpec,
     assignment: &Assignment,
 ) -> Result<Resolution, ResolveError> {
-    honour(config, task, assignment, Layer::Task)
+    honour(config, task, task.privacy, assignment, Layer::Task)
 }
 
 fn honour(
     config: &ProviderConfig,
     task: &'static TaskSpec,
+    privacy: PrivacyClass,
     assignment: &Assignment,
     layer: Layer,
 ) -> Result<Resolution, ResolveError> {
@@ -440,12 +478,10 @@ fn honour(
     } else {
         profile.location
     };
-    if !task.privacy.permits(location, assignment.allow_off_device) {
-        return Err(ResolveError::OffDevice {
-            privacy: task.privacy,
-        });
+    if !privacy.permits(location, assignment.allow_off_device) {
+        return Err(ResolveError::OffDevice { privacy });
     }
-    if task.privacy != PrivacyClass::Open
+    if privacy != PrivacyClass::Open
         && location == EndpointLocation::ThisDevice
         && !model.revision.as_deref().is_some_and(is_pinned_revision)
     {
@@ -459,6 +495,7 @@ fn honour(
         .map_err(|error| ResolveError::Options { error })?;
     Ok(Resolution {
         task,
+        privacy,
         profile: profile.clone(),
         model: model.clone(),
         options: assignment.options,
@@ -516,7 +553,11 @@ fn target<'a>(
 }
 
 /// The best running local model for `task`, or why there is none.
-fn local_choice(inputs: &Inputs<'_>, task: &TaskSpec) -> Result<Assignment, ResolveError> {
+fn local_choice(
+    inputs: &Inputs<'_>,
+    task: &TaskSpec,
+    privacy: PrivacyClass,
+) -> Result<Assignment, ResolveError> {
     let running = inputs
         .config
         .local_profile()
@@ -543,9 +584,7 @@ fn local_choice(inputs: &Inputs<'_>, task: &TaskSpec) -> Result<Assignment, Reso
     {
         return Err(ResolveError::RestartRequired { vendor });
     }
-    Err(ResolveError::NoModel {
-        privacy: task.privacy,
-    })
+    Err(ResolveError::NoModel { privacy })
 }
 
 /// The person's best provider model for `task`: the default provider first,
@@ -597,14 +636,23 @@ pub fn preset_assignment(
     preset: Preset,
     task: &TaskSpec,
 ) -> Result<Assignment, ResolveError> {
-    if task.privacy != PrivacyClass::Open || preset == Preset::Private {
-        return local_choice(inputs, task);
+    preset_for(inputs, preset, task, task.privacy)
+}
+
+fn preset_for(
+    inputs: &Inputs<'_>,
+    preset: Preset,
+    task: &TaskSpec,
+    privacy: PrivacyClass,
+) -> Result<Assignment, ResolveError> {
+    if privacy != PrivacyClass::Open || preset == Preset::Private {
+        return local_choice(inputs, task, privacy);
     }
     match preset {
-        Preset::Private => local_choice(inputs, task),
+        Preset::Private => local_choice(inputs, task, privacy),
         Preset::Balanced => {
             if strong_accelerator(inputs.hardware)
-                && let Ok(local) = local_choice(inputs, task)
+                && let Ok(local) = local_choice(inputs, task, privacy)
             {
                 return Ok(local);
             }
@@ -613,14 +661,14 @@ pub fn preset_assignment(
             if let Some(vendor) = restart_pending(inputs.hardware) {
                 return Err(ResolveError::RestartRequired { vendor });
             }
-            provider_choice(inputs, task).map_or_else(|| local_choice(inputs, task), Ok)
+            provider_choice(inputs, task).map_or_else(|| local_choice(inputs, task, privacy), Ok)
         }
         Preset::BestQuality => match provider_choice(inputs, task) {
             Some(mut assignment) => {
                 assignment.options.reasoning_effort = highest_effort(inputs.config, &assignment);
                 Ok(assignment)
             }
-            None => local_choice(inputs, task),
+            None => local_choice(inputs, task, privacy),
         },
     }
 }
@@ -648,12 +696,20 @@ pub fn recommended_assignment(
     inputs: &Inputs<'_>,
     task: &TaskSpec,
 ) -> Result<Assignment, ResolveError> {
-    if task.privacy == PrivacyClass::Open
+    recommended_for(inputs, task, task.privacy)
+}
+
+fn recommended_for(
+    inputs: &Inputs<'_>,
+    task: &TaskSpec,
+    privacy: PrivacyClass,
+) -> Result<Assignment, ResolveError> {
+    if privacy == PrivacyClass::Open
         && let Some(assignment) = provider_choice(inputs, task)
     {
         return Ok(assignment);
     }
-    local_choice(inputs, task)
+    local_choice(inputs, task, privacy)
 }
 
 /// One task's outcome under a preset, for the preset picker.
@@ -672,7 +728,13 @@ pub fn preset_plan(inputs: &Inputs<'_>, preset: Preset) -> Vec<PresetOutcome> {
         .map(|task| PresetOutcome {
             task,
             outcome: preset_assignment(inputs, preset, task).and_then(|assignment| {
-                honour(inputs.config, task, &assignment, Layer::Preset(preset))
+                honour(
+                    inputs.config,
+                    task,
+                    task.privacy,
+                    &assignment,
+                    Layer::Preset(preset),
+                )
             }),
         })
         .collect()
@@ -934,6 +996,84 @@ mod tests {
         )
         .unwrap();
         assert!(best.profile.is_device_local());
+    }
+
+    #[test]
+    fn feedback_triage_resolves_by_the_privacy_of_the_report_it_reads() {
+        use crate::tasks::FEEDBACK_TRIAGE;
+        let config = config();
+        let agent = Consumer::app(tasks::AGENT_APP);
+        let mut assignments = ModelAssignments::default();
+        let triage = |assignments: &ModelAssignments, content| {
+            resolve_for(
+                &inputs(&config, assignments, None),
+                &agent,
+                FEEDBACK_TRIAGE.id,
+                Some("triage"),
+                content,
+            )
+        };
+
+        // A public #feedback report is open content: the default provider.
+        let public = triage(&assignments, PrivacyClass::Open).unwrap();
+        assert_eq!(
+            (public.profile.id.as_str(), public.privacy),
+            ("anthropic", PrivacyClass::Open)
+        );
+        // A report from a direct room raises the class: this device.
+        let private = triage(&assignments, PrivacyClass::Sensitive).unwrap();
+        assert!(private.profile.is_device_local());
+        assert_eq!(private.privacy, PrivacyClass::Sensitive);
+
+        // A hosted assignment serves the public reports and refuses the
+        // private ones until the person allows it.
+        let mut hosted = Assignment::profile("anthropic", "claude-opus-5");
+        assignments.set_agent("triage", FEEDBACK_TRIAGE.id, hosted.clone());
+        assert_eq!(
+            triage(&assignments, PrivacyClass::Open).unwrap().layer,
+            Layer::Agent
+        );
+        assert_eq!(
+            triage(&assignments, PrivacyClass::Sensitive),
+            Err(ResolveError::OffDevice {
+                privacy: PrivacyClass::Sensitive
+            })
+        );
+        hosted.allow_off_device = true;
+        assignments.set_agent("triage", FEEDBACK_TRIAGE.id, hosted);
+        assert_eq!(
+            triage(&assignments, PrivacyClass::Sensitive)
+                .unwrap()
+                .profile
+                .id,
+            "anthropic"
+        );
+
+        // A request can raise a class but never lower one: the review task
+        // stays sensitive whatever its caller claims.
+        assert_eq!(
+            resolve_for(
+                &inputs(&config, &ModelAssignments::default(), None),
+                &Consumer::Session,
+                FEEDBACK_REVIEW.id,
+                None,
+                PrivacyClass::Open,
+            )
+            .unwrap()
+            .privacy,
+            PrivacyClass::Sensitive
+        );
+        // Only the agent consumes it.
+        assert_eq!(
+            resolve_for(
+                &inputs(&config, &assignments, None),
+                &Consumer::Session,
+                FEEDBACK_TRIAGE.id,
+                None,
+                PrivacyClass::Open,
+            ),
+            Err(ResolveError::NotConsumer)
+        );
     }
 
     #[test]

@@ -28,6 +28,10 @@
 //!   access token (or derives `iCloud` session headers), seals any rotated
 //!   grant back into the vault and publishes only the short-lived part.
 //!
+//! - **The feedback triage agent** files an issue an Editor approved with
+//!   [`Custodian::file_forge_issue`]: the forge token of a `forgejo` account
+//!   ([`forge`]) is used here and never handed out.
+//!
 //! A grant the provider no longer accepts (a revoked refresh token, an
 //! `iCloud` session that needs the two-factor step again) moves the account
 //! to [`accounts::AccountSyncHealth::NeedsAuthentication`], which Settings
@@ -50,10 +54,14 @@ mod clients;
 #[cfg(feature = "custody")]
 mod custodian;
 #[cfg(feature = "custody")]
+pub mod forge;
+#[cfg(feature = "custody")]
 pub mod icloud;
 #[cfg(feature = "custody")]
 pub mod nextcloud;
 pub mod providers;
+#[cfg(feature = "custody")]
+pub mod service;
 #[cfg(feature = "custody")]
 pub mod storage;
 

@@ -6,6 +6,18 @@
 use super::*;
 use crate::collaboration::RouteSpec;
 
+/// How far an action's document changes got before its terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TerminalPublication {
+    /// Every changed owned record is queued; the terminal may follow.
+    Queued,
+    /// A changed record's route is still being joined. The terminal waits
+    /// for it rather than preceding the change it reports.
+    AwaitingRoute,
+    /// Publication failed; the transport is retired as uncertain.
+    Failed,
+}
+
 /// The user-visible status a transport outcome implies for a route: `Some`
 /// replaces the current one (clearing it on success), `None` leaves it (a
 /// transient refusal is retried silently).
@@ -257,12 +269,14 @@ impl App {
 
     /// Enqueue all changed live owned records. Success is queue admission, not
     /// durability: the SDK still awaits each document RPC before a terminal.
-    fn queue_owned_documents(&mut self) -> Result<(), &'static str> {
+    /// `Ok(false)` leaves a change whose route is still being joined for a
+    /// later publication.
+    fn queue_owned_documents(&mut self) -> Result<bool, &'static str> {
         self.refresh_document_routes();
         self.queue_owned_documents_after_refresh()
     }
 
-    fn queue_owned_documents_after_refresh(&mut self) -> Result<(), &'static str> {
+    fn queue_owned_documents_after_refresh(&mut self) -> Result<bool, &'static str> {
         fn collect(root: &dyn Widget, owners: &mut Vec<crate::history_mode::HistoryOwner>) {
             let joined = root.joined_records().map(|joined| joined.owners());
             for owner in root
@@ -285,7 +299,7 @@ impl App {
         self.root_widget
             .visit_framework_history(&mut |_, live| collect(live, &mut current));
         if current.is_empty() {
-            return Ok(());
+            return Ok(true);
         }
         if self.document_routes.witness.is_none() {
             return Err("the admitted document route is unavailable");
@@ -344,11 +358,21 @@ impl App {
             };
             sends.push((entry.route.clone(), request, heads));
         }
+        let mut queued = true;
         for (route, request, heads) in sends {
+            let publishable = self
+                .collaboration
+                .manager
+                .document_route_publishable(&route);
             let result = self.send_owned_document(route.clone(), request);
             let failure = outbound_failure(&result);
             if result.is_err() {
-                blocked.get_or_insert("the document command could not enter the transport queue");
+                if publishable {
+                    blocked
+                        .get_or_insert("the document command could not enter the transport queue");
+                } else {
+                    queued = false;
+                }
             }
             let Some(entry) = self
                 .document_routes
@@ -371,30 +395,42 @@ impl App {
                 self.layout.layout_dirty = true;
             }
         }
-        blocked.map_or(Ok(()), Err)
+        blocked.map_or(Ok(queued), Err)
     }
 
     /// A local mutation may already exist. Suppress its terminal and retire the
     /// transport; broker disconnect/recovery retains admitted uncertainty.
-    pub(super) fn queue_documents_before_terminal(&mut self) -> bool {
+    pub(super) fn queue_documents_before_terminal(&mut self) -> TerminalPublication {
         if self.action_publication_failure.is_some() {
-            return false;
+            return TerminalPublication::Failed;
         }
         match self.queue_owned_documents() {
-            Ok(()) => true,
+            Ok(true) => TerminalPublication::Queued,
+            Ok(false) => TerminalPublication::AwaitingRoute,
             Err(reason) => {
-                self.action_publication_failure = Some(format!(
-                    "Document publication blocked: {reason}; action outcome unknown. Reconnect and reconcile before retrying."
-                ));
-                self.restore_primary_publication_obligations();
-                if let Some(room) = self.persistence.room_index.as_mut() {
-                    room.advance_outbound(Vec::new());
-                }
-                self.collaboration.manager.stop_after_publication_failure();
-                self.layout.layout_dirty = true;
-                false
+                self.fail_terminal_publication(reason);
+                TerminalPublication::Failed
             }
         }
+    }
+
+    /// A held terminal's route was never joined: retire the transport as for
+    /// any other refused publication.
+    pub(super) fn fail_awaited_publication(&mut self) {
+        self.fail_terminal_publication("a changed document's route was never joined");
+    }
+
+    fn fail_terminal_publication(&mut self, reason: &str) {
+        tracing::warn!(%reason, "collab: an action's document changes could not be queued");
+        self.action_publication_failure = Some(format!(
+            "Document publication blocked: {reason}; action outcome unknown. Reconnect and reconcile before retrying."
+        ));
+        self.restore_primary_publication_obligations();
+        if let Some(room) = self.persistence.room_index.as_mut() {
+            room.advance_outbound(Vec::new());
+        }
+        self.collaboration.manager.stop_after_publication_failure();
+        self.layout.layout_dirty = true;
     }
     #[cfg(test)]
     pub(super) fn drain_document_routes(&mut self) {
@@ -443,11 +479,17 @@ impl App {
                             }
                         }
                     }
-                    Ok(None) => break,
+                    Ok(None) => {
+                        tracing::debug!(
+                            "collab: a remote change waits for this record's own edits to settle"
+                        );
+                        break;
+                    }
                     Err(error) => {
                         let reason = format!(
                             "Remote document could not be applied: {error}. Synchronization needs recovery."
                         );
+                        tracing::warn!(%reason, "collab: a remote change was not applied");
                         if error.is_invalid_mutation() {
                             entry.pending.quarantine_invalid_front(reason);
                             continue;
@@ -464,11 +506,19 @@ impl App {
                     self.document_routes.primary.pop_applied();
                     changed |= applied;
                 }
-                Ok(None) => break,
+                Ok(None) => {
+                    tracing::debug!(
+                        pending_ops =
+                            automerge::transaction::Transactable::pending_ops(&self.state.doc),
+                        "collab: a remote change waits for this copy's own edits to settle"
+                    );
+                    break;
+                }
                 Err(error) => {
                     let reason = format!(
                         "Remote document could not be applied: {error}. Synchronization needs recovery."
                     );
+                    tracing::warn!(%reason, "collab: a remote change was not applied");
                     if error.is_invalid_mutation() {
                         self.document_routes
                             .primary
@@ -586,6 +636,10 @@ impl App {
             }
         }
         let Some(witness) = self.document_routes.witness.as_ref() else {
+            tracing::debug!(
+                seq = envelope.seq,
+                "collab: a document change arrived before this app chose its document"
+            );
             return;
         };
         // Signature/role/replay verification remains the SDK's responsibility.
@@ -623,6 +677,10 @@ impl App {
         } else if let Some((route, payload)) = primary {
             (None, route, payload)
         } else {
+            tracing::debug!(
+                seq = envelope.seq,
+                "collab: a document change for a route this app does not hold"
+            );
             return;
         };
         // Brokers enforce the class rule; the receiver holds it too, and

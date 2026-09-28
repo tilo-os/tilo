@@ -127,6 +127,8 @@ pub(super) struct ActionRuntime {
     /// Background operations admitted by the retained widget tree.
     pub(super) directed_invocations:
         std::collections::HashMap<tilo_actions::InvocationId, DirectedInvocation>,
+    /// Terminals waiting for a joining route to carry their changes.
+    pub(super) held_terminals: Vec<crate::app::HeldTerminal>,
     /// Operations started from this window rather than by the broker.
     pub(super) local_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
@@ -189,6 +191,7 @@ impl ActionRuntime {
             action_surface_publication_attempts: 0,
             action_directory_cursors: std::collections::HashMap::new(),
             directed_invocations: std::collections::HashMap::new(),
+            held_terminals: Vec::new(),
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
             workspace_request_sources: std::collections::HashMap::new(),

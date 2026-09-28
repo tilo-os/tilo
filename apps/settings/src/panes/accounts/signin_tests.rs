@@ -595,3 +595,74 @@ fn an_azure_openai_account_is_listed_signs_in_again_and_its_removal_signs_the_pr
         "removing the account in Settings › Accounts signs the provider out"
     );
 }
+
+#[test]
+fn an_open_ai_hub_and_accounts_pane_follow_an_account_removed_elsewhere() {
+    let (_dir, root) = scratch_root();
+    let id = revoked_azure_account(&root);
+    let mut provider = agent_provider_config::ProviderProfile::hosted(
+        agent_provider_config::ProviderProtocol::AzureOpenAi,
+    );
+    provider.credential = Some(agent_provider_config::Credential::Account {
+        account_id: id.to_string(),
+    });
+    let mut hub = crate::panes::ai::AiPane::for_state(crate::panes::ai::demo_state(false))
+        .with_account_root(root.clone());
+    let mut accounts = AccountsPane::in_root(root.clone());
+    let mut doc = AutoCommit::new();
+    let path = automerge::ROOT;
+    assert_eq!(
+        hub.account_sign_in_for_test(&provider),
+        crate::ai_settings::AccountSignIn::SignedIn {
+            account_id: id.to_string()
+        }
+    );
+    assert_eq!(
+        accounts
+            .directory()
+            .views_of(AccountKind::AzureOpenAi)
+            .len(),
+        1
+    );
+
+    accounts.store_watch.as_mut().unwrap().check_now();
+    assert!(!accounts.update(&mut doc, &path), "nothing changed yet");
+
+    // Removed somewhere else, as a resource action or another window does.
+    AccountsPane::remove_account(
+        &root,
+        &root.custodian(),
+        account_custody::providers::AZURE_OPENAI_TYPE,
+        id.as_str(),
+    )
+    .unwrap();
+    assert!(
+        hub.next_wake_deadline().is_some(),
+        "the hub wakes to look at the store without input"
+    );
+    hub.check_account_store_now();
+    accounts.store_watch.as_mut().unwrap().check_now();
+    assert!(hub.update(&mut doc, &path), "the hub notices the removal");
+    assert_eq!(
+        hub.account_sign_in_for_test(&provider),
+        crate::ai_settings::AccountSignIn::SignedOut,
+        "the open hub shows the provider signed out without a reload"
+    );
+    assert!(hub.take_structure_dirty(), "and redraws");
+    assert!(
+        accounts.update(&mut doc, &path),
+        "the Accounts pane notices too"
+    );
+    assert!(
+        accounts
+            .directory()
+            .views_of(AccountKind::AzureOpenAi)
+            .is_empty()
+    );
+
+    accounts.store_watch.as_mut().unwrap().check_now();
+    assert!(
+        !accounts.update(&mut doc, &path),
+        "a change is reported once"
+    );
+}

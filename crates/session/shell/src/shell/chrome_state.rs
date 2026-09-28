@@ -1345,6 +1345,38 @@ impl ChromeState {
         })
     }
 
+    /// Allow the active room's members' session recorders if it forbids
+    /// them, or forbid them if it allows them, as its administrator. `false`
+    /// when this person may not change it here.
+    pub fn toggle_recording_delegates(&mut self) -> bool {
+        let actor = self.active_local_user();
+        let mut tree = self.tree_mut();
+        let Some((workspace_id, forbidden)) = tree
+            .desktop
+            .active_workspace()
+            .map(|ws| (ws.id, ws.recording_delegates_forbidden))
+        else {
+            return false;
+        };
+        tree.set_recording_delegates_allowed(workspace_id, &actor, forbidden)
+    }
+
+    /// Have the team's triage agent join reporters' direct rooms if it does
+    /// not, or stop if it does, as the community room's administrator.
+    /// `false` when this person may not change it here.
+    pub fn toggle_triage_in_direct_rooms(&mut self) -> bool {
+        let actor = self.active_local_user();
+        let mut tree = self.tree_mut();
+        let Some((workspace_id, on)) = tree
+            .desktop
+            .active_workspace()
+            .map(|ws| (ws.id, ws.triage_in_direct_rooms))
+        else {
+            return false;
+        };
+        tree.set_triage_in_direct_rooms(workspace_id, &actor, !on)
+    }
+
     /// Empty buffers are a cancel — never overwrite the name with "". A
     /// guest can never turn an inline field into an apparent local rename.
     pub fn commit_workspace_name(&mut self) {
@@ -3670,5 +3702,57 @@ mod active_tab_tests {
 
         broker_tree_epoch_invalidates_chrome_exactly_once();
         active_exposure_snapshot_is_sorted_deduplicated_and_edge_triggered();
+    }
+}
+
+#[cfg(test)]
+mod recording_delegates_tests {
+    use super::*;
+
+    /// Workspace Settings' switch: the room's administrator turns members'
+    /// recording off and on again, and the room document says so each time.
+    #[test]
+    fn an_administrator_toggles_members_recording() {
+        let mut workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Shared");
+        workspace.set_owner("shell-fixture".to_string());
+        let room = workspace.room;
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.active = workspace.id;
+        tree.desktop.workspaces.push(workspace);
+        let chrome = ChromeState::new_with_fixture_handle(
+            tree.shared(),
+            super::super::hosted_inputs::HostedTileInputs::default(),
+        );
+        let mut state = chrome.borrow_mut();
+        let projected = |state: &ChromeState| {
+            let tree = state.tree();
+            (
+                tree.desktop.workspaces[0].recording_delegates_forbidden,
+                tree.room_docs
+                    .get(&room)
+                    .and_then(tilo_desktop_model::projection::recording_delegates_forbidden_of),
+            )
+        };
+
+        assert!(state.toggle_recording_delegates());
+        assert_eq!(projected(&state), (true, Some(true)));
+        assert!(state.toggle_recording_delegates());
+        assert_eq!(projected(&state), (false, Some(false)));
+
+        {
+            let mut tree = state.tree_mut();
+            let workspace = &mut tree.desktop.workspaces[0];
+            workspace.owner = Some("someone-else".into());
+            workspace
+                .capabilities
+                .retain(|cap| !cap.id.starts_with("owner-"));
+            drop(tree);
+        }
+        assert!(
+            !state.toggle_recording_delegates(),
+            "only an administrator changes it"
+        );
+        assert!(!projected(&state).0);
     }
 }

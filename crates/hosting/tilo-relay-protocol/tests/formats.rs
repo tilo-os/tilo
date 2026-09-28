@@ -145,6 +145,7 @@ fn json_encodings_are_pinned() {
         replayed_pending: 9,
         subscriber_dropped: 10,
         subscriber_dropped_backpressure: 11,
+        peer_sessions_ended: 12,
     };
     let encoded = r#"{
   "conns_accepted": 1,
@@ -157,7 +158,8 @@ fn json_encodings_are_pinned() {
   "replayed_retained": 8,
   "replayed_pending": 9,
   "subscriber_dropped": 10,
-  "subscriber_dropped_backpressure": 11
+  "subscriber_dropped_backpressure": 11,
+  "peer_sessions_ended": 12
 }"#;
     assert_eq!(
         String::from_utf8(serde_json::to_vec_pretty(&snapshot).unwrap()).unwrap(),
@@ -283,6 +285,7 @@ fn toml_encodings_are_pinned() {
         full_replica_status: PathBuf::from("/var/lib/tilo/full-replica/status.json"),
         home_peer_bundle: PathBuf::from("/etc/tilo/home-peer.toml"),
         iroh_listen: SocketAddr::from(([0, 0, 0, 0], 4919)),
+        metrics_listen: None,
         trust_policy: TrustPolicy::AllowList {
             users: vec!["ab".repeat(32)],
         },

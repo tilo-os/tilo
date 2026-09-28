@@ -21,6 +21,10 @@ use crate::shared_surfaces::SharedSurfaces;
 use crate::task::{WorkspaceEffectReceipt, WorkspaceTask};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent governance or view fact of the room (recording delegates, triage in direct rooms, hidden), serialised on its own"
+)]
 pub struct Workspace {
     pub id: WorkspaceId,
     /// Durable identity of this workspace as a collaboration room — the
@@ -87,6 +91,19 @@ pub struct Workspace {
     /// it to tell a person plainly that what they post here is public.
     #[serde(default)]
     pub channel_class: collab_types::ChannelClass,
+    /// Whether the room's administrators turned off recording delegates:
+    /// a member's session recorder acting for them here. Room governance,
+    /// written only by the room's authority. Off by default, so a room
+    /// allows its members to record what they see until told otherwise;
+    /// every member lists a recorder while it records either way.
+    #[serde(default)]
+    pub recording_delegates_forbidden: bool,
+    /// Whether the team's feedback triage agent also joins each reporter's
+    /// direct room with the team. Room governance of the community room,
+    /// set by its administrators; reporters' devices read it when they
+    /// create their direct room with the team.
+    #[serde(default)]
+    pub triage_in_direct_rooms: bool,
     /// Shortcuts saved in this workspace: a person's own in their personal
     /// workspace, shared ones in a collaborative one. Projected as a CRDT
     /// map keyed by shortcut id, so they reach every desktop the workspace
@@ -98,6 +115,13 @@ pub struct Workspace {
     /// beside the shortcuts, one map key per schedule.
     #[serde(default)]
     pub schedule_claims: Vec<tilo_automation::ScheduleClaim>,
+    /// The always-on hosts the room's authority delegated this room to
+    /// (a public room's relay), each an Iroh endpoint address as JSON.
+    /// Room governance: written only by the room's authority, read by every
+    /// member, and carried in each invitation the room mints so a joiner
+    /// reaches a host while the authority's own device is away.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delegated_hosts: Vec<String>,
     /// Surfaces from this workspace being streamed to peers. Keys are
     /// wayland `wl_surface` ids; values are the target Iroh peers
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
@@ -576,6 +600,26 @@ impl Workspace {
         )
     }
 
+    /// Whether `user` may operate `agent` here — launch its sessions: they
+    /// administer the room, or hold a live, explicit `Write` grant on that
+    /// agent ([`Scope::Agent`]). A role never implies it: operating an agent
+    /// is always a grant naming the agent.
+    pub fn may_operate_agent_at(&self, user: &UserId, agent: &str, now: u64) -> bool {
+        if self.may_administer_at(user, now) {
+            return true;
+        }
+        let actor = self.actor_for_person_at(user, now);
+        self.capabilities.iter().any(|cap| {
+            matches!(&cap.scope, Scope::Agent(operated) if operated == agent)
+                && cap.subject.matches_actor(&actor)
+        }) && self.allows_at(
+            &actor,
+            &ResourceRef::Agent(agent.to_string()),
+            Verb::Write,
+            now,
+        )
+    }
+
     /// Install `user` as owner, and record the membership capability
     /// that makes them `Admin` — `owner` survives an empty capability
     /// list, and the capability is what replicates and what `decide` reads.
@@ -838,8 +882,11 @@ impl Workspace {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
+            recording_delegates_forbidden: false,
+            triage_in_direct_rooms: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
+            delegated_hosts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
             hidden: false,
@@ -911,8 +958,11 @@ impl Default for Workspace {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
+            recording_delegates_forbidden: false,
+            triage_in_direct_rooms: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
+            delegated_hosts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
             hidden: false,

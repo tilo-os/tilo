@@ -180,8 +180,14 @@ async fn a_stranger_redeems_the_standing_invite_and_every_member_can_verify_it()
         })
         .unwrap();
     assert!(
-        matches!(next(&ada_client).await, Envelope::NotAuthorised { .. }),
-        "without redeeming, a stranger is not a member"
+        matches!(
+            next(&ada_client).await,
+            Envelope::NotAuthorised {
+                refusal: tilo_relay::transport::Refusal::NotMember,
+                ..
+            }
+        ),
+        "without redeeming, a stranger is not a member, and asking again unchanged cannot help"
     );
 
     ada_client
@@ -191,7 +197,11 @@ async fn a_stranger_redeems_the_standing_invite_and_every_member_can_verify_it()
         })
         .unwrap();
     assert!(
-        matches!(next(&ada_client).await, Envelope::NotAuthorised { reason, .. } if reason.contains("not registered")),
+        matches!(
+            next(&ada_client).await,
+            Envelope::NotAuthorised { refusal: tilo_relay::transport::Refusal::NotMember, reason, .. }
+                if reason.contains("not registered")
+        ),
         "an unregistered invitation admits nobody"
     );
 

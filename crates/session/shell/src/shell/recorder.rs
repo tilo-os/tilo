@@ -52,7 +52,8 @@ use crate::shell::collab_broker::{
     BrokerChannels, BrokerHandle, CrdtRoute, FanoutState, LocalParticipant, RoomSubscription,
 };
 use crate::shell::state::{
-    CapOverride, CapRole, Subject, UserId, Verb, WorkspaceId, WorkspaceTreeHandle,
+    CapOverride, CapRole, Principal, Subject, UserId, Verb, WorkspaceId, WorkspaceTree,
+    WorkspaceTreeHandle,
 };
 
 /// The recorder's agent principal id: the capability subject it is admitted
@@ -93,8 +94,12 @@ pub enum RecorderError {
     NoRooms,
     #[error("room {0} is not a workspace on this machine")]
     UnknownRoom(String),
-    #[error("{user} does not administer room {room}, so the recorder cannot be admitted")]
-    NotAdministrator { user: String, room: String },
+    #[error("{user} is not a member of room {room}, so the recorder cannot act for them there")]
+    NotMember { user: String, room: String },
+    #[error(
+        "“{0}” does not allow its members to record. An administrator can turn on “Members may record” in Workspace Settings › Agents."
+    )]
+    RecordingNotAllowed(String),
     #[error("the recorder was removed from room {0}; admit it again from Workspace Settings")]
     Removed(String),
     #[error("the recent buffer is off; turn on feedback.recent_buffer first")]
@@ -282,8 +287,9 @@ struct Finishing {
 /// State only the frame thread touches.
 #[derive(Default)]
 struct Control {
-    /// Admissions this recorder granted, by room, so it revokes only its own.
-    granted: BTreeMap<String, WorkspaceId>,
+    /// Admissions this recorder was given, by room — the workspace and the
+    /// capability id — so it revokes only its own.
+    granted: BTreeMap<String, (WorkspaceId, String)>,
     /// Rooms the user removed the recorder from while the buffer followed
     /// them; not re-admitted until the buffer is switched on again.
     refused: BTreeSet<String>,
@@ -506,6 +512,7 @@ impl Recorder {
         limits: Limits,
     ) -> Arc<Self> {
         warm_image_digest();
+        Self::drop_stale_delegations(&tree);
         let fanout = broker.fanout();
         let capture: Arc<Mutex<Capture>> = Arc::new(Mutex::new(Capture::default()));
         let sink_capture = Arc::clone(&capture);
@@ -799,20 +806,34 @@ impl Recorder {
         Some(control.awaiting_review.remove(index))
     }
 
-    /// Whether the recorder's agent admission in `room` is live.
+    /// Whether the recorder's own admission in `room` is live: the room's
+    /// governance admits it and does not block it, or it acts there as a
+    /// delegate on this device that still stands. Another member's
+    /// recorder, listed here from their delegation, is not this one.
     fn admitted_in(&self, room: &str) -> bool {
         let tree = self.tree.read();
         tree.desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == room)
-            .and_then(|workspace| workspace.role_of_agent(RECORDER_AGENT))
-            .is_some_and(|role| role != CapRole::Denied)
+            .is_some_and(|workspace| {
+                let governed = workspace.capabilities.iter().any(|cap| {
+                    cap.id == RECORDER_ADMISSION && cap.is_live_at(Some(tilo_clock::unix_now()))
+                }) && workspace.role_of_agent(RECORDER_AGENT)
+                    != Some(CapRole::Denied);
+                governed || WorkspaceTree::local_delegate_stands(workspace, RECORDER_AGENT)
+            })
     }
 
-    /// Admit the recorder to `room` as an Observer, through the tree so the
-    /// grant reaches the room document, its members and disk like any
-    /// agent admission. A room that already admits it is left alone.
+    /// Admit the recorder to `room` as an Observer. A room `user`
+    /// administers, on the machine that governs it, grants it through the
+    /// tree so the grant reaches the room document, its members and disk
+    /// like any agent admission. Anywhere else the recorder acts as `user`'s
+    /// delegate on this device, which needs no administrator: it reads no
+    /// more than `user` can ([`WorkspaceTree::admit_device_delegate`]), and
+    /// the network announces it so every member lists it. A room whose
+    /// administrators turned off recording delegates refuses that. A room
+    /// that already admits the recorder is left alone.
     fn admit(&self, control: &mut Control, room: &str, user: &UserId) -> Result<(), RecorderError> {
         if self.admitted_in(room) {
             return Ok(());
@@ -825,37 +846,69 @@ impl Recorder {
             .find(|workspace| workspace.room.to_string() == room)
             .ok_or_else(|| RecorderError::UnknownRoom(room.to_string()))?;
         let workspace_id = workspace.id;
-        if !workspace.may_administer(user) {
-            return Err(RecorderError::NotAdministrator {
-                user: user.clone(),
-                room: room.to_string(),
-            });
-        }
+        let administers = workspace.may_administer(user);
+        let forbidden = workspace
+            .recording_delegates_forbidden
+            .then(|| workspace.name.clone());
         let cap =
             CapOverride::membership(Subject::agent(RECORDER_AGENT), room.to_string(), Verb::Read)
                 .with_id(RECORDER_ADMISSION.to_string());
-        let granted = tree.grant_in_workspace(workspace_id, user, cap);
+        let granted = administers
+            .then(|| tree.grant_in_workspace(workspace_id, user, cap.clone()))
+            .flatten();
+        let granted = match granted {
+            Some(id) => Some(id),
+            None if let Some(name) = forbidden => {
+                return Err(RecorderError::RecordingNotAllowed(name));
+            }
+            None => tree.admit_device_delegate(workspace_id, user, cap),
+        };
         drop(tree);
-        if granted.is_none() {
-            return Err(RecorderError::NotAdministrator {
+        let Some(id) = granted else {
+            return Err(RecorderError::NotMember {
                 user: user.clone(),
                 room: room.to_string(),
             });
-        }
-        control.granted.insert(room.to_string(), workspace_id);
+        };
+        control.granted.insert(room.to_string(), (workspace_id, id));
         Ok(())
     }
 
-    /// Revoke the admission this recorder granted in `room`, if any.
+    /// Revoke the admission this recorder was given in `room`, if any.
     fn release(&self, control: &mut Control, room: &str, user: &UserId) {
-        if let Some(workspace_id) = control.granted.remove(room) {
-            let revoked =
-                self.tree
-                    .write()
-                    .revoke_in_workspace(workspace_id, user, RECORDER_ADMISSION);
+        if let Some((workspace_id, id)) = control.granted.remove(room) {
+            let mut tree = self.tree.write();
+            let revoked = tree.revoke_device_delegate(workspace_id, &id)
+                || tree.revoke_in_workspace(workspace_id, user, &id);
+            drop(tree);
             if !revoked {
                 tracing::warn!(%room, "recorder: could not revoke its own admission");
             }
+        }
+    }
+
+    /// Drop device-delegate admissions a previous run left behind — it
+    /// ended without stopping — so the recorder is never listed, or
+    /// admitted, in a room it does not hold.
+    fn drop_stale_delegations(tree: &WorkspaceTreeHandle) {
+        let mut tree = tree.write();
+        let stale: Vec<(WorkspaceId, String)> = tree
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| {
+                workspace
+                    .capabilities
+                    .iter()
+                    .filter(|cap| {
+                        matches!(&cap.subject, Subject::Principal(Principal::Agent(agent)) if agent == RECORDER_AGENT)
+                            && crate::shell::state::is_local_device_delegate(cap)
+                    })
+                    .map(|cap| (workspace.id, cap.id.clone()))
+            })
+            .collect();
+        for (workspace_id, id) in stale {
+            tree.revoke_device_delegate(workspace_id, &id);
         }
     }
 
@@ -1193,8 +1246,12 @@ impl Recorder {
         }
         let mut control = lock(&self.control);
         for room in &revoked {
-            // Revoked by someone else: nothing of ours is left to revoke.
-            control.granted.remove(room);
+            // Revoked by someone else, or a delegate that no longer stands
+            // (the room turned delegates off, its person lost their role):
+            // take back what is left of ours, so it is not announced again.
+            if let Some((workspace_id, id)) = control.granted.remove(room) {
+                self.tree.write().revoke_device_delegate(workspace_id, &id);
+            }
             if recent.contains(room) {
                 control.refused.insert(room.clone());
             }
@@ -1233,7 +1290,7 @@ impl Recorder {
             .read()
             .desktop
             .active_workspace()
-            .filter(|workspace| !workspace.room.is_nil() && workspace.may_administer(user))
+            .filter(|workspace| !workspace.room.is_nil())
             .map(|workspace| workspace.room.to_string())
         else {
             return false;

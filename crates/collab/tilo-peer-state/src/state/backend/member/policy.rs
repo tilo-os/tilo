@@ -66,6 +66,7 @@ impl Output {
             },
             Scope::Room(s) => Scope::Room(self.text(s)?),
             Scope::FsRecord(s) => Scope::FsRecord(self.text(s)?),
+            Scope::Agent(s) => Scope::Agent(self.text(s)?),
         };
         Ok(CapOverride {
             subject,

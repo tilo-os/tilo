@@ -95,6 +95,7 @@ rustPlatform.buildRustPackage rec {
     install -Dm644 "$p/portal/tilo.portal" "$out/share/xdg-desktop-portal/portals/tilo.portal"
     install -Dm644 "$p/portal/tilo-portals.conf" "$out/share/xdg-desktop-portal/tilo-portals.conf"
     install -Dm644 "$p/pipewire/tilo-echo-cancel.conf" "$out/share/pipewire/tilo-echo-cancel.conf"
+    install -Dm644 "$p/community/community.toml" "$out/share/tilo/community.toml"
     install -Dm644 "$p/systemd-user/tilo-graphical-session.target" "$out/share/systemd/user/tilo-graphical-session.target"
     install -Dm644 "$p/license/LICENSE" "$out/share/licenses/tilo-session/LICENSE"
     install -Dm755 "$p/bin/tilo-import-folders" "$out/bin/tilo-import-folders"

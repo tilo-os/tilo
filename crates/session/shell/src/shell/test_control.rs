@@ -170,7 +170,11 @@ pub enum Command {
     /// ships (`/usr/share/tilo/community.toml`, or `TILO_COMMUNITY_CONFIG`).
     /// Answers the room's status: its channel class and this session's role.
     CommunityJoin,
-    /// The community room as this session knows it, or `{"joined": false}`.
+    /// Leave the Tilo community room and remember that the person left, so
+    /// none of their devices joins it again on its own.
+    CommunityLeave,
+    /// The community room as this session knows it, or `{"joined": false}`
+    /// with the person's membership choice.
     CommunityStatus,
     /// Open this person's private feedback room: the direct room with the
     /// configured Tilo team principal.
@@ -194,6 +198,11 @@ pub enum Command {
         #[serde(default)]
         expires_in_seconds: Option<u64>,
     },
+    /// Stop redeeming the standing invitation `invite_id` (hex, as minted)
+    /// of public room `room` at this machine. People it admitted stay; the
+    /// room's hosts keep their own list (`tilo-relay-admin community
+    /// revoke-invite`).
+    StandingInviteRevoke { room: String, invite_id: String },
     /// A room's channel class, whether governance stated it, and this
     /// session's role in it.
     RoomStatus { room: String },
@@ -680,11 +689,13 @@ pub fn dispatch_command<S: ControlState>(
             Vec::new(),
         ),
         Command::CommunityJoin
+        | Command::CommunityLeave
         | Command::CommunityStatus
         | Command::CommunityTeamRoom
         | Command::CommunityDirectRoom { .. }
         | Command::PublicRoomCreate { .. }
         | Command::StandingInvite { .. }
+        | Command::StandingInviteRevoke { .. }
         | Command::RoomStatus { .. }
         | Command::RoomGrant { .. } => (community(state, cmd), Vec::new()),
         Command::CheckAction {
@@ -1118,6 +1129,7 @@ fn community<S: ControlState>(state: &S, cmd: &Command) -> Response {
     use crate::shell::peer_sync_overlay::CommunityRequest;
     let request = match cmd {
         Command::CommunityJoin => CommunityRequest::Join,
+        Command::CommunityLeave => CommunityRequest::Leave,
         Command::CommunityStatus => CommunityRequest::Status,
         Command::CommunityTeamRoom => CommunityRequest::OpenTeamRoom,
         Command::CommunityDirectRoom { person, label } => CommunityRequest::OpenDirectRoom {
@@ -1148,6 +1160,12 @@ fn community<S: ControlState>(state: &S, cmd: &Command) -> Response {
                 room: room.clone(),
                 role,
                 expires_in_seconds: *expires_in_seconds,
+            }
+        }
+        Command::StandingInviteRevoke { room, invite_id } => {
+            CommunityRequest::RevokeStandingInvite {
+                room: room.clone(),
+                invite_id: invite_id.clone(),
             }
         }
         Command::RoomStatus { room } => CommunityRequest::RoomStatus { room: room.clone() },

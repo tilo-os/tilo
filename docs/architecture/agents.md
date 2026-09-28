@@ -75,12 +75,16 @@ review, a minimum context window) and a privacy class:
 
 | Class | Where it may run | Tasks |
 | --- | --- | --- |
-| Open | Any configured provider | `agent.planning`, `agent.transform` |
-| Sensitive | This device, unless the person explicitly allows a provider | `feedback.review` |
+| Open | Any configured provider | `agent.planning`, `agent.transform`, `feedback.triage` (public reports) |
+| Sensitive | This device, unless the person explicitly allows a provider | `feedback.review`, `feedback.triage` (direct-room reports) |
 | Device only | Only the model manager's supervised runtime | `photos.vision`, `photos.faces` |
 
 The registry is compiled into the gateway, so a sandboxed app cannot declare
 its own privacy class. Adding a feature's task is adding a `TaskSpec` there.
+A request may say its content is more private than the task's class
+(`assign::resolve_for`, the `content` of a `Transform`). That can raise the
+class, never lower it: the same triage task resolves as open for a public
+report and as sensitive for a private one.
 Tasks whose request the caller writes use the `Plan` verb; tasks whose prompt
 the gateway builds use a fixed verb (`Transform`, `AnalyzeImage`,
 `ClusterFaces`, `ReviewTrace`).

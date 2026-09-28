@@ -208,6 +208,10 @@ install -Dpm 0644 systemd-user/tilo-graphical-session.target \
 # Settings offers "Reduce echo in calls" only where `pipewire -c` finds this.
 install -Dpm 0644 pipewire/tilo-echo-cancel.conf \
                   %{buildroot}%{_datadir}/pipewire/tilo-echo-cancel.conf
+# Where this release finds the Tilo community room and the Tilo team; the
+# payload stage refused a release without one (dist/community-config.sh).
+install -Dpm 0644 community/community.toml \
+                  %{buildroot}%{_datadir}/tilo/community.toml
 install -Dpm 0644 license/LICENSE \
                   %{buildroot}%{_datadir}/licenses/%{name}/LICENSE
 
@@ -271,6 +275,7 @@ grep -q '^UseIn=tilo$' %{buildroot}%{_datadir}/xdg-desktop-portal/portals/tilo.p
 grep -q '^default=tilo$' %{buildroot}%{_datadir}/xdg-desktop-portal/tilo-portals.conf
 grep -q '^DesktopNames=tilo$' %{buildroot}%{_datadir}/wayland-sessions/tilo.desktop
 grep -q 'libpipewire-module-echo-cancel' %{buildroot}%{_datadir}/pipewire/tilo-echo-cancel.conf
+grep -q '^\[community\]$' %{buildroot}%{_datadir}/tilo/community.toml
 grep -q '^Requires=graphical-session-pre.target graphical-session.target$' \
     %{buildroot}%{_userunitdir}/tilo-graphical-session.target
 grep -q '^Wants=tilo-ush.service$' \
@@ -312,6 +317,8 @@ done
 %{_datadir}/xdg-desktop-portal/portals/tilo.portal
 %{_datadir}/xdg-desktop-portal/tilo-portals.conf
 %{_datadir}/pipewire/tilo-echo-cancel.conf
+%dir %{_datadir}/tilo
+%{_datadir}/tilo/community.toml
 %{_userunitdir}/tilo-graphical-session.target
 %license %{_datadir}/licenses/%{name}/LICENSE
 

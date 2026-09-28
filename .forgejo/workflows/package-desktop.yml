@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - "dist/**"
+      - "os/usr/share/tilo/community.toml"
       - "flake.nix"
       - "flake.lock"
       - ".cargo/config.toml"
@@ -121,6 +122,8 @@ jobs:
             diagnostic=rpm-version-drift
           elif ! dist/ci/run-dev-session-test.sh; then
             diagnostic=dev-session-contract
+          elif ! dist/community-config.sh check os/usr/share/tilo/community.toml; then
+            diagnostic=community-config
           elif ! dist/ci/run-payload-contract-tests.sh; then
             diagnostic=payload-contract
           elif ! os/tests/portal_config_validity.sh; then
@@ -206,8 +209,24 @@ jobs:
           fallback-keys: |
             github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
             github-assets-all-v1-
+      # The community room's standing invitation and the team principal ship in
+      # every package (/usr/share/tilo/community.toml). The TILO_COMMUNITY_TOML
+      # repository variable, when set, replaces the checked-in file; a release
+      # tag refuses the empty placeholder, here and again in stage-payload.sh.
+      - name: Load the community configuration
+        shell: bash
+        env:
+          TILO_COMMUNITY_TOML: ${{ vars.TILO_COMMUNITY_TOML }}
+          TILO_REQUIRE_COMMUNITY: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          args=(materialize)
+          [[ $TILO_REQUIRE_COMMUNITY != 1 ]] || args+=(--require)
+          dist/community-config.sh "${args[@]}" os/usr/share/tilo/community.toml
       - name: Build and install-test all five target userspaces
         env:
+          # A release tag must ship a real community configuration.
+          TILO_REQUIRE_COMMUNITY: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && '1' || '0' }}
           # Compiler cache credentials must never enter pull-request code,
           # and a payload that can be published never compiles through the
           # shared cache: every CI job and agent sandbox can write any object

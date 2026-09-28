@@ -1,0 +1,35 @@
+# Anyone may reach the relay's Iroh port: every connection authenticates with
+# a certified device and every room gates by its own membership. Metrics are
+# counts only, but still reachable from the monitoring namespace alone.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tilo-community-relay
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - port: 4433
+          protocol: UDP
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9464
+          protocol: TCP
+  egress:
+    # Iroh relay servers and discovery (HTTPS), direct QUIC paths to peers
+    # (any UDP port), and DNS.
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+    - ports:
+        - port: 1
+          endPort: 65535
+          protocol: UDP

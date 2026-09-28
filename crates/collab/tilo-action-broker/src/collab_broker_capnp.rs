@@ -560,6 +560,61 @@ pub fn principal_id_for_root(user_public_key: [u8; 32]) -> String {
     }
 }
 
+/// Whether a `Comment`-class op on a room's index route (`record_id` empty)
+/// carries anything but its author's own comment references. The class is
+/// all a role check sees; the shape is checked from the change itself, so a
+/// Commenter's op that adds any other reference, takes one out or writes
+/// elsewhere is refused here rather than spread to every member. Encrypted
+/// payloads stay opaque to a broker; the index's holder checks those.
+#[must_use]
+pub fn room_index_comment_refused(
+    record_id: &str,
+    envelope: &SignedOp,
+    payload: &collab_types::RoutedDocumentPayload,
+) -> bool {
+    match payload {
+        collab_types::RoutedDocumentPayload::Cleartext(mutation) => {
+            room_index_comment_shape_refused(record_id, envelope, Some(mutation))
+        }
+        collab_types::RoutedDocumentPayload::CleartextSegment(_) => {
+            room_index_comment_shape_refused(record_id, envelope, None)
+        }
+        collab_types::RoutedDocumentPayload::Encrypted { .. } => false,
+    }
+}
+
+/// [`room_index_comment_refused`] for a whole-document payload.
+fn whole_room_index_comment_refused(
+    record_id: &str,
+    envelope: &SignedOp,
+    payload: &collab_types::WholeDocumentPayload,
+) -> bool {
+    match payload {
+        collab_types::WholeDocumentPayload::Cleartext(mutation) => {
+            room_index_comment_shape_refused(record_id, envelope, Some(mutation))
+        }
+        collab_types::WholeDocumentPayload::Encrypted { .. } => false,
+    }
+}
+
+/// The shape check of a readable room-index payload: `mutation` is its whole
+/// cleartext change, `None` for one the broker cannot read in one piece.
+fn room_index_comment_shape_refused(
+    record_id: &str,
+    envelope: &SignedOp,
+    mutation: Option<&collab_types::DocumentMutation>,
+) -> bool {
+    if !record_id.is_empty() || envelope.op_class != collab_types::OpClass::Comment {
+        return false;
+    }
+    match mutation {
+        Some(collab_types::DocumentMutation::Incremental(delta)) => {
+            !ui::record::room::comment_references_delta(delta, envelope.author.as_bytes())
+        }
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 fn admit_verified_join(
     tree: &DesktopTree,
@@ -637,15 +692,13 @@ fn admit_agent_delegation_at(
         .iter()
         .find(|workspace| workspace.room.to_string() == route.cluster_id)
         .ok_or_else(|| "agent delegation names an unavailable workspace".to_string())?;
-    if workspace.owner.as_ref() != Some(&admitted.principal_id)
-        && workspace.decide_at(
-            &workspace.actor_for_person_at(&admitted.principal_id, now),
-            &ResourceRef::Workspace,
-            Verb::Admin,
-            now,
-        ) != CapDecision::Allow
-    {
-        return Err("only a workspace administrator may launch a delegated agent session".into());
+    // An administrator launches any agent the room admitted; anyone else only
+    // an agent the room let them operate by name (`Scope::Agent`).
+    if !workspace.may_operate_agent_at(&admitted.principal_id, agent_id, now) {
+        return Err(
+            "only a workspace administrator or the agent's operator may launch a delegated agent session"
+                .into(),
+        );
     }
     let role = workspace
         .role_of_agent_at(agent_id, now)
@@ -655,6 +708,43 @@ fn admit_agent_delegation_at(
     admitted.agent_id = Some(agent_id.to_string());
     admitted.display_handle = Some(agent_id.to_string());
     Ok(())
+}
+
+/// Admit the certified device of `user_public_key` to `room` as a join is
+/// admitted (the outer result), then delegate `agent_id` to that session as
+/// a join presenting an agent delegation is (the inner result).
+///
+/// # Errors
+///
+/// Returns why the join itself was refused.
+#[cfg(any(test, feature = "test-support"))]
+pub fn admit_agent_delegation_for_test(
+    tree: &DesktopTree,
+    room: &str,
+    user_public_key: [u8; 32],
+    agent_id: &str,
+) -> Result<Result<(), String>, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "clock unavailable")?
+        .as_secs();
+    let route = CrdtRoute::cluster(room.to_string());
+    let mut admitted = admit_verified_join_at(
+        tree,
+        &route,
+        VerifiedJoinIdentity {
+            user_public_key,
+            device_public_key: [42; 32],
+        },
+        now,
+    )?;
+    Ok(admit_agent_delegation_at(
+        tree,
+        &route,
+        &mut admitted,
+        agent_id,
+        now,
+    ))
 }
 
 fn verify_session_author(
@@ -2255,6 +2345,10 @@ pub struct CapnpBrokerState {
     inspections: inspection::InspectionRegistry,
     /// Directed invocation stream registered by each application connection.
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
+    /// Who each application connection runs for: the certified participant
+    /// whose device writes whatever that connection's app writes. An action
+    /// that speaks as that participant is delivered only to its own caller.
+    invocation_performers: Mutex<HashMap<u64, BrokerActor>>,
     action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
     /// Remote-action invocations admitted through the action host, keyed by
@@ -2463,6 +2557,7 @@ impl CapnpBrokerState {
         clear!(self.surfaces);
         clear!(self.action_directory_roots);
         clear!(self.invocation_subscribers);
+        clear!(self.invocation_performers);
         clear!(self.action_catalogue_subscribers);
         clear!(self.pending_invocations);
         clear!(self.stable_invocation_subscribers);
@@ -2925,6 +3020,7 @@ impl CapnpBrokerState {
                 action_directory_root_snapshot: Mutex::new(ActionDirectoryRootSnapshot::default()),
                 inspections: inspection::InspectionRegistry::default(),
                 invocation_subscribers: Mutex::new(HashMap::new()),
+                invocation_performers: Mutex::new(HashMap::new()),
                 action_catalogue_subscribers: Mutex::new(HashMap::new()),
                 pending_invocations: Mutex::new(HashMap::new()),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),
@@ -4322,6 +4418,13 @@ impl CapnpBrokerState {
             )
             .map_err(|refusal| refusal.to_string())?;
         }
+        if offered.1.contract.speaks_as_participant() && !self.performs_for(peer_id, actor) {
+            return Err(
+                "that action speaks for the participant its application runs for; \
+                 only they may invoke it"
+                    .into(),
+            );
+        }
         if (durable.is_some() || enrolled_durable.is_some())
             && !self
                 .stable_invocation_subscribers
@@ -4504,6 +4607,18 @@ impl CapnpBrokerState {
             return Err("the application invocation stream closed; outcome unknown".into());
         }
         Ok(InvocationJob { id, completion: rx })
+    }
+
+    /// Whether the application connection `peer_id` runs for `actor`: an
+    /// action it performs is written by `actor`'s own device. A connection
+    /// with no certified participant runs for nobody.
+    #[must_use]
+    pub fn performs_for(&self, peer_id: u64, actor: &BrokerActor) -> bool {
+        self.invocation_performers
+            .lock()
+            .ok()
+            .and_then(|performers| performers.get(&peer_id).cloned())
+            .is_some_and(|performer| performer == *actor)
     }
 
     /// Changes whenever a pending or completed invocation changes.
@@ -5007,6 +5122,9 @@ impl CapnpBrokerState {
         if let Ok(mut subscribers) = self.invocation_subscribers.lock() {
             subscribers.remove(&peer_id);
         }
+        if let Ok(mut performers) = self.invocation_performers.lock() {
+            performers.remove(&peer_id);
+        }
         self.inspections.remove_peer(peer_id);
         if let Ok(mut subscribers) = self.action_catalogue_subscribers.lock() {
             subscribers.remove(&peer_id);
@@ -5252,6 +5370,12 @@ impl CapnpBrokerState {
         }
         collab_types::check_document_route(&route.record_id, envelope.op_class, &envelope.author)
             .map_err(|error| capnp::Error::failed(format!("document operation refused: {error}")))?;
+        if whole_room_index_comment_refused(&route.record_id, envelope, &payload) {
+            return Err(capnp::Error::failed(
+                "a comment-class room-index change may add only its author's own comment references"
+                    .into(),
+            ));
+        }
         Ok(AuthorizedDocumentRoute {
             artifact: envelope.artifact,
             channel,
@@ -5814,6 +5938,79 @@ impl CapnpBrokerState {
         agents.sort();
         agents.dedup();
         agents
+    }
+
+    /// Most ops [`Self::serve_route_history`] hands one joining app.
+    const MAX_SERVED_HISTORY: usize = 8192;
+
+    /// Hand the app `requester` on `channel_id` every op this broker holds
+    /// for the route's document, oldest first. An op the broker accepted
+    /// before any app of this device held the route reached nobody when it
+    /// arrived; the app that joins later is served it here, with everything
+    /// it depends on, rather than having to catch it live. Returns how many
+    /// ops were served.
+    pub fn serve_route_history(&self, channel_id: &str, requester: u64) -> usize {
+        let route = CrdtRoute::from_channel_key(channel_id);
+        if route.app_id.is_empty() {
+            return 0;
+        }
+        let artifact =
+            collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+        let mut ops: Vec<SignedOp> = Vec::new();
+        {
+            let Ok(mut held) = self.broker_channels.lock() else {
+                return 0;
+            };
+            let mut before = u64::MAX;
+            loop {
+                let (page, exhausted) = held.scrollback_page(artifact, before, 256);
+                let Some(oldest) = page.first().map(|op| op.seq) else {
+                    break;
+                };
+                before = oldest;
+                ops.splice(0..0, page);
+                if exhausted || ops.len() >= Self::MAX_SERVED_HISTORY {
+                    break;
+                }
+            }
+        }
+        tracing::debug!(app_id = %route.app_id, record = %route.record_id, held = ops.len(), "serving a joining app what this broker holds");
+        if ops.is_empty() {
+            return 0;
+        }
+        if ops.len() >= Self::MAX_SERVED_HISTORY {
+            tracing::warn!(
+                app_id = %route.app_id,
+                served = ops.len(),
+                "a joining app was served only the newest part of its document's history"
+            );
+        }
+        let Ok(mut channels) = self.channels.lock() else {
+            return 0;
+        };
+        let Some(channel) = channels.get_mut(channel_id) else {
+            return 0;
+        };
+        let mut served = 0usize;
+        for subscriber in channel.op.iter().filter(|sub| sub.peer_id == requester) {
+            for op in &ops {
+                let Ok(op_bytes) = postcard::to_stdvec(op) else {
+                    continue;
+                };
+                if subscriber
+                    .tx
+                    .send(OpEnvelope {
+                        op_bytes,
+                        from_user_id: hex::encode(op.author.as_bytes()),
+                        kind: OpKind::Signed,
+                    })
+                    .is_ok()
+                {
+                    served = served.saturating_add(1);
+                }
+            }
+        }
+        served
     }
 
     /// Direct a late-join snapshot request to one established subscriber on
@@ -6508,6 +6705,11 @@ impl channel_handle::Server for CapnpChannelHandle {
         let _ = self
             .state
             .request_document_snapshot(&self.channel_id, self.peer_id);
+        // What this broker already accepted for the route, including what
+        // reached nobody because no app held the route yet.
+        let _ = self
+            .state
+            .serve_route_history(&self.channel_id, self.peer_id);
         // The app asks once its streams are installed, so a replayed
         // retained message reaches it: that is what lets its later
         // snapshots name as covered what the host retained before it came.
@@ -7564,6 +7766,13 @@ impl channel_handle::Server for CapnpChannelHandle {
             ));
         }
         let (tx, rx) = mpsc::unbounded_channel();
+        if let Ok(mut performers) = self.state.invocation_performers.lock() {
+            performers.insert(self.peer_id, self.verified_identity.broker_actor());
+        } else {
+            return Promise::err(capnp::Error::failed(
+                "invocation subscriber registry unavailable".into(),
+            ));
+        }
         if let Ok(mut subscribers) = self.state.invocation_subscribers.lock() {
             subscribers.insert(self.peer_id, tx);
         } else {
@@ -8003,7 +8212,9 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::UpdateInvocationParams,
         _results: channel_handle::UpdateInvocationResults,
     ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
+        let app_id = self.route().app_id;
+        let peer_id = self.peer_id;
+        let applied = async move {
             let request = params.get()?;
             let update =
                 serde_json::from_str(request.get_update_json()?.to_str()?).map_err(|error| {
@@ -8017,6 +8228,13 @@ impl channel_handle::Server for CapnpChannelHandle {
                     Some((self.route(), self.verified_identity.clone())),
                 )
                 .await
+        };
+        Promise::from_future(async move {
+            let applied = applied.await;
+            if let Err(error) = &applied {
+                tracing::warn!(%app_id, peer_id, %error, "refused an application's invocation update");
+            }
+            applied
         })
     }
 
@@ -12559,6 +12777,145 @@ pub mod tests {
     }
 
     #[cfg(test)]
+    fn catalogue_text(
+        state: &Arc<CapnpBrokerState>,
+        caller: &tilo_actions::remote::Caller,
+    ) -> String {
+        let mut page = state.action_query(
+            caller,
+            &tilo_actions::remote::CatalogueQuery {
+                max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                ..tilo_actions::remote::CatalogueQuery::default()
+            },
+        );
+        let tilo_actions::remote::PendingPoll::Ready(Ok(page)) = page.poll_ready() else {
+            panic!("the eager catalogue answers at once");
+        };
+        serde_json::to_string(&page).expect("catalogue encodes")
+    }
+
+    /// An action that speaks as its app's participant (a post, a reaction)
+    /// reaches that app only from that participant. Anyone else, however
+    /// much authority they hold, would otherwise write under the other
+    /// participant's device, and is refused and never offered it.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario: the offer, the refusal, the owner's own call and the closed connection"
+    )]
+    fn an_action_speaking_for_a_participant_is_delivered_only_from_them() {
+        let mut workspace =
+            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(32), "Chat room");
+        workspace.set_owner("owner");
+        workspace.grant_capability(CapOverride::membership(
+            Subject::person("reporter"),
+            workspace.room.to_string(),
+            Verb::Comment,
+        ));
+        let room = workspace.room.to_string();
+        let route = CrdtRoute::app("so.tilo.chat", room.clone());
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.shared()),
+            None,
+        );
+        let post = |action: &str, contract: tilo_actions::ActionContract| PublishedAction {
+            resource: "chat.channel:c_feedback".into(),
+            action: action.into(),
+            resource_kind: "chat.channel".into(),
+            resource_label: "feedback".into(),
+            resource_sensitivity: tilo_actions::Sensitivity::Public,
+            action_label: action.into(),
+            description: None,
+            operation_kind: tilo_actions::OperationKind::Effect,
+            params: Vec::new(),
+            contract,
+            view: None,
+            input: PublishedInput::None,
+        };
+        let spoken = tilo_actions::ActionContract {
+            permission: tilo_actions::PermissionRequirement::Comment,
+            tags: vec![tilo_actions::PARTICIPANT_TAG.into()],
+            ..tilo_actions::ActionContract::default()
+        };
+        // Peer 7 is the owner's Chat.
+        state.surfaces.lock().expect("surfaces").insert(
+            7,
+            PublishedSurface {
+                peer_id: 7,
+                app_id: "so.tilo.chat".into(),
+                route,
+                actions: vec![
+                    post("remark", spoken),
+                    post(
+                        "rename",
+                        tilo_actions::ActionContract {
+                            permission: tilo_actions::PermissionRequirement::Comment,
+                            ..tilo_actions::ActionContract::default()
+                        },
+                    ),
+                ],
+                live: true,
+            },
+        );
+        let (tx, mut invocations) = mpsc::unbounded_channel();
+        state
+            .invocation_subscribers
+            .lock()
+            .expect("subscribers")
+            .insert(7, tx);
+        state
+            .invocation_performers
+            .lock()
+            .expect("performers")
+            .insert(7, BrokerActor::person("owner"));
+
+        let reporter = tilo_actions::remote::Caller::local_person("reporter").in_room(&room);
+        let text = catalogue_text(&state, &reporter);
+        assert!(
+            text.contains("rename") && !text.contains("remark"),
+            "another participant's voice is not offered: {text}"
+        );
+        let refused = state
+            .start_invocation(7, "chat.channel:c_feedback", "remark", None, "reporter")
+            .err()
+            .expect("the reporter may not post through the owner's Chat");
+        assert!(refused.contains("speaks for the participant"), "{refused}");
+        assert!(invocations.try_recv().is_err(), "nothing reached the app");
+        state
+            .start_invocation(7, "chat.channel:c_feedback", "rename", None, "reporter")
+            .expect("an action that names nobody runs for any authorised caller");
+        drop(invocations.try_recv().expect("delivered"));
+
+        state
+            .start_invocation(7, "chat.channel:c_feedback", "remark", None, "owner")
+            .expect("the owner posts through their own Chat");
+        drop(invocations.try_recv().expect("delivered"));
+        // An agent is never the person who launched it.
+        assert!(
+            state
+                .start_invocation_confirmed_for(
+                    7,
+                    "chat.channel:c_feedback",
+                    "remark",
+                    None,
+                    &BrokerActor::agent("agent:owner"),
+                    None,
+                    None,
+                )
+                .is_err()
+        );
+        // A connection that closed runs for nobody.
+        state.remove_connection(7);
+        assert!(!state.performs_for(7, &BrokerActor::person("owner")));
+    }
+
+    #[cfg(test)]
     fn verified_device(root: &SigningKey) -> VerifiedJoinIdentity {
         VerifiedJoinIdentity {
             user_public_key: root.verifying_key().to_bytes(),
@@ -13165,6 +13522,58 @@ pub mod tests {
                 .is_err(),
             "labelling an edit to an ordinary record as a comment is refused"
         );
+
+        // On the room's index route a Comment-class op may carry only the
+        // Commenter's own comment references.
+        let index_op = |delta: Vec<u8>| {
+            let route = CrdtRoute::record("so.tilo.chat", room.clone(), "");
+            let mut op = SignedOp::new_unsigned(
+                DocumentMutation::Incremental(delta)
+                    .encode()
+                    .expect("typed mutation"),
+                document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+                author,
+                document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+                collab_types::OpClass::Comment,
+                SystemTime::now(),
+                1,
+            );
+            sign_op(&mut op, &device).expect("device signs");
+            (route, op)
+        };
+        let parent_id = ui::record::RecordId::parse(parent).expect("a record id");
+        let index = automerge::AutoCommit::new();
+        let referencing = |id: &ui::record::RecordId, kind: &str| {
+            let mut replica = index.clone();
+            assert!(ui::record::room::reference(
+                &mut replica,
+                id,
+                &ui::record::RecordKind::new(kind)
+            ));
+            replica.save_after(&[])
+        };
+        let own = ui::record::RecordId::for_comment(*author.as_bytes(), "m1", &parent_id)
+            .expect("own comment");
+        let (route, op) = index_op(referencing(&own, "chat.message"));
+        state
+            .authorize_certified_document(&route, &admit(&route), &op)
+            .expect("a commenter lists their own comment in the room");
+        for spam in [
+            referencing(&parent_id, "chat.channel"),
+            referencing(
+                &ui::record::RecordId::for_comment([0x5A; 32], "m1", &parent_id)
+                    .expect("foreign comment"),
+                "chat.message",
+            ),
+        ] {
+            let (route, op) = index_op(spam);
+            assert!(
+                state
+                    .authorize_certified_document(&route, &admit(&route), &op)
+                    .is_err(),
+                "a commenter adds no other reference to the room's index"
+            );
+        }
     }
 
     #[test]
@@ -15348,10 +15757,25 @@ impl CapnpBrokerState {
             if let Ok(mut requests) = state.cancellation_requests.lock() {
                 requests.remove(&id);
             }
+            note_incomplete_action(peer_id, id, &completion);
             let _ = pending.tx.send(completion);
             state.record_effect_receipt(&pending, &update);
         }
         Ok(())
+    }
+}
+
+/// Say that application connection `peer_id` reported invocation `id` as
+/// not completed, when it did.
+fn note_incomplete_action(peer_id: u64, id: u64, completion: &InvocationCompletion) {
+    if !completion.code.is_empty() {
+        tracing::warn!(
+            peer_id,
+            id,
+            code = %completion.code,
+            message = %completion.message,
+            "an application action did not complete"
+        );
     }
 }
 

@@ -450,6 +450,7 @@ async fn handle_streaming(
         Request::Transform {
             task,
             agent,
+            content,
             instructions,
             input,
             max_output_tokens,
@@ -460,6 +461,7 @@ async fn handle_streaming(
             task,
             agent,
             TransformAsk {
+                content,
                 instructions,
                 input,
                 max_output_tokens,
@@ -528,10 +530,20 @@ fn resolve_task(
     task: &str,
     agent: Option<&str>,
 ) -> Result<Resolution, assign::ResolveError> {
+    resolve_task_for(consumer, task, agent, tasks::PrivacyClass::Open)
+}
+
+/// [`resolve_task`] for content at least as private as `content`.
+fn resolve_task_for(
+    consumer: &Consumer,
+    task: &str,
+    agent: Option<&str>,
+    content: tasks::PrivacyClass,
+) -> Result<Resolution, assign::ResolveError> {
     let config = ProviderConfig::load();
     let assignments = ModelAssignments::load();
     let local = LocalRuntime::load();
-    assign::resolve(
+    assign::resolve_for(
         &Inputs {
             config: &config,
             assignments: &assignments,
@@ -540,6 +552,7 @@ fn resolve_task(
         consumer,
         task,
         agent,
+        content,
     )
 }
 
@@ -1611,6 +1624,8 @@ fn fixed_local_route(
 
 /// One single-shot transformation, as tilo-agent asked for it.
 struct TransformAsk {
+    /// How private the input is, as the caller knows it.
+    content: tasks::PrivacyClass,
     instructions: String,
     input: String,
     max_output_tokens: u32,
@@ -1718,18 +1733,23 @@ fn transform_answer(protocol: ProviderProtocol, body: &str) -> Result<String, St
     Ok(text.to_string())
 }
 
-/// Resolve the transform task for `consumer` and read its credential. Only
-/// the task served by the transform verb may be named here; a caller-dialect
-/// or another fixed task goes through its own verb.
+/// The tasks the transform verb serves.
+const TRANSFORM_TASKS: [&str; 2] = [tasks::AGENT_TRANSFORM.id, tasks::FEEDBACK_TRIAGE.id];
+
+/// Resolve a transform task for `consumer` over `content` and read its
+/// credential. Only the tasks served by the transform verb may be named
+/// here; a caller-dialect or another fixed task goes through its own verb.
 fn transform_route(
     consumer: &Consumer,
     task: &str,
     agent: Option<&str>,
+    content: tasks::PrivacyClass,
 ) -> Result<(Resolution, Bearer), String> {
-    if task != tasks::AGENT_TRANSFORM.id {
+    if !TRANSFORM_TASKS.contains(&task) {
         return Err("this task is not served through the transform operation".into());
     }
-    let resolution = resolve_for(consumer, task, agent)?;
+    let resolution =
+        resolve_task_for(consumer, task, agent, content).map_err(|error| error.to_string())?;
     let bearer = credential_for(&resolution.profile)?;
     Ok((resolution, bearer))
 }
@@ -1742,8 +1762,9 @@ async fn transform(
     ask: TransformAsk,
 ) -> Result<String, String> {
     validate_transform(&ask)?;
+    let content = ask.content;
     let (resolution, bearer) =
-        blocking(move || transform_route(&consumer, &task, agent.as_deref())).await?;
+        blocking(move || transform_route(&consumer, &task, agent.as_deref(), content)).await?;
     let protocol = resolution.profile.protocol;
     let mut body = transform_body(protocol, &resolution.model.id, &ask);
     // The assignment, not the caller, sets the model's typed options.
@@ -2775,6 +2796,7 @@ mod tests {
 
     fn ask(input: &str) -> TransformAsk {
         TransformAsk {
+            content: tasks::PrivacyClass::Open,
             instructions: "Answer with JSON.".into(),
             input: input.into(),
             max_output_tokens: 512,
@@ -2835,6 +2857,7 @@ mod tests {
         Request::Transform {
             task: task.into(),
             agent: None,
+            content: tasks::PrivacyClass::Open,
             instructions: "Answer.".into(),
             input: "text".into(),
             max_output_tokens: 16,
@@ -2865,7 +2888,7 @@ mod tests {
     }
 
     #[test]
-    fn the_transform_verb_serves_only_the_transform_task() {
+    fn the_transform_verb_serves_only_the_transform_tasks() {
         let agent = Principal::App {
             app_id: AGENT_APP.into(),
         };

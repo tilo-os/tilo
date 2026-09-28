@@ -163,6 +163,42 @@ mod room_record_launch_tests {
             });
         assert!(!leaked, "the pre-checkout write stayed off the room route");
     }
+
+    /// A launched window starts on its continuation instance's route; when
+    /// it checks a record out, the route it keeps for the room index is the
+    /// room's own, not the continuation's.
+    #[test]
+    fn checking_out_from_a_continuation_route_keeps_the_rooms_route() {
+        use crate::collaboration::{
+            CollabRequest, CollaborationManager, LoopbackTransport, RouteSpec, TransportCommand,
+        };
+
+        let (transport, peer) = LoopbackTransport::new();
+        let mut manager = CollaborationManager::with_transport(Box::new(transport));
+        let room = RouteSpec::app("so.tilo.fixture", uuid::Uuid::new_v4());
+        let continuation = RouteSpec {
+            record: Some("continuation:7".into()),
+            ..room.clone()
+        };
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: room.app_id.clone(),
+            cluster_id: room.cluster_id,
+            record: continuation.record.clone(),
+            handle: None,
+        }));
+        peer.acknowledge_primary(Ok(continuation));
+        let _ = manager.poll();
+        let _ = peer.take_submitted();
+
+        let kept = manager.move_primary_to_record(&RecordId::minted());
+        assert_eq!(kept.as_ref(), Some(&room));
+        assert!(
+            peer.take_submitted().iter().any(
+                |command| matches!(command, TransportCommand::Join(joined) if *joined == room)
+            ),
+            "the room's route stays joined for its index"
+        );
+    }
 }
 
 const ACTION_DIRECTORY_MAX_RESULTS: usize = 128;
@@ -412,6 +448,14 @@ struct DirectedInvocation {
     wire_id: u64,
     cancellation_requested: bool,
     authorization: Option<crate::invocation_scope::ResourceInvocationScope>,
+}
+
+/// A directed action's terminal update, held until the route of a document
+/// change it covers has been joined, so it never precedes that change.
+struct HeldTerminal {
+    wire_id: u64,
+    update: tilo_actions::InvocationUpdate,
+    since: crate::time::Instant,
 }
 
 /// Public-in-crate so the throttle decision is unit-testable without a real
@@ -1248,7 +1292,7 @@ impl App {
         registration: crate::history_mode::HistoryRegistration,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         let _entry = self.enter_wake_scope();
-        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        self.sync_root();
         registration.validate_root(self.root_widget.as_ref())?;
         #[cfg(any(test, feature = "test-support"))]
         let controlled_definition = registration.definition;
@@ -2244,12 +2288,23 @@ impl App {
         });
     }
 
+    /// Sync the widget tree with the document. What the app writes while it
+    /// syncs, when no edit of its own is open, is upkeep rather than an
+    /// action ([`State::settle_upkeep`]).
+    pub(crate) fn sync_root(&mut self) {
+        let settled = self.state.edits_settled();
+        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        if settled {
+            self.state.settle_upkeep();
+        }
+    }
+
     /// Exposed so headless tests can drive modal open/close without a winit
     /// loop.
     #[doc(hidden)]
     pub fn refresh_focus_order(&mut self) {
         let _entry = self.enter_wake_scope();
-        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        self.sync_root();
         self.invalidate_widget_resource_cache();
         self.update_focusable_order();
     }
@@ -2327,7 +2382,7 @@ impl App {
 
         // The widgets built above are fresh instances the OLD `sync` never
         // ran against, so without this they draw blank until the next event.
-        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        self.sync_root();
         self.needs_sync = false;
         if self.root_widget.take_structure_dirty() {
             // Fresh sync can replace delegates. Rebuild before any map access.
@@ -2743,6 +2798,10 @@ mod number_input_layout_tests;
 #[cfg(test)]
 #[path = "app/history_tests.rs"]
 mod framework_history_tests;
+
+#[cfg(test)]
+#[path = "app/upkeep_tests.rs"]
+mod upkeep_tests;
 
 #[path = "app/history.rs"]
 mod framework_history;

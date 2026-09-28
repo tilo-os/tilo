@@ -39,6 +39,24 @@ pub fn required_changes(bytes: &[u8]) -> Option<Vec<ChangeHash>> {
     Some(required)
 }
 
+/// The changes a message of incremental Automerge bytes carries, read
+/// without a document. `None` unless the bytes are entirely change chunks —
+/// a saved document or anything unreadable is not incremental changes.
+#[must_use]
+pub fn changes_in(bytes: &[u8]) -> Option<Vec<Change>> {
+    let mut rest = bytes;
+    let mut changes = Vec::new();
+    while !rest.is_empty() {
+        let (chunk, remaining) = split_chunk(rest)?;
+        match chunk.get(8)? {
+            &CHANGE_CHUNK | &COMPRESSED_CHANGE_CHUNK => changes.push(Change::try_from(chunk).ok()?),
+            _ => return None,
+        }
+        rest = remaining;
+    }
+    Some(changes)
+}
+
 /// Whether `doc` holds every change in `required`.
 #[must_use]
 pub fn holds_all(doc: &AutoCommit, required: &[ChangeHash]) -> bool {

@@ -767,6 +767,9 @@ async fn admit_until_ready(
                     .unwrap();
             }
             Inbound::RemoteAction { .. } | Inbound::Replayed { .. } => {}
+            Inbound::Refused { refusal, reason } => {
+                panic!("relay refused the session: {refusal:?}: {reason}")
+            }
         }
     }
 }

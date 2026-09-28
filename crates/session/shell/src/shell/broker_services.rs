@@ -465,23 +465,161 @@ impl tilo_action_broker::services::KeyboardShortcutServices for NativeKeyboardSh
     }
 }
 
-/// Workspace governance (permission profiles) applied under the shell's
-/// canonical capability authority. There is no application behind these
-/// actions: the shell validates, mutates, records the effect and persists.
-pub struct NativeWorkspaceGovernance(pub WorkspaceTreeHandle);
+/// Workspace governance (permission profiles and public-room governance)
+/// applied under the shell's canonical capability authority. There is no
+/// application behind these actions: the shell validates, mutates, records
+/// the effect and persists. Public-room governance is performed by the
+/// shell's network, exactly as the palette's is.
+pub struct NativeWorkspaceGovernance {
+    pub tree: WorkspaceTreeHandle,
+    pub network: Option<Arc<super::network::ShellNetwork>>,
+}
+
+impl NativeWorkspaceGovernance {
+    #[must_use]
+    pub fn new(
+        tree: WorkspaceTreeHandle,
+        network: Option<Arc<super::network::ShellNetwork>>,
+    ) -> Self {
+        Self { tree, network }
+    }
+
+    /// Run one public-room governance action (`shell::public_room_governance`)
+    /// for `request.actor`: the action must be on the room's surface,
+    /// confirmed, and the caller must hold Admin on it; the shell's network
+    /// then performs it exactly as the palette's does. The answer (a new
+    /// room's id, a minted invitation) is the invocation's output.
+    fn invoke_public_room(
+        &self,
+        request: &WorkspaceGovernanceRequest<'_>,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        let (workspace_id, room, spec, resource) = {
+            let workspace = self
+                .tree
+                .read()
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room.to_string() == request.room)
+                .cloned()
+                .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
+            let workspace = &workspace;
+            let surface = super::public_room_governance::resource(workspace);
+            let spec = surface
+                .actions
+                .iter()
+                .find(|candidate| candidate.id == request.action)
+                .cloned()
+                .ok_or_else(|| "this room offers no such public-room action".to_string())?;
+            if request
+                .confirmation
+                .get("confirm")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            {
+                return Err("explicit confirmation is required".into());
+            }
+            let caller = governance_caller(workspace, request.actor);
+            if workspace.decide(
+                &caller,
+                &super::state::ResourceRef::Action {
+                    app: super::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
+                    action: request.action.into(),
+                },
+                super::state::Verb::Admin,
+            ) != super::state::CapDecision::Allow
+            {
+                return Err("the caller does not administer this room".into());
+            }
+            (workspace.id, workspace.room, spec, surface)
+        };
+        let json = request
+            .argument
+            .and_then(|value| value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
+            .unwrap_or("{}");
+        let mut arguments =
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+                .map_err(|error| format!("invalid public-room arguments: {error}"))?;
+        // The broker's confirmation is the action's `confirm`.
+        arguments.insert("confirm".into(), serde_json::Value::Bool(true));
+        let encoded = spec
+            .build_json(&arguments)
+            .map_err(|error| format!("invalid public-room arguments: {error}"))?;
+        if encoded.type_id != super::public_room_governance::ACTION_TYPE {
+            return Err(format!(
+                "invalid public-room arguments: {}",
+                String::from_utf8_lossy(&encoded.payload)
+            ));
+        }
+        let operation: super::public_room_governance::Operation =
+            serde_json::from_slice(&encoded.payload)
+                .map_err(|error| format!("invalid public-room operation: {error}"))?;
+        let (community_request, _) = operation.request(&room.to_string());
+        let answer = self
+            .network
+            .as_ref()
+            .ok_or_else(|| "this host has no network to govern rooms through".to_string())?
+            .serve_community_request(community_request)?;
+        let context = tilo_actions::ActionContext::for_resource(
+            &spec.label,
+            resource.id.as_str(),
+            &resource.kind,
+            &resource.label,
+        )
+        .with_app(super::state::WORKSPACE_GOVERNANCE_APP_ID, "Public room");
+        let mut tree = self.tree.write();
+        let _ = tree.append_workspace_effect_receipt(
+            workspace_id,
+            request.invocation,
+            request.actor.id(),
+            context,
+            tilo_actions::EffectReceiptStatus::Succeeded,
+        );
+        tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
+        tree.flush_to_disk();
+        drop(tree);
+        Ok(tilo_actions::ActionOutput {
+            value: Some(answer),
+            ..tilo_actions::ActionOutput::default()
+        })
+    }
+}
+
+/// Who `actor` is to `workspace`'s capability policy.
+fn governance_caller(
+    workspace: &super::state::Workspace,
+    actor: &tilo_action_broker::collab_broker_capnp::BrokerActor,
+) -> super::state::Actor {
+    if let Some(app) = actor.id().strip_prefix("app:") {
+        super::state::Actor::app(app).in_room(workspace.room.to_string())
+    } else if actor.is_agent() {
+        workspace.actor_for_agent(
+            actor
+                .id()
+                .strip_prefix("agent:")
+                .unwrap_or_else(|| actor.id()),
+        )
+    } else {
+        workspace.actor_for_person(&actor.id().to_string())
+    }
+}
+
 impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
     fn app_id(&self) -> &str {
         super::state::WORKSPACE_GOVERNANCE_APP_ID
     }
-    fn handles(&self, action: &str) -> bool {
-        super::workspace_settings::is_governance_action(action)
+    fn handles(&self, resource: &str, action: &str) -> bool {
+        resource.starts_with(&format!(
+            "{}:",
+            super::public_room_governance::RESOURCE_KIND
+        )) || super::workspace_settings::is_governance_action(action)
     }
     fn descriptors(
         &self,
         workspace: &tilo_desktop_model::Workspace,
     ) -> Vec<tilo_actions::ActionDescriptor> {
         // Describe from the shell's own authority, not the broker's snapshot.
-        let tree = self.0.read();
+        let tree = self.tree.read();
         let room = workspace.room;
         tree.desktop
             .workspaces
@@ -492,13 +630,21 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
                     super::workspace_settings::permission_profile_resource_with_access(
                         workspace, true,
                     ),
+                    // Public-room governance, the same actions the palette offers.
+                    super::public_room_governance::resource(workspace),
                 ])
             })
             .unwrap_or_default()
     }
-    fn invoke(&self, request: &WorkspaceGovernanceRequest<'_>) -> Result<(), String> {
+    fn invoke(
+        &self,
+        request: &WorkspaceGovernanceRequest<'_>,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        if request.resource == super::public_room_governance::resource_id(request.room) {
+            return self.invoke_public_room(request);
+        }
         let actor = request.actor;
-        let mut tree = self.0.write();
+        let mut tree = self.tree.write();
         let workspace_index = tree
             .desktop
             .workspaces
@@ -510,18 +656,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
             .workspaces
             .get(workspace_index)
             .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
-        let caller = if let Some(app) = actor.id().strip_prefix("app:") {
-            super::state::Actor::app(app).in_room(workspace.room.to_string())
-        } else if actor.is_agent() {
-            workspace.actor_for_agent(
-                actor
-                    .id()
-                    .strip_prefix("agent:")
-                    .unwrap_or_else(|| actor.id()),
-            )
-        } else {
-            workspace.actor_for_person(&actor.id().to_string())
-        };
+        let caller = governance_caller(workspace, actor);
         let surface =
             super::workspace_settings::permission_profile_resource_with_access(workspace, true);
         let resource = find_resource(&surface, request.resource)
@@ -580,7 +715,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
         tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
         tree.flush_to_disk();
         drop(tree);
-        Ok(())
+        Ok(tilo_actions::ActionOutput::default())
     }
 }
 
@@ -876,7 +1011,10 @@ pub fn native_services(
             as Arc<dyn NativeDocumentReads>
     });
     let governance = membership.as_ref().map(|tree| {
-        Arc::new(NativeWorkspaceGovernance(tree.clone())) as Arc<dyn WorkspaceGovernanceServices>
+        Arc::new(NativeWorkspaceGovernance::new(
+            tree.clone(),
+            network.clone(),
+        )) as Arc<dyn WorkspaceGovernanceServices>
     });
     let shortcut_library = membership.as_ref().map(|tree| {
         Arc::new(NativeShortcutLibrary(tree.clone())) as Arc<dyn ShortcutLibraryServices>
@@ -947,7 +1085,10 @@ pub(crate) fn test_broker_with_membership(
     let services = HostServices {
         legacy_workspace: Some(authority.clone()),
         launcher: Some(Arc::new(NativeLauncher)),
-        workspace_governance: Some(Arc::new(NativeWorkspaceGovernance(membership.clone()))),
+        workspace_governance: Some(Arc::new(NativeWorkspaceGovernance::new(
+            membership.clone(),
+            None,
+        ))),
         shortcut_library: Some(Arc::new(NativeShortcutLibrary(membership.clone()))),
         keyboard_shortcuts: Some(Arc::new(NativeKeyboardShortcuts)),
         app_action_grants: Some(Arc::new(NativeAppActionGrants(membership.clone()))),
@@ -1289,6 +1430,98 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Public-room governance is offered through the action broker to an
+    /// agent the room made its administrator, and to no one else; running it
+    /// takes confirmation and Admin, and is then the network's to perform.
+    #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the broker host this test drives owns long-lived permits by design"
+    )]
+    fn public_room_governance_reaches_an_admin_agent_and_nobody_else() {
+        use tilo_action_broker::collab_broker_capnp::BrokerActor;
+        use tilo_actions::remote::{ActionHost as _, Caller, CatalogueQuery, PendingPoll};
+        let mut workspace = super::super::state::Workspace::new(
+            super::super::state::WorkspaceId(33),
+            "Tilo Community",
+        );
+        workspace.set_owner("owner");
+        workspace.channel_class = collab_types::ChannelClass::Public;
+        for action in super::super::public_room_governance::ACTIONS {
+            workspace.grant_capability(collab_types::CapOverride::grant(
+                collab_types::Subject::agent("steward"),
+                collab_types::Scope::Action {
+                    app: super::super::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
+                    action: (*action).into(),
+                },
+                collab_types::Verb::Admin,
+            ));
+        }
+        let cluster = workspace.room.to_string();
+        let mut tree = super::super::state::WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace);
+        let membership = tree.shared();
+        let host = super::super::remote_actions::BrokerActionHost::new(
+            test_broker_with_membership(membership.clone()),
+        );
+        let catalogue_text = |caller: &Caller| {
+            let mut page = host.query(
+                caller,
+                CatalogueQuery {
+                    max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                    ..CatalogueQuery::default()
+                },
+            );
+            let PendingPoll::Ready(Ok(page)) = page.poll_ready() else {
+                panic!("the eager catalogue answers at once");
+            };
+            serde_json::to_string(&page).expect("catalogue encodes")
+        };
+        let steward = catalogue_text(&Caller::local_agent("steward").in_room(&cluster));
+        for action in super::super::public_room_governance::ACTIONS {
+            assert!(
+                steward.contains(action),
+                "an Admin agent is offered {action}"
+            );
+        }
+        let bystander = catalogue_text(&Caller::local_agent("bystander").in_room(&cluster));
+        assert!(
+            !bystander.contains(super::super::public_room_governance::ISSUE_INVITE),
+            "an agent without Admin is not offered public-room governance"
+        );
+
+        let governance = NativeWorkspaceGovernance::new(membership, None);
+        let resource = super::super::public_room_governance::resource_id(&cluster);
+        assert!(governance.handles(
+            &resource,
+            super::super::public_room_governance::ISSUE_INVITE
+        ));
+        let invite = |who: &str, confirm: bool| {
+            governance.invoke(&WorkspaceGovernanceRequest {
+                room: &cluster,
+                actor: &BrokerActor::agent(format!("agent:{who}")),
+                resource: &resource,
+                action: super::super::public_room_governance::ISSUE_INVITE,
+                argument: None,
+                confirmation: &serde_json::json!({ "confirm": confirm }),
+                invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(1)),
+            })
+        };
+        assert!(
+            invite("steward", false)
+                .unwrap_err()
+                .contains("confirmation")
+        );
+        assert!(
+            invite("bystander", true)
+                .unwrap_err()
+                .contains("administer")
+        );
+        // Confirmed and Admin: the service hands it to the network, which
+        // this fixture has none of; the refusal is that, not a gate.
+        assert!(invite("steward", true).unwrap_err().contains("network"));
+    }
 
     /// Content keyed by `(room, hash)`, standing in for the content store's
     /// room-scoped reads.

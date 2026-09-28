@@ -529,7 +529,15 @@ impl DrainQueues {
                         let state = ch.state_for(artifact);
                         state.artifacts.insert(artifact, ArtifactKind::Note);
                         state.artifact_apps.insert(artifact, entry.app_id.clone());
-                        validate_admitted_inbound_op(
+                        // What a durable host delivers may be the room's past
+                        // (a catch-up, a queued delta, a replay), as old as the
+                        // room: it is checked like a live op but for its age.
+                        let validate = if entry.history {
+                            collab_types::validate_admitted_history_op
+                        } else {
+                            validate_admitted_inbound_op
+                        };
+                        validate(
                             &envelope,
                             entry.role,
                             state,

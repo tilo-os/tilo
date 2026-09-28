@@ -56,3 +56,6 @@ mod composition_balance;
 
 #[path = "alignment_review.rs"]
 mod alignment_review;
+
+#[path = "community_review.rs"]
+mod community_review;

@@ -44,6 +44,8 @@ pub enum PeerSyncRequest {
 pub enum CommunityRequest {
     /// Join the community room from the OS's standing invitation.
     Join,
+    /// Leave the community room and remember that the person left.
+    Leave,
     /// Report the community room as this session knows it.
     Status,
     /// Create a public room governed by this machine.
@@ -54,6 +56,12 @@ pub enum CommunityRequest {
         role: crate::network::invite::InviteRole,
         expires_in_seconds: Option<u64>,
     },
+    /// Stop redeeming a standing invitation (hex id) of a public room this
+    /// machine governs.
+    RevokeStandingInvite { room: String, invite_id: String },
+    /// Record the always-on host (an Iroh endpoint address, JSON) a public
+    /// room this machine governs is delegated to.
+    DelegateHost { room: String, endpoint: String },
     /// Open this person's direct room with the Tilo team principal.
     OpenTeamRoom,
     /// Open the direct room with `person` (the team's end).

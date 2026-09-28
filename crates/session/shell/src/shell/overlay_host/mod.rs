@@ -809,6 +809,12 @@ pub struct ShellOverlayHost {
     /// Room-activity sheet. Held as a `Widget` with its own hover, scroll, and
     /// filter state, placed by hand like the notification stack.
     room_activity: crate::shell::room_activity::RoomActivityPane,
+    /// The team's triage agent sessions, kept running in every room that
+    /// lets this desktop operate it.
+    triage_runtime: crate::shell::triage_runtime::TriageRuntime,
+    /// Whether this desktop is the Tilo team's, read once from the community
+    /// configuration; only the team's desktop runs its triage agent.
+    team_desktop: Option<bool>,
     /// Background, local-only prose renderer. Deterministic summaries remain
     /// installed until a cited model result passes validation.
     history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
@@ -947,6 +953,14 @@ pub enum PeerSyncAction {
     /// (`ShellOverlayHost::draw_peer_sync`); submitting it sends a
     /// [`PeerSyncRequest::AcceptInvite`] through the bridge.
     PromptConnect,
+    /// A public-room governance operation the palette validated (a room
+    /// this person administers, explicit confirmation). The outcome is told
+    /// in a notification; `copy` names the answer field put on the
+    /// clipboard (the new room's id, a minted standing invitation).
+    Community {
+        request: crate::shell::peer_sync_overlay::CommunityRequest,
+        copy: Option<&'static str>,
+    },
 }
 
 /// Rows the palette asks the registry for, shared round-robin between the
@@ -2184,6 +2198,8 @@ impl ShellOverlayHost {
             app_action_broker: None,
             session_audio_policy: None,
             room_activity: inputs.room_activity,
+            triage_runtime: crate::shell::triage_runtime::TriageRuntime::default(),
+            team_desktop: None,
             history_narrator: inputs.history_narrator,
             status_narrator: inputs.status_narrator,
             status_narrative_request: None,
@@ -3628,6 +3644,33 @@ impl ShellOverlayHost {
                 }
                 PeerSyncAction::PromptInvite => self.open_invite_manager(),
                 PeerSyncAction::PromptConnect => self.peer_sync_overlay.prompt_connect(),
+                PeerSyncAction::Community { request, copy } => {
+                    let outcome = self.community_request(request);
+                    if let Some(chrome) = self.chrome.as_ref() {
+                        let mut chrome = chrome.borrow_mut();
+                        match outcome {
+                            Ok(answer) => {
+                                let copied = copy
+                                    .and_then(|field| answer.get(field))
+                                    .and_then(serde_json::Value::as_str);
+                                if let Some(value) = copied {
+                                    ui::text_selection::clipboard_copy(value);
+                                }
+                                chrome.push_notification(
+                                    t("public-room-governance-done"),
+                                    if copied.is_some() {
+                                        t("public-room-governance-copied")
+                                    } else {
+                                        answer.to_string()
+                                    },
+                                );
+                            }
+                            Err(error) => {
+                                chrome.push_notification(t("public-room-governance-failed"), error);
+                            }
+                        }
+                    }
+                }
                 #[expect(
                     clippy::unreachable,
                     reason = "the palette queues a tracked request around one plain action, never another tracked one"
@@ -5473,6 +5516,46 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Keep the team's triage agent running in every room that admits it
+    /// and lets this person operate it — the community room and each
+    /// reporter's direct room — through the managed-agent launch path. Only
+    /// the Tilo team's desktop runs it; nobody starts it per room.
+    fn keep_triage_agents_running(&mut self) {
+        let team_desktop = *self.team_desktop.get_or_insert_with(|| {
+            crate::shell::community::load().is_ok_and(|config| {
+                config
+                    .team
+                    .is_some_and(|team| team.person_id() == crate::shell::state::local_user_id())
+            })
+        });
+        let Some(chrome) = self.chrome.as_ref().filter(|_| team_desktop) else {
+            return;
+        };
+        let st = chrome.borrow();
+        let tree = st.tree();
+        let me = crate::shell::state::local_user_id();
+        let wanted = crate::shell::triage_runtime::wanted(&tree, &me, tilo_clock::unix_now());
+        let workspaces = tree.desktop.workspaces.clone();
+        drop(tree);
+        drop(st);
+        self.triage_runtime
+            .reconcile(&wanted, std::time::Instant::now(), &mut |want| {
+                let workspace = workspaces
+                    .iter()
+                    .find(|ws| ws.room == want.room)
+                    .ok_or_else(|| "the room is gone".to_string())?;
+                crate::shell::launcher::launch_managed_agent(
+                    crate::shell::workspace_settings::TRIAGE_AGENT,
+                    workspace,
+                    crate::shell::launcher::ManagedAgentWork::Triage {
+                        direct: want.direct,
+                    },
+                )
+                .map(|_| ())
+                .map_err(|error| error.user_message())
+            });
+    }
+
     /// Turns app-launcher worker-thread failures into notifications (a clean
     /// launch/exit is silent — the window is the feedback). Returns whether
     /// anything was posted, so the caller can mark the frame dirty.
@@ -5536,6 +5619,8 @@ impl ShellOverlayHost {
                 chrome_handle.borrow_mut().bump();
                 posted = true;
             }
+            self.triage_runtime
+                .observe(&event, std::time::Instant::now());
             // A failure settles the "Opening…" notice here. `Started`
             // doesn't — the window is still seconds away — that's
             // [`Self::retire_notices_for_opened_windows`]'s job. A clean
@@ -15427,6 +15512,38 @@ impl ShellOverlayHost {
                     self.last_search_query = "\0agent-onboarding\0".to_string();
                 }
             }
+            WorkspaceSettingsOutcome::ToggleRecordingDelegates => {
+                if is_owner && let Some(chrome) = self.chrome.as_ref() {
+                    let mut st = chrome.borrow_mut();
+                    st.toggle_recording_delegates();
+                    st.bump();
+                }
+            }
+            WorkspaceSettingsOutcome::TriageAgent => {
+                let admitted = self.chrome.as_ref().is_some_and(|chrome| {
+                    chrome
+                        .borrow()
+                        .tree()
+                        .desktop
+                        .active_workspace()
+                        .is_some_and(crate::shell::workspace_settings::triage_agent_admitted)
+                });
+                if is_owner
+                    && admitted
+                    && let Some(chrome) = self.chrome.as_ref()
+                {
+                    let mut st = chrome.borrow_mut();
+                    st.toggle_triage_in_direct_rooms();
+                    st.bump();
+                } else if is_owner {
+                    // The same typed palette flow as any agent: one action,
+                    // reviewable and invocable by keyboard or automation.
+                    self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+                    self.palette
+                        .set_query(&crate::shell::i18n::t("search-action-agent-invite-triage"));
+                    self.last_search_query = "\0agent-onboarding\0".to_string();
+                }
+            }
             WorkspaceSettingsOutcome::ReviewAgent(agent) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
@@ -16891,6 +17008,7 @@ impl Widget for ShellOverlayHost {
         let dialog_dirty = self.pump_portal_dialogs();
         self.pump_permission_prompt();
         let launch_dirty = self.drain_launch_events() | self.retire_notices_for_opened_windows();
+        self.keep_triage_agents_running();
         let session_action_dirty = self.drain_session_action_results();
         // Also driven by the widget's own `update`, but routed here too so
         // chrome stays consistent for tests that never call the widget.
@@ -18041,6 +18159,27 @@ impl Widget for ShellOverlayHost {
                     }
                     if let Some(chrome) = &self.chrome {
                         let state = chrome.borrow();
+                        let recording = self.workspace_settings_overlay.recording_delegates_rect();
+                        if matches!(state.ws_settings_tab, WsTab::Agents) && recording.area() > 0.0
+                        {
+                            let allowed = state
+                                .tree()
+                                .desktop
+                                .active_workspace()
+                                .is_some_and(|workspace| !workspace.recording_delegates_forbidden);
+                            let enabled = state.can_rename_active_workspace();
+                            settings.children.push(
+                                AccessNode::new(Role::Switch)
+                                    .with_name(t("workspace-settings-recording-toggle"))
+                                    .with_state(AccessState {
+                                        focusable: enabled,
+                                        disabled: !enabled,
+                                        checked: Some(allowed),
+                                        ..Default::default()
+                                    })
+                                    .with_bounds(recording),
+                            );
+                        }
                         if matches!(state.ws_settings_tab, WsTab::General) {
                             let body = self.workspace_settings_overlay.general_body_rect();
                             let summary = self.workspace_settings_overlay.general_summary_rect();
