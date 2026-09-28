@@ -5715,10 +5715,6 @@ impl RemoteApp {
     /// Paint one segmented control over rects the caller already pushed as
     /// hits: the shared face owns selection, hover, separators and measured
     /// label centring, so this canvas keeps only its pointer routing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The segmented-control painter forwards render context, precomputed hit rectangles, labels, and the optional selected index."
-    )]
     fn draw_segments(
         &self,
         scene: &mut Scene,

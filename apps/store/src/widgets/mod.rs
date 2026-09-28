@@ -11,5 +11,5 @@ pub mod card;
 pub mod chips;
 
 pub use artwork::Artwork;
-pub use card::{CARD_HEIGHT, store_card};
+pub use card::{CARD_HEIGHT, CardAction, CardDetails, CardLayout, store_card};
 pub use chips::{FilterChipSelection, filter_chip_row};

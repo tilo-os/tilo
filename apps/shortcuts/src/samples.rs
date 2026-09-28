@@ -23,47 +23,51 @@ pub const SCENARIOS: &[&str] = &["library", "editor", "review"];
 const NOTES: &str = "so.tilo.notes";
 const MAIL: &str = "so.tilo.mail";
 
-#[expect(clippy::too_many_arguments, reason = "one catalogue row, spelled out")]
+fn resource(id: &str, kind: &str, label: &str) -> CatalogueResource {
+    CatalogueResource {
+        id: id.into(),
+        kind: kind.into(),
+        label: label.into(),
+        sensitivity: ui::tilo_actions::Sensitivity::Public,
+        presentation: None,
+    }
+}
+
+fn contract(permission: PermissionRequirement, result: ResultSpec) -> ActionContract {
+    ActionContract {
+        permission,
+        result,
+        ..ActionContract::default()
+    }
+}
+
+/// One document action, `(id, label)`, offered on `resource` by `app`.
 fn row(
     app: &str,
-    resource: &str,
-    kind: &str,
-    label: &str,
-    action: &str,
-    action_label: &str,
+    resource: CatalogueResource,
+    (action, action_label): (&str, &str),
     params: Vec<ActionParam>,
-    permission: PermissionRequirement,
-    result: ResultSpec,
+    contract: ActionContract,
 ) -> CatalogueRow {
     CatalogueRow {
         provider: format!("sample:{app}"),
         app_id: app.into(),
         parent_resource: String::new(),
-        resource: CatalogueResource {
-            id: resource.into(),
-            kind: kind.into(),
-            label: label.into(),
-            sensitivity: ui::tilo_actions::Sensitivity::Public,
-            presentation: None,
-        },
         action: Some(ActionDescriptor {
-            address: ActionAddress::new(resource, action),
-            resource_kind: kind.into(),
-            resource_label: label.into(),
-            resource_sensitivity: ui::tilo_actions::Sensitivity::Public,
+            address: ActionAddress::new(&resource.id, action),
+            resource_kind: resource.kind.clone(),
+            resource_label: resource.label.clone(),
+            resource_sensitivity: resource.sensitivity,
             action_label: action_label.into(),
             description: None,
             locus: ExecutionLocus::default(),
             kind: OperationKind::Document,
-            contract: ActionContract {
-                permission,
-                result,
-                ..ActionContract::default()
-            },
+            contract,
             input: InputSpec::None,
             params,
             view: None,
         }),
+        resource,
         has_children: false,
         visibility: None,
     }
@@ -82,66 +86,49 @@ pub fn catalog() -> ActionCatalog {
     ActionCatalog::new(vec![
         row(
             NOTES,
-            "notes.folder:inbox",
-            "notes.folder",
-            "Inbox",
-            "list",
-            "List notes",
+            resource("notes.folder:inbox", "notes.folder", "Inbox"),
+            ("list", "List notes"),
             Vec::new(),
-            PermissionRequirement::Read,
-            titles,
+            contract(PermissionRequirement::Read, titles),
         ),
         row(
             NOTES,
-            "notes.folder:inbox",
-            "notes.folder",
-            "Inbox",
-            "create",
-            "New note",
+            resource("notes.folder:inbox", "notes.folder", "Inbox"),
+            ("create", "New note"),
             vec![
                 ActionParam::required("title", ParamType::Text, "Title"),
                 ActionParam::required("pinned", ParamType::Boolean, "Pin it"),
             ],
-            PermissionRequirement::Write,
-            ResultSpec::None,
+            contract(PermissionRequirement::Write, ResultSpec::None),
         ),
         row(
             MAIL,
-            "mail.outbox",
-            "mail.outbox",
-            "Outbox",
-            "send",
-            "Send message",
+            resource("mail.outbox", "mail.outbox", "Outbox"),
+            ("send", "Send message"),
             vec![
                 ActionParam::required("to", ParamType::Text, "Recipient"),
                 ActionParam::required("body", ParamType::Text, "Message"),
             ],
-            PermissionRequirement::Write,
-            ResultSpec::None,
+            contract(PermissionRequirement::Write, ResultSpec::None),
         ),
         row(
             AGENT_APP_ID,
-            "agent.transform:text",
-            AGENT_TRANSFORM_KIND,
-            "Text",
-            AGENT_SUMMARISE_ACTION,
-            "Summarise",
+            resource("agent.transform:text", AGENT_TRANSFORM_KIND, "Text"),
+            (AGENT_SUMMARISE_ACTION, "Summarise"),
             vec![ActionParam::required("input", ParamType::Text, "Text")],
-            PermissionRequirement::Read,
-            ResultSpec::Json {
-                schema: json!({"type": "string"}),
-            },
+            contract(
+                PermissionRequirement::Read,
+                ResultSpec::Json {
+                    schema: json!({"type": "string"}),
+                },
+            ),
         ),
         row(
             SHORTCUTS_APP_ID,
-            "shortcuts",
-            "shortcuts.library",
-            "Shortcuts",
-            "list",
-            "List shortcuts",
+            resource("shortcuts", "shortcuts.library", "Shortcuts"),
+            ("list", "List shortcuts"),
             Vec::new(),
-            PermissionRequirement::Read,
-            ResultSpec::None,
+            contract(PermissionRequirement::Read, ResultSpec::None),
         ),
     ])
 }

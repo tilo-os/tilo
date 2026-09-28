@@ -128,10 +128,6 @@ fn outcome_label(outcome: &Result<super::SettingSecrets, AgentError>) -> &'stati
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the D-Bus interface fixes GetSecrets' five arguments; the header and connection are how the caller is checked"
-)]
 #[zbus::interface(name = "org.freedesktop.NetworkManager.SecretAgent")]
 impl SecretAgent {
     /// `NetworkManager` needs secrets for `setting_name` of a connection.

@@ -297,77 +297,10 @@ impl RichTextLayout {
         }
     }
 
-    /// Shape `spans` into `width`. `base_bold` makes the whole block bold
-    /// (headings); `underlines` are byte ranges to underline; `align` sets
-    /// horizontal alignment. `line_height_mult` scales the line advance
-    /// (1.0 = default spacing).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Rich-text shaping accepts spans, block typography, width and alignment, decoration ranges, and line spacing beside the font system."
-    )]
-    pub fn shape(
-        fs: &mut FontSystem,
-        spans: &[RichSpan],
-        base_bold: bool,
-        size: f32,
-        width: f32,
-        align: TextAlign,
-        family: FontFamily,
-        underlines: Vec<(usize, usize)>,
-        strikes: Vec<(usize, usize)>,
-        line_height_mult: f32,
-    ) -> Self {
-        Self::shape_browser(
-            fs,
-            spans,
-            base_bold,
-            size,
-            width,
-            align,
-            family,
-            underlines,
-            strikes,
-            line_height_mult,
-            false,
-        )
-    }
-
-    /// [`Self::shape`] reusing the unchanged paragraphs (cosmic-text lines,
-    /// including the chunks of a huge paragraph) of `previous`, this block's
-    /// last layout from the same font system. Any configuration change makes
-    /// it shape from scratch, exactly like [`Self::shape`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Same shaping inputs as `shape` plus the previous layout to reuse."
-    )]
-    pub fn shape_reusing(
-        fs: &mut FontSystem,
-        spans: &[RichSpan],
-        base_bold: bool,
-        size: f32,
-        width: f32,
-        align: TextAlign,
-        family: FontFamily,
-        underlines: Vec<(usize, usize)>,
-        strikes: Vec<(usize, usize)>,
-        line_height_mult: f32,
-        previous: Option<Self>,
-    ) -> Self {
-        let style = Self::block_style(base_bold, size, family, line_height_mult);
-        Self::shape_styled_reusing_browser(
-            fs,
-            spans,
-            &style,
-            Some(width),
-            align,
-            underlines,
-            strikes,
-            previous,
-            false,
-        )
-    }
-
-    fn block_style(
+    /// The complete style of a legacy text block for [`Self::shape_styled`]:
+    /// `base_bold` makes the whole block bold (headings) and
+    /// `line_height_mult` scales the default 1.4 line advance.
+    pub fn block_style(
         base_bold: bool,
         size: f32,
         family: FontFamily,
@@ -389,36 +322,6 @@ impl RichTextLayout {
             .with_family(family)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The compatibility shaping entry point preserves block metrics and decorations while selecting installed browser emoji."
-    )]
-    pub(crate) fn shape_browser(
-        fs: &mut FontSystem,
-        spans: &[RichSpan],
-        base_bold: bool,
-        size: f32,
-        width: f32,
-        align: TextAlign,
-        family: FontFamily,
-        underlines: Vec<(usize, usize)>,
-        strikes: Vec<(usize, usize)>,
-        line_height_mult: f32,
-        browser_emoji: bool,
-    ) -> Self {
-        let style = Self::block_style(base_bold, size, family, line_height_mult);
-        Self::shape_styled_browser(
-            fs,
-            spans,
-            &style,
-            Some(width),
-            align,
-            underlines,
-            strikes,
-            browser_emoji,
-        )
-    }
-
     /// Shape attributed spans with the same complete block style used by
     /// plain application text. This is the preferred entry point for editors
     /// and custom widgets: font family, weight, size, and leading remain one
@@ -438,10 +341,6 @@ impl RichTextLayout {
         )
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Canonical block style, width and decoration ranges remain explicit alongside browser emoji availability."
-    )]
     pub(crate) fn shape_styled_browser(
         fs: &mut FontSystem,
         spans: &[RichSpan],
@@ -452,17 +351,8 @@ impl RichTextLayout {
         strikes: Vec<(usize, usize)>,
         browser_emoji: bool,
     ) -> Self {
-        Self::shape_styled_reusing_browser(
-            fs,
-            spans,
-            style,
-            max_width,
-            align,
-            underlines,
-            strikes,
-            None,
-            browser_emoji,
-        )
+        Self::shape_styled_reusing_browser(fs, spans, style, max_width, align, None, browser_emoji)
+            .with_decorations(underlines, strikes)
     }
 
     /// Reuse unchanged paragraphs from this renderer's previous layout.
@@ -470,7 +360,7 @@ impl RichTextLayout {
     /// font replacement or locale changes require `previous = None`.
     /// Fresh paragraph construction remains authoritative for attributes and
     /// document offsets; only compatible cosmic shape/layout caches move over.
-    pub(crate) fn shape_styled_reusing(
+    pub fn shape_styled_reusing(
         fs: &mut FontSystem,
         spans: &[RichSpan],
         style: &crate::text_render::TextStyle,
@@ -480,23 +370,16 @@ impl RichTextLayout {
         strikes: Vec<(usize, usize)>,
         previous: Option<Self>,
     ) -> Self {
-        Self::shape_styled_reusing_browser(
-            fs, spans, style, max_width, align, underlines, strikes, previous, false,
-        )
+        Self::shape_styled_reusing_browser(fs, spans, style, max_width, align, previous, false)
+            .with_decorations(underlines, strikes)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Paragraph reuse adds a previous layout to the canonical shaping inputs and browser emoji availability."
-    )]
     pub(crate) fn shape_styled_reusing_browser(
         fs: &mut FontSystem,
         spans: &[RichSpan],
         style: &crate::text_render::TextStyle,
         max_width: Option<f32>,
         align: TextAlign,
-        underlines: Vec<(usize, usize)>,
-        strikes: Vec<(usize, usize)>,
         previous: Option<Self>,
         browser_emoji: bool,
     ) -> Self {
@@ -593,8 +476,8 @@ impl RichTextLayout {
             line_lens,
             offset_map,
             text_len: full_text.len(),
-            underlines,
-            strikes,
+            underlines: Vec::new(),
+            strikes: Vec::new(),
             backgrounds,
             baselines,
             discretionary_hyphen_width,
@@ -777,6 +660,19 @@ impl RichTextLayout {
                     }
             })
             .fold(0.0f32, f32::max)
+    }
+
+    /// Underline and strike through byte ranges of the shaped text; neither
+    /// affects shaping.
+    #[must_use]
+    pub(crate) fn with_decorations(
+        mut self,
+        underlines: Vec<(usize, usize)>,
+        strikes: Vec<(usize, usize)>,
+    ) -> Self {
+        self.underlines = underlines;
+        self.strikes = strikes;
+        self
     }
 
     /// Add an underline decoration in this layout's global byte space. This
@@ -1622,17 +1518,14 @@ mod tests {
         // Case `shapes_caret_hit_and_selection`.
         {
             let mut fs = crate::font_catalog::fixture_font_system();
-            let layout = RichTextLayout::shape(
+            let layout = RichTextLayout::shape_styled(
                 &mut fs,
                 &[RichSpan::new("hello world")],
-                false,
-                16.0,
-                400.0,
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                Some(400.0),
                 TextAlign::Left,
-                FontFamily::Sans,
                 vec![],
                 vec![],
-                1.0,
             );
             assert!(layout.height() > 0.0);
             let (x0, _, h) = layout.caret_geometry(0);
@@ -1759,17 +1652,14 @@ mod tests {
 
     fn layout(text: &str, width: f32) -> RichTextLayout {
         let mut fs = crate::font_catalog::fixture_font_system();
-        RichTextLayout::shape(
+        RichTextLayout::shape_styled(
             &mut fs,
             &[RichSpan::new(text)],
-            false,
-            18.0,
-            width,
+            &RichTextLayout::block_style(false, 18.0, FontFamily::Sans, 1.0),
+            Some(width),
             TextAlign::Left,
-            FontFamily::Sans,
             vec![],
             vec![],
-            1.0,
         )
     }
 
@@ -1778,29 +1668,23 @@ mod tests {
         // Case `center_alignment_offsets_text`.
         {
             let mut fs = crate::font_catalog::fixture_font_system();
-            let left = RichTextLayout::shape(
+            let left = RichTextLayout::shape_styled(
                 &mut fs,
                 &[RichSpan::new("hi")],
-                false,
-                16.0,
-                400.0,
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                Some(400.0),
                 TextAlign::Left,
-                FontFamily::Sans,
                 vec![],
                 vec![],
-                1.0,
             );
-            let center = RichTextLayout::shape(
+            let center = RichTextLayout::shape_styled(
                 &mut fs,
                 &[RichSpan::new("hi")],
-                false,
-                16.0,
-                400.0,
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                Some(400.0),
                 TextAlign::Center,
-                FontFamily::Sans,
                 vec![],
                 vec![],
-                1.0,
             );
             let lx = left.caret_geometry(0).0;
             let cx = center.caret_geometry(0).0;
@@ -1814,29 +1698,23 @@ mod tests {
         {
             let mut fs = crate::font_catalog::fixture_font_system();
             let long = "word ".repeat(60);
-            let one = RichTextLayout::shape(
+            let one = RichTextLayout::shape_styled(
                 &mut fs,
                 &[RichSpan::new("word")],
-                false,
-                16.0,
-                1000.0,
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                Some(1000.0),
                 TextAlign::Left,
-                FontFamily::Sans,
                 vec![],
                 vec![],
-                1.0,
             );
-            let wrapped = RichTextLayout::shape(
+            let wrapped = RichTextLayout::shape_styled(
                 &mut fs,
                 &[RichSpan::new(long)],
-                false,
-                16.0,
-                120.0,
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                Some(120.0),
                 TextAlign::Left,
-                FontFamily::Sans,
                 vec![],
                 vec![],
-                1.0,
             );
             assert!(wrapped.height() > one.height() * 3.0);
         }
@@ -2065,20 +1943,17 @@ mod tests {
                 + 0.5;
 
             let mut fs = crate::font_catalog::fixture_font_system();
-            let layout = RichTextLayout::shape(
+            let layout = RichTextLayout::shape_styled(
                 &mut fs,
                 &[
                     RichSpan::new(first).background(Some([240, 220, 80])),
                     RichSpan::new(format!("{second}{third}")).bold(true),
                 ],
-                false,
-                18.0,
-                width,
+                &RichTextLayout::block_style(false, 18.0, FontFamily::Sans, 1.0),
+                Some(width),
                 TextAlign::Left,
-                FontFamily::Sans,
                 vec![(9, 18)],
                 vec![],
-                1.0,
             );
 
             assert_eq!(layout.visual_line_index(0), 0);
@@ -2215,17 +2090,14 @@ mod tests {
                 RichSpan::new("BBB").background(Some([255, 230, 0])),
                 RichSpan::new("CCC"),
             ];
-            let layout = RichTextLayout::shape(
+            let layout = RichTextLayout::shape_styled(
                 &mut fs,
                 &spans,
-                false,
-                16.0,
-                400.0,
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                Some(400.0),
                 TextAlign::Left,
-                FontFamily::Sans,
                 vec![],
                 vec![],
-                1.0,
             );
             // Exactly one background band, covering the "BBB" byte range [3, 6).
             assert_eq!(layout.backgrounds.len(), 1);
@@ -2240,17 +2112,14 @@ mod tests {
             assert!(x1 > x0, "highlight band must have positive width");
             assert!(y1 > y0, "highlight band must have positive height");
             // A span without a background contributes no band.
-            let plain = RichTextLayout::shape(
+            let plain = RichTextLayout::shape_styled(
                 &mut fs,
                 &[RichSpan::new("AAA")],
-                false,
-                16.0,
-                400.0,
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                Some(400.0),
                 TextAlign::Left,
-                FontFamily::Sans,
                 vec![],
                 vec![],
-                1.0,
             );
             assert!(plain.backgrounds.is_empty());
         }
@@ -2264,17 +2133,14 @@ mod tests {
                 RichSpan::new("x"),
                 RichSpan::new("2").baseline(BaselineShift::Super),
             ];
-            let layout = RichTextLayout::shape(
+            let layout = RichTextLayout::shape_styled(
                 &mut fs,
                 &spans,
-                false,
-                base_size,
-                400.0,
+                &RichTextLayout::block_style(false, base_size, FontFamily::Sans, 1.0),
+                Some(400.0),
                 TextAlign::Left,
-                FontFamily::Sans,
                 vec![],
                 vec![],
-                1.0,
             );
             // Recorded as a baseline range over the "2" byte [1, 2).
             assert_eq!(layout.baselines.len(), 1);
@@ -2326,29 +2192,23 @@ mod tests {
             let mut fs = crate::font_catalog::fixture_font_system();
             // Force two lines so the gap between line tops reflects the line advance.
             let long = "word ".repeat(40);
-            let single = RichTextLayout::shape(
+            let single = RichTextLayout::shape_styled(
                 &mut fs,
                 &[RichSpan::new(long.clone())],
-                false,
-                16.0,
-                120.0,
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                Some(120.0),
                 TextAlign::Left,
-                FontFamily::Sans,
                 vec![],
                 vec![],
-                1.0,
             );
-            let doubled = RichTextLayout::shape(
+            let doubled = RichTextLayout::shape_styled(
                 &mut fs,
                 &[RichSpan::new(long)],
-                false,
-                16.0,
-                120.0,
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 2.0),
+                Some(120.0),
                 TextAlign::Left,
-                FontFamily::Sans,
                 vec![],
                 vec![],
-                2.0,
             );
             let advance = |layout: &RichTextLayout| -> f32 {
                 let tops: Vec<f32> = layout.buffer.layout_runs().map(|r| r.line_top).collect();

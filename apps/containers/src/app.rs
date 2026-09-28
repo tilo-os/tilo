@@ -3291,10 +3291,6 @@ impl ContainersApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event for one embedded hand-laid field"
-    )]
     pub(crate) fn route_create_input(
         &mut self,
         field: CreateField,

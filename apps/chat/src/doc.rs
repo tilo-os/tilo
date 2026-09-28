@@ -18,15 +18,13 @@
 //! │                  work(Map{state, since, reasoning, trace}) }
 //! ├── "voice"        (Map<chId,  Map<userId,{talking,muted,deafened,audio_only}>>)
 //! ├── "read"         (Map<userId, Map<chId, i64>>) # each peer's read watermark
-//! ├── "rich_drafts"  (Map<chId, rich text>)      # per-channel composer body
-//! └── "drafts"       (Map<chId, Text>)           # first-format drafts, moved on load
+//! └── "rich_drafts"  (Map<chId, rich text>)      # per-channel composer body
 //! ```
 //!
 //! A message's `text` is its plain text; `rich`, when present, is the body as
 //! written (qdoc rich text, mentions marked). A message written before bodies
 //! were rich has only `text`, and reads as that text with its mentions
-//! marked. Drafts are rich text; a first-format `Text` draft is moved into
-//! `rich_drafts` once, on load ([`ChatDoc::upgrade_drafts`]).
+//! marked. Drafts are rich text.
 //!
 //! A channel's **unread** count is not stored — it is derived per-peer as the
 //! number of top-level messages beyond that peer's `read` watermark (advanced
@@ -55,7 +53,7 @@ use std::collections::HashMap;
 use ui::doc::{read_bool, read_i64_coerced, read_str, read_text};
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
 use tilo_content::ContentStore;
 use uuid::Uuid;
@@ -68,16 +66,7 @@ use crate::model::{
 /// Attachments in the chat CRDT are portable content-addressed descriptors;
 /// bytes are kept in the app's content store so a message never names a
 /// sender-local filesystem path.
-/// One sync migration visits at most this many message rows. The app invokes
-/// it once per loaded document, so hostile legacy history cannot tax every
-/// frame forever.
-const LEGACY_MIGRATION_VISIT_BUDGET: usize = 256;
-const LEGACY_MIGRATION_WRITE_BUDGET: usize = 32;
-/// Legacy paths are only examined for our fixed demo identities. Keeping the
-/// copied scalar small makes the one-shot migration fail closed even when a
-/// hostile old document contains megabyte-scale path fields.
-const LEGACY_MIGRATION_PATH_BYTES: usize = 256;
-
+///
 /// A deliberately small import ceiling. Media bytes live in the content store,
 /// but accepting an arbitrary local file on the UI event path would
 /// still let one click exhaust memory and room bandwidth.
@@ -236,39 +225,8 @@ fn message_lists(doc: &AutoCommit, channel: &str) -> Vec<ObjId> {
         .collect()
 }
 
-/// Every draft `Text` stored for `key` across every `drafts` map candidate,
-/// each with the map holding it, winner map first.
-fn draft_values(doc: &AutoCommit, key: &str) -> Vec<(ObjId, ObjId)> {
-    let mut out = Vec::new();
-    for drafts in map_candidates(doc, &ROOT, "drafts") {
-        let Ok(values) = doc.get_all(&drafts, key) else {
-            continue;
-        };
-        for (value, id) in values {
-            if matches!(value, Value::Object(ObjType::Text)) {
-                out.push((drafts.clone(), id));
-            }
-        }
-    }
-    out
-}
-
 /// Where each composer's rich-text draft is kept.
 const RICH_DRAFTS: &str = "rich_drafts";
-/// The drafts format a document has been moved to ([`ChatDoc::upgrade_drafts`]).
-const DRAFTS_VERSION_KEY: &str = "drafts_version";
-const DRAFTS_VERSION: i64 = 1;
-
-/// Positional trace keys emitted by the short-lived pre-stable-id schema.
-/// Current step ids always begin with `step_`; this deliberately recognises
-/// only exactly eight ASCII digits so a user-authored id is never migrated.
-fn is_legacy_trace_key(key: &str) -> bool {
-    key.len() == 8 && key.bytes().all(|byte| byte.is_ascii_digit())
-}
-
-fn legacy_step_id(key: &str) -> String {
-    format!("legacy_step_{key}")
-}
 
 /// # Panics
 /// Never in practice: every caller passes `ROOT` or an object it just
@@ -351,61 +309,6 @@ impl ChatDoc {
         (content.read(&hash).as_deref() == Some(bytes)).then_some(hash)
     }
 
-    /// Upgrade only legacy demo rows, whose content is deterministic and has
-    /// no local I/O. Historic filesystem-backed rows intentionally remain
-    /// inert until their owning machine explicitly re-shares the file through
-    /// the bounded import worker; reading arbitrary old paths from `sync`
-    /// would both block the UI and replicate a peer-local identity onward.
-    pub fn migrate_legacy_attachment_paths(doc: &mut AutoCommit) {
-        let Some(channels) = map_at(doc, &ROOT, "messages") else {
-            return;
-        };
-        let mut legacy = Vec::new();
-        let mut visited = 0usize;
-        for channel in doc.keys(&channels).take(LEGACY_MIGRATION_VISIT_BUDGET) {
-            let Some(messages) = list_at(doc, &channels, &channel) else {
-                continue;
-            };
-            for index in 0..doc.length(&messages) {
-                if visited >= LEGACY_MIGRATION_VISIT_BUDGET {
-                    break;
-                }
-                visited += 1;
-                let Ok(Some((Value::Object(ObjType::Map), message))) = doc.get(&messages, index)
-                else {
-                    continue;
-                };
-                let Some(attachment) = map_at(doc, &message, "attachment") else {
-                    continue;
-                };
-                let blob_is_empty = match doc.get(&attachment, "blob") {
-                    Ok(None) => true,
-                    Ok(Some((Value::Scalar(value), _))) => {
-                        matches!(value.as_ref(), ScalarValue::Str(blob) if blob.is_empty())
-                    }
-                    _ => false,
-                };
-                if !blob_is_empty {
-                    continue;
-                }
-                let Ok(Some((Value::Scalar(value), _))) = doc.get(&attachment, "path") else {
-                    continue;
-                };
-                let ScalarValue::Str(path) = value.as_ref() else {
-                    continue;
-                };
-                if path.len() <= LEGACY_MIGRATION_PATH_BYTES
-                    && path.starts_with(crate::images::DEMO_SCHEME)
-                {
-                    legacy.push((attachment, path.to_string()));
-                }
-            }
-        }
-        for (attachment, path) in legacy.into_iter().take(LEGACY_MIGRATION_WRITE_BUDGET) {
-            let _ = doc.put(&attachment, "blob", path);
-            let _ = doc.delete(&attachment, "path");
-        }
-    }
     pub fn is_seeded(doc: &AutoCommit) -> bool {
         read_bool(doc, &ROOT, "seeded").unwrap_or(false)
     }
@@ -431,8 +334,19 @@ impl ChatDoc {
         if Self::is_seeded(doc) {
             return;
         }
-        let _ = tilo_automerge::ApplyIncoming::apply_incoming(doc, Self::starter_scaffold());
+        Self::seed_shared(doc);
         Self::put_user(doc, me_id, me_name, me_initials, 0, Presence::Online);
+    }
+
+    /// The starter workspace alone, with nobody in it: what a host that
+    /// is no member's own Chat lays out for a new room. Each member's Chat
+    /// adds its own person entry when it joins. Idempotent like
+    /// [`Self::seed_starter`], and the same shared change.
+    pub fn seed_shared(doc: &mut AutoCommit) {
+        if Self::is_seeded(doc) {
+            return;
+        }
+        let _ = tilo_automerge::ApplyIncoming::apply_incoming(doc, Self::starter_scaffold());
     }
 
     /// The starter workspace as the one change every member writes: a fixed
@@ -457,8 +371,6 @@ impl ChatDoc {
         ] {
             let _ = get_or_map(doc, &ROOT, key);
         }
-        // Drafts start in the current shape, so nothing is ever upgraded.
-        let _ = doc.put(&ROOT, DRAFTS_VERSION_KEY, DRAFTS_VERSION);
         Self::put_workspace(doc, "ws_home", "My Workspace", "MW", 0, 0);
         Self::put_category(doc, "cat_home_text", "ws_home", "Channels", 0, false);
         Self::put_category(doc, "cat_home_voice", "ws_home", "Voice", 1, false);
@@ -1079,7 +991,6 @@ impl ChatDoc {
         for key in ["messages", "read", RICH_DRAFTS] {
             let _ = get_or_map(doc, &ROOT, key);
         }
-        let _ = doc.put(&ROOT, DRAFTS_VERSION_KEY, DRAFTS_VERSION);
     }
 
     fn put_user(
@@ -1130,10 +1041,6 @@ impl ChatDoc {
         let _ = doc.put(&cat, "collapsed", collapsed);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "private leaf serializer mirrors the fixed channel CRDT schema; all call sites provide complete channel records"
-    )]
     fn put_channel(
         doc: &mut AutoCommit,
         id: &str,
@@ -1318,8 +1225,7 @@ impl ChatDoc {
     /// Reasoning is deliberately one atomic scalar: `route` and `why` are one
     /// assertion, and merging them independently could manufacture a pairing
     /// no agent authored. Trace rows are keyed by an authored step id, never a
-    /// positional index. Current trace updates are additive; only legacy
-    /// positional rows are tombstoned during migration.
+    /// positional index, and trace updates are additive.
     fn write_work(doc: &mut AutoCommit, block: &ObjId, work: &crate::model::AgentWork) {
         // A state update is often accompanied by an unchanged trace or
         // reasoning record. Do not rewrite those independent fields: doing so
@@ -1382,22 +1288,6 @@ impl ChatDoc {
         // collaborator's append cannot know that row is obsolete. Therefore
         // `SetAgentWork` is additive; only an explicit future tombstone action
         // may clear a stable step id.
-        // A release prior to stable step ids used zero-padded list positions as
-        // keys. During the first update, retain its projection under a derived
-        // legacy id but tombstone the positional row so it cannot reappear.
-        #[allow(
-            clippy::needless_collect,
-            reason = "the keys must be owned before tombstoning their rows mutably"
-        )]
-        let legacy_trace_keys: Vec<_> = doc
-            .keys(&trace)
-            .filter(|key| is_legacy_trace_key(key))
-            .collect();
-        for key in legacy_trace_keys {
-            if let Some(row) = map_at(doc, &trace, &key) {
-                let _ = doc.put(&row, "present", false);
-            }
-        }
     }
 
     /// # Panics
@@ -1518,11 +1408,10 @@ impl ChatDoc {
             work,
         } = nm;
 
-        // Keep this low-level writer compatible with old persisted rows and
-        // migrations, while still making a repeated stable id harmless. New
-        // network/palette actions go through `accepts_message_action` below,
-        // which also validates their channel, hierarchy, text, and attachment
-        // metadata before it reaches this compatibility seam.
+        // A repeated stable id is harmless. New network/palette actions go
+        // through `accepts_message_action` below, which also validates their
+        // channel, hierarchy, text, and attachment metadata before it reaches
+        // this low-level writer.
         if Self::message_id_exists(doc, id) {
             return id.to_string();
         }
@@ -1554,9 +1443,8 @@ impl ChatDoc {
     }
 
     /// Whether a new wire action is safe to add to the durable conversation.
-    /// This is intentionally separate from `push_message_with_id`: migration
-    /// code must be able to faithfully retain path-based legacy descriptors,
-    /// while an incoming modern action must not create an ambiguous resource,
+    /// This is intentionally separate from `push_message_with_id`: an incoming
+    /// action must not create an ambiguous resource,
     /// hidden channel, dangling thread edge, or unbounded display metadata.
     pub fn accepts_message_action(
         doc: &AutoCommit,
@@ -1977,7 +1865,7 @@ impl ChatDoc {
     }
 
     /// The draft for `key` as written: every draft stored for it, the same
-    /// text twice (two peers moving one first-format draft at once) once.
+    /// text twice (two peers joining the same drafts at once) once.
     pub fn draft_blocks(doc: &AutoCommit, key: &str) -> Vec<ui::widget::BlockContent> {
         Self::distinct_drafts(doc, key)
             .into_iter()
@@ -2013,17 +1901,9 @@ impl ChatDoc {
             .collect()
     }
 
-    /// The draft's plain text, a line per paragraph. A draft not yet moved
-    /// out of the first format reads as its `Text`, joined across peers.
+    /// The draft's plain text, a line per paragraph.
     pub fn draft_text(doc: &AutoCommit, key: &str) -> String {
-        if !Self::rich_draft_candidates(doc, key).is_empty() {
-            return crate::body::plain_text(&Self::draft_blocks(doc, key));
-        }
-        let mut out = String::new();
-        for (_, id) in draft_values(doc, key) {
-            out.push_str(&doc.text(&id).unwrap_or_default());
-        }
-        out
+        crate::body::plain_text(&Self::draft_blocks(doc, key))
     }
 
     /// Replace the draft with `text` as one paragraph (line breaks inside
@@ -2045,54 +1925,6 @@ impl ChatDoc {
             return;
         }
         let _ = Self::replace_rich_draft(doc, key, &[]);
-    }
-
-    /// Move first-format drafts (a `Text` per key under `drafts`) into rich
-    /// text, once: a draft with text becomes one paragraph holding it, line
-    /// breaks and all, and the old `drafts` map goes. Returns whether
-    /// anything was written. A version stamp keeps a second pass from
-    /// writing again.
-    pub fn upgrade_drafts(doc: &mut AutoCommit) -> bool {
-        if !Self::needs_draft_upgrade(doc) {
-            return false;
-        }
-        let keys: Vec<String> = map_candidates(doc, &ROOT, "drafts")
-            .iter()
-            .flat_map(|drafts| doc.keys(drafts).collect::<Vec<_>>())
-            .collect();
-        for key in keys {
-            let text = {
-                let mut out = String::new();
-                for (_, id) in draft_values(doc, &key) {
-                    out.push_str(&doc.text(&id).unwrap_or_default());
-                }
-                out
-            };
-            let exists = !Self::rich_draft_candidates(doc, &key).is_empty();
-            if !exists {
-                // Every key gets its rich draft now, so peers type into one.
-                Self::set_draft(doc, &key, &text);
-            } else if !text.is_empty() && Self::draft_text(doc, &key).is_empty() {
-                Self::set_draft(doc, &key, &text);
-            }
-        }
-        let _ = doc.delete(&ROOT, "drafts");
-        let _ = get_or_map(doc, &ROOT, RICH_DRAFTS);
-        let _ = doc.put(&ROOT, DRAFTS_VERSION_KEY, DRAFTS_VERSION);
-        true
-    }
-
-    /// Whether [`Self::upgrade_drafts`] has anything to do: first-format
-    /// drafts are still there (a document from before, or restored from an
-    /// archive into a newer one), or the version was never stamped.
-    pub fn needs_draft_upgrade(doc: &AutoCommit) -> bool {
-        let version = doc
-            .get(&ROOT, DRAFTS_VERSION_KEY)
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| value.as_i64())
-            .unwrap_or(0);
-        version < DRAFTS_VERSION || !map_candidates(doc, &ROOT, "drafts").is_empty()
     }
 
     // -----------------------------------------------------------------------
@@ -2137,7 +1969,8 @@ impl ChatDoc {
             let _ = doc.put(&u, "initials", initials);
             wrote = true;
         }
-        if read_i64_coerced(doc, &u, "color_idx").unwrap_or(0) != color as i64 {
+        // Absent is not colour 0: a person always carries their colour.
+        if read_i64_coerced(doc, &u, "color_idx") != Some(color as i64) {
             let _ = doc.put(&u, "color_idx", color as i64);
             wrote = true;
         }
@@ -2490,9 +2323,6 @@ impl ChatDoc {
         }
         if let Some(voice) = map_at(doc, &ROOT, "voice") {
             let _ = doc.delete(&voice, id);
-        }
-        for drafts in map_candidates(doc, &ROOT, "drafts") {
-            let _ = doc.delete(&drafts, id);
         }
         for drafts in map_candidates(doc, &ROOT, RICH_DRAFTS) {
             let _ = doc.delete(&drafts, id);
@@ -2953,18 +2783,7 @@ impl ChatDoc {
 
     fn read_attachment(doc: &AutoCommit, msg: &ObjId) -> Option<Attachment> {
         let a = map_at(doc, msg, "attachment")?;
-        // A historic row can still carry a peer-local `path`. Preserve it in
-        // this peer's projection so the file card is not erased, but never
-        // read it here or write it back as a blob: only an explicit local
-        // re-share enters the bounded importer and collaborative document.
-        let blob = {
-            let current = read_str(doc, &a, "blob").unwrap_or_default();
-            if current.is_empty() {
-                read_str(doc, &a, "path").unwrap_or_default()
-            } else {
-                current
-            }
-        };
+        let blob = read_str(doc, &a, "blob").unwrap_or_default();
         match read_str(doc, &a, "kind").unwrap_or_default().as_str() {
             "image" => Some(Attachment::Image {
                 name: read_str(doc, &a, "name").unwrap_or_default(),
@@ -3022,110 +2841,39 @@ impl ChatDoc {
         serde_json::from_str(&raw).ok()
     }
 
-    /// The agent record stored on a message, or `None` for an ordinary one.
-    /// New rows use the native CRDT map written by [`Self::write_work`]. The
-    /// JSON fallback is read-only compatibility for documents saved by older
-    /// releases; the next real agent update replaces it with the native form.
+    /// The agent record stored on a message, or `None` for an ordinary one,
+    /// as the native CRDT map written by [`Self::write_work`].
     fn read_work(doc: &AutoCommit, msg: &ObjId) -> Option<crate::model::AgentWork> {
-        if let Some(record) = map_at(doc, msg, "work") {
-            return Self::read_native_work(doc, &record);
-        }
-        let raw = read_str(doc, msg, "work").unwrap_or_default();
-        if raw.is_empty() {
-            return None;
-        }
-        serde_json::from_str(&raw).ok()
+        let record = map_at(doc, msg, "work")?;
+        Self::read_native_work(doc, &record)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one compatibility reader keeps the native and two legacy AgentWork schemas adjacent"
-    )]
     fn read_native_work(doc: &AutoCommit, record: &ObjId) -> Option<crate::model::AgentWork> {
         let transition = serde_json::from_str::<StoredAgentTransition>(
             &read_str(doc, record, "transition").unwrap_or_default(),
         )
-        .ok();
-        let (state, since) = if let Some(transition) = transition {
-            (transition.state, transition.since)
-        } else {
-            // Compatibility with the initial native-map rollout. Its next
-            // update writes `transition` and thereafter ignores these fields.
-            let state = map_at(doc, record, "state")?;
-            let state = match read_str(doc, &state, "kind").unwrap_or_default().as_str() {
-                "taken" => crate::model::AgentWorkState::Taken,
-                "waiting" => crate::model::AgentWorkState::Waiting {
-                    app: read_str(doc, &state, "app").unwrap_or_default(),
-                },
-                "doing" => crate::model::AgentWorkState::Doing {
-                    did: read_str(doc, &state, "did").unwrap_or_default(),
-                    about: read_str(doc, &state, "about").unwrap_or_default(),
-                },
-                "done" => crate::model::AgentWorkState::Done {
-                    did: read_str(doc, &state, "did").unwrap_or_default(),
-                },
-                "refused" => crate::model::AgentWorkState::Refused,
-                _ => return None,
-            };
-            (state, read_i64_coerced(doc, record, "since").unwrap_or(0))
-        };
+        .ok()?;
+        let (state, since) = (transition.state, transition.since);
         // Reasoning is one atomic scalar because route and explanation are one
-        // authored claim. Support the previous native map only while reading
-        // old documents; the next write replaces it with this scalar.
-        let reasoning = if map_at(doc, record, "reasoning").is_some() {
-            map_at(doc, record, "reasoning").and_then(|reasoning| {
-                if !read_bool(doc, &reasoning, "present").unwrap_or(false) {
-                    return None;
-                }
-                let route = match read_str(doc, &reasoning, "route")
-                    .unwrap_or_default()
-                    .as_str()
-                {
-                    "model" => crate::model::AgentRoute::Model,
-                    "floor" => crate::model::AgentRoute::Floor,
-                    _ => return None,
-                };
-                Some(crate::model::AgentReasoning {
-                    route,
-                    why: read_str(doc, &reasoning, "why").unwrap_or_default(),
-                })
-            })
-        } else {
-            serde_json::from_str::<Option<crate::model::AgentReasoning>>(
-                &read_str(doc, record, "reasoning").unwrap_or_default(),
-            )
-            .ok()
-            .flatten()
-        };
+        // authored claim.
+        let reasoning = serde_json::from_str::<Option<crate::model::AgentReasoning>>(
+            &read_str(doc, record, "reasoning").unwrap_or_default(),
+        )
+        .ok()
+        .flatten();
         let mut trace_with_order = Vec::new();
         if let Some(rows) = map_at(doc, record, "trace") {
-            for key in doc.keys(&rows) {
-                let Some(row) = map_at(doc, &rows, &key) else {
+            for id in doc.keys(&rows) {
+                let Some(row) = map_at(doc, &rows, &id) else {
                     continue;
                 };
                 if !read_bool(doc, &row, "present").unwrap_or(false) {
                     continue;
                 }
-                let outcome = if let Ok(outcome) =
-                    serde_json::from_str::<crate::model::AgentStepOutcome>(
-                        &read_str(doc, &row, "outcome").unwrap_or_default(),
-                    ) {
-                    outcome
-                } else {
-                    match read_str(doc, &row, "outcome").unwrap_or_default().as_str() {
-                        "asked" => crate::model::AgentStepOutcome::Asked,
-                        "applied" => crate::model::AgentStepOutcome::Applied,
-                        "no_change" => crate::model::AgentStepOutcome::NoChange,
-                        "refused" => crate::model::AgentStepOutcome::Refused {
-                            why: read_str(doc, &row, "why").unwrap_or_default(),
-                        },
-                        _ => continue,
-                    }
-                };
-                let id = if is_legacy_trace_key(&key) {
-                    legacy_step_id(&key)
-                } else {
-                    key.clone()
+                let Ok(outcome) = serde_json::from_str::<crate::model::AgentStepOutcome>(
+                    &read_str(doc, &row, "outcome").unwrap_or_default(),
+                ) else {
+                    continue;
                 };
                 let sequence = read_i64_coerced(doc, &row, "sequence").unwrap_or(0).max(0) as u64;
                 trace_with_order.push((
@@ -3197,6 +2945,29 @@ mod tests {
     use super::*;
     use crate::model;
     use tilo_automerge::ApplyIncoming;
+
+    /// A person joining with the first colour still carries it: the entry
+    /// is complete whatever colour they have.
+    #[test]
+    fn a_new_person_carries_their_colour_even_the_first() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_shared(&mut doc);
+        assert!(ChatDoc::ensure_user(
+            &mut doc,
+            "u_7f3a",
+            "Robin Vale",
+            "RV",
+            0,
+            Presence::Online
+        ));
+        let users = doc.get(ROOT, "users").unwrap().unwrap().1;
+        let person = doc.get(&users, "u_7f3a").unwrap().unwrap().1;
+        assert_eq!(read_i64_coerced(&doc, &person, "color_idx"), Some(0));
+        assert!(
+            !ChatDoc::ensure_user(&mut doc, "u_7f3a", "Robin Vale", "RV", 0, Presence::Online),
+            "an unchanged person writes nothing"
+        );
+    }
 
     /// Two writers each scaffold the room's conversation before the other's
     /// copy arrives, and one then adds a channel: once their documents meet,
@@ -3636,12 +3407,11 @@ mod tests {
         }
     }
 
-    /// A document written before the shared containers were created up
-    /// front: the seed without `drafts`/`messages`/`read`, so the first write
-    /// on each replica creates them lazily.
-    fn legacy_seeded() -> AutoCommit {
+    /// The seed without its shared `rich_drafts`/`messages`/`read`
+    /// containers, so the first write on each replica creates them lazily.
+    fn lazy_root_seeded() -> AutoCommit {
         let mut doc = seeded();
-        for key in ["drafts", RICH_DRAFTS, "messages", "read"] {
+        for key in [RICH_DRAFTS, "messages", "read"] {
             let _ = doc.delete(&ROOT, key);
         }
         doc.commit();
@@ -3675,7 +3445,7 @@ mod tests {
 
     #[test]
     fn concurrent_first_drafts_on_two_replicas_both_survive() {
-        for mut base in [seeded(), legacy_seeded()] {
+        for mut base in [seeded(), lazy_root_seeded()] {
             for _ in 0..8 {
                 let mut a = base.fork();
                 let mut b = base.fork();
@@ -3708,45 +3478,6 @@ mod tests {
         type_into(&mut c, "c_crit", 11, "!");
         a.merge_incoming(&mut c).unwrap();
         assert_eq!(ChatDoc::draft_text(&a, "c_crit"), "Hello, world!");
-    }
-
-    #[test]
-    fn first_format_drafts_move_into_rich_text_once() {
-        let mut doc = legacy_seeded();
-        let _ = doc.delete(&ROOT, DRAFTS_VERSION_KEY);
-        let drafts = get_or_map(&mut doc, &ROOT, "drafts");
-        let old = doc.put_object(&drafts, "c_crit", ObjType::Text).unwrap();
-        doc.splice_text(&old, 0, 0, "half a thought\nsecond line")
-            .unwrap();
-        let _ = doc.put_object(&drafts, "c_empty", ObjType::Text).unwrap();
-        doc.commit();
-        let saved = AutoCommit::load(&doc.save()).unwrap();
-        let mut doc = saved;
-        assert!(ChatDoc::needs_draft_upgrade(&doc));
-        assert_eq!(
-            ChatDoc::draft_text(&doc, "c_crit"),
-            "half a thought\nsecond line"
-        );
-        assert!(ChatDoc::upgrade_drafts(&mut doc));
-        assert!(!ChatDoc::needs_draft_upgrade(&doc));
-        assert_eq!(
-            ChatDoc::draft_text(&doc, "c_crit"),
-            "half a thought\nsecond line",
-            "the draft comes across whole"
-        );
-        assert_eq!(
-            ChatDoc::draft_blocks(&doc, "c_crit").len(),
-            1,
-            "one paragraph"
-        );
-        assert!(ChatDoc::rich_draft(&doc, "c_empty").is_some());
-        assert!(
-            map_at(&doc, &ROOT, "drafts").is_none(),
-            "the first format is gone"
-        );
-        let heads = doc.get_heads();
-        assert!(!ChatDoc::upgrade_drafts(&mut doc), "once is enough");
-        assert_eq!(doc.get_heads(), heads);
     }
 
     #[test]
@@ -3829,7 +3560,7 @@ mod tests {
             ChannelKind::Text,
         );
         origin.commit();
-        let cases = [(origin, "c_new"), (legacy_seeded(), "c_crit")];
+        let cases = [(origin, "c_new"), (lazy_root_seeded(), "c_crit")];
         for (mut base, channel) in cases {
             for _ in 0..8 {
                 let mut a = base.fork();
@@ -3856,7 +3587,7 @@ mod tests {
     #[test]
     fn concurrent_first_read_marks_on_two_replicas_both_survive() {
         for _ in 0..8 {
-            let mut base = legacy_seeded();
+            let mut base = lazy_root_seeded();
             let mut a = base.fork();
             let mut b = base.fork();
             ChatDoc::set_read_watermark(&mut a, "c_crit", "u_a", 3);
@@ -3869,10 +3600,10 @@ mod tests {
 
     /// Regression (frame-performance Chat workload): consecutive sends from
     /// one composer while a collaborator syncs every change must each start
-    /// from an empty draft, on a fresh and on a legacy (lazy-draft) document.
+    /// from an empty draft, on a fresh and on a lazily rooted document.
     #[test]
     fn consecutive_sends_with_a_syncing_collaborator_start_from_an_empty_draft() {
-        for mut origin in [seeded(), legacy_seeded()] {
+        for mut origin in [seeded(), lazy_root_seeded()] {
             let mut a = origin.fork();
             let mut b = origin.fork();
             for n in 0..5 {
@@ -4202,7 +3933,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one labelled phase per original scenario, each with its own fresh fixture"
     )]
-    fn attachments_are_portable_bounded_and_legacy_paths_migrate_within_budget() {
+    fn attachments_are_portable_and_bounded() {
         // Phase: video_attachment_round_trips_through_the_crdt.
         {
             // A video share references a portable content hash (no bytes in the
@@ -4257,93 +3988,6 @@ mod tests {
         {
             let too_large = vec![0; MAX_ATTACHMENT_BYTES as usize + 1];
             assert!(ChatDoc::store_attachment_blob(&ContentStore::memory(), &too_large).is_none());
-        }
-
-        // Phase: legacy_local_paths_remain_visible_but_are_never_promoted_in_sync.
-        {
-            let mut doc = seeded();
-            let id = ChatDoc::push_message_with_id(
-                &mut doc,
-                "c_crit",
-                "m_legacy_attachment",
-                NewMessage {
-                    author: model::ME.into(),
-                    ts: NOW,
-                    attachment: Some(Attachment::File {
-                        name: "old-local.pdf".into(),
-                        blob: String::new(),
-                        size: 7,
-                    }),
-                    ..Default::default()
-                },
-            );
-            let message = ChatDoc::find_message_obj(&doc, "c_crit", &id).unwrap();
-            let attachment = map_at(&doc, &message, "attachment").unwrap();
-            let _ = doc.put(&attachment, "path", "/old-machine/old-local.pdf");
-
-            ChatDoc::migrate_legacy_attachment_paths(&mut doc);
-            let row = ChatDoc::list_messages(&doc, "c_crit")
-                .into_iter()
-                .find(|row| row.id == id)
-                .unwrap();
-            assert_eq!(
-                row.attachment.unwrap().blob(),
-                Some("/old-machine/old-local.pdf")
-            );
-            assert_eq!(
-                read_str(&doc, &attachment, "path").unwrap_or_default(),
-                "/old-machine/old-local.pdf",
-                "sync neither reads nor rewrites a peer-local path"
-            );
-        }
-
-        // Phase: legacy_migration_has_a_fixed_total_visit_and_write_budget.
-        {
-            let mut doc = seeded();
-            for n in 0..=LEGACY_MIGRATION_VISIT_BUDGET {
-                let id = format!("m_legacy_budget_{n}");
-                ChatDoc::push_message_with_id(
-                    &mut doc,
-                    "c_crit",
-                    &id,
-                    NewMessage {
-                        author: model::ME.into(),
-                        ts: NOW,
-                        attachment: Some(Attachment::File {
-                            name: format!("{n}.txt"),
-                            blob: String::new(),
-                            size: 1,
-                        }),
-                        ..Default::default()
-                    },
-                );
-                let message = ChatDoc::find_message_obj(&doc, "c_crit", &id).unwrap();
-                let attachment = map_at(&doc, &message, "attachment").unwrap();
-                let _ = doc.put(&attachment, "path", crate::images::DEMO_CALL_GRID);
-            }
-
-            ChatDoc::migrate_legacy_attachment_paths(&mut doc);
-            let migrated = (0..=LEGACY_MIGRATION_VISIT_BUDGET)
-                .filter(|n| {
-                    let id = format!("m_legacy_budget_{n}");
-                    let message = ChatDoc::find_message_obj(&doc, "c_crit", &id).unwrap();
-                    let attachment = map_at(&doc, &message, "attachment").unwrap();
-                    read_str(&doc, &attachment, "blob").unwrap_or_default()
-                        == crate::images::DEMO_CALL_GRID
-                })
-                .count();
-            assert!(migrated <= LEGACY_MIGRATION_WRITE_BUDGET);
-            assert!(
-                {
-                    let message =
-                        ChatDoc::find_message_obj(&doc, "c_crit", "m_legacy_budget_256").unwrap();
-                    let attachment = map_at(&doc, &message, "attachment").unwrap();
-                    read_str(&doc, &attachment, "blob")
-                        .unwrap_or_default()
-                        .is_empty()
-                },
-                "the bounded one-shot migration leaves rows beyond its visit budget untouched"
-            );
         }
     }
 
@@ -4577,56 +4221,6 @@ mod tests {
                 (merged.state == left.state && merged.since == left.since)
                     || (merged.state == right.state && merged.since == right.since),
                 "merge must choose one complete authored transition, not a hybrid: {merged:?}"
-            );
-        }
-
-        // Phase: legacy_positional_trace_row_migrates_to_a_tombstoned_id_key.
-        {
-            use crate::model::{AgentStepOutcome, AgentWork, AgentWorkState};
-
-            let mut doc = seeded();
-            let message = ChatDoc::push_message_with_id(
-                &mut doc,
-                "c_crit",
-                "m_legacy_trace",
-                NewMessage {
-                    author: "agent_claude".into(),
-                    ts: NOW,
-                    ..Default::default()
-                },
-            );
-            let message_obj = ChatDoc::find_message_obj(&doc, "c_crit", &message).unwrap();
-            let work = get_or_map(&mut doc, &message_obj, "work");
-            let _ = doc.put(&work, "since", NOW);
-            let state = get_or_map(&mut doc, &work, "state");
-            let _ = doc.put(&state, "kind", "taken");
-            let trace = get_or_map(&mut doc, &work, "trace");
-            let old = get_or_map(&mut doc, &trace, "00000000");
-            let _ = doc.put(&old, "present", true);
-            let _ = doc.put(&old, "resource", "chat.message:m_me1");
-            let _ = doc.put(&old, "label", "Pin message");
-            let _ = doc.put(&old, "outcome", "asked");
-
-            let mut updated = AgentWork::new(AgentWorkState::Taken, NOW + 1);
-            updated.trace = ChatDoc::list_messages(&doc, "c_crit")
-                .into_iter()
-                .find(|row| row.id == message)
-                .and_then(|row| row.work)
-                .unwrap()
-                .trace;
-            assert_eq!(updated.trace[0].id, "legacy_step_00000000");
-            updated.trace[0].outcome = AgentStepOutcome::Applied;
-            ChatDoc::set_message_work(&mut doc, "c_crit", &message, &updated, None);
-
-            let trace = map_at(&doc, &work, "trace").unwrap();
-            assert!(
-                !read_bool(&doc, &map_at(&doc, &trace, "00000000").unwrap(), "present")
-                    .unwrap_or(false),
-                "the old positional row is a tombstone"
-            );
-            assert!(
-                map_at(&doc, &trace, "legacy_step_00000000").is_some(),
-                "the same row is now keyed by a stable id"
             );
         }
     }

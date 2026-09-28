@@ -366,7 +366,7 @@ jobs:
         if: matrix.test_packages != '' && contains(format('{0} ', matrix.test_packages), '-p shell ')
         run: >-
           bash scripts/ci-run.sh "cargo build (shell end-to-end apps)" --
-          cargo build --locked --bin notes --bin chat --bin tilo-launcher
+          cargo build --locked -p notes -p chat -p launcher --bin notes --bin chat --bin tilo-launcher
 
       - name: Test shard ${{ matrix.shard }}
         if: matrix.test_packages != ''
@@ -459,7 +459,7 @@ jobs:
         if: contains(format('{0} ', matrix.test_packages), '-p shell ')
         run: >-
           bash scripts/ci-run.sh "cargo build (shell end-to-end apps)" --
-          cargo build --locked --bin notes --bin chat --bin tilo-launcher
+          cargo build --locked -p notes -p chat -p launcher --bin notes --bin chat --bin tilo-launcher
 
       - name: Archive the tests of ${{ matrix.package }}
         run: |

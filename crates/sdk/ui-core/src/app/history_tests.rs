@@ -771,7 +771,7 @@ struct RoutedOwners {
 }
 impl RoutedOwners {
     fn new() -> Self {
-        use crate::application::{HostContext, LaunchTarget, RestoreInput};
+        use crate::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
         use crate::application_test_support::{
             APP, author, provenance, runner_permissions, runner_probe_definition,
         };
@@ -793,13 +793,15 @@ impl RoutedOwners {
         for instance in [10, 11] {
             let context = HostContext::prepare(
                 definition,
-                records.clone(),
-                views.clone(),
-                "D".into(),
-                instance,
-                runner_permissions(),
-                author(),
-                provenance(),
+                HostContextInputs {
+                    records: records.clone(),
+                    views: views.clone(),
+                    device_id: "D".into(),
+                    instance_id: instance,
+                    permissions: runner_permissions(),
+                    author: author(),
+                    action_context: provenance(),
+                },
                 &LaunchTarget::New,
             )
             .unwrap();
@@ -1179,7 +1181,9 @@ struct RoutedPrimary {
 }
 impl RoutedPrimary {
     fn new(shape: PrimaryMetadataShape) -> Self {
-        use crate::application::{ApplicationDefinition, HostContext, LaunchTarget, RestoreInput};
+        use crate::application::{
+            ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+        };
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::record::RecordOwners::new(temp.path().to_path_buf());
         let workspace = "00000000-0000-4000-8000-000000000078";
@@ -1205,15 +1209,17 @@ impl RoutedPrimary {
         let target = LaunchTarget::PrimaryNew;
         let context = HostContext::prepare(
             &definition,
-            records.clone(),
-            views,
-            "D".into(),
-            70,
-            std::rc::Rc::new(std::cell::RefCell::new(
-                crate::permissions::PermissionContext::permissive(),
-            )),
-            crate::permissions::UserId("primary-author".into()),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records: records.clone(),
+                views,
+                device_id: "D".into(),
+                instance_id: 70,
+                permissions: std::rc::Rc::new(std::cell::RefCell::new(
+                    crate::permissions::PermissionContext::permissive(),
+                )),
+                author: crate::permissions::UserId("primary-author".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             &target,
         )
         .unwrap();

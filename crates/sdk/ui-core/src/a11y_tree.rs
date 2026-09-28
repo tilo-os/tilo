@@ -1107,10 +1107,6 @@ impl<const BOUND: bool> Build<'_, BOUND> {
     }
 
     /// A virtual row/cell — has no backing widget, but may carry geometry.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a synthetic node's identity, owner and clip all come from the walk above it"
-    )]
     fn visit_synthetic(
         &mut self,
         parent: &SemanticId,

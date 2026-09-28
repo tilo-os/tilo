@@ -61,6 +61,33 @@ struct FrameState {
     para_had_text: bool,
 }
 
+impl FrameState {
+    /// The picture's alt text, size and positioning, as attrs on its `image` block `id`.
+    fn set_image_attrs(&self, doc: &mut DocMut, id: &str) {
+        let alt = if self.title.is_empty() {
+            &self.desc
+        } else {
+            &self.title
+        };
+        if !alt.is_empty() {
+            doc.set_attr(id, "alt", alt.as_str());
+        }
+        if let Some(w) = self.width.as_deref().and_then(parse_len_px) {
+            doc.set_attr(id, "width", w);
+        }
+        if let Some(h) = self.height.as_deref().and_then(parse_len_px) {
+            doc.set_attr(id, "height", h);
+        }
+        // Positioning: anchor (inline/paragraph/page) + wrap.
+        if let Some(a) = self.anchor.as_deref() {
+            doc.set_attr(id, "anchor", a);
+        }
+        if let Some(w) = self.wrap.as_deref() {
+            doc.set_attr(id, "wrap", w);
+        }
+    }
+}
+
 /// Whether a raw text node is purely pretty-printer indentation (LibreOffice/pandoc insert
 /// newlines around structural list/table/heading elements — such nodes always contain a
 /// newline, unlike genuine inline whitespace). Dropping these keeps list items and
@@ -165,164 +192,129 @@ fn open_para(
 /// marks its own style carries, and the char index where it opened.
 type LinkStackEntry = (Option<String>, Vec<(String, MarkValue)>, usize);
 
-/// Advance the in-progress verbatim-capture state machine for one XML event: an unmodeled
-/// element's raw source, re-emitted as a `fidelity` block once its closing tag is reached.
-/// No-op unless `capture` is already `Some` (the caller only calls this while it is).
-// Each parameter is a distinct, independently necessary piece of parse
-// state or event data — the same `doc`/`prev`/`cur`/`cur_len` bundle
-// `start_block`/`append`/`open_para` above already thread individually.
-// Bundling would trade named parameters for an equally large struct with
-// no behavioural change.
-#[allow(clippy::too_many_arguments, reason = "see comment above the function")]
-fn advance_capture(
-    ev: &Event,
-    s: &str,
-    end_pos: usize,
-    capture: &mut Option<(usize, i32)>,
-    doc: &mut DocMut,
-    prev: &mut Option<String>,
-    cur: &mut Option<String>,
-    cur_len: &mut usize,
-) {
-    let Some((start, depth)) = capture.as_mut() else {
-        return;
-    };
-    match ev {
-        Event::Start(_) => *depth = depth.saturating_add(1),
-        Event::End(_) => {
-            *depth = depth.saturating_sub(1);
-            if *depth == 0 {
-                let raw = s.get(*start..end_pos).unwrap_or_default();
-                fidelity_block(doc, prev, cur, cur_len, raw);
-                *cur = None;
-                *capture = None;
+impl BodyState {
+    /// Advance the in-progress verbatim-capture state machine for one XML event: an unmodeled
+    /// element's raw source, re-emitted as a `fidelity` block once its closing tag is reached.
+    /// No-op unless `capture` is already `Some` (the caller only calls this while it is).
+    fn advance_capture(&mut self, ev: &Event, s: &str, end_pos: usize, doc: &mut DocMut) {
+        let Some((start, depth)) = self.capture.as_mut() else {
+            return;
+        };
+        match ev {
+            Event::Start(_) => *depth = depth.saturating_add(1),
+            Event::End(_) => {
+                *depth = depth.saturating_sub(1);
+                if *depth == 0 {
+                    let raw = s.get(*start..end_pos).unwrap_or_default();
+                    fidelity_block(doc, &mut self.prev, &mut self.cur, &mut self.cur_len, raw);
+                    self.cur = None;
+                    self.capture = None;
+                }
             }
+            _ => {}
         }
-        _ => {}
     }
-}
 
-/// Advance the in-progress `draw:frame` state machine for one XML event: collects the image
-/// href + alt text, then on close emits either an `image` block (if the Pictures part has the
-/// bytes) or a verbatim fidelity atom. No-op unless `frame` is already `Some`.
-// See the comment on `advance_capture` above — same shared parse-state bundle.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "see comment above advance_capture"
-)]
-fn advance_frame(
-    ev: &Event,
-    s: &str,
-    end_pos: usize,
-    frame: &mut Option<FrameState>,
-    container: &OdtContainer,
-    doc: &mut DocMut,
-    inputs: &mut ContentInputs,
-    prev: &mut Option<String>,
-    cur: &mut Option<String>,
-    cur_len: &mut usize,
-) -> Result<FrameOutcome, CodecError> {
-    let Some(fr) = frame.as_mut() else {
-        return Ok(FrameOutcome::Open);
-    };
-    match ev {
-        Event::Start(e) => {
-            fr.depth = fr.depth.saturating_add(1);
-            match e.name().as_ref() {
-                b"draw:image" => {
-                    if fr.href.is_none() {
-                        fr.href = attr_val(e, b"xlink:href");
+    /// Advance the in-progress `draw:frame` state machine for one XML event: collects the image
+    /// href + alt text, then on close emits either an `image` block (if the Pictures part has the
+    /// bytes) or a verbatim fidelity atom. No-op unless `frame` is already `Some`.
+    fn advance_frame(
+        &mut self,
+        ev: &Event,
+        s: &str,
+        end_pos: usize,
+        container: &OdtContainer,
+        doc: &mut DocMut,
+        inputs: &mut ContentInputs,
+    ) -> Result<FrameOutcome, CodecError> {
+        let Some(fr) = self.frame.as_mut() else {
+            return Ok(FrameOutcome::Open);
+        };
+        match ev {
+            Event::Start(e) => {
+                fr.depth = fr.depth.saturating_add(1);
+                match e.name().as_ref() {
+                    b"draw:image" => {
+                        if fr.href.is_none() {
+                            fr.href = attr_val(e, b"xlink:href");
+                        }
                     }
-                }
-                b"svg:title" => fr.collecting = Some(true),
-                b"svg:desc" => fr.collecting = Some(false),
-                _ => {}
-            }
-        }
-        Event::Empty(e) => {
-            if e.name().as_ref() == b"draw:image" && fr.href.is_none() {
-                fr.href = attr_val(e, b"xlink:href");
-            }
-        }
-        Event::Text(t) => {
-            if let Some(is_title) = fr.collecting {
-                let txt = t
-                    .xml10_content()
-                    .map_err(|e| CodecError::Parse(format!("text: {e}")))?;
-                if is_title {
-                    fr.title.push_str(&txt);
-                } else {
-                    fr.desc.push_str(&txt);
+                    b"svg:title" => fr.collecting = Some(true),
+                    b"svg:desc" => fr.collecting = Some(false),
+                    _ => {}
                 }
             }
-        }
-        Event::GeneralRef(r) => {
-            let resolved = crate::resolve_general_ref(r);
-            match fr.collecting {
-                Some(true) => fr.title.extend(resolved),
-                Some(false) => fr.desc.extend(resolved),
-                None => {}
+            Event::Empty(e) => {
+                if e.name().as_ref() == b"draw:image" && fr.href.is_none() {
+                    fr.href = attr_val(e, b"xlink:href");
+                }
             }
-        }
-        Event::End(e) => {
-            fr.depth = fr.depth.saturating_sub(1);
-            match e.name().as_ref() {
-                b"svg:title" | b"svg:desc" => fr.collecting = None,
-                _ => {}
-            }
-            if fr.depth == 0 {
-                let bytes = fr
-                    .href
-                    .as_deref()
-                    .and_then(|h| container.get(h).map(<[u8]>::to_vec));
-                if let Some(bytes) = bytes {
-                    let id = start_block(doc, prev, cur, cur_len, "image");
-                    let hash = doc.attach(&bytes, inputs);
-                    doc.set_attr(&id, "blob", hash.as_str());
-                    let alt = if fr.title.is_empty() {
-                        &fr.desc
+            Event::Text(t) => {
+                if let Some(is_title) = fr.collecting {
+                    let txt = t
+                        .xml10_content()
+                        .map_err(|e| CodecError::Parse(format!("text: {e}")))?;
+                    if is_title {
+                        fr.title.push_str(&txt);
                     } else {
-                        &fr.title
-                    };
-                    if !alt.is_empty() {
-                        doc.set_attr(&id, "alt", alt.as_str());
+                        fr.desc.push_str(&txt);
                     }
-                    if let Some(w) = fr.width.as_deref().and_then(parse_len_px) {
-                        doc.set_attr(&id, "width", w);
-                    }
-                    if let Some(h) = fr.height.as_deref().and_then(parse_len_px) {
-                        doc.set_attr(&id, "height", h);
-                    }
-                    // Positioning: anchor (inline/paragraph/page) + wrap.
-                    if let Some(a) = fr.anchor.as_deref() {
-                        doc.set_attr(&id, "anchor", a);
-                    }
-                    if let Some(w) = fr.wrap.as_deref() {
-                        doc.set_attr(&id, "wrap", w);
-                    }
-                    // An image-only paragraph (the common LibreOffice/pandoc "figure" layout) leaves an empty wrapper paragraph — drop it so the image isn't preceded by a blank line.
-                    if let Some(pid) = fr.enclosing_para.as_deref()
-                        && !fr.para_had_text
-                    {
-                        doc.remove_block(pid);
-                    }
-                } else {
-                    // Not a picture in the container (text box, formula, chart…): keep it verbatim, in place.
-                    let raw = s.get(fr.raw_start..end_pos).unwrap_or_default().to_string();
-                    if fr.enclosing_para.is_some() {
-                        *frame = None;
-                        return Ok(FrameOutcome::Inline(raw));
-                    }
-                    fidelity_block(doc, prev, cur, cur_len, &raw);
                 }
-                *cur = None;
-                *frame = None;
-                return Ok(FrameOutcome::Block);
             }
+            Event::GeneralRef(r) => {
+                let resolved = crate::resolve_general_ref(r);
+                match fr.collecting {
+                    Some(true) => fr.title.extend(resolved),
+                    Some(false) => fr.desc.extend(resolved),
+                    None => {}
+                }
+            }
+            Event::End(e) => {
+                fr.depth = fr.depth.saturating_sub(1);
+                match e.name().as_ref() {
+                    b"svg:title" | b"svg:desc" => fr.collecting = None,
+                    _ => {}
+                }
+                if fr.depth == 0 {
+                    let bytes = fr
+                        .href
+                        .as_deref()
+                        .and_then(|h| container.get(h).map(<[u8]>::to_vec));
+                    if let Some(bytes) = bytes {
+                        let id = start_block(
+                            doc,
+                            &mut self.prev,
+                            &mut self.cur,
+                            &mut self.cur_len,
+                            "image",
+                        );
+                        let hash = doc.attach(&bytes, inputs);
+                        doc.set_attr(&id, "blob", hash.as_str());
+                        fr.set_image_attrs(doc, &id);
+                        // An image-only paragraph (the common LibreOffice/pandoc "figure" layout) leaves an empty wrapper paragraph — drop it so the image isn't preceded by a blank line.
+                        if let Some(pid) = fr.enclosing_para.as_deref()
+                            && !fr.para_had_text
+                        {
+                            doc.remove_block(pid);
+                        }
+                    } else {
+                        // Not a picture in the container (text box, formula, chart…): keep it verbatim, in place.
+                        let raw = s.get(fr.raw_start..end_pos).unwrap_or_default().to_string();
+                        if fr.enclosing_para.is_some() {
+                            self.frame = None;
+                            return Ok(FrameOutcome::Inline(raw));
+                        }
+                        fidelity_block(doc, &mut self.prev, &mut self.cur, &mut self.cur_len, &raw);
+                    }
+                    self.cur = None;
+                    self.frame = None;
+                    return Ok(FrameOutcome::Block);
+                }
+            }
+            _ => {}
         }
-        _ => {}
+        Ok(FrameOutcome::Open)
     }
-    Ok(FrameOutcome::Open)
 }
 
 /// What a `draw:frame` event left behind.
@@ -1324,33 +1316,13 @@ pub(crate) fn parse_body(
         let pos_after = || usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
 
         if st.capture.is_some() {
-            advance_capture(
-                &ev,
-                s,
-                pos_after(),
-                &mut st.capture,
-                doc,
-                &mut st.prev,
-                &mut st.cur,
-                &mut st.cur_len,
-            );
+            st.advance_capture(&ev, s, pos_after(), doc);
             continue;
         }
 
         // Inside a draw:frame: collect the image href + alt, then on close emit either an `image` block (if the Pictures part exists) or a verbatim fidelity atom.
         if st.frame.is_some() {
-            match advance_frame(
-                &ev,
-                s,
-                pos_after(),
-                &mut st.frame,
-                container,
-                doc,
-                inputs,
-                &mut st.prev,
-                &mut st.cur,
-                &mut st.cur_len,
-            )? {
+            match st.advance_frame(&ev, s, pos_after(), container, doc, inputs)? {
                 FrameOutcome::Open => {}
                 // A picture split its paragraph: what follows continues in a new block.
                 FrameOutcome::Block => st.continue_para = st.in_para,
@@ -1410,93 +1382,82 @@ pub(crate) fn parse_body(
         }
     }
 
-    apply_deferred_marks(
-        doc,
-        st.pending_marks,
-        st.note_refs,
-        st.open_comments,
-        st.comment_ranges,
-        st.open_bookmarks,
-        st.bookmark_ranges,
-        st.open_changes,
-        st.change_ranges,
-    );
+    st.apply_deferred_marks(doc);
     Ok(())
 }
 
-/// Apply every mark deferred during the parse: span/paragraph text marks, note-reference
-/// markers, and the comment/bookmark/tracked-change anchor ranges — closing any range whose
-/// explicit end never arrived by extending it to the block's end (or one character, if that's
-/// still zero-width and text follows).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each parameter is a distinct kind of mark gathered by parse_body over the whole parse"
-)]
-fn apply_deferred_marks(
-    doc: &mut DocMut,
-    pending_marks: Vec<(String, usize, usize, String, MarkValue)>,
-    note_refs: Vec<(String, usize, String)>,
-    mut open_comments: BTreeMap<String, (String, String, usize)>,
-    mut comment_ranges: Vec<(String, usize, usize, String)>,
-    mut open_bookmarks: BTreeMap<String, (String, usize)>,
-    mut bookmark_ranges: Vec<(String, usize, usize, String)>,
-    mut open_changes: BTreeMap<String, (String, ChangeKind, String, usize)>,
-    mut change_ranges: Vec<(String, usize, usize, ChangeKind, String)>,
-) {
-    // Apply marks now that all text is present (exact ranges, no expansion).
-    for (b, start, end, name, value) in pending_marks {
-        if start >= end {
-            continue;
+impl BodyState {
+    /// Apply every mark deferred during the parse: span/paragraph text marks, note-reference
+    /// markers, and the comment/bookmark/tracked-change anchor ranges — closing any range whose
+    /// explicit end never arrived by extending it to the block's end (or one character, if that's
+    /// still zero-width and text follows).
+    fn apply_deferred_marks(self, doc: &mut DocMut) {
+        let Self {
+            pending_marks,
+            note_refs,
+            mut open_comments,
+            mut comment_ranges,
+            mut open_bookmarks,
+            mut bookmark_ranges,
+            mut open_changes,
+            mut change_ranges,
+            ..
+        } = self;
+        // Apply marks now that all text is present (exact ranges, no expansion).
+        for (b, start, end, name, value) in pending_marks {
+            if start >= end {
+                continue;
+            }
+            match value {
+                MarkValue::Bool(v) => doc.add_mark(&b, start, end, &name, v),
+                MarkValue::Int(n) => doc.add_mark(&b, start, end, &name, n),
+                MarkValue::Str(s) => doc.add_mark(&b, start, end, &name, s.as_str()),
+            }
         }
-        match value {
-            MarkValue::Bool(v) => doc.add_mark(&b, start, end, &name, v),
-            MarkValue::Int(n) => doc.add_mark(&b, start, end, &name, n),
-            MarkValue::Str(s) => doc.add_mark(&b, start, end, &name, s.as_str()),
+        // Note-reference markers: cover the placeholder spliced when each `text:note` opened, with a `note-ref` mark valued with the note id.
+        for (b, idx, nid) in note_refs {
+            doc.add_mark(&b, idx, idx.saturating_add(1), MARK_NOTE_REF, nid.as_str());
         }
-    }
-    // Note-reference markers: cover the placeholder spliced when each `text:note` opened, with a `note-ref` mark valued with the note id.
-    for (b, idx, nid) in note_refs {
-        doc.add_mark(&b, idx, idx.saturating_add(1), MARK_NOTE_REF, nid.as_str());
-    }
-    // Any annotation whose `office:annotation-end` never arrived (a point comment, or a malformed range) still anchors at its start, extending to the block's end when content follows.
-    for (name, (cid, b, start)) in std::mem::take(&mut open_comments) {
-        let _ = name;
-        let end = doc_block_len(doc, &b).max(start);
-        comment_ranges.push((b, start, end, cid));
-    }
-    // Comment anchor marks: cover the commented range with a `comment` mark valued with the comment id, widened to one character when zero-width and text follows.
-    for (b, start, mut end, cid) in comment_ranges {
-        if end <= start {
-            let blen = doc_block_len(doc, &b);
-            end = start.saturating_add(1).min(blen);
+        // Any annotation whose `office:annotation-end` never arrived (a point comment, or a malformed range) still anchors at its start, extending to the block's end when content follows.
+        for (name, (cid, b, start)) in std::mem::take(&mut open_comments) {
+            let _ = name;
+            let end = doc_block_len(doc, &b).max(start);
+            comment_ranges.push((b, start, end, cid));
         }
-        if end > start {
-            doc.add_mark(&b, start, end, MARK_COMMENT, cid.as_str());
+        // Comment anchor marks: cover the commented range with a `comment` mark valued with the comment id, widened to one character when zero-width and text follows.
+        for (b, start, mut end, cid) in comment_ranges {
+            if end <= start {
+                let blen = doc_block_len(doc, &b);
+                end = start.saturating_add(1).min(blen);
+            }
+            if end > start {
+                doc.add_mark(&b, start, end, MARK_COMMENT, cid.as_str());
+            }
         }
-    }
-    // Any bookmark whose `text:bookmark-end` never arrived still anchors at its start, extending to the block's end when content follows.
-    for (name, (b, start)) in std::mem::take(&mut open_bookmarks) {
-        let end = doc_block_len(doc, &b).max(start);
-        bookmark_ranges.push((b, start, end, name));
-    }
-    // Bookmark anchor marks: cover each bookmarked range with a `bookmark` mark valued with the
-    // name, widened to one character when zero-width and text follows; an end-of-block point sits over the last character.
-    for (b, start, end, name) in bookmark_ranges {
-        doc.add_bookmark(&b, start, end, &name);
-    }
-    // Any tracked change whose `text:change-end` never arrived still anchors at its start, extending to the block's end when content follows.
-    for (_id, (cid, kind, b, start)) in std::mem::take(&mut open_changes) {
-        let end = doc_block_len(doc, &b).max(start);
-        change_ranges.push((b, start, end, kind, cid));
-    }
-    // Tracked-change anchor marks: cover each changed range with the `ins`/`del` mark matching the change's kind, widened to one character when zero-width.
-    for (b, start, mut end, kind, cid) in change_ranges {
-        if end <= start {
-            let blen = doc_block_len(doc, &b);
-            end = start.saturating_add(1).min(blen);
+        // Any bookmark whose `text:bookmark-end` never arrived still anchors at its start, extending to the block's end when content follows.
+        for (name, (b, start)) in std::mem::take(&mut open_bookmarks) {
+            let end = doc_block_len(doc, &b).max(start);
+            bookmark_ranges.push((b, start, end, name));
         }
-        if end > start {
-            doc.add_change_mark(kind, &b, start, end, &cid);
+        // Bookmark anchor marks: cover each bookmarked range with a `bookmark` mark valued with the
+        // name, widened to one character when zero-width and text follows; an end-of-block point sits over the last character.
+        for (b, start, end, name) in bookmark_ranges {
+            doc.add_bookmark(&b, start, end, &name);
+        }
+        // Any tracked change whose `text:change-end` never arrived still anchors at its start, extending to the block's end when content follows.
+        for (_id, (cid, kind, b, start)) in std::mem::take(&mut open_changes) {
+            let end = doc_block_len(doc, &b).max(start);
+            change_ranges.push((b, start, end, kind, cid));
+        }
+        // Tracked-change anchor marks: cover each changed range with the `ins`/`del` mark matching the change's kind, widened to one character when zero-width.
+        for (b, start, mut end, kind, cid) in change_ranges {
+            if end <= start {
+                let blen = doc_block_len(doc, &b);
+                end = start.saturating_add(1).min(blen);
+            }
+            if end > start {
+                doc.add_change_mark(kind, &b, start, end, &cid);
+            }
         }
     }
 }

@@ -20,26 +20,18 @@
 //! could otherwise harvest without ever calling `Print`. See
 //! `PrintBackend::prepare_print`.
 
-#![allow(
-    clippy::used_underscore_binding,
-    reason = "the D-Bus method signatures below require unused positional parameters (handle, \
-              parent_window, ...); zbus's #[interface] macro deserialises them into these named \
-              parameters and forwards them by identifier into its generated dispatcher, so the \
-              lint fires on macro-generated code a per-function #[allow] cannot reach"
-)]
-
 #[cfg(target_os = "linux")]
 use crate::shell::state::Capability;
 #[cfg(target_os = "linux")]
 use crate::shell::state::GRANT_ONCE;
 #[cfg(target_os = "linux")]
-use zbus::interface;
+use zbus::names::{InterfaceName, MemberName, OwnedUniqueName};
 #[cfg(target_os = "linux")]
-use zbus::names::OwnedUniqueName;
+use zbus::object_server::{DispatchResult2, Interface, SignalEmitter};
 #[cfg(target_os = "linux")]
-use zbus::object_server::SignalEmitter;
+use zbus::zvariant::OwnedObjectPath;
 #[cfg(target_os = "linux")]
-use zbus::zvariant::ObjectPath;
+use zbus::{Connection, ObjectServer, fdo, message::Header, message::Message};
 
 use std::collections::HashMap;
 #[cfg(any(test, target_os = "linux"))]
@@ -54,7 +46,9 @@ use zbus::zvariant::{OwnedValue, Value};
 
 use super::PortalCaller;
 #[cfg(target_os = "linux")]
-use super::{CapabilityKind, PortalContext, auth::authenticate_call, flow, lockdown};
+use super::{
+    CapabilityKind, PortalContext, auth::authenticate_call, flow, interface_dispatch, lockdown,
+};
 
 /// Hard ceiling on the bytes we will read off the app's descriptor.
 ///
@@ -440,8 +434,215 @@ fn random_token() -> u32 {
 
 // D-Bus surface
 
+/// The spec arguments of one `PreparePrint` call that policy reads. The
+/// request handle and options are accepted on the wire and ignored.
 #[cfg(target_os = "linux")]
-#[interface(name = "org.freedesktop.impl.portal.Print")]
+struct PreparePrintRequest {
+    app_id: String,
+    parent_window: String,
+    title: String,
+    settings: HashMap<String, OwnedValue>,
+    page_setup: HashMap<String, OwnedValue>,
+}
+
+/// `PreparePrint`'s wire arguments: `handle o`, `app_id s`, `parent_window s`,
+/// `title s`, `settings a{sv}`, `page_setup a{sv}`, `options a{sv}`.
+#[cfg(target_os = "linux")]
+type PreparePrintArgs = (
+    OwnedObjectPath,
+    String,
+    String,
+    String,
+    HashMap<String, OwnedValue>,
+    HashMap<String, OwnedValue>,
+    HashMap<String, OwnedValue>,
+);
+
+#[cfg(target_os = "linux")]
+impl From<PreparePrintArgs> for PreparePrintRequest {
+    fn from(
+        (_handle, app_id, parent_window, title, settings, page_setup, _options): PreparePrintArgs,
+    ) -> Self {
+        Self {
+            app_id,
+            parent_window,
+            title,
+            settings,
+            page_setup,
+        }
+    }
+}
+
+/// The spec arguments of one `Print` call that policy reads; the request
+/// handle is accepted on the wire and ignored.
+#[cfg(target_os = "linux")]
+struct PrintRequest {
+    app_id: String,
+    parent_window: String,
+    title: String,
+    fd: zbus::zvariant::OwnedFd,
+    options: HashMap<String, OwnedValue>,
+}
+
+/// `Print`'s wire arguments: `handle o`, `app_id s`, `parent_window s`,
+/// `title s`, `fd h`, `options a{sv}`.
+#[cfg(target_os = "linux")]
+type PrintArgs = (
+    OwnedObjectPath,
+    String,
+    String,
+    String,
+    zbus::zvariant::OwnedFd,
+    HashMap<String, OwnedValue>,
+);
+
+#[cfg(target_os = "linux")]
+impl From<PrintArgs> for PrintRequest {
+    fn from((_handle, app_id, parent_window, title, fd, options): PrintArgs) -> Self {
+        Self {
+            app_id,
+            parent_window,
+            title,
+            fd,
+            options,
+        }
+    }
+}
+
+/// The interface's introspection, byte-identical to what zbus's
+/// `#[interface]` macro wrote for the former macro-dispatched backend.
+#[cfg(target_os = "linux")]
+const PRINT_INTROSPECTION: &str = r#"<interface name="org.freedesktop.impl.portal.Print">
+  <!--
+   `PreparePrint` — the print dialog, minus the dialog.
+
+   **This prompts**, even though nothing has been printed yet: the reply
+   itself is sensitive — printer names read like `ACME-3F-Reception`,
+   disclosing an employer, site and floor plan, and fingerprinting the
+   network. An app that only ever calls `PreparePrint` would collect all
+   of that without a prompt firing if submission were the only gate.
+   Costs the honest app nothing: `flow::resolve` fast-paths a standing `Always` grant.
+   -->
+  <method name="PreparePrint">
+    <arg name="_handle" type="o" direction="in"/>
+    <arg name="app_id" type="s" direction="in"/>
+    <arg name="parent_window" type="s" direction="in"/>
+    <arg name="title" type="s" direction="in"/>
+    <arg name="settings" type="a{sv}" direction="in"/>
+    <arg name="page_setup" type="a{sv}" direction="in"/>
+    <arg name="_options" type="a{sv}" direction="in"/>
+    <arg type="u" direction="out"/>
+    <arg type="a{sv}" direction="out"/>
+  </method>
+  <!--
+   `Print` — hand over the bytes. `fd` is a descriptor the app chose;
+   treat every property as a claim: read only after consent, only if a regular file, only up to [`MAX_SPOOL_BYTES`].
+   -->
+  <method name="Print">
+    <arg name="_handle" type="o" direction="in"/>
+    <arg name="app_id" type="s" direction="in"/>
+    <arg name="parent_window" type="s" direction="in"/>
+    <arg name="title" type="s" direction="in"/>
+    <arg name="fd" type="h" direction="in"/>
+    <arg name="options" type="a{sv}" direction="in"/>
+    <arg type="u" direction="out"/>
+    <arg type="a{sv}" direction="out"/>
+  </method>
+</interface>
+"#;
+
+#[cfg(target_os = "linux")]
+#[zbus::export::async_trait::async_trait]
+impl Interface for PrintBackend {
+    fn name() -> InterfaceName<'static> {
+        InterfaceName::from_static_str_unchecked("org.freedesktop.impl.portal.Print")
+    }
+
+    async fn get(
+        &self,
+        _property: &str,
+        _server: &ObjectServer,
+        _connection: &Connection,
+        _header: Option<&Header<'_>>,
+        _emitter: &SignalEmitter<'_>,
+    ) -> Option<fdo::Result<OwnedValue>> {
+        None
+    }
+
+    async fn get_all(
+        &self,
+        _server: &ObjectServer,
+        _connection: &Connection,
+        _header: Option<&Header<'_>>,
+        _emitter: &SignalEmitter<'_>,
+    ) -> fdo::Result<HashMap<String, OwnedValue>> {
+        Ok(HashMap::new())
+    }
+
+    fn set<'call>(
+        &'call self,
+        _property: &'call str,
+        _value: &'call Value<'_>,
+        _server: &'call ObjectServer,
+        _connection: &'call Connection,
+        _header: Option<&'call Header<'_>>,
+        _emitter: &'call SignalEmitter<'_>,
+    ) -> DispatchResult2<'call> {
+        DispatchResult2::NotFound
+    }
+
+    async fn set_mut(
+        &mut self,
+        _property: &str,
+        _value: &Value<'_>,
+        _server: &ObjectServer,
+        _connection: &Connection,
+        _header: Option<&Header<'_>>,
+        _emitter: &SignalEmitter<'_>,
+    ) -> Option<fdo::Result<()>> {
+        None
+    }
+
+    fn call<'call>(
+        &'call self,
+        _server: &'call ObjectServer,
+        connection: &'call Connection,
+        message: &'call Message,
+        name: MemberName<'call>,
+    ) -> DispatchResult2<'call> {
+        match name.as_str() {
+            "PreparePrint" => interface_dispatch::dispatch(
+                connection,
+                message,
+                move |hdr, args: PreparePrintArgs| async move {
+                    Ok(self.prepare_print(&hdr, args.into()).await)
+                },
+            ),
+            "Print" => interface_dispatch::dispatch(
+                connection,
+                message,
+                move |hdr, args: PrintArgs| async move { Ok(self.print(&hdr, args.into()).await) },
+            ),
+            _ => DispatchResult2::NotFound,
+        }
+    }
+
+    fn call_mut<'call>(
+        &'call mut self,
+        _server: &'call ObjectServer,
+        _connection: &'call Connection,
+        _message: &'call Message,
+        _name: MemberName<'call>,
+    ) -> DispatchResult2<'call> {
+        DispatchResult2::NotFound
+    }
+
+    fn introspect_to_writer(&self, writer: &mut dyn std::fmt::Write, level: usize) {
+        interface_dispatch::write_introspection(writer, level, PRINT_INTROSPECTION);
+    }
+}
+
+#[cfg(target_os = "linux")]
 impl PrintBackend {
     /// `PreparePrint` — the print dialog, minus the dialog.
     ///
@@ -451,22 +652,18 @@ impl PrintBackend {
     /// network. An app that only ever calls `PreparePrint` would collect all
     /// of that without a prompt firing if submission were the only gate.
     /// Costs the honest app nothing: `flow::resolve` fast-paths a standing `Always` grant.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.Print.PreparePrint D-Bus signature"
-    )]
     async fn prepare_print(
         &self,
-        #[zbus(signal_emitter)] _sig: SignalEmitter<'_>,
-        #[zbus(header)] hdr: zbus::message::Header<'_>,
-        _handle: ObjectPath<'_>,
-        app_id: String,
-        parent_window: String,
-        title: String,
-        settings: HashMap<String, OwnedValue>,
-        page_setup: HashMap<String, OwnedValue>,
-        _options: HashMap<String, OwnedValue>,
+        hdr: &Header<'_>,
+        request: PreparePrintRequest,
     ) -> (u32, HashMap<String, OwnedValue>) {
+        let PreparePrintRequest {
+            app_id,
+            parent_window,
+            title,
+            settings,
+            page_setup,
+        } = request;
         tracing::debug!("Print.PreparePrint: app={app_id} title={title:?}");
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let Ok(auth) =
@@ -519,21 +716,18 @@ impl PrintBackend {
 
     /// `Print` — hand over the bytes. `fd` is a descriptor the app chose;
     /// treat every property as a claim: read only after consent, only if a regular file, only up to [`MAX_SPOOL_BYTES`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.Print.Print D-Bus signature"
-    )]
     async fn print(
         &self,
-        #[zbus(signal_emitter)] _sig: SignalEmitter<'_>,
-        #[zbus(header)] hdr: zbus::message::Header<'_>,
-        _handle: ObjectPath<'_>,
-        app_id: String,
-        parent_window: String,
-        title: String,
-        fd: zbus::zvariant::OwnedFd,
-        options: HashMap<String, OwnedValue>,
+        hdr: &Header<'_>,
+        request: PrintRequest,
     ) -> (u32, HashMap<String, OwnedValue>) {
+        let PrintRequest {
+            app_id,
+            parent_window,
+            title,
+            fd,
+            options,
+        } = request;
         tracing::debug!("Print.Print: app={app_id} title={title:?}");
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let Ok(auth) =
@@ -807,6 +1001,26 @@ mod tests {
     use crate::shell::state::Workspace;
     use crate::shell::state::WorkspaceId;
     use std::io::Write;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn print_methods_decode_exactly_the_advertised_arguments() {
+        use zbus::zvariant::Type;
+        let advertised = |method| {
+            format!(
+                "({})",
+                interface_dispatch::advertised_in_signature(PRINT_INTROSPECTION, method)
+            )
+        };
+        assert_eq!(
+            advertised("PreparePrint"),
+            <PreparePrintArgs as Type>::SIGNATURE.to_string()
+        );
+        assert_eq!(
+            advertised("Print"),
+            <PrintArgs as Type>::SIGNATURE.to_string()
+        );
+    }
 
     #[cfg(target_os = "linux")]
     fn ctx_with(

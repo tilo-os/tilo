@@ -295,34 +295,40 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
     panic!("broker did not publish {app_id}'s action catalogue in time");
 }
 
+/// A document invocation as the broker delivers it to the app host.
+pub struct DocumentInvocation<'a> {
+    pub id: u64,
+    pub address: ActionAddress,
+    pub argument: Option<&'a str>,
+    pub actor: &'a str,
+    /// The invocation's own provenance (the calling run's intent group),
+    /// recorded with the change exactly as the toolkit host records it.
+    pub context: Option<&'a tilo_actions::ActionContext>,
+}
+
 /// Resolve and execute a document invocation through an application's real
 /// action registry, broadcasting the resulting CRDT delta like the toolkit
 /// host. The caller owns when to send the returned terminal update, allowing
-/// concurrency tests to interleave another participant first. `context` is
-/// the invocation's own provenance (the calling run's intent group), recorded
-/// with the change exactly as the toolkit host records it.
+/// concurrency tests to interleave another participant first.
 ///
 /// # Panics
 ///
 /// Panics if a successful document action produces no CRDT delta or that
 /// delta cannot be sent through the typed test peer.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the peer, replica, registry and invocation envelope stay explicit so tests can interleave document actions and terminal updates"
-)]
 pub fn service_document_invocation(
     peer: &mut TypedPeer,
     replica: &mut automerge::AutoCommit,
     resources: &[Resource],
     register: fn(&mut ActionRegistry),
-    id: u64,
-    resource: String,
-    action: String,
-    argument: Option<&str>,
-    actor: &str,
-    context: Option<&tilo_actions::ActionContext>,
+    invocation: DocumentInvocation<'_>,
 ) -> tilo_actions::InvocationUpdate {
-    let address = ActionAddress::new(resource, action);
+    let DocumentInvocation {
+        id,
+        address,
+        argument,
+        actor,
+        context,
+    } = invocation;
     let provenance = tilo_actions::door::InvocationProvenance {
         actor: actor.as_bytes(),
         ambient: context,

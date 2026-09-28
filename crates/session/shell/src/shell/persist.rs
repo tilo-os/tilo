@@ -396,19 +396,6 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     // Before the repairs below, so they apply to what the document
     // restores too, and the seed after them records their outcome.
     attach_saved_doc(&mut tree, path, s.as_bytes());
-    // Repair state written by older builds which serialised process-local
-    // Wayland surface ids.  This must happen before seeding the room document,
-    // otherwise the dead window is immediately promoted back into the
-    // authoritative topology.
-    repair_legacy_foreign_surfaces(&mut tree);
-    // `Opening here…` describes work owned by the compositor process that
-    // wrote this file.  After a restart there is no corresponding launcher
-    // worker or pending placement left to complete it, so treating it as an
-    // answered symbolic window makes the card permanent and the application
-    // is never retried.  Older builds did persist this marker; normalise it
-    // before seeding the document so both local restore and peer projection
-    // see the retryable state.
-    clear_transient_launch_notes(&mut tree);
     tree.prune_local_app_records();
     // `doc` is `#[serde(skip)]` in `state.json`. The seed is diff-aware: for
     // a current document it writes only what the repairs changed; for a
@@ -493,78 +480,6 @@ fn clear_transient_launch_notes(tree: &mut WorkspaceTree) {
             }
         }
     }
-}
-
-/// Old builds wrote raw foreign ids before the save-side sanitizer existed.
-/// Those records cannot be safely launched because their presence on disk is
-/// ambiguous, so retain the defensive deletion only for legacy input.
-fn repair_legacy_foreign_surfaces(tree: &mut WorkspaceTree) {
-    use crate::shell::state::TileContent;
-
-    let mut removed_tabs = std::collections::HashSet::new();
-    let mut removed_surfaces = std::collections::HashSet::new();
-
-    for workspace in &mut tree.desktop.workspaces {
-        for strip in &mut workspace.strips {
-            for group in &mut strip.window_groups {
-                group.tabs.retain(|tab| {
-                    if let TileContent::Foreign { surface_id, .. } = &tab.tile {
-                        removed_tabs.insert(tab.id);
-                        removed_surfaces.insert(*surface_id);
-                        false
-                    } else {
-                        true
-                    }
-                });
-                if !group.tabs.iter().any(|tab| tab.id == group.active_tab) {
-                    group.active_tab = group.tabs.first().map_or(0, |tab| tab.id);
-                }
-            }
-            strip.window_groups.retain(|group| !group.tabs.is_empty());
-        }
-        for surface in &removed_surfaces {
-            workspace.shared_surfaces.unshare(*surface);
-        }
-        for collaborator in &mut workspace.collaborators {
-            if collaborator
-                .active_tab
-                .is_some_and(|tab| removed_tabs.contains(&tab))
-            {
-                collaborator.active_tab = None;
-            }
-        }
-    }
-
-    let valid_active_groups: std::collections::HashSet<_> = tree
-        .desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| &workspace.strips)
-        .flat_map(|strip| {
-            strip
-                .window_groups
-                .iter()
-                .map(move |group| (strip.id, group.id))
-        })
-        .collect();
-    tree.desktop
-        .active_group
-        .retain(|strip_id, group_id| valid_active_groups.contains(&(*strip_id, *group_id)));
-    for workspace in &tree.desktop.workspaces {
-        for strip in &workspace.strips {
-            if !tree.desktop.active_group.contains_key(&strip.id)
-                && let Some(group) = strip.window_groups.first()
-            {
-                tree.desktop.active_group.insert(strip.id, group.id);
-            }
-        }
-    }
-    tree.continuation_tabs
-        .retain(|tab| !removed_tabs.contains(tab));
-    tree.continuation_owned_tabs
-        .retain(|tab, _| !removed_tabs.contains(tab));
-    tree.continuation_file_references
-        .retain(|tab, _| !removed_tabs.contains(tab));
 }
 
 /// A missing file is the first boot and carries no notice; anything
@@ -797,48 +712,7 @@ mod tests {
             );
         }
 
-        fn load_migrates_stale_opening_progress_back_to_a_retryable_window() {
-            use crate::shell::state::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
-
-            let dir = tempfile::tempdir().expect("tempdir");
-            let path = dir.path().join("state.json");
-            let mut legacy = WorkspaceTree::bootstrap_default();
-            legacy.desktop.workspaces[0].strips = vec![Strip {
-                id: StripId::from(91_104),
-                name: "Main".into(),
-                window_groups: vec![WindowGroup {
-                    id: 91_105,
-                    tabs: Vec::new(),
-                    active_tab: 0,
-                    width: WindowWidth::Normal,
-                    maximized: false,
-                }],
-            }];
-            let group = &mut legacy.desktop.workspaces[0].strips[0].window_groups[0];
-            group.tabs = vec![Tab {
-                id: 91_103,
-                title: "XTerm".into(),
-                tile: TileContent::LocalApp {
-                    app_id: "XTerm".into(),
-                    label: "XTerm".into(),
-                    note: crate::shell::peer_windows::OPENING.into(),
-                },
-            }];
-            group.active_tab = 91_103;
-            legacy.desktop.schema_version = NATIVE_STATE_SCHEMA_VERSION;
-            std::fs::write(&path, serde_json::to_vec_pretty(&legacy).expect("encode"))
-                .expect("write legacy state");
-
-            let loaded = load_tree_from(&path).expect("load old in-flight state");
-            assert_eq!(symbolic_note(&loaded, 91_103), Some(""));
-            assert!(
-                crate::shell::peer_windows::any_pending(&loaded),
-                "an interrupted launch must be attempted by the new session"
-            );
-        }
-
         save_never_durably_records_process_local_opening_progress();
-        load_migrates_stale_opening_progress_back_to_a_retryable_window();
     }
 
     #[test]
@@ -1033,106 +907,9 @@ mod tests {
             assert!(local_apps(&loaded).is_empty());
         }
 
-        fn load_repairs_legacy_foreign_tabs_but_keeps_explicit_placeholders() {
-            use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
-
-            let dir = tempfile::tempdir().expect("tempdir");
-            let path = dir.path().join("legacy-state.json");
-            let mut legacy = WorkspaceTree::bootstrap_default();
-            legacy.desktop.workspaces[0].strips[0]
-                .window_groups
-                .push(WindowGroup {
-                    id: 90_004,
-                    tabs: Vec::new(),
-                    active_tab: 0,
-                    width: WindowWidth::Normal,
-                    maximized: false,
-                });
-            let group = &mut legacy.desktop.workspaces[0].strips[0].window_groups[0];
-            group.tabs.push(Tab {
-                id: 90_002,
-                title: "Stale client".into(),
-                tile: TileContent::Foreign {
-                    app_id: "org.example.Editor".into(),
-                    surface_id: 1234,
-                },
-            });
-            group.tabs.push(Tab {
-                id: 90_003,
-                title: "Continue here".into(),
-                tile: TileContent::PeerWindow {
-                    app_id: "org.example.Editor".into(),
-                    label: "Continue here".into(),
-                    note: String::new(),
-                },
-            });
-            legacy.desktop.schema_version = NATIVE_STATE_SCHEMA_VERSION;
-            std::fs::write(&path, serde_json::to_vec_pretty(&legacy).expect("encode"))
-                .expect("stage legacy state");
-
-            let loaded = load_tree_from(&path).expect("load legacy state");
-            assert!(foreign_tabs(&loaded).is_empty());
-            assert!(
-                loaded.desktop.workspaces[0].strips[0].window_groups[0]
-                    .tabs
-                    .iter()
-                    .any(|tab| matches!(&tab.tile, TileContent::PeerWindow { .. }))
-            );
-        }
-
-        fn sanitizer_repairs_every_reference_when_the_last_live_group_disappears() {
-            use crate::shell::state::{Collaborator, Tab, TileContent, WindowGroup, WindowWidth};
-
-            let mut tree = WorkspaceTree::bootstrap_default();
-            let strip_id = tree.desktop.workspaces[0].strips[0].id;
-            let tab_id = 91_001;
-            let surface_id = 91_002;
-            tree.desktop.workspaces[0].strips[0]
-                .window_groups
-                .push(WindowGroup {
-                    id: 91_003,
-                    tabs: vec![Tab {
-                        id: tab_id,
-                        title: "Ephemeral".into(),
-                        tile: TileContent::Foreign {
-                            app_id: "org.example.Ephemeral".into(),
-                            surface_id,
-                        },
-                    }],
-                    active_tab: tab_id,
-                    width: WindowWidth::Normal,
-                    maximized: false,
-                });
-            tree.desktop.active_group.insert(strip_id, 91_003);
-            tree.desktop.workspaces[0]
-                .shared_surfaces
-                .share(surface_id, 44);
-            tree.desktop.workspaces[0]
-                .collaborators
-                .push(Collaborator::with_active_tab("peer", "Peer", tab_id));
-            tree.continuation_tabs.insert(tab_id);
-            tree.continuation_owned_tabs
-                .insert(tab_id, tree.desktop.workspaces[0].room);
-
-            repair_legacy_foreign_surfaces(&mut tree);
-
-            assert!(
-                tree.desktop.workspaces[0].strips[0]
-                    .window_groups
-                    .is_empty()
-            );
-            assert!(!tree.desktop.active_group.contains_key(&strip_id));
-            assert!(tree.desktop.workspaces[0].shared_surfaces.is_empty());
-            assert_eq!(tree.desktop.workspaces[0].collaborators[0].active_tab, None);
-            assert!(!tree.continuation_tabs.contains(&tab_id));
-            assert!(!tree.continuation_owned_tabs.contains_key(&tab_id));
-        }
-
         live_foreign_surface_round_trip_preserves_symbolic_app_and_exact_placement();
         host_foreign_surface_persists_the_launchable_desktop_id();
         a_closed_foreign_app_is_not_recreated_by_the_next_save();
-        load_repairs_legacy_foreign_tabs_but_keeps_explicit_placeholders();
-        sanitizer_repairs_every_reference_when_the_last_live_group_disappears();
     }
 
     #[test]
@@ -1252,97 +1029,8 @@ mod tests {
             );
         }
 
-        /// A state file written before workspaces had a room identity must
-        /// gain one exactly once. Minting on every load would be worse than
-        /// not minting at all: the workspace's room would change every
-        /// boot, so every peer previously invited to it would be talking to
-        /// a room that no longer exists.
-        fn a_pre_rooms_state_file_gains_one_room_and_keeps_it() {
-            use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
-
-            let dir = tempfile::tempdir().expect("tempdir");
-            let path = dir.path().join("state.json");
-
-            // Derived from the live serialiser, then `room` stripped from
-            // every workspace, so it stays *loadable* as the struct grows.
-            let mut original = WorkspaceTree::default();
-            original
-                .desktop
-                .workspaces
-                .push(Workspace::new(WorkspaceId(7), "Home"));
-            save_tree_to(&original, &path).expect("save");
-            let mut raw: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&path).expect("read"))
-                    .expect("state file parses");
-            for ws in raw["workspaces"].as_array_mut().expect("workspaces array") {
-                assert!(
-                    ws.as_object_mut()
-                        .expect("workspace object")
-                        .remove("room")
-                        .is_some(),
-                    "the current writer must emit a room, or this fixture is \
-                     not removing anything"
-                );
-            }
-            std::fs::write(&path, serde_json::to_string_pretty(&raw).expect("re-json"))
-                .expect("write legacy state");
-            // The writer of the fixture is gone before the first boot.
-            drop(original);
-
-            let (mut first_boot, _) = load_or_default(&path);
-            // Identify the tree by the id the fixture wrote, not by its
-            // shape — `bootstrap_default` is also a single workspace, and
-            // its id is minted fresh, never 7.
-            assert_eq!(
-                first_boot
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .map(|w| w.id)
-                    .collect::<Vec<_>>(),
-                vec![WorkspaceId(7)],
-                "the legacy state file must still load; got the bootstrap \
-                 fallback or something else entirely"
-            );
-            assert!(
-                first_boot.desktop.workspaces[0].room.is_nil(),
-                "a workspace deserialised from a pre-rooms file has no identity \
-                 yet; that is what the boot-time migration is for"
-            );
-
-            first_boot.persist_path = Some(path.clone());
-            let minted = first_boot.adopt_roomless_workspaces();
-            assert_eq!(
-                minted.len(),
-                1,
-                "the migration must mint for the one roomless workspace"
-            );
-            let room = first_boot.desktop.workspaces[0].room;
-            assert!(!room.is_nil(), "the minted room must be a real identity");
-
-            // The mint and the write are one operation, so the *next* boot
-            // reads the same value rather than minting again.
-            drop(first_boot);
-            let (mut second_boot, _) = load_or_default(&path);
-            assert_eq!(
-                second_boot.desktop.workspaces[0].room, room,
-                "the room minted on first boot must have been written to disk, \
-                 so the second boot loads it instead of minting a new one"
-            );
-            second_boot.persist_path = Some(path);
-            assert!(
-                second_boot.adopt_roomless_workspaces().is_empty(),
-                "a second boot must find nothing to migrate"
-            );
-            assert_eq!(
-                second_boot.desktop.workspaces[0].room, room,
-                "and must leave the room it loaded alone"
-            );
-        }
-
         a_persisted_roster_does_not_come_back_as_presence();
         a_state_file_without_a_document_starts_its_history_from_it();
-        a_pre_rooms_state_file_gains_one_room_and_keeps_it();
     }
 
     /// What the Activity pane shows for `tree`: rows as (id, author, summary),

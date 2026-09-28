@@ -1523,9 +1523,7 @@ impl App {
                     return Err("Deferred action accepts no argument".into());
                 }
                 let actor = self.collaboration.local_author.0.clone();
-                match self.invoke_resource_action_scoped(
-                    &address, None, &actor, false, false, None, None, None, None,
-                ) {
+                match self.invoke_resource_action(ResourceInvocation::new(&address, &actor)) {
                     Ok(_) => {
                         self.needs_sync = true;
                         self.layout.layout_dirty = true;

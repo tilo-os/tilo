@@ -33,8 +33,9 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDe
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::Selection;
 use crate::theme::Theme;
@@ -800,12 +801,13 @@ impl Widget for Dropdown {
 
         if self.open {
             self.filter_composition.draw(
-                scene,
-                transform,
-                text_renderer,
-                &self.filter,
-                &self.filter_selection,
-                "Type to filter…",
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                QueryView {
+                    text: &self.filter,
+                    selection: &self.filter_selection,
+                    placeholder: "Type to filter…",
+                    show_caret: self.is_focused,
+                },
                 Rect::new(
                     self.rect.x0 + PAD_X,
                     self.rect.y0,
@@ -813,11 +815,7 @@ impl Widget for Dropdown {
                     self.rect.y1,
                 ),
                 &TextStyle::new(FONT),
-                theme.text_primary,
-                theme.text_dim,
-                theme.accent_primary.with_alpha_factor(0.3),
-                theme.accent_primary,
-                self.is_focused,
+                QueryInk::accented(theme.text_primary, theme.text_dim, theme.accent_primary),
             );
         } else {
             let (label, color) = if self.selected.is_empty() {

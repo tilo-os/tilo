@@ -2058,3 +2058,32 @@ fn directory_cursor_saturation_evicts_old_cursors_as_stale() {
     });
     assert!(page.stale_cursor);
 }
+
+#[test]
+fn a_needle_finds_actions_published_only_in_the_resource_tree() {
+    let mut app = app();
+    let mut query = directory_query("", "", 8, 65_536, 64);
+    query.needle = "ping".into();
+    let page = app.action_directory_page(query);
+    assert!(page.exhausted, "{page:?}");
+    let found = page
+        .rows
+        .iter()
+        .map(|row| (row.resource.as_str(), row.action.as_deref()))
+        .collect::<Vec<_>>();
+    assert_eq!(found, [("test.counter", Some("ping"))]);
+
+    let mut query = directory_query("", "", 1, 65_536, 64);
+    query.needle = "BUMP".into();
+    let first = app.action_directory_page(query.clone());
+    assert_eq!(first.rows.len(), 1);
+    assert!(!first.exhausted);
+    query.revision = first.revision.clone();
+    query.cursor = first.next_cursor.clone();
+    let second = app.action_directory_page(query);
+    assert_eq!(second.rows.len(), 1);
+    assert_ne!(
+        first.rows[0].action, second.rows[0].action,
+        "the cursor resumes after the returned match"
+    );
+}

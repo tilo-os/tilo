@@ -46,6 +46,7 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
@@ -1110,21 +1111,33 @@ impl TypstApp {
 
     // ----- drawing --------------------------------------------------------
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Toolbar pill painting combines render context, bounds, label, selected state, and the action for its hit region."
-    )]
-    fn paint_pill(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        label: &str,
-        action: TbAction,
-        active: bool,
-    ) {
+    /// Whether `action`'s toolbar control paints in its on state.
+    fn is_active(&self, action: TbAction) -> bool {
+        match action {
+            TbAction::ToggleMenu => self.menu_open,
+            TbAction::ToggleProblems => self.show_diagnostics,
+            TbAction::ShowEditor => matches!(self.compact_view, CompactPane::Editor),
+            TbAction::ShowPreview => !matches!(self.compact_view, CompactPane::Editor),
+            TbAction::PrevDoc
+            | TbAction::NextDoc
+            | TbAction::Compile
+            | TbAction::Save
+            | TbAction::Open
+            | TbAction::ExportPdf
+            | TbAction::ZoomOut
+            | TbAction::ZoomIn
+            | TbAction::Fit => false,
+        }
+    }
+
+    fn paint_pill(&mut self, ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, action: TbAction) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
+        let active = self.is_active(action);
         let c = &theme.tokens.colors;
         if active {
             let shape = RoundedRect::from_rect(rect, 7.0);
@@ -1199,12 +1212,8 @@ impl TypstApp {
         let with_index = w1x >= 1000.0;
         let switcher_cap = 220.0 * self.text_k;
         let mut x = self.draw_doc_switcher(
-            scene,
-            t,
-            tr,
-            theme,
-            tb.x0 + 12.0,
-            y,
+            &mut PaintCtx::new(scene, t, tr, theme),
+            Point::new(tb.x0 + 12.0, y),
             switcher_cap,
             with_index,
         );
@@ -1221,7 +1230,7 @@ impl TypstApp {
         for (lbl, act) in [("Fit", TbAction::Fit), ("+", TbAction::ZoomIn)] {
             let pill_w = Self::pill_width(tr, lbl);
             let pill_rect = Rect::new(rx - pill_w, y, rx, y + self.pill_h);
-            self.paint_pill(scene, t, tr, theme, pill_rect, lbl, act, false);
+            self.paint_pill(&mut PaintCtx::new(scene, t, tr, theme), pill_rect, lbl, act);
             rx -= pill_w + 6.0;
         }
         // zoom percentage chip (non-interactive)
@@ -1242,7 +1251,12 @@ impl TypstApp {
         rx -= zchip_w + 6.0;
         let zow = Self::pill_width(tr, "−");
         let zor = Rect::new(rx - zow, y, rx, y + self.pill_h);
-        self.paint_pill(scene, t, tr, theme, zor, "−", TbAction::ZoomOut, false);
+        self.paint_pill(
+            &mut PaintCtx::new(scene, t, tr, theme),
+            zor,
+            "−",
+            TbAction::ZoomOut,
+        );
         let right_edge = zor.x0 - 12.0;
 
         // --- action group ---
@@ -1279,14 +1293,10 @@ impl TypstApp {
         }
         for ((lbl, act), pill_w) in actions.iter().zip(&widths).take(shown) {
             self.paint_pill(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 Rect::new(x, y, x + pill_w, y + self.pill_h),
                 lbl,
                 *act,
-                false,
             );
             x += pill_w + 8.0;
         }
@@ -1294,14 +1304,10 @@ impl TypstApp {
             let kr = Rect::new(x, y, x + kebab_w, y + self.pill_h);
             self.kebab_rect = kr;
             self.paint_pill(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 kr,
                 "⋯",
                 TbAction::ToggleMenu,
-                self.menu_open,
             );
         } else {
             // Every action fits as a pill: there is no kebab, so an open menu
@@ -1328,14 +1334,10 @@ impl TypstApp {
         let kr = Rect::new(rx - kebab_w, y, rx, y + self.pill_h);
         self.kebab_rect = kr;
         self.paint_pill(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             kr,
             "⋯",
             TbAction::ToggleMenu,
-            self.menu_open,
         );
         rx -= kebab_w + 8.0;
         if self.err_count > 0 || self.warn_count > 0 {
@@ -1361,7 +1363,12 @@ impl TypstApp {
         let (ell_w, _) = tr.measure_weighted("…", PILL_FONT, None, TextWeight::Semibold);
         let min_chip = f64::from(ell_w) + 24.0;
         let max_chip = (rx - gap - switch_w - gap - left_x - arrows).max(min_chip);
-        let cluster_end = self.draw_doc_switcher(scene, t, tr, theme, left_x, y, max_chip, false);
+        let cluster_end = self.draw_doc_switcher(
+            &mut PaintCtx::new(scene, t, tr, theme),
+            Point::new(left_x, y),
+            max_chip,
+            false,
+        );
 
         // Segmented Edit / Preview switch: centred in the toolbar when that
         // fits, otherwise pushed right of the left cluster (never over it) and
@@ -1369,39 +1376,28 @@ impl TypstApp {
         let _ = self.draw_view_switch(scene, t, tr, theme, y, cluster_end + gap, rx - gap);
     }
 
-    /// Draw the `‹ [name] ›` document switcher starting at `x`. `max_chip` caps
+    /// Draw the `‹ [name] ›` document switcher starting at `origin`. `max_chip` caps
     /// the name chip width (the name is elided to fit). Returns the x just past
     /// the group.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Document switcher painting combines render context, position, available chip width, and document-index visibility."
-    )]
     fn draw_doc_switcher(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        x: f64,
-        y: f64,
+        ctx: &mut PaintCtx<'_>,
+        origin: Point,
         max_chip: f64,
         with_index: bool,
     ) -> f64 {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        let mut x = x;
+        let Point { mut x, y } = origin;
         let multi = self.documents.len() > 1;
 
-        let prev_w = Self::pill_width(tr, "‹");
+        let prev_w = Self::pill_width(ctx.text, "‹");
         if multi {
             self.paint_pill(
-                scene,
-                t,
-                tr,
-                theme,
+                ctx,
                 Rect::new(x, y, x + prev_w, y + self.pill_h),
                 "‹",
                 TbAction::PrevDoc,
-                false,
             );
             x += prev_w + 6.0;
         }
@@ -1416,38 +1412,36 @@ impl TypstApp {
             name
         };
         // Elide to fit the cap.
-        let label = tr.elide_to_width_weighted(
+        let label = ctx.text.elide_to_width_weighted(
             &base,
             PILL_FONT,
             ui::num::f32_of_f64(max_chip - 24.0),
             TextWeight::Semibold,
         );
-        let (lw, _) = tr.measure_weighted(&label, PILL_FONT, None, TextWeight::Semibold);
+        let (lw, _) = ctx
+            .text
+            .measure_weighted(&label, PILL_FONT, None, TextWeight::Semibold);
         let chip_w = (f64::from(lw) + 24.0).min(max_chip);
         let chip = Rect::new(x, y, x + chip_w, y + self.pill_h);
-        ui::surface::card(scene, t, chip, 7.0, c.surfaces.base);
-        tr.draw_text_weighted(
-            scene,
+        ui::surface::card(ctx.scene, ctx.transform, chip, 7.0, c.surfaces.base);
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             &label,
             PILL_FONT,
             c.text_primary,
-            t * Affine::translate((x + 12.0, y + (self.pill_h - self.pill_line) / 2.0)),
+            ctx.transform * Affine::translate((x + 12.0, y + (self.pill_h - self.pill_line) / 2.0)),
             None,
             TextWeight::Semibold,
         );
         x += chip_w + 6.0;
 
         if multi {
-            let next_w = Self::pill_width(tr, "›");
+            let next_w = Self::pill_width(ctx.text, "›");
             self.paint_pill(
-                scene,
-                t,
-                tr,
-                theme,
+                ctx,
                 Rect::new(x, y, x + next_w, y + self.pill_h),
                 "›",
                 TbAction::NextDoc,
-                false,
             );
             x += next_w;
         }
@@ -1474,10 +1468,6 @@ impl TypstApp {
     /// A two-segment Edit / Preview toggle, centred in the toolbar when the
     /// centre lies inside `[min_x0, max_x1]`, otherwise clamped into that span
     /// so it never overlaps the clusters on either side. Returns its rect.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The view toggle needs render context, vertical position, and the free horizontal span between toolbar clusters."
-    )]
     fn draw_view_switch(
         &mut self,
         scene: &mut Scene,
@@ -1514,41 +1504,19 @@ impl TypstApp {
         let outer = Rect::new(x0, y, x0 + total, y + self.pill_h);
         ui::surface::card(scene, t, outer, 8.0, c.lift(0.35));
 
-        let edit_active = matches!(self.compact_view, CompactPane::Editor);
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         // Edit segment.
         let er = Rect::new(x0, y, x0 + ew, y + self.pill_h);
-        self.paint_segment(
-            scene,
-            t,
-            tr,
-            theme,
-            er,
-            seg_edit,
-            TbAction::ShowEditor,
-            edit_active,
-        );
+        self.paint_segment(&mut ctx, er, seg_edit, TbAction::ShowEditor);
         // Preview segment.
         let pr = Rect::new(x0 + ew, y, x0 + ew + pw, y + self.pill_h);
-        self.paint_segment(
-            scene,
-            t,
-            tr,
-            theme,
-            pr,
-            seg_prev,
-            TbAction::ShowPreview,
-            !edit_active,
-        );
+        self.paint_segment(&mut ctx, pr, seg_prev, TbAction::ShowPreview);
         outer
     }
 
     /// A "Problems" pill placed from its right edge at `rx`. `long` uses the
     /// full "Problems (n)" label; otherwise a compact count badge. Returns the
     /// left edge just past the pill.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Problems pill painting combines render context, right-edge/top placement, and the full-label versus count-only mode."
-    )]
     fn draw_problems_pill(
         &mut self,
         scene: &mut Scene,
@@ -1578,35 +1546,24 @@ impl TypstApp {
         let w = Self::pill_width(tr, &label);
         let r = Rect::new(rx - w, y, rx, y + self.pill_h);
         self.paint_pill(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             r,
             &label,
             TbAction::ToggleProblems,
-            self.show_diagnostics,
         );
         r.x0
     }
 
     /// Paint one segment of a segmented control (no rounded outline of its own;
     /// the container draws that).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Segment painting combines render context, bounds, label, active state, and the action registered for hit testing."
-    )]
-    fn paint_segment(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        label: &str,
-        action: TbAction,
-        active: bool,
-    ) {
+    fn paint_segment(&mut self, ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, action: TbAction) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
+        let active = self.is_active(action);
         let c = &theme.tokens.colors;
         if active {
             let shape = RoundedRect::from_rect(rect.inflate(-2.0, -2.0), 6.0);

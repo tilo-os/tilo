@@ -28,6 +28,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
@@ -36,7 +37,7 @@ use ui::theme::Theme;
 use ui::tilo_actions::OperationKind;
 use ui::tokens::spacing::Spacing;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
-use ui::widget::{Banner, BannerKind, Button, ButtonFace, TextInput, Widget};
+use ui::widget::{Banner, BannerContent, BannerKind, Button, ButtonFace, TextInput, Widget};
 
 use crate::add_panel::{AddAccountPanel, AddPanelEvent};
 use crate::doc::AuthDoc;
@@ -1309,16 +1310,15 @@ impl Widget for AuthenticatorApp {
                     .unwrap_or("Local vault changes aren't saved — restore access, then retry.")
             };
             Banner::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 banner,
-                BannerKind::Error,
-                BannerKind::Error.default_icon(),
-                banner_message,
-                None,
-                false,
+                &BannerContent {
+                    kind: BannerKind::Error,
+                    icon: BannerKind::Error.default_icon(),
+                    title: banner_message,
+                    message: None,
+                    dismissible: false,
+                },
                 self.last_mouse,
             );
             Button::paint(
@@ -1376,16 +1376,7 @@ impl Widget for AuthenticatorApp {
 
         // Modal owns all input while open.
         if self.add_panel.is_open() {
-            self.add_panel.handle_event(
-                event,
-                ctx.scale_factor,
-                ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                ctx.handled,
-                ctx.node_id,
-                ctx.taffy,
-            );
+            self.add_panel.handle_event(event, ctx);
             if let Some(ev) = self.add_panel.take_event() {
                 self.apply_add_panel_event(ev, ctx.state);
             }

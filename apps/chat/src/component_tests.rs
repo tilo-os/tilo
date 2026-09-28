@@ -226,7 +226,9 @@ fn component_mount(
     ui::record::RecordCheckout,
 ) {
     use std::{cell::RefCell, rc::Rc};
-    use ui::application::{ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput};
+    use ui::application::{
+        ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    };
 
     let cache = cache.clone();
     let definition = crate::definition();
@@ -251,13 +253,15 @@ fn component_mount(
     };
     let context = HostContext::prepare(
         definition,
-        records.clone(),
-        views,
-        "device".into(),
-        instance,
-        permissions,
-        ui::permissions::UserId(author.into()),
-        tilo_actions::ActionContext::default(),
+        HostContextInputs {
+            records: records.clone(),
+            views,
+            device_id: "device".into(),
+            instance_id: instance,
+            permissions,
+            author: ui::permissions::UserId(author.into()),
+            action_context: tilo_actions::ActionContext::default(),
+        },
         &target,
     )
     .unwrap();
@@ -436,7 +440,7 @@ fn captured_pointer_send_retry_does_not_duplicate_the_canonical_message() {
 fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
     use std::{cell::RefCell, rc::Rc};
     use ui::{
-        application::{HostContext, LaunchTarget, RestoreInput},
+        application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput},
         portable_storage::{PortableStorage, StorageKey},
         record::{RecordCheckout, RecordOwners},
     };
@@ -480,13 +484,15 @@ fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
         };
         let context = HostContext::prepare(
             definition,
-            records.clone(),
-            views.clone(),
-            "component-device".into(),
-            instance,
-            permissions.clone(),
-            ui::permissions::UserId("author".into()),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records: records.clone(),
+                views: views.clone(),
+                device_id: "component-device".into(),
+                instance_id: instance,
+                permissions: permissions.clone(),
+                author: ui::permissions::UserId("author".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             &target,
         )
         .unwrap();
@@ -821,4 +827,48 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     );
     visitor.close_components();
     agent.close_components();
+}
+
+/// A host lays out a room's Chat without inventing a person for it, and
+/// what it then publishes for the mounted Chat passes the contract check a
+/// host makes before publishing: a surface failing it is withheld, and the
+/// hosted Chat offers nothing at all. People appear as members join, each
+/// named by an id that never spells their name.
+#[test]
+fn a_hosted_chat_publishes_a_surface_that_passes_its_contract() {
+    use automerge::ReadDoc;
+    let mut doc = AutoCommit::new();
+    ChatDoc::seed_shared(&mut doc);
+    let users = doc.get(ROOT, "users").unwrap().unwrap().1;
+    assert_eq!(doc.length(&users), 0, "the host invents nobody");
+    // The mounted Chat's author is the host's person principal; another
+    // member has joined with a name of their own.
+    let author = "5a".repeat(32);
+    let member = "c3".repeat(32);
+    for (id, name) in [
+        (author.as_str(), author.as_str()),
+        (member.as_str(), "Robin Vale"),
+    ] {
+        ChatDoc::ensure_user(&mut doc, id, name, "RV", 1, crate::model::Presence::Online);
+    }
+    doc.commit();
+    let identity = LocalIdentity {
+        id: author.clone(),
+        name: author,
+        initials: "5A".into(),
+        color_idx: 1,
+    };
+    let mut app =
+        ChatApp::from_document(&doc, identity, crate::app::ChatRuntime::Unavailable).unwrap();
+    app.sync(&mut doc, &ROOT);
+    let mut registry = tilo_actions::ActionRegistry::new();
+    crate::actions::register(&mut registry);
+    let resources = app.resources(&doc);
+    assert!(!resources.is_empty());
+    // Requests to the workspace (message, invite) are forwarded by the App
+    // host for every app, however mounted.
+    let mut handlers = app.resource_operation_handlers();
+    handlers.insert(tilo_actions::remote::WORKSPACE_REQUEST_TYPE.to_string());
+    let violations = tilo_actions::validate_surface(&resources, &registry, &handlers);
+    assert!(violations.is_empty(), "{violations:#?}");
 }

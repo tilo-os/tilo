@@ -133,15 +133,14 @@ impl CollaborationOverview {
         let fill = Color::from_rgb8(c.0, c.1, c.2);
         if ringed {
             Avatar::draw_ringed_at(
-                scene,
-                transform,
+                &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
                 rect,
                 &Self::initials(identity.name),
                 fill,
-                theme.bg_primary,
-                2.0,
-                theme,
-                tr,
+                crate::widget::AvatarRing {
+                    color: theme.bg_primary,
+                    width: 2.0,
+                },
             );
         } else {
             Avatar::draw_at(

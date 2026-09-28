@@ -2338,17 +2338,7 @@ impl Widget for TileHost {
         if let Some(history) = &mut self.history {
             history.observe_pointer(event, ctx.scale_factor);
             if history.controls_event(event, ctx.scale_factor) {
-                history.route_event(
-                    app.as_mut(),
-                    event,
-                    ctx.scale_factor,
-                    ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.handled,
-                    ctx.focus_target,
-                    ctx.taffy,
-                );
+                history.route_event(app.as_mut(), event, ctx);
                 return;
             }
             if !history.live_interactive() {
@@ -2672,16 +2662,15 @@ impl TileHost {
             self.rect.y1 - margin,
         );
         crate::widget::Banner::paint(
-            scene,
-            transform,
-            tr,
-            theme,
+            &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
             banner,
-            crate::widget::BannerKind::Error,
-            crate::icons::Icon::Ban,
-            "Document switch blocked",
-            Some(detail),
-            false,
+            &crate::widget::BannerContent {
+                kind: crate::widget::BannerKind::Error,
+                icon: crate::icons::Icon::Ban,
+                title: "Document switch blocked",
+                message: Some(detail),
+                dismissible: false,
+            },
             Point::ZERO,
         );
     }
@@ -2819,10 +2808,6 @@ impl TileHost {
 // Standard immediate-mode paint-helper signature for this vello renderer
 // (scene + transform + text_renderer + theme, plus this draw's own
 // content); every parameter is independently load-bearing.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "An opening card combines render context and presence with card bounds, application name, and its mutable spinner."
-)]
 fn draw_opening_card(
     scene: &mut Scene,
     transform: Affine,

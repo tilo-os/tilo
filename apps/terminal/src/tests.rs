@@ -2218,7 +2218,8 @@ fn menu_and_paste_actions_recheck_live_permissions() {
     {
         use std::{cell::RefCell, rc::Rc};
         use ui::application::{
-            ApplicationDefinition, ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput,
+            ApplicationDefinition, ComponentRunnerInputs, HostContext, HostContextInputs,
+            LaunchTarget, RestoreInput,
         };
         use ui::permissions::{Actor, PermissionContext, Role, UserId};
         const APP_ID: &str = "so.tilo.terminal";
@@ -2271,13 +2272,15 @@ fn menu_and_paste_actions_recheck_live_permissions() {
         MENU_COMPONENT_WIDGET.with_borrow_mut(|slot| *slot = Some(widget));
         let context = HostContext::prepare(
             &definition,
-            records,
-            views,
-            "terminal-menu-device".into(),
-            17,
-            permissions.clone(),
-            UserId("terminal-menu-user".into()),
-            ui::tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records,
+                views,
+                device_id: "terminal-menu-device".into(),
+                instance_id: 17,
+                permissions: permissions.clone(),
+                author: UserId("terminal-menu-user".into()),
+                action_context: ui::tilo_actions::ActionContext::default(),
+            },
             &LaunchTarget::New,
         )
         .unwrap();
@@ -2348,7 +2351,8 @@ fn menu_and_paste_actions_recheck_live_permissions() {
     {
         use std::{cell::RefCell, rc::Rc};
         use ui::application::{
-            ApplicationDefinition, ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput,
+            ApplicationDefinition, ComponentRunnerInputs, HostContext, HostContextInputs,
+            LaunchTarget, RestoreInput,
         };
         use ui::permissions::{Actor, PermissionContext, Role, UserId};
         use winit::keyboard::{Key, SmolStr};
@@ -2406,13 +2410,15 @@ fn menu_and_paste_actions_recheck_live_permissions() {
         MENU_COMPONENT_WIDGET.with_borrow_mut(|slot| *slot = Some(widget));
         let context = HostContext::prepare(
             &definition,
-            records,
-            views,
-            "terminal-shortcut-device".into(),
-            18,
-            permissions.clone(),
-            UserId("terminal-shortcut-user".into()),
-            ui::tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records,
+                views,
+                device_id: "terminal-shortcut-device".into(),
+                instance_id: 18,
+                permissions: permissions.clone(),
+                author: UserId("terminal-shortcut-user".into()),
+                action_context: ui::tilo_actions::ActionContext::default(),
+            },
             &LaunchTarget::New,
         )
         .unwrap();

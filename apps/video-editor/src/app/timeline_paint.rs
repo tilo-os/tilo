@@ -67,11 +67,9 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 &words,
-                9.0,
+                &TextStyle::new(9.0).with_weight(TextWeight::Semibold),
                 fg,
-                at.x,
-                at.y,
-                TextWeight::Semibold,
+                Point::new(at.x, at.y),
             );
         } else {
             // The peak-hold, or an honest blank. "-∞" would say the mix is
@@ -331,11 +329,9 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 &name,
-                13.0,
+                &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
                 c.text_primary,
-                head.name.x0,
-                name_y,
-                TextWeight::Semibold,
+                Point::new(head.name.x0, name_y),
             );
             // What the lane is, and — when it has been moved off unity or
             // centre — where its fader is. The reading belongs *here*, on the
@@ -404,11 +400,9 @@ impl VideoEditorApp {
                         tr,
                         tf,
                         label,
-                        10.0,
+                        &TextStyle::new(10.0).with_weight(TextWeight::Semibold),
                         fg,
-                        at.x,
-                        at.y,
-                        TextWeight::Semibold,
+                        Point::new(at.x, at.y),
                     );
                 } else {
                     // Off: the shared neutral face, so the toggle carries the
@@ -437,7 +431,14 @@ impl VideoEditorApp {
         let mut tied: Vec<(Uuid, Rect)> = Vec::new();
         for (tid, kind, lane) in &lanes {
             for clip in self.project.clips_on(*tid) {
-                self.draw_clip(scene, tf, tr, theme, clip, lane, *kind, r, &links);
+                self.draw_clip(
+                    &mut PaintCtx::new(scene, tf, tr, theme),
+                    clip,
+                    lane,
+                    *kind,
+                    r,
+                    &links,
+                );
                 let rect = self.clip_rect(clip, lane, r);
                 drawn.push((clip.id, rect));
                 if let Some(link) = clip.link.filter(|_| links.group_selected(clip)) {
@@ -617,11 +618,9 @@ impl VideoEditorApp {
             tr,
             tf,
             &tag,
-            10.0,
+            &TextStyle::new(10.0).with_weight(TextWeight::Bold),
             on_fill(theme, c.accent[5]).1,
-            tagx,
-            r.ruler.y0 + 3.0,
-            TextWeight::Bold,
+            Point::new(tagx, r.ruler.y0 + 3.0),
         );
 
         // Everyone else's playhead, after the local one so a peer parked on
@@ -650,15 +649,14 @@ impl VideoEditorApp {
                 )
             };
             ui::widget::EmptyState::paint(
-                scene,
-                tf,
-                tr,
-                theme,
+                &mut ui::paint::PaintCtx::new(scene, tf, tr, theme),
                 area,
-                Some(ui::icons::Icon::Layers),
-                title,
-                Some(hint),
-                None,
+                &ui::widget::EmptyStateContent {
+                    icon: Some(ui::icons::Icon::Layers),
+                    title,
+                    message: Some(hint),
+                    action_label: None,
+                },
                 Point::new(f64::MIN, f64::MIN),
             );
         }
@@ -727,25 +725,19 @@ impl VideoEditorApp {
         reason = "each clip's linked, selected, media, and accessibility treatments must share the exact same lane geometry"
     )]
     #[expect(
-        clippy::too_many_arguments,
-        reason = "the paint context plus the clip, its lane and the per-clip state the timeline computed"
-    )]
-    #[expect(
         clippy::many_single_char_names,
         reason = "the paint pass's shorthands: colours c, the clip rect r, and the x/y of each mark"
     )]
     pub(super) fn draw_clip(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         clip: &Clip,
         lane: &Rect,
         kind: TrackKind,
         r: &Regions,
         links: &LinkMarks,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let cr = self.clip_rect(clip, lane, r);
         if cr.x1 < r.lanes.x0 || cr.x0 > r.lanes.x1 {
@@ -761,8 +753,8 @@ impl VideoEditorApp {
         };
         let body = if hovered { lighten(body, 0.08) } else { body };
         fill_round(
-            scene,
-            tf,
+            ctx.scene,
+            ctx.transform,
             cr,
             6.0,
             with_alpha(
@@ -777,7 +769,7 @@ impl VideoEditorApp {
         // header strip
         let chrome_scale = self.chrome_scale();
         let strip = self.clip_header_rect(cr);
-        fill_round(scene, tf, strip, 6.0, darken(base, 0.3));
+        fill_round(ctx.scene, ctx.transform, strip, 6.0, darken(base, 0.3));
 
         // content: filmstrip or waveform
         let inner = Rect::new(cr.x0 + 2.0, strip.y1, cr.x1 - 2.0, cr.y1 - 2.0);
@@ -801,8 +793,10 @@ impl VideoEditorApp {
                     // the generated representative, so a cell only comes back
                     // empty when the source has no picture at all.
                     match self.thumbnails.frame_at(clip.media, t) {
-                        Some(th) => blit_thumb(scene, tf, th, cell, 2.0),
-                        None => fill_round(scene, tf, cell, 2.0, lighten(base, 0.16)),
+                        Some(th) => blit_thumb(ctx.scene, ctx.transform, th, cell, 2.0),
+                        None => {
+                            fill_round(ctx.scene, ctx.transform, cell, 2.0, lighten(base, 0.16));
+                        }
                     }
                 }
                 // A source that could not be decoded says so once, over the
@@ -810,11 +804,11 @@ impl VideoEditorApp {
                 // "this clip has no picture".
                 if self.thumbnails.is_undecodable(clip.media) && cr.width() > 90.0 {
                     let msg = "No preview";
-                    let (mw, _) = tr.measure(msg, 10.0, None);
+                    let (mw, _) = ctx.text.measure(msg, 10.0, None);
                     text(
-                        scene,
-                        tr,
-                        tf,
+                        ctx.scene,
+                        ctx.text,
+                        ctx.transform,
                         msg,
                         10.0,
                         with_alpha(Color::WHITE, 0.7),
@@ -833,8 +827,8 @@ impl VideoEditorApp {
                     self.waveforms.peaks(clip.media),
                 ) {
                     (crate::waveform::WaveformState::Ready, Some(peaks)) => draw_waveform(
-                        scene,
-                        tf,
+                        ctx.scene,
+                        ctx.transform,
                         WaveformPaint {
                             area: inner,
                             peaks,
@@ -848,7 +842,7 @@ impl VideoEditorApp {
                             color,
                         },
                     ),
-                    _ => draw_flat_signal(scene, tf, inner, color),
+                    _ => draw_flat_signal(ctx.scene, ctx.transform, inner, color),
                 }
             }
         }
@@ -863,20 +857,32 @@ impl VideoEditorApp {
             None
         };
         if let Some(msg) = unusable {
-            hatch_rect(scene, tf, with_alpha(c.semantic.warning, 0.30), cr, 7.0);
+            hatch_rect(
+                ctx.scene,
+                ctx.transform,
+                with_alpha(c.semantic.warning, 0.30),
+                cr,
+                7.0,
+            );
             if cr.width() > 118.0 && inner.height() > 14.0 {
-                let (mw, mh) = tr.measure(msg, 10.0, None);
+                let (mw, mh) = ctx.text.measure(msg, 10.0, None);
                 let pill = Rect::new(
                     inner.center().x - f64::from(mw) / 2.0 - 6.0,
                     inner.center().y - f64::from(mh) / 2.0 - 2.0,
                     inner.center().x + f64::from(mw) / 2.0 + 6.0,
                     inner.center().y + f64::from(mh) / 2.0 + 2.0,
                 );
-                fill_round(scene, tf, pill, 4.0, with_alpha(Color::BLACK, 0.55));
+                fill_round(
+                    ctx.scene,
+                    ctx.transform,
+                    pill,
+                    4.0,
+                    with_alpha(Color::BLACK, 0.55),
+                );
                 text(
-                    scene,
-                    tr,
-                    tf,
+                    ctx.scene,
+                    ctx.text,
+                    ctx.transform,
                     msg,
                     10.0,
                     with_alpha(Color::WHITE, 0.95),
@@ -907,7 +913,8 @@ impl VideoEditorApp {
             0.0
         } else {
             f64::from(
-                tr.measure_weighted(&clip.speed.label(), 9.5, None, TextWeight::Bold)
+                ctx.text
+                    .measure_weighted(&clip.speed.label(), 9.5, None, TextWeight::Bold)
                     .0,
             ) + 18.0
         };
@@ -926,8 +933,8 @@ impl VideoEditorApp {
         let chain_w = if linked { CHAIN_W } else { 0.0 };
         if linked && seen > corner + CHAIN_W + 6.0 {
             draw_chain(
-                scene,
-                tf,
+                ctx.scene,
+                ctx.transform,
                 with_alpha(head_col, 0.85),
                 vx0 + 4.0 + corner,
                 strip.center().y,
@@ -937,28 +944,26 @@ impl VideoEditorApp {
         // where the name is actually drawn.
         let avail = (seen - 10.0 - corner - chain_w - badge_w).max(4.0) as f32;
         if seen > 30.0 + corner + chain_w {
-            let shown = elide_w(&label, avail, tr);
+            let shown = elide_w(&label, avail, ctx.text);
             // The name sits on the clip's header strip, whose colour comes
             // from the user's chosen label — so the text colour has to be
             // resolved against it rather than assumed white.
             text_w(
-                scene,
-                tr,
-                tf,
+                ctx.scene,
+                ctx.text,
+                ctx.transform,
                 &shown,
-                11.0,
+                &TextStyle::new(11.0).with_weight(TextWeight::Medium),
                 head_col,
-                vx0 + 5.0 + corner + chain_w,
-                cr.y0 + 3.0 * chrome_scale,
-                TextWeight::Medium,
+                Point::new(vx0 + 5.0 + corner + chain_w, cr.y0 + 3.0 * chrome_scale),
             );
         }
         // transition marker at head
         if clip.transition != Transition::None && seen > 16.0 {
             let mk = triangle_corner(vx0, cr.y0, 12.0);
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
-                tf,
+                ctx.transform,
                 with_alpha(on_fill(theme, base).1, 0.85),
                 None,
                 &mk,
@@ -969,7 +974,9 @@ impl VideoEditorApp {
         // from one that was simply trimmed shorter.
         if !clip.speed.is_normal() && seen > 52.0 {
             let label = clip.speed.label();
-            let (lw, _) = tr.measure_weighted(&label, 9.5, None, TextWeight::Bold);
+            let (lw, _) = ctx
+                .text
+                .measure_weighted(&label, 9.5, None, TextWeight::Bold);
             let pill = Rect::new(
                 vx1 - 8.0 - f64::from(lw) - 10.0,
                 cr.y0 + 2.0 * chrome_scale,
@@ -978,18 +985,16 @@ impl VideoEditorApp {
             );
             if pill.x0 > vx0 + 4.0 {
                 let bg = darken(base, 0.45);
-                fill_round(scene, tf, pill, 4.0, with_alpha(bg, 0.9));
-                let baseline = text_baseline(pill, 9.5, tr);
+                fill_round(ctx.scene, ctx.transform, pill, 4.0, with_alpha(bg, 0.9));
+                let baseline = text_baseline(pill, 9.5, ctx.text);
                 text_w(
-                    scene,
-                    tr,
-                    tf,
+                    ctx.scene,
+                    ctx.text,
+                    ctx.transform,
                     &label,
-                    9.5,
+                    &TextStyle::new(9.5).with_weight(TextWeight::Bold),
                     on_fill(theme, bg).1,
-                    pill.x0 + 5.0,
-                    baseline,
-                    TextWeight::Bold,
+                    Point::new(pill.x0 + 5.0, baseline),
                 );
             }
         }
@@ -1006,8 +1011,8 @@ impl VideoEditorApp {
             let mark = on_fill(theme, base).1;
             let y = cr.y1 - 7.0;
             stroke_line(
-                scene,
-                tf,
+                ctx.scene,
+                ctx.transform,
                 with_alpha(darken(base, 0.45), 0.75),
                 (cr.x0 + 3.0).max(r.lanes.x0),
                 y,
@@ -1027,10 +1032,16 @@ impl VideoEditorApp {
                 d.line_to((x, y + s));
                 d.line_to((x - s, y));
                 d.close_path();
-                scene.fill(Fill::NonZero, tf, with_alpha(mark, 0.95), None, &d);
-                scene.stroke(
+                ctx.scene.fill(
+                    Fill::NonZero,
+                    ctx.transform,
+                    with_alpha(mark, 0.95),
+                    None,
+                    &d,
+                );
+                ctx.scene.stroke(
                     &Stroke::new(1.0),
-                    tf,
+                    ctx.transform,
                     with_alpha(darken(base, 0.5), 0.9),
                     None,
                     &d,
@@ -1043,20 +1054,27 @@ impl VideoEditorApp {
         // always clear which clip a trim or a grade will land on.
         let primary = self.selection.primary() == Some(clip.id);
         if primary {
-            stroke_round(scene, tf, cr, 6.0, c.border_focus, 2.0);
+            stroke_round(ctx.scene, ctx.transform, cr, 6.0, c.border_focus, 2.0);
             for hx in [cr.x0, cr.x1] {
                 let hrect = Rect::new(hx - 3.0, cr.y0 + 2.0, hx + 3.0, cr.y1 - 2.0);
-                fill_round(scene, tf, hrect, 2.0, c.accent[5]);
+                fill_round(ctx.scene, ctx.transform, hrect, 2.0, c.accent[5]);
             }
         } else if selected {
-            stroke_round(scene, tf, cr, 6.0, with_alpha(c.border_focus, 0.6), 2.0);
+            stroke_round(
+                ctx.scene,
+                ctx.transform,
+                cr,
+                6.0,
+                with_alpha(c.border_focus, 0.6),
+                2.0,
+            );
         } else if links.group_selected(clip) {
             // The other half of a selected shot. Dashed rather than solid, so
             // "this will move too" never reads as "this is selected" — an edit
             // aimed at it (a grade, a level) still lands on the anchor.
-            scene.stroke(
+            ctx.scene.stroke(
                 &Stroke::new(1.6).with_dashes(0.0, [4.0, 3.0]),
-                tf,
+                ctx.transform,
                 with_alpha(c.border_focus, 0.75),
                 None,
                 &RoundedRect::from_rect(cr, 6.0),
@@ -1066,8 +1084,8 @@ impl VideoEditorApp {
             // on a pale label in light as on a deep one in dark; the old
             // half-alpha base wash was a light ring on white.
             stroke_round(
-                scene,
-                tf,
+                ctx.scene,
+                ctx.transform,
                 cr.inset(-0.5),
                 5.5,
                 ui::surface::edge_on(body),

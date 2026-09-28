@@ -21,7 +21,9 @@ use tilo_peer_state::{NeighbourMsg, StatePeer, owner_commit::OwnerCommitService}
 use tilo_user_identity::DeviceCert;
 use tokio::sync::mpsc;
 use ui::{
-    application::{ComponentCloseReport, HostContext, LaunchTarget, RestoreInput},
+    application::{
+        ComponentCloseReport, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    },
     collaboration::{CertifiedEndpointIdentity, CollaborationManager, RouteSpec},
     host_worker::HostWorker,
     permissions::PermissionContext,
@@ -923,10 +925,6 @@ impl AgentWorkers {
         }
         Ok(())
     }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one worker mount needs each of its inputs"
-    )]
     fn mount(
         &mut self,
         snapshot: &Snapshot,
@@ -1036,13 +1034,15 @@ impl AgentWorkers {
         };
         let context = HostContext::prepare(
             definition,
-            records.clone(),
-            self.views.clone(),
-            hex::encode(self.certificate.device_public_key),
-            instance,
-            permissions.clone(),
-            ui::permissions::UserId(self.principal.clone()),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records: records.clone(),
+                views: self.views.clone(),
+                device_id: hex::encode(self.certificate.device_public_key),
+                instance_id: instance,
+                permissions: permissions.clone(),
+                author: ui::permissions::UserId(self.principal.clone()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             &target,
         )
         .map_err(|e| self.setup_error(e))?;

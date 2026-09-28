@@ -29,25 +29,34 @@ impl ConfirmedRestore<'_> {
     }
 }
 
+/// A restore the person reviewed in History: the source and scope it names,
+/// and the controller whose review token it carries.
+pub(crate) struct ReviewedRestore<'a> {
+    pub(crate) source: &'a crate::history_mode::HistorySourceRegistration,
+    pub(crate) scope: &'a crate::history_mode::HistoryScopeDefinition,
+    pub(crate) controller: &'a crate::history_mode::HistoryController,
+    pub(crate) review: &'a crate::history_mode::RestoreReview,
+}
+
 /// The framework History host's admission door. The current owner/context is
 /// borrowed through preparation, final authorization and the synchronous
 /// canonical write.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "restore admission binds the reviewed source and schema to current state, authority, author, title and time"
-)]
 pub(crate) fn restore_reviewed_history(
     state: &mut State,
-    source: &crate::history_mode::HistorySourceRegistration,
-    controller: &crate::history_mode::HistoryController,
-    review: &crate::history_mode::RestoreReview,
-    schema: Option<&'static crate::history_mode::restore::HistoryRestoreSchema>,
+    restore: &ReviewedRestore<'_>,
     authority: &PermissionContext,
     author: &UserId,
-    title: &str,
     now: u64,
 ) -> Result<OwnedActionReceipt, String> {
     use crate::history_mode::HistorySourceRegistration;
+    let ReviewedRestore {
+        source,
+        scope,
+        controller,
+        review,
+    } = *restore;
+    let schema = scope.content_schema;
+    let title = scope.title;
     let resource = match source {
         HistorySourceRegistration::HostDocument { resource, .. }
         | HistorySourceRegistration::OwnedDocument { resource, .. } => resource,

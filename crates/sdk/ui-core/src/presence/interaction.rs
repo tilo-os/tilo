@@ -293,10 +293,6 @@ impl PresenceCtx {
     /// Draw a compact generic fallback for interactions an application has
     /// not yet projected onto domain geometry. This is an activity rail, not
     /// a cursor: it never moves focus or implies keyboard/mouse navigation.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "interaction rails combine scene resources and theme with viewport bounds and the time used to filter visible activity"
-    )]
     pub fn draw_interactions(
         &self,
         scene: &mut Scene,
@@ -318,7 +314,6 @@ impl PresenceCtx {
     /// client gets collaboration by default, while activity from a different
     /// app can never be painted over its pixels.
     #[allow(
-        clippy::too_many_arguments,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::cast_precision_loss,
@@ -376,10 +371,6 @@ impl PresenceCtx {
         entries
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "interaction cards combine scene resources and theme with the activity entry and its computed placement"
-    )]
     #[allow(
         clippy::cast_possible_truncation,
         reason = "card widths are bounded UI pixels; f32 text shaping precision is sufficient"

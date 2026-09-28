@@ -80,10 +80,6 @@ pub(crate) fn band_buttons(band: Rect) -> BandButtons {
 
 /// Paint a Keep/Revert band into `band`: `title` over `status` on the left,
 /// Keep and Revert on the right.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "draw context plus the band's two lines and focus"
-)]
 pub(crate) fn paint_keep_revert_band(
     scene: &mut Scene,
     transform: Affine,

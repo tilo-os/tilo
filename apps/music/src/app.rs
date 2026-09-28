@@ -650,8 +650,7 @@ struct NameDlg {
 impl MusicApp {
     // A flat struct literal initializing every field of `MusicApp`'s ~90-field
     // state; splitting it into sub-builders would only relocate the field
-    // assignments across more functions, not reduce them (the same reasoning
-    // as the file-level `too_many_arguments` allow above).
+    // assignments across more functions, not reduce them.
     #[allow(
         clippy::too_many_lines,
         reason = "flat struct-literal initializing every MusicApp field once; splitting it would only relocate field assignments, not reduce them"
@@ -4863,40 +4862,6 @@ impl Default for MusicApp {
 
 fn rrect(r: Rect, radius: f64) -> RoundedRect {
     RoundedRect::from_rect(r, radius)
-}
-
-fn fill_rrect(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &rrect(r, radius));
-}
-
-// The params are independent geometry/style values a caller picks per call
-// (position, size, color, weight, wrap width); a struct would just relocate
-// them across 90+ call sites in `app/render.rs` without reducing complexity.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "text rendering forwards independent geometry and style values across existing call sites"
-)]
-fn draw_text(
-    tr: &mut TextRenderer,
-    scene: &mut Scene,
-    t: Affine,
-    text: &str,
-    x: f64,
-    y: f64,
-    size: f32,
-    color: Color,
-    weight: TextWeight,
-    max_w: Option<f32>,
-) {
-    tr.draw_text_weighted(
-        scene,
-        text,
-        size,
-        color,
-        t * Affine::translate((x, y)),
-        max_w,
-        weight,
-    );
 }
 
 /// Truncate `text` to fit `max_w` px at `size`, appending an ellipsis.

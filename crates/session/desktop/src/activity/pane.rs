@@ -31,6 +31,7 @@ use automerge::transaction::Transactable;
 use automerge::{ChangeHash, Prop, ReadDoc, ScalarValue, Value};
 use collab_types::OpClass;
 use collab_types::caps::{CapOverride, Effect, Principal, Scope, Subject, Verb};
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::widget::{
@@ -309,10 +310,6 @@ fn local_resume_snapshot(entries: &[HistoryEntry], local: &str) -> Option<Resume
         .max_by_key(|resume| resume.timestamp)
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "resume card rendering receives the ordinary immediate-mode scene and typography context"
-)]
 #[expect(
     clippy::too_many_lines,
     reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
@@ -1413,14 +1410,18 @@ impl RoomActivityPane {
         };
         if ui::history_groups::materialize_and_move_boundary(
             tree.document_mut(),
-            older.work_session_id.as_deref(),
-            &older_start,
-            &older_end,
-            &older.title,
-            newer.work_session_id.as_deref(),
-            &newer_start,
-            &newer_end,
-            &newer.title,
+            ui::history_groups::DisplayedSession {
+                record: older.work_session_id.as_deref(),
+                start: &older_start,
+                end: &older_end,
+                label: &older.title,
+            },
+            ui::history_groups::DisplayedSession {
+                record: newer.work_session_id.as_deref(),
+                start: &newer_start,
+                end: &newer_end,
+                label: &newer.title,
+            },
             &new_left_end,
             &new_right_start,
         )
@@ -2840,7 +2841,13 @@ impl RoomActivityPane {
             capacity
         });
         for (lens, label) in candidates.iter().skip(self.lens_offset).take(shown) {
-            self.draw_lens_row(scene, transform, tr, theme, lens, label, &mut y, bounds);
+            self.draw_lens_row(
+                &mut PaintCtx::new(scene, transform, tr, theme),
+                lens,
+                label,
+                &mut y,
+                bounds,
+            );
         }
         if shown < remaining || self.lens_offset > 0 {
             let label = t(if shown < remaining {
@@ -2933,7 +2940,6 @@ impl RoomActivityPane {
     }
 
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "one immediate-mode detail renderer keeps the agent task narrative and actions spatially coherent"
     )]
@@ -3080,10 +3086,6 @@ impl RoomActivityPane {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "immediate-mode action row needs shared scene, typography, theme, bounds, and selection context"
-    )]
     fn draw_detail_actions(
         &mut self,
         scene: &mut Scene,
@@ -3162,7 +3164,6 @@ impl RoomActivityPane {
     }
 
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         clippy::cast_precision_loss,
         reason = "comparison paint, bounds, and text layout stay in one retained-rendering pass so labels, hit geometry, and accessible summary cannot diverge"
@@ -3314,21 +3315,16 @@ impl RoomActivityPane {
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "small immediate-mode explorer row"
-    )]
     fn draw_lens_row(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         lens: &LensSelection,
         label: &str,
         y: &mut f64,
         bounds: Rect,
     ) {
+        let (scene, transform, tr, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         if *y + 28.0 > bounds.y1 - 6.0 {
             return;
         }
@@ -3653,10 +3649,7 @@ impl RoomActivityPane {
                 &rect,
             );
             draw_brief_card(
-                scene,
-                transform,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, transform, tr, theme),
                 brief,
                 rect,
                 metrics,
@@ -4136,10 +4129,7 @@ impl RoomActivityPane {
             let rect = Rect::new(x0, y, x1, y + height);
             self.task_rects.push((task.id.clone(), rect));
             draw_task_card(
-                scene,
-                transform,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, transform, tr, theme),
                 task,
                 rect,
                 selected,
@@ -6472,21 +6462,18 @@ fn draw_task_button(
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "task-card rendering needs the shared renderer context and explicit card data together to keep the visible and accessible states aligned"
 )]
 fn draw_task_card(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     task: &WorkspaceTask,
     rect: Rect,
     selected: bool,
     now: SystemTime,
     execution_notice: Option<&str>,
 ) {
+    let (scene, transform, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     scene.fill(
         Fill::NonZero,
         transform,
@@ -6990,7 +6977,6 @@ fn draw_presence_trail(
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::cast_precision_loss,
     reason = "presence-trail painting receives the shared renderer context and uses bounded frame and pointer counts only for display geometry"
 )]
@@ -7040,22 +7026,19 @@ fn draw_replay_pointers(
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::cast_precision_loss,
     reason = "brief-card rendering keeps its geometry, summary, and accessible label in one retained pass"
 )]
 fn draw_brief_card(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     brief: &ActivityBrief,
     rect: Rect,
     m: BriefCardMetrics,
     expanded: bool,
     now: SystemTime,
 ) {
+    let (scene, transform, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     let rail_x = rect.x0 + 20.0;
     scene.stroke(
         &Stroke::new(2.0),

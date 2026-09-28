@@ -833,16 +833,9 @@ impl PreviewPane {
         let y0 = main.y0 + 10.0;
         let banner = Rect::new(x0, y0, x0 + w, y0 + 44.0 * scale);
         ui::widget::Banner::paint(
-            scene,
-            transform,
-            tr,
-            theme,
+            &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),
             banner,
-            ui::widget::BannerKind::Warning,
-            ui::widget::BannerKind::Warning.default_icon(),
-            Self::STALE_NOTICE,
-            None,
-            false,
+            &ui::widget::BannerContent::new(ui::widget::BannerKind::Warning, Self::STALE_NOTICE),
             Point::ZERO,
         );
     }

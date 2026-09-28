@@ -15,12 +15,21 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, Vec2};
 use vello::peniko::{self, BlendMode, Color, Fill};
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+
+/// The separator ring painted behind an avatar chip in an overlapping
+/// cluster: `width` px of `color` around the chip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AvatarRing {
+    pub color: Color,
+    pub width: f64,
+}
 
 /// Circular profile chip — see module docs.
 pub struct Avatar {
@@ -178,112 +187,77 @@ impl Avatar {
 
     /// [`Avatar::draw_at`] preceded by a separator ring, for overlapping
     /// avatars in a cluster.
-    // Standard immediate-mode paint-helper signature for this vello
-    // renderer (scene + transform + text_renderer + theme, plus this
-    // draw's own content); every parameter is independently load-bearing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Ringed avatar painting combines scene/transform, avatar bounds and initials/color, ring style, theme, and text renderer."
-    )]
     pub fn draw_ringed_at(
-        scene: &mut Scene,
-        transform: Affine,
+        ctx: &mut PaintCtx<'_>,
         rect: Rect,
         initials: &str,
         color: Color,
-        ring_color: Color,
-        ring_width: f64,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
+        ring: AvatarRing,
     ) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
-        Self::draw_ring(scene, transform, rect, ring_color, ring_width);
+        Self::draw_ring(ctx.scene, ctx.transform, rect, ring);
         Self::draw_at(
-            scene,
-            transform,
+            ctx.scene,
+            ctx.transform,
             rect,
             initials,
             color,
-            theme,
-            text_renderer,
+            ctx.theme,
+            ctx.text,
         );
     }
 
     /// Trailing "+N overflow" chip — same separator ring as
-    /// [`Avatar::draw_ringed_at`], but a neutral `fill` and a
-    /// non-truncated `"+{count}"` label, since it reads as "N more people"
-    /// rather than another identity. `count == 0` paints nothing.
-    // Standard immediate-mode paint-helper signature for this vello
-    // renderer (scene + transform + text_renderer + theme, plus this
-    // draw's own content); every parameter is independently load-bearing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Overflow avatar painting combines scene/transform, bounds and count, fill/ring/label colors, ring width, and text renderer."
-    )]
-    pub fn draw_overflow_at(
-        scene: &mut Scene,
-        transform: Affine,
-        rect: Rect,
-        count: usize,
-        fill: Color,
-        ring_color: Color,
-        ring_width: f64,
-        label_color: Color,
-        text_renderer: &mut TextRenderer,
-    ) {
+    /// [`Avatar::draw_ringed_at`], but the theme's neutral raised fill and a
+    /// dim, non-truncated `"+{count}"` label, since it reads as "N more
+    /// people" rather than another identity. `count == 0` paints nothing.
+    pub fn draw_overflow_at(ctx: &mut PaintCtx<'_>, rect: Rect, count: usize, ring: AvatarRing) {
         if count == 0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
-        Self::draw_ring(scene, transform, rect, ring_color, ring_width);
+        let colors = &ctx.theme.tokens.colors;
+        Self::draw_ring(ctx.scene, ctx.transform, rect, ring);
         let centre = rect.center();
         let radius = rect.width().min(rect.height()) * 0.5;
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
-            transform,
-            fill,
+            ctx.transform,
+            colors.surfaces.raised,
             None,
             &Circle::new(centre, radius),
         );
         // "+N" can be 2–3 glyphs, so key the size a touch below the 0.4×
         // initials ratio to keep "+12" inside the chip.
         let label = format!("+{count}");
-        let text_size =
-            renderer_type_size(text_renderer, px(rect.width().min(rect.height())) * 0.36);
-        let (tw, th) =
-            text_renderer.measure_weighted(&label, text_size, None, TextWeight::Semibold);
+        let text_size = renderer_type_size(ctx.text, px(rect.width().min(rect.height())) * 0.36);
+        let (tw, th) = ctx
+            .text
+            .measure_weighted(&label, text_size, None, TextWeight::Semibold);
         let tx = centre.x - f64::from(tw) / 2.0;
         let ty = centre.y - f64::from(th) / 2.0;
-        text_renderer.draw_text_weighted(
-            scene,
+        ctx.text(
             &label,
-            text_size,
-            label_color,
-            transform.pre_translate(Vec2::new(tx, ty)),
+            &TextStyle::new(text_size).with_weight(TextWeight::Semibold),
+            colors.text_dim,
+            Point::new(tx, ty),
             None,
-            TextWeight::Semibold,
         );
     }
 
-    /// A filled `ring_color` disc `ring_width` px larger than `rect`,
+    /// A filled `ring.color` disc `ring.width` px larger than `rect`,
     /// painted before the chip fill so the ring shows through the gap
     /// between neighbouring chips.
-    fn draw_ring(
-        scene: &mut Scene,
-        transform: Affine,
-        rect: Rect,
-        ring_color: Color,
-        ring_width: f64,
-    ) {
+    fn draw_ring(scene: &mut Scene, transform: Affine, rect: Rect, ring: AvatarRing) {
         let centre = rect.center();
         let radius = rect.width().min(rect.height()) * 0.5;
         scene.fill(
             Fill::NonZero,
             transform,
-            ring_color,
+            ring.color,
             None,
-            &Circle::new(centre, radius + ring_width),
+            &Circle::new(centre, radius + ring.width),
         );
     }
 
@@ -781,15 +755,14 @@ mod tests {
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
             Avatar::draw_ringed_at(
-                &mut scene,
-                Affine::IDENTITY,
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
                 Rect::new(0.0, 0.0, 40.0, 40.0),
                 "qd",
                 Avatar::color_for_initials("qd", &theme),
-                Color::from_rgb8(0, 0, 0),
-                2.0,
-                &theme,
-                &mut tr,
+                AvatarRing {
+                    color: Color::from_rgb8(0, 0, 0),
+                    width: 2.0,
+                },
             );
             let enc = scene.encoding();
             let color_fills = enc
@@ -815,15 +788,13 @@ mod tests {
 
             let mut scene = Scene::new();
             Avatar::draw_overflow_at(
-                &mut scene,
-                Affine::IDENTITY,
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
                 Rect::new(0.0, 0.0, 40.0, 40.0),
                 5,
-                colors.surfaces.raised,
-                colors.surfaces.overlay,
-                2.0,
-                colors.text_dim,
-                &mut tr,
+                AvatarRing {
+                    color: colors.surfaces.overlay,
+                    width: 2.0,
+                },
             );
             let enc = scene.encoding();
             let color_fills = enc
@@ -843,15 +814,13 @@ mod tests {
             // count == 0 → nothing at all.
             let mut empty = Scene::new();
             Avatar::draw_overflow_at(
-                &mut empty,
-                Affine::IDENTITY,
+                &mut PaintCtx::new(&mut empty, Affine::IDENTITY, &mut tr, &theme),
                 Rect::new(0.0, 0.0, 40.0, 40.0),
                 0,
-                colors.surfaces.raised,
-                colors.surfaces.overlay,
-                2.0,
-                colors.text_dim,
-                &mut tr,
+                AvatarRing {
+                    color: colors.surfaces.overlay,
+                    width: 2.0,
+                },
             );
             assert_eq!(
                 empty.encoding().draw_tags.len(),

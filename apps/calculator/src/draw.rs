@@ -3,8 +3,9 @@
 //! `Theme`), so nothing here hard-codes a palette.
 
 use ui::ColorCompat;
+use ui::paint::PaintCtx;
 pub use ui::paint::{fill_rect, fill_round, stroke_round, with_alpha};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::Color;
@@ -82,55 +83,35 @@ pub fn measure_w(tr: &mut TextRenderer, text: &str, size: f32, weight: TextWeigh
 }
 
 /// Draw a single line of text inside `rect`, aligned + vertically centered.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "passes the scene, text renderer and transform alongside bounds, alignment and weighted text styling"
-)]
-#[expect(
-    clippy::many_single_char_names,
-    reason = "t/w/h/x/y are the paint convention: transform, measured size and origin"
-)]
+/// `style.size` is scaled through this paint pass like every label here.
 pub fn text_in(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
+    ctx: &mut PaintCtx<'_>,
     rect: Rect,
     text: &str,
-    size: f32,
+    style: &TextStyle,
     color: Color,
     align: Align,
-    weight: TextWeight,
 ) {
     if text.is_empty() {
         return;
     }
-    let size = scaled_size(size);
+    let style = TextStyle {
+        size: scaled_size(style.size),
+        ..style.clone()
+    };
     // Centre on the measured line box, not `size × 1.25`: the renderer may
     // still apply its own accessibility scale on top of `size`.
-    let (w, h) = tr.measure_weighted(text, size, None, weight);
-    let line_h = f64::from(h);
+    let (w, h) = ctx.text.measure_style(text, None, &style);
     let x = match align {
         Align::Left => rect.x0,
         Align::Center => rect.center().x - f64::from(w) / 2.0,
         Align::Right => rect.x1 - f64::from(w),
     };
-    let y = rect.y0 + (rect.height() - line_h) / 2.0;
-    tr.draw_text_weighted(
-        scene,
-        text,
-        size,
-        color,
-        t * Affine::translate((x, y)),
-        None,
-        weight,
-    );
+    let y = rect.y0 + (rect.height() - f64::from(h)) / 2.0;
+    ctx.text(text, &style, color, Point::new(x, y), None);
 }
 
 /// Draw text at an explicit top-left point.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "passes the scene, text renderer and transform alongside the text position, size, color and weight"
-)]
 pub fn text_at(
     scene: &mut Scene,
     tr: &mut TextRenderer,

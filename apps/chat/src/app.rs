@@ -929,7 +929,6 @@ pub struct ChatApp {
     /// The latest call/media problem to show in the call chrome (a refused
     /// control, a native voice issue, or no connected media transport).
     pub(crate) media_error: Option<String>,
-    legacy_migration_attempted: bool,
     /// Feedback channels, reference chips and record cards on this peer.
     pub(crate) feedback: crate::feedback::FeedbackUi,
     /// What people wrote in feedback channels, in records they own.
@@ -1189,7 +1188,6 @@ impl ChatApp {
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
             media_error: None,
-            legacy_migration_attempted: false,
             feedback: crate::feedback::FeedbackUi::default(),
             comments: crate::comments::Comments::new(ui::record::RecordStore::in_memory()),
             canonical: false,
@@ -2491,12 +2489,9 @@ impl ChatApp {
         self.set_composer_focus();
     }
 
-    /// Bring both composers up to date with their drafts, moving drafts out
-    /// of the first format once. `--shots` stages its mid-compose draft here.
+    /// Bring both composers up to date with their drafts. `--shots` stages
+    /// its mid-compose draft here.
     pub(crate) fn sync_composers(&mut self, doc: &mut AutoCommit) {
-        if ChatDoc::needs_draft_upgrade(doc) && self.can_participate() {
-            ChatDoc::upgrade_drafts(doc);
-        }
         if let Some(draft) = self.shot_composer_draft.take() {
             ChatDoc::set_draft(doc, &self.active_channel, &draft);
         }
@@ -3979,10 +3974,6 @@ impl Widget for ChatApp {
                 ChatDoc::seed_demo_feedback(doc);
             }
         }
-        if !self.canonical && !self.legacy_migration_attempted {
-            ChatDoc::migrate_legacy_attachment_paths(doc);
-            self.legacy_migration_attempted = true;
-        }
         self.settle_attachment_picker();
         self.settle_attachment_import(doc);
         if self.canonical {
@@ -4179,7 +4170,7 @@ impl Widget for ChatApp {
         let msg_area = self.messages_rect(tr);
         crate::paint::push_clip(scene, tf, msg_area);
         self.draw_messages(
-            crate::paint::PaintContext::new(scene, tf, tr, theme),
+            ui::paint::PaintCtx::new(scene, tf, tr, theme),
             presence,
             msg_area,
             &mut hits,

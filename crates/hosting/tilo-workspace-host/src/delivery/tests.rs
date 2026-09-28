@@ -1062,89 +1062,63 @@ fn delivery_enrollment_and_governance_transactions_enter_replay_while_receipt_on
         owner.status().generation
     );
 }
-/// A write for `owner`'s first record, sealed for its document channel.
-fn sealed_write(owner: &SessionOwner) -> NeighbourMsg {
-    let mut encrypted = owner
-        .peer
-        .clone()
-        .signed_snapshots(&owner.identity.native, SystemTime::now())
-        .unwrap()
-        .remove(0);
-    let NeighbourMsg::AppDocument {
-        app_id,
-        cluster_id,
-        record_id,
-        envelope,
-        ..
-    } = &mut encrypted
-    else {
-        unreachable!()
-    };
-    envelope.seq += 1;
-    envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(
-        1,
-        collab_types::document_channel_id(app_id, cluster_id, record_id),
-    ));
-    envelope.payload = vec![1, 2, 3];
-    collab_types::sign_op(envelope, &owner.identity.native).unwrap();
-    encrypted
-}
 #[test]
 fn delivery_deferred_encryption_metadata_has_no_admission_or_replay_and_blocks_activation() {
-    let (_temp, mut owner) = owner();
-    let before = owner.status().generation;
-    let encrypted = sealed_write(&owner);
-    owner
-        .receive(
-            TransportOrigin::RelayDelta(owner.peer.authority().device_public_key),
-            encrypted,
-        )
-        .unwrap();
-    assert!(owner.activate_delivery().is_err());
-    assert!(!owner.peer.admission_v5_selected());
-    assert_eq!(owner.status().generation, before + 1);
-    assert!(!owner.permits_publication());
-    let path = owner.root().to_owned();
-    drop(owner);
-    let owner = SessionOwner::open(&path).unwrap();
-    assert!(!owner.permits_publication());
-    assert_eq!(owner.status().generation, before + 1);
-}
-#[test]
-fn delivery_admits_a_sealed_write_as_durable_history_it_cannot_open() {
-    let (_temp, mut owner) = owner();
-    owner.activate_delivery().unwrap();
-    let before = owner.status().generation;
-    let replays = owner.delivery_ledger().unwrap().replay.len();
-    let document = owner.peer.document("so.tilo.chat", "").unwrap();
-    let bytes = postcard::to_stdvec(&sealed_write(&owner)).unwrap();
-    let first = durable(send(&mut owner, 1, &bytes).unwrap());
-    assert_eq!(first.result, DurableAdmissionKind::Accepted);
-    assert_eq!(first.operations.len(), 1);
-    assert_eq!(owner.status().generation, before + 1);
-    assert_eq!(first.committed.sequence, owner.status().generation);
-    let ledger = owner.delivery_ledger().unwrap();
-    assert_eq!(ledger.replay.len(), replays + 1);
-    let replay = ledger.replay[&owner.status().generation].clone();
-    assert!(replay.admitted_operations.contains(&first.operations[0]));
-    assert_eq!(owner.peer.document("so.tilo.chat", "").unwrap(), document);
-    assert!(owner.permits_publication());
-    let path = owner.root().to_owned();
-    drop(owner);
-    let mut owner = SessionOwner::open(&path).unwrap();
-    assert!(owner.permits_publication());
-    assert_eq!(owner.status().generation, before + 1);
-    let retry = durable(send(&mut owner, 1, &bytes).unwrap());
-    assert_eq!(retry.committed, first.committed);
-    assert_eq!(retry.operations, first.operations);
-    let duplicate = durable(send(&mut owner, 2, &bytes).unwrap());
-    assert_eq!(duplicate.result, DurableAdmissionKind::Duplicate);
-    assert_eq!(duplicate.committed, first.committed);
-    assert_eq!(
-        owner.delivery_ledger().unwrap().replay[&(before + 1)],
-        replay
-    );
-    assert_eq!(owner.peer.document("so.tilo.chat", "").unwrap(), document);
+    for selected in [false, true] {
+        let (_temp, mut owner) = owner();
+        if selected {
+            owner.activate_delivery().unwrap();
+        }
+        let before = owner.status().generation;
+        let mut encrypted = owner
+            .peer
+            .clone()
+            .signed_snapshots(&owner.identity.native, SystemTime::now())
+            .unwrap()
+            .remove(0);
+        let NeighbourMsg::AppDocument {
+            app_id,
+            cluster_id,
+            record_id,
+            envelope,
+            ..
+        } = &mut encrypted
+        else {
+            unreachable!()
+        };
+        envelope.seq += 1;
+        envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(
+            1,
+            collab_types::document_channel_id(app_id, cluster_id, record_id),
+        ));
+        envelope.payload = vec![1, 2, 3];
+        collab_types::sign_op(envelope, &owner.identity.native).unwrap();
+        if selected {
+            let count = owner.delivery_ledger().unwrap().replay.len();
+            assert!(matches!(
+                send(&mut owner, 1, &postcard::to_stdvec(&encrypted).unwrap()).unwrap(),
+                AdmissionOutcome::RetryLater(MissingPrerequisite::PersistedMls)
+            ));
+            assert!(owner.delivery_ledger().unwrap().admissions.is_empty());
+            assert_eq!(owner.delivery_ledger().unwrap().replay.len(), count);
+        } else {
+            owner
+                .receive(
+                    TransportOrigin::RelayDelta(owner.peer.authority().device_public_key),
+                    encrypted,
+                )
+                .unwrap();
+            assert!(owner.activate_delivery().is_err());
+            assert!(!owner.peer.admission_v5_selected());
+        }
+        assert_eq!(owner.status().generation, before + 1);
+        assert!(!owner.permits_publication());
+        let path = owner.root().to_owned();
+        drop(owner);
+        let owner = SessionOwner::open(&path).unwrap();
+        assert!(!owner.permits_publication());
+        assert_eq!(owner.status().generation, before + 1);
+    }
 }
 
 #[test]

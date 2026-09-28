@@ -245,10 +245,6 @@ impl ContinuationRegistry {
         )
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the report entry points forward each validated field of one report unchanged"
-    )]
     fn report_with_validator(
         &mut self,
         room: RoomId,

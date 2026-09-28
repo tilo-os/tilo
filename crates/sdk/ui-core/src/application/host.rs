@@ -2,10 +2,10 @@
 //! Apps supply their definition and migration; this owner supplies storage,
 //! identity, authority and local presentation. No ambient profile discovery.
 use super::{
-    ApplicationDefinition, ApplicationLocalView, ComponentRunnerInputs, HostContext, InstanceId,
-    InstanceViewStore, LaunchError, LaunchTarget, PermissionContext, PreparedComponentInputs,
-    RecordCheckout, RecordId, RecordOpenError, RecordStore, RestoreInput, SavedInstanceView,
-    UserId, View, validate_identity,
+    ApplicationDefinition, ApplicationLocalView, ComponentRunnerInputs, HostContext,
+    HostContextInputs, InstanceId, InstanceViewStore, LaunchError, LaunchTarget, PermissionContext,
+    PreparedComponentInputs, RecordCheckout, RecordId, RecordOpenError, RecordStore, RestoreInput,
+    SavedInstanceView, UserId, View, validate_identity,
 };
 use crate::record::RecordOwners;
 use std::cell::RefCell;
@@ -682,25 +682,29 @@ impl ApplicationHost {
         let context = if matches!(target, LaunchTarget::New) {
             HostContext::prepare_new_record(
                 definition,
-                records,
-                self.views.clone(),
-                self.device_id.clone(),
-                instance_id,
-                self.permissions.clone(),
-                self.author.clone(),
-                self.action_context.clone(),
+                HostContextInputs {
+                    records,
+                    views: self.views.clone(),
+                    device_id: self.device_id.clone(),
+                    instance_id,
+                    permissions: self.permissions.clone(),
+                    author: self.author.clone(),
+                    action_context: self.action_context.clone(),
+                },
                 checkout.id,
             )?
         } else {
             HostContext::prepare(
                 definition,
-                records,
-                self.views.clone(),
-                self.device_id.clone(),
-                instance_id,
-                self.permissions.clone(),
-                self.author.clone(),
-                self.action_context.clone(),
+                HostContextInputs {
+                    records,
+                    views: self.views.clone(),
+                    device_id: self.device_id.clone(),
+                    instance_id,
+                    permissions: self.permissions.clone(),
+                    author: self.author.clone(),
+                    action_context: self.action_context.clone(),
+                },
                 &target,
             )?
         };

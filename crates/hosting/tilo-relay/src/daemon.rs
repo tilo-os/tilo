@@ -817,18 +817,16 @@ impl Relay {
     /// that already know the target's iroh addresses, and for
     /// pinned-address deployments.
     pub fn add_peer_relay_at(&self, addr: EndpointAddr, label: String, priority: i32) {
-        let task = spawn_peer_relay_dial_at(
-            addr,
-            label,
-            priority,
-            self.endpoint.clone(),
-            self.own_user_public_key,
-            self.own_cert.clone(),
-            self.own_signing_key.clone(),
-            self.live_revocations.clone(),
-            self.workspaces.clone(),
-            self.metrics.clone(),
-        );
+        let task = PeerRelayDialer {
+            endpoint: self.endpoint.clone(),
+            own_user_pk: self.own_user_public_key,
+            own_cert: self.own_cert.clone(),
+            own_sk: self.own_signing_key.clone(),
+            revocations: self.live_revocations.clone(),
+            workspaces: self.workspaces.clone(),
+            metrics: self.metrics.clone(),
+        }
+        .spawn_at(addr, label, priority);
         push_peer_relay_task(&self.peer_relay_tasks, task);
     }
 
@@ -2283,7 +2281,7 @@ pub use crate::frame::{read_frame, write_frame};
 
 /// Spawn the outbound reconnect-with-backoff task for one peer
 /// relay identified by its config entry. Parses the iroh id and
-/// hands off to [`spawn_peer_relay_dial_at`].
+/// hands off to [`PeerRelayDialer::spawn_at`]'s dial loop.
 fn spawn_peer_relay_dial(
     peer_cfg: PeerRelayConfig,
     endpoint: Endpoint,
@@ -2301,36 +2299,25 @@ fn spawn_peer_relay_dial(
             return;
         };
         let addr = EndpointAddr::new(node_id);
-        peer_relay_dial_loop(
-            addr,
-            label,
-            priority,
+        PeerRelayDialer {
             endpoint,
-            identity.user_public_key,
-            identity.device_cert,
-            identity.device_signing_key,
+            own_user_pk: identity.user_public_key,
+            own_cert: identity.device_cert,
+            own_sk: identity.device_signing_key,
             revocations,
             workspaces,
             metrics,
-        )
+        }
+        .dial_loop(addr, label, priority)
         .await;
     })
 }
 
-/// Spawn the outbound reconnect-with-backoff task for one peer
-/// relay, with a fully-resolved endpoint address. The task loops
-/// forever (until the returned join handle is aborted) — reconnect
-/// gap is `1s, 2s, 4s, 8s, …, capped at 60s`. While connected it
-/// holds a `RelayClient` session and admits inbound deltas through the
-/// same ordered persistence owner used by device peers.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "The relay task receives its complete endpoint, enrollment and persistence context at spawn."
-)]
-fn spawn_peer_relay_dial_at(
-    addr: EndpointAddr,
-    label: String,
-    priority: i32,
+/// What an outbound peer-relay dial carries: the local endpoint, this
+/// relay's own user key, device certificate and signing key, the live
+/// revocation list (read afresh for every dial and session), the hosted
+/// workspaces and metrics.
+struct PeerRelayDialer {
     endpoint: Endpoint,
     own_user_pk: [u8; 32],
     own_cert: DeviceCert,
@@ -2338,12 +2325,21 @@ fn spawn_peer_relay_dial_at(
     revocations: Arc<std::sync::RwLock<RevocationList>>,
     workspaces: WorkspaceRegistry,
     metrics: Arc<Metrics>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        peer_relay_dial_loop(
-            addr,
-            label,
-            priority,
+}
+
+impl PeerRelayDialer {
+    /// Spawn the outbound reconnect-with-backoff task for one peer
+    /// relay, with a fully-resolved endpoint address. The task loops
+    /// forever (until the returned join handle is aborted) — reconnect
+    /// gap is `1s, 2s, 4s, 8s, …, capped at 60s`. While connected it
+    /// holds a `RelayClient` session and admits inbound deltas through the
+    /// same ordered persistence owner used by device peers.
+    fn spawn_at(self, addr: EndpointAddr, label: String, priority: i32) -> JoinHandle<()> {
+        tokio::spawn(self.dial_loop(addr, label, priority))
+    }
+
+    async fn dial_loop(self, addr: EndpointAddr, label: String, _priority: i32) {
+        let PeerRelayDialer {
             endpoint,
             own_user_pk,
             own_cert,
@@ -2351,65 +2347,46 @@ fn spawn_peer_relay_dial_at(
             revocations,
             workspaces,
             metrics,
-        )
-        .await;
-    })
-}
-
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Reconnect attempts retain the same endpoint, enrollment and persistence context for the task lifetime."
-)]
-async fn peer_relay_dial_loop(
-    addr: EndpointAddr,
-    label: String,
-    _priority: i32,
-    endpoint: Endpoint,
-    own_user_pk: [u8; 32],
-    own_cert: DeviceCert,
-    own_sk: ed25519_dalek::SigningKey,
-    revocations: Arc<std::sync::RwLock<RevocationList>>,
-    workspaces: WorkspaceRegistry,
-    metrics: Arc<Metrics>,
-) {
-    let mut backoff_ms: u64 = 1_000;
-    loop {
-        let ep = endpoint.clone();
-        let current_revocations = revocations
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        match RelayClient::connect(
-            ep,
-            addr.clone(),
-            own_user_pk,
-            own_cert.clone(),
-            own_sk.clone(),
-            current_revocations,
-        )
-        .await
-        {
-            Ok(client) => {
-                tracing::info!(%label, "peer relay federated");
-                backoff_ms = 1_000;
-                if let Err(e) = run_peer_relay_session(
-                    &client,
-                    &workspaces,
-                    revocations.clone(),
-                    own_user_pk,
-                    metrics.clone(),
-                )
-                .await
-                {
-                    tracing::debug!(%label, "peer relay session ended: {e}");
+        } = self;
+        let mut backoff_ms: u64 = 1_000;
+        loop {
+            let ep = endpoint.clone();
+            let current_revocations = revocations
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            match RelayClient::connect(
+                ep,
+                addr.clone(),
+                own_user_pk,
+                own_cert.clone(),
+                own_sk.clone(),
+                current_revocations,
+            )
+            .await
+            {
+                Ok(client) => {
+                    tracing::info!(%label, "peer relay federated");
+                    backoff_ms = 1_000;
+                    if let Err(e) = run_peer_relay_session(
+                        &client,
+                        &workspaces,
+                        revocations.clone(),
+                        own_user_pk,
+                        metrics.clone(),
+                    )
+                    .await
+                    {
+                        tracing::debug!(%label, "peer relay session ended: {e}");
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(%label, "peer relay dial failed: {e}");
                 }
             }
-            Err(e) => {
-                tracing::debug!(%label, "peer relay dial failed: {e}");
-            }
+            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+            backoff_ms = backoff_ms.saturating_mul(2).min(60_000);
         }
-        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-        backoff_ms = backoff_ms.saturating_mul(2).min(60_000);
     }
 }
 

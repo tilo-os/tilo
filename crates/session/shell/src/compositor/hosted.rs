@@ -318,18 +318,8 @@ fn prepare_workspace_namespace(enable_peer_sync: bool, state_path: &std::path::P
     }
 }
 
-/// Mints a room identity and an owner for any workspace restored from a state file written before
-/// either concept existed — otherwise nobody can grant anything in it, or "yesterday's workspace"
-/// and "today's" resolve to different rooms.
+/// Adopts every ownerless workspace for its selected identity.
 fn adopt_tree_ownership(tree: &mut WorkspaceTree) {
-    let roomless = tree.adopt_roomless_workspaces();
-    if !roomless.is_empty() {
-        tracing::info!(
-            "collaboration: minted a room identity for {} workspace(s)",
-            roomless.len()
-        );
-    }
-
     // Someone has to own each room or nobody can grant anything in it.
     // Resolve per room so hosted mode uses the same selected identity that
     // its certified collaboration join presents.

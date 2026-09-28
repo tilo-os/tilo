@@ -426,22 +426,29 @@ pub fn clock(ms: u64) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
+/// How a line of text is set: its size, colour and weight.
+#[derive(Clone, Copy)]
+struct Ink {
+    size: f32,
+    color: Color,
+    weight: TextWeight,
+}
+
 /// Draw one line of text with its top at `y`, returning its height.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "immediate text painting takes the scene, renderer, placement and style together"
-)]
 fn line(
     scene: &mut Scene,
     transform: Affine,
     tr: &mut TextRenderer,
     value: &str,
-    size: f32,
-    color: Color,
+    ink: Ink,
     at: Point,
     max_width: f64,
-    weight: TextWeight,
 ) -> f64 {
+    let Ink {
+        size,
+        color,
+        weight,
+    } = ink;
     let fitted = tr.elide_to_width_weighted(value, size, f32_of(max_width.max(0.0)), weight);
     let (_, h) = tr.measure_weighted(&fitted, size, None, weight);
     tr.draw_text_weighted(
@@ -457,10 +464,6 @@ fn line(
 }
 
 /// Wrapped text with its top at `y`, returning its height.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "immediate text painting takes the scene, renderer, placement and style together"
-)]
 fn paragraph(
     scene: &mut Scene,
     transform: Affine,
@@ -498,11 +501,13 @@ fn section_header(
         transform,
         tr,
         &label.to_uppercase(),
-        scale.xs,
-        theme.tokens.colors.text_tertiary,
+        Ink {
+            size: scale.xs,
+            color: theme.tokens.colors.text_tertiary,
+            weight: TextWeight::Medium,
+        },
         at,
         width,
-        TextWeight::Medium,
     )
 }
 
@@ -868,11 +873,13 @@ impl RemarkView {
             transform,
             tr,
             &hint,
-            scale.sm,
-            colors.text_dim,
+            Ink {
+                size: scale.sm,
+                color: colors.text_dim,
+                weight: TextWeight::Regular,
+            },
             Point::new(text_x, cy - f64::from(hint_h) / 2.0),
             count_x - text_x - f64_of(spacing.s3),
-            TextWeight::Regular,
         );
         if count > 0 {
             line(
@@ -880,11 +887,13 @@ impl RemarkView {
                 transform,
                 tr,
                 &count_label,
-                scale.sm,
-                colors.text_primary,
+                Ink {
+                    size: scale.sm,
+                    color: colors.text_primary,
+                    weight: TextWeight::Semibold,
+                },
                 Point::new(count_x, cy - f64::from(hint_h) / 2.0),
                 f64::from(count_w) + 1.0,
-                TextWeight::Semibold,
             );
         }
         let done_face = ButtonFace::new(done_rect, &done_label)
@@ -908,10 +917,6 @@ impl RemarkView {
 
     /// The tag beside the focused node: its role glyph, name, role and app,
     /// like an inspector's, placed above the node when it fits.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the tag is placed against the node, the viewport and the theme together"
-    )]
     fn draw_tag(
         scene: &mut Scene,
         transform: Affine,
@@ -1051,15 +1056,11 @@ impl RemarkView {
     /// The composer panel.
     #[allow(
         clippy::too_many_lines,
-        clippy::too_many_arguments,
         reason = "one ordered layout-and-paint pass over the composer's sections"
     )]
     pub fn draw_composer(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut ui::paint::PaintCtx<'_>,
         presence: &ui::presence::PresenceCtx,
         viewport: Rect,
         composer: &Composer,
@@ -1067,6 +1068,8 @@ impl RemarkView {
         recent_buffer: bool,
         now_recording_ms: Option<u64>,
     ) {
+        let (scene, transform, tr, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         self.targets.clear();
         let colors = &theme.tokens.colors;
         let spacing = &theme.tokens.spacing;
@@ -1205,14 +1208,16 @@ impl RemarkView {
             transform,
             tr,
             &title,
-            scale.base,
-            colors.text_primary,
+            Ink {
+                size: scale.base,
+                color: colors.text_primary,
+                weight: TextWeight::Semibold,
+            },
             Point::new(
                 left + icon + f64_of(metrics.icon_label_gap),
                 y + (header_h - f64::from(title_h)) / 2.0,
             ),
             inner - icon - target_h - gap,
-            TextWeight::Semibold,
         );
         let close = Rect::from_origin_size((panel.x1 - pad - target_h, y), (target_h, target_h));
         let close_label = t("remark-close");
@@ -1420,11 +1425,13 @@ impl RemarkView {
                     transform,
                     tr,
                     &t("remark-frames"),
-                    scale.sm,
-                    colors.text_primary,
+                    Ink {
+                        size: scale.sm,
+                        color: colors.text_primary,
+                        weight: TextWeight::Medium,
+                    },
                     Point::new(left, frames_row.y0 + 4.0),
                     inner - 56.0,
-                    TextWeight::Medium,
                 );
                 paragraph(
                     scene,
@@ -1466,11 +1473,13 @@ impl RemarkView {
                     transform,
                     tr,
                     &label,
-                    scale.sm,
-                    colors.text_primary,
+                    Ink {
+                        size: scale.sm,
+                        color: colors.text_primary,
+                        weight: TextWeight::Medium,
+                    },
                     Point::new(row.x0 + gap + 16.0, row.center().y - f64::from(lh) / 2.0),
                     inner - 140.0,
-                    TextWeight::Medium,
                 );
                 if matches!(composer.flow, Flow::Recording { .. }) {
                     let stop_label = t("remark-stop");
@@ -1517,11 +1526,13 @@ impl RemarkView {
                     transform,
                     tr,
                     &label,
-                    scale.sm,
-                    colors.text_primary,
+                    Ink {
+                        size: scale.sm,
+                        color: colors.text_primary,
+                        weight: TextWeight::Medium,
+                    },
                     Point::new(row.x0 + gap + 26.0, row.center().y - f64::from(lh) / 2.0),
                     inner - 90.0,
-                    TextWeight::Medium,
                 );
                 let remove = Rect::from_center_size(
                     (row.x1 - gap - target_h / 2.0 + 4.0, row.center().y),
@@ -1642,21 +1653,19 @@ impl RemarkView {
                 transform,
                 tr,
                 &status,
-                scale.xs,
-                color,
+                Ink {
+                    size: scale.xs,
+                    color,
+                    weight: TextWeight::Regular,
+                },
                 Point::new(left, footer_y + (footer_h - f64::from(sh)) / 2.0),
                 discard.x0 - left - gap,
-                TextWeight::Regular,
             );
         }
         let _ = y;
         scene.pop_layer();
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a destination row is painted against the theme, text renderer and row together"
-    )]
     fn draw_destination_row(
         scene: &mut Scene,
         transform: Affine,
@@ -1694,22 +1703,26 @@ impl RemarkView {
             transform,
             tr,
             &option.label,
-            scale.sm,
-            colors.text_primary,
+            Ink {
+                size: scale.sm,
+                color: colors.text_primary,
+                weight: TextWeight::Medium,
+            },
             Point::new(x, top),
             width,
-            TextWeight::Medium,
         );
         line(
             scene,
             transform,
             tr,
             &detail,
-            scale.xs,
-            colors.text_dim,
+            Ink {
+                size: scale.xs,
+                color: colors.text_dim,
+                weight: TextWeight::Regular,
+            },
             Point::new(x, top + f64::from(name_h) + 1.0),
             width,
-            TextWeight::Regular,
         );
     }
 
@@ -1722,10 +1735,6 @@ impl RemarkView {
     #[allow(
         clippy::too_many_lines,
         reason = "one ordered layout-and-paint pass over the review sheet"
-    )]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the review sheet is painted against its review, its step states and the frame"
     )]
     pub fn draw_review(
         &mut self,
@@ -1799,22 +1808,26 @@ impl RemarkView {
             transform,
             tr,
             &title,
-            scale.lg,
-            colors.text_primary,
+            Ink {
+                size: scale.lg,
+                color: colors.text_primary,
+                weight: TextWeight::Semibold,
+            },
             Point::new(left, y),
             heading_max,
-            TextWeight::Semibold,
         );
         line(
             scene,
             transform,
             tr,
             &subtitle,
-            scale.sm,
-            colors.text_dim,
+            Ink {
+                size: scale.sm,
+                color: colors.text_dim,
+                weight: TextWeight::Regular,
+            },
             Point::new(left, y + f64::from(th) + 2.0),
             heading_max,
-            TextWeight::Regular,
         );
         if !beside {
             y += 52.0;
@@ -1870,11 +1883,13 @@ impl RemarkView {
                 transform,
                 tr,
                 &t("remark-review-verdict-pending"),
-                scale.sm,
-                colors.text_dim,
+                Ink {
+                    size: scale.sm,
+                    color: colors.text_dim,
+                    weight: TextWeight::Regular,
+                },
                 Point::new(body.center().x - 80.0, body.center().y - f64::from(h) / 2.0),
                 240.0,
-                TextWeight::Regular,
             );
             self.draw_review_footer(scene, transform, tr, theme, sheet, None);
             return;
@@ -1894,14 +1909,16 @@ impl RemarkView {
                 transform,
                 tr,
                 &message,
-                scale.sm,
-                colors.text_dim,
+                Ink {
+                    size: scale.sm,
+                    color: colors.text_dim,
+                    weight: TextWeight::Regular,
+                },
                 Point::new(
                     body.center().x - f64::from(w) / 2.0,
                     body.center().y - f64::from(h) / 2.0,
                 ),
                 inner,
-                TextWeight::Regular,
             );
             self.draw_review_footer(scene, transform, tr, theme, sheet, Some(review));
             self.draw_review_offer(scene, transform, tr, theme, sheet, body, review);
@@ -2012,11 +2029,13 @@ impl RemarkView {
                 transform,
                 tr,
                 &title,
-                scale.sm,
-                title_color,
+                Ink {
+                    size: scale.sm,
+                    color: title_color,
+                    weight: TextWeight::Medium,
+                },
                 Point::new(x, row.y0 + 8.0),
                 text_x1 - x - gap,
-                TextWeight::Medium,
             );
             if cut {
                 let shown = tr.elide_to_width_weighted(
@@ -2045,11 +2064,13 @@ impl RemarkView {
                 transform,
                 tr,
                 &meta,
-                scale.xs,
-                colors.text_dim,
+                Ink {
+                    size: scale.xs,
+                    color: colors.text_dim,
+                    weight: TextWeight::Regular,
+                },
                 Point::new(x, row.y0 + 12.0 + f64::from(title_h)),
                 text_x1 - x - gap,
-                TextWeight::Regular,
             );
             self.push(row, target);
         }
@@ -2074,11 +2095,13 @@ impl RemarkView {
             transform,
             tr,
             &title,
-            scale.base,
-            colors.text_primary,
+            Ink {
+                size: scale.base,
+                color: colors.text_primary,
+                weight: TextWeight::Semibold,
+            },
             Point::new(detail.x0, dy),
             detail.width() - 150.0,
-            TextWeight::Semibold,
         );
         if review.titled_by_model(step) {
             draw_icon(
@@ -2127,15 +2150,17 @@ impl RemarkView {
                 transform,
                 tr,
                 &meta_line,
-                scale.xs,
-                if meta.failed() {
-                    colors.semantic.danger
-                } else {
-                    colors.text_dim
+                Ink {
+                    size: scale.xs,
+                    color: if meta.failed() {
+                        colors.semantic.danger
+                    } else {
+                        colors.text_dim
+                    },
+                    weight: TextWeight::Regular,
                 },
                 Point::new(detail.x0, dy),
                 detail.width() - 150.0,
-                TextWeight::Regular,
             );
         }
         dy += 24.0;
@@ -2204,26 +2229,24 @@ impl RemarkView {
                 transform,
                 tr,
                 &caption,
-                scale.xs,
-                colors.text_tertiary,
+                Ink {
+                    size: scale.xs,
+                    color: colors.text_tertiary,
+                    weight: TextWeight::Medium,
+                },
                 Point::new(detail.x0, dy + 2.0),
                 caption_w - gap,
-                TextWeight::Medium,
             );
             // As it leaves: what review hid here, and every hidden value
             // wherever else it appears.
             let shown = masker.mask(&review.redacted(step, &text_item.node).unwrap_or_default());
             dy = self.draw_words(
-                scene,
-                transform,
-                tr,
-                theme,
+                &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),
                 Point::new(detail.x0 + caption_w, dy),
                 detail.width() - caption_w,
                 step,
                 &text_item.node,
-                &text_item.text,
-                &shown,
+                (&text_item.text, &shown),
                 scale.sm,
             ) + f64_of(spacing.s2);
         }
@@ -2233,11 +2256,13 @@ impl RemarkView {
                 transform,
                 tr,
                 &t("remark-review-nothing-included"),
-                scale.sm,
-                colors.text_dim,
+                Ink {
+                    size: scale.sm,
+                    color: colors.text_dim,
+                    weight: TextWeight::Regular,
+                },
                 Point::new(detail.x0, dy),
                 detail.width(),
-                TextWeight::Regular,
             );
         }
 
@@ -2249,10 +2274,6 @@ impl RemarkView {
     /// header: the toolkit's shared set-up offer, as Settings shows it, in
     /// the hub's own words. It stands in for the steps and the footer until
     /// the person answers it; its buttons are this sheet's targets.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the offer is painted against its review, the sheet and the body it covers"
-    )]
     fn draw_review_offer(
         &mut self,
         scene: &mut Scene,
@@ -2361,46 +2382,44 @@ impl RemarkView {
                 transform,
                 tr,
                 name,
-                scale.sm,
-                colors.text_primary,
+                Ink {
+                    size: scale.sm,
+                    color: colors.text_primary,
+                    weight: TextWeight::Medium,
+                },
                 Point::new(x, row.y0 + 8.0),
                 row.x1 - x - gap,
-                TextWeight::Medium,
             );
             line(
                 scene,
                 transform,
                 tr,
                 &t("remark-review-protected"),
-                scale.xs,
-                colors.text_dim,
+                Ink {
+                    size: scale.xs,
+                    color: colors.text_dim,
+                    weight: TextWeight::Regular,
+                },
                 Point::new(x, row.y0 + 12.0 + f64::from(name_h)),
                 row.x1 - x - gap,
-                TextWeight::Regular,
             );
         }
     }
 
     /// One text, word by word: a hidden word is its mask, a shown one is
     /// pressable to hide it. Returns the y below the text.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the words are laid out against the text, its redacted form and the step together"
-    )]
     fn draw_words(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut ui::paint::PaintCtx<'_>,
         at: Point,
         width: f64,
         step: u32,
         node: &str,
-        original: &str,
-        shown: &str,
+        (original, shown): (&str, &str),
         size: f32,
     ) -> f64 {
+        let (scene, transform, tr, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let colors = &theme.tokens.colors;
         let (space_w, line_h) = tr.measure(" ", size, None);
         let space_w = f64::from(space_w).max(3.0);
@@ -2524,7 +2543,12 @@ impl RemarkView {
             ),
         };
         Self::draw_badge(
-            scene, transform, tr, theme, rect, icon, tint, &title, &detail,
+            &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),
+            rect,
+            icon,
+            tint,
+            &title,
+            &detail,
         );
     }
 
@@ -2595,25 +2619,25 @@ impl RemarkView {
             }
         };
         Self::draw_badge(
-            scene, transform, tr, theme, rect, icon, tint, &title, &detail,
+            &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),
+            rect,
+            icon,
+            tint,
+            &title,
+            &detail,
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a badge is its icon, tint and two lines of text in a rectangle"
-    )]
     fn draw_badge(
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut ui::paint::PaintCtx<'_>,
         rect: Rect,
         icon: Icon,
         tint: Color,
         title: &str,
         detail: &str,
     ) {
+        let (scene, transform, tr, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let colors = &theme.tokens.colors;
         let scale = &theme.tokens.typography.scale;
         let icon_rect = Rect::from_center_size((rect.x0 + 10.0, rect.y0 + 10.0), (16.0, 16.0));
@@ -2632,11 +2656,13 @@ impl RemarkView {
             transform,
             tr,
             title,
-            scale.sm,
-            colors.text_primary,
+            Ink {
+                size: scale.sm,
+                color: colors.text_primary,
+                weight: TextWeight::Medium,
+            },
             Point::new(x, rect.y0 + 2.0),
             rect.x1 - x,
-            TextWeight::Medium,
         );
         paragraph(
             scene,
@@ -2657,7 +2683,6 @@ impl RemarkView {
     /// as, the node the step acted on is ringed, and pressing a text hides
     /// it whole.
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "the preview is laid out against the step, its state and the frame together"
     )]
@@ -2938,11 +2963,13 @@ impl RemarkView {
                 transform,
                 tr,
                 &summary,
-                scale.xs,
-                colors.text_dim,
+                Ink {
+                    size: scale.xs,
+                    color: colors.text_dim,
+                    weight: TextWeight::Regular,
+                },
                 Point::new(x.max(back.x1 + gap(theme)), y + (h - f64::from(sh)) / 2.0),
                 send.x0 - back.x1 - gap(theme) * 2.0,
-                TextWeight::Regular,
             );
             if matches!(review.model, ModelUse::Floor) {
                 let setup_label = t("remark-review-model-floor");

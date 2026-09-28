@@ -1004,10 +1004,6 @@ impl AppActionBroker {
             .while_live(|state| state.dispatch_workspace_task(room, task_id))
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Confirmation binds the complete invocation route and caller evidence in one operation."
-    )]
     /// Prepare a one-use confirmation token for the exact invocation inputs.
     ///
     /// # Errors
@@ -1027,10 +1023,6 @@ impl AppActionBroker {
         })
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Starting a confirmed action must retain the exact invocation inputs used to issue its token."
-    )]
     /// Start a published action using a previously prepared confirmation token.
     ///
     /// # Errors
@@ -1305,10 +1297,6 @@ pub fn spawn_with_services(
 ///
 /// Returns an I/O error when the broker socket or thread cannot be set up.
 #[cfg(any(test, feature = "test-support"))]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "fixture twin of spawn_with_services that also injects trusted devices"
-)]
 pub fn spawn_with_test_services(
     socket: PathBuf,
     membership: Option<crate::services::WorkspaceAuthorityHandle>,
@@ -1331,10 +1319,6 @@ pub fn spawn_with_test_services(
     )
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the single constructor behind the production and fixture spawn entry points"
-)]
 fn spawn_inner(
     socket: PathBuf,
     membership: Option<crate::services::WorkspaceAuthorityHandle>,
@@ -1349,13 +1333,15 @@ fn spawn_inner(
     let thread = crate::collab_broker_capnp::spawn_configured(
         &socket,
         &fanout,
-        channels.clone(),
-        publisher,
-        membership,
-        trusted_devices,
-        services,
+        crate::collab_broker_capnp::BrokerWiring {
+            broker_channels: channels.clone(),
+            publisher,
+            membership,
+            trusted_devices,
+            services,
+            config,
+        },
         quit.clone(),
-        config,
     )?;
     let capnp_identity = fanout.capnp_state().map(|state| Arc::as_ptr(&state).addr());
     Ok(BrokerHandle {

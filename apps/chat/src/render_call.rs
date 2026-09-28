@@ -13,17 +13,16 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, SegmentedFace, SegmentedStyle, ToggleGroup, Widget};
 
 use crate::app::{ChatApp, Hit};
 use crate::geometry::line_top;
 use crate::model::{self, Presence, VoiceMember};
-use crate::paint::{
-    PaintContext, fill_circle, fill_rect, fill_round, label, stroke_circle, stroke_round, text,
-};
+use crate::paint::{fill_circle, fill_rect, fill_round, label, stroke_circle, stroke_round, text};
 use crate::render_chat::draw_avatar;
 
 /// One person to render in the call, derived from the shared CRDT voice
@@ -302,7 +301,7 @@ impl ChatApp {
         let s2 = f64::from(theme.tokens.spacing.s2);
         let (cy, caption_y) = avatar_caption_block(rect, r, f64::from(sh), plate_height(theme), s2);
         draw_avatar(
-            PaintContext::new(scene, tf, tr, theme),
+            PaintCtx::new(scene, tf, tr, theme),
             Point::new(cx, cy),
             r,
             &initials,
@@ -461,7 +460,7 @@ impl ChatApp {
         let others = parts.len().saturating_sub(1);
         let strip_y = v.y1 + 10.0;
         self.draw_huddle_strip_header(
-            PaintContext::new(scene, tf, tr, theme),
+            PaintCtx::new(scene, tf, tr, theme),
             panel,
             strip_y,
             &parts,
@@ -484,12 +483,7 @@ impl ChatApp {
             );
             let alpha = reveal * reveal * (3.0 - 2.0 * reveal);
             scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, tf, &clip);
-            Self::draw_huddle_chips(
-                PaintContext::new(scene, tf, tr, theme),
-                panel,
-                strip_y,
-                &parts,
-            );
+            Self::draw_huddle_chips(PaintCtx::new(scene, tf, tr, theme), panel, strip_y, &parts);
             scene.pop_layer();
         }
 
@@ -500,13 +494,13 @@ impl ChatApp {
     /// expand/collapse toggle's hit region.
     fn draw_huddle_strip_header(
         &self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         panel: Rect,
         strip_y: f64,
         parts: &[Participant],
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -564,13 +558,8 @@ impl ChatApp {
 
     /// Adaptive participant chips beneath the strip header — one per
     /// non-host member, wrapping to the panel width.
-    fn draw_huddle_chips(
-        paint: PaintContext<'_>,
-        panel: Rect,
-        strip_y: f64,
-        parts: &[Participant],
-    ) {
-        let PaintContext {
+    fn draw_huddle_chips(paint: PaintCtx<'_>, panel: Rect, strip_y: f64, parts: &[Participant]) {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -594,7 +583,7 @@ impl ChatApp {
                     stroke_circle(scene, tf, cc, radius + 3.0, c.semantic.success, 2.0);
                 }
                 draw_avatar(
-                    PaintContext::new(scene, tf, tr, theme),
+                    PaintCtx::new(scene, tf, tr, theme),
                     cc,
                     radius,
                     "♫",
@@ -666,18 +655,9 @@ impl ChatApp {
         for (txt, icon, on, danger, hit) in ctrls {
             let r = Rect::new(x, cy, x + cw, cy + 28.0);
             let hovered = self.call_control_is_hovered(&hit);
-            Self::ctl(
-                scene,
-                tf,
-                tr,
-                theme,
-                r,
-                if use_text { &txt } else { icon },
-                on,
-                danger,
-                hovered,
-                true,
-            );
+            let face =
+                Self::ctl_face(r, if use_text { &txt } else { icon }, on, danger).hovered(hovered);
+            Button::paint(scene, tf, tr, theme, &face);
             ChatApp::push_hit(hits, r, hit);
             x = r.x1 + gap;
         }
@@ -709,15 +689,11 @@ impl ChatApp {
         );
         let (tw, _) = tr.measure_weighted(&title, CALL_TITLE_TEXT, None, TextWeight::Bold);
         text(
-            scene,
-            tr,
-            tf,
+            &mut PaintCtx::new(scene, tf, tr, theme),
             &title,
-            CALL_TITLE_TEXT,
+            &TextStyle::new(CALL_TITLE_TEXT).with_weight(TextWeight::Bold),
             c.text_primary,
-            self.rect.center().x - f64::from(tw) / 2.0,
-            title_y,
-            TextWeight::Bold,
+            Point::new(self.rect.center().x - f64::from(tw) / 2.0, title_y),
             None,
         );
         let parts = self.call_participants();
@@ -879,15 +855,11 @@ impl ChatApp {
         };
         let (hw, _) = tr.measure(&head, 15.0, None);
         text(
-            scene,
-            tr,
-            tf,
+            &mut PaintCtx::new(scene, tf, tr, theme),
             &head,
-            15.0,
+            &TextStyle::new(15.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            gcx - f64::from(hw) / 2.0,
-            base.y1 + 18.0,
-            TextWeight::Bold,
+            Point::new(gcx - f64::from(hw) / 2.0, base.y1 + 18.0),
             None,
         );
         // Honest status: the local sharer is the source; a remote tile is
@@ -996,9 +968,10 @@ impl ChatApp {
         );
         for (label_txt, on, danger, enabled, hit, r) in buttons {
             let hovered = self.call_control_is_hovered(&hit);
-            Self::ctl(
-                scene, tf, tr, theme, r, &label_txt, on, danger, hovered, enabled,
-            );
+            let face = Self::ctl_face(r, &label_txt, on, danger)
+                .hovered(hovered)
+                .disabled(!enabled);
+            Button::paint(scene, tf, tr, theme, &face);
             if enabled {
                 ChatApp::push_hit(hits, r, hit);
             }
@@ -1282,7 +1255,7 @@ impl ChatApp {
             let (cy, caption_y) =
                 avatar_caption_block(rect, radius, f64::from(sh), plate_height(theme), s2);
             draw_avatar(
-                PaintContext::new(scene, tf, tr, theme),
+                PaintCtx::new(scene, tf, tr, theme),
                 Point::new(cx, cy),
                 radius,
                 &u.initials,
@@ -1407,41 +1380,25 @@ impl ChatApp {
         );
     }
 
-    /// A pill control button. `on` = active/highlighted, `danger` = red.
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::fn_params_excessive_bools,
-        reason = "the four flags are independent visual states of one control; wrapping them would only move the boolean fields into a one-use parameter struct"
-    )]
-    fn ctl(
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        label_txt: &str,
-        on: bool,
-        danger: bool,
-        hovered: bool,
-        enabled: bool,
-    ) {
+    /// The face of a pill control button. `on` = active/highlighted,
+    /// `danger` = red; callers add the hover and disabled states.
+    fn ctl_face(rect: Rect, label_txt: &str, on: bool, danger: bool) -> ButtonFace<'_> {
         // The shared button face (HIG §8): Neutral at rest, the accent
         // Primary while "on", DangerOutline for the destructive control and
         // the toolkit's disabled face when it cannot be used — one painter
         // for fill, rest edge, ink and the label centred on its measured
         // line, instead of a local copy of each state.
-        let mut face = ButtonFace::new(rect, label_txt)
+        let face = ButtonFace::new(rect, label_txt)
             .text_size(CALL_CTL_TEXT)
             .weight(TextWeight::Regular)
-            .radius(9.0)
-            .hovered(hovered)
-            .disabled(!enabled);
+            .radius(9.0);
         if danger {
-            face = face.danger_outline();
+            face.danger_outline()
         } else if on {
-            face = face.primary();
+            face.primary()
+        } else {
+            face
         }
-        Button::paint(scene, tf, tr, theme, &face);
     }
 
     fn call_control_is_hovered(&self, hit: &Hit) -> bool {
@@ -1615,7 +1572,7 @@ impl ChatApp {
             label(scene, tr, tf, heading, 10.5, c.text_dim, grid.x0 + 2.0, y);
             y += 16.0;
             Self::emoji_grid(
-                PaintContext::new(scene, tf, tr, theme),
+                PaintCtx::new(scene, tf, tr, theme),
                 set,
                 grid,
                 &mut y,
@@ -1630,7 +1587,7 @@ impl ChatApp {
     /// One section's cells from `*y` down, advancing `*y` past them. Only
     /// cells inside `clip` receive a hit target.
     fn emoji_grid(
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         set: &[&str],
         clip: Rect,
         y: &mut f64,
@@ -1638,7 +1595,7 @@ impl ChatApp {
         cell: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -1656,15 +1613,14 @@ impl ChatApp {
             }
             let (ew, eh) = tr.measure(e, 19.0, None);
             text(
-                scene,
-                tr,
-                tf,
+                &mut PaintCtx::new(scene, tf, tr, theme),
                 e,
-                19.0,
+                &TextStyle::new(19.0),
                 c.text_primary,
-                cellr.center().x - f64::from(ew) / 2.0,
-                cellr.center().y - f64::from(eh) / 2.0,
-                TextWeight::Regular,
+                Point::new(
+                    cellr.center().x - f64::from(ew) / 2.0,
+                    cellr.center().y - f64::from(eh) / 2.0,
+                ),
                 None,
             );
             let target = cellr.intersect(clip);
@@ -1777,15 +1733,11 @@ impl ChatApp {
             );
             y += 18.0;
             text(
-                scene,
-                tr,
-                tf,
+                &mut PaintCtx::new(scene, tf, tr, theme),
                 body,
-                13.0,
+                &TextStyle::new(13.0),
                 if accent { c.text_primary } else { c.text_dim },
-                panel.x0 + 14.0,
-                y,
-                TextWeight::Regular,
+                Point::new(panel.x0 + 14.0, y),
                 Some(tw),
             );
             y += bh - 22.0 - 14.0 + 8.0;

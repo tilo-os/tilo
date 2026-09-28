@@ -88,10 +88,6 @@ impl HdrTonemapConfig {
 /// (`y.len() >= y_stride * height`); a shorter buffer never panics —
 /// pixels whose sample would fall outside `y`/`uv` are left as
 /// transparent black instead.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "two planes, their strides, the frame size and the colour inputs are all independent"
-)]
 pub fn tonemap_p010_to_rgba8(
     y: &[u16],
     uv: &[u16],
@@ -230,31 +226,33 @@ pub fn tonemap_rgb_signal_to_sdr_linear(
     [r709, g709, b709].map(|c| hable(c * scale))
 }
 
-/// The normalised R'G'B' signal of P010 pixel `(col, row)`: BT.2020
-/// `Y'CbCr`, chroma subsampled nearest. `None` when the planes are too short.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "two planes, their strides, the position and the range are all independent"
-)]
-pub fn p010_signal_at(
-    y: &[u16],
-    uv: &[u16],
-    y_stride: u32,
-    uv_stride: u32,
-    col: u32,
-    row: u32,
-    limited: bool,
-) -> Option<[f32; 3]> {
-    let y_raw = *y.get(plane_index(row, y_stride, col))?;
-    let uv_pair = plane_index(row / 2, uv_stride, (col / 2).saturating_mul(2));
-    let u_raw = *uv.get(uv_pair)?;
-    let v_raw = *uv.get(uv_pair.saturating_add(1))?;
-    let (r, g, b) = bt2020_ycbcr_to_rgb(
-        unpack_p010_sample(y_raw, limited, true),
-        unpack_p010_sample(u_raw, limited, false),
-        unpack_p010_sample(v_raw, limited, false),
-    );
-    Some([r, g, b].map(|c| c.clamp(0.0, 1.0)))
+/// A P010 frame's two sample planes (BT.2020 `Y'CbCr`, 10 bits in the top of
+/// each sample, chroma subsampled 2×2), their strides in samples, and whether
+/// the codes are limited range.
+#[derive(Clone, Copy)]
+pub struct P010Planes<'a> {
+    pub luma: &'a [u16],
+    pub chroma: &'a [u16],
+    pub luma_stride: u32,
+    pub chroma_stride: u32,
+    pub limited: bool,
+}
+
+impl P010Planes<'_> {
+    /// The normalised R'G'B' signal of pixel `(col, row)`, chroma sampled
+    /// nearest. `None` when the planes are too short.
+    pub fn signal_at(&self, col: u32, row: u32) -> Option<[f32; 3]> {
+        let y_raw = *self.luma.get(plane_index(row, self.luma_stride, col))?;
+        let uv_pair = plane_index(row / 2, self.chroma_stride, (col / 2).saturating_mul(2));
+        let u_raw = *self.chroma.get(uv_pair)?;
+        let v_raw = *self.chroma.get(uv_pair.saturating_add(1))?;
+        let (r, g, b) = bt2020_ycbcr_to_rgb(
+            unpack_p010_sample(y_raw, self.limited, true),
+            unpack_p010_sample(u_raw, self.limited, false),
+            unpack_p010_sample(v_raw, self.limited, false),
+        );
+        Some([r, g, b].map(|c| c.clamp(0.0, 1.0)))
+    }
 }
 
 /// Row-major linear index into a stride-`stride` plane at (`row`,

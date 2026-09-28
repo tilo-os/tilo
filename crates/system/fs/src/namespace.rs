@@ -2286,10 +2286,6 @@ impl Namespace {
     }
 
     /// [`Self::create_node`] bound to an existing stable `record_id`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "every field a new node is written with, once"
-    )]
     fn create_node_as(
         &mut self,
         parent_id: &str,

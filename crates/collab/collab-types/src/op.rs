@@ -644,10 +644,6 @@ impl SignedOp {
     /// caller has already encrypted via `ChannelGroup::encrypt`; the
     /// ciphertext goes into `payload`, the matching `epoch`/`channel` into
     /// `encryption`. Sign with [`crate::crypto::sign_op`] as usual.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The signed envelope constructor binds payload, artifact, author, attestation, clocks and encryption in one explicit wire contract."
-    )]
     pub fn new_unsigned_with_encryption(
         payload: Vec<u8>,
         artifact: ArtifactId,

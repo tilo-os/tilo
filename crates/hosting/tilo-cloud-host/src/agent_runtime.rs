@@ -225,21 +225,12 @@ impl Drop for CloudAgentRuntime {
         }
     }
 }
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is a distinct piece of custody or context the caller already holds"
-)]
 async fn handle_certified_command(
-    root: &Path,
-    owner: &RuntimeOwner,
-    provider: Option<&Arc<AgentControlProvider>>,
-    offer: Option<&GrantOffer>,
-    reads_supported: bool,
+    host: read_attachment::CommandHost<'_>,
     evidence: &CertifiedAction,
-    queued: &mut AgentWorkQueue,
     policy_time: &tilo_action_broker::peer_actions::PolicyTime,
-    reads: &mut read_attachment::ReadCache,
 ) -> Result<Option<ActionMessage>, String> {
+    let (owner, reads_supported) = (host.owner, host.reads_supported);
     let action = evidence.action();
     if !matches!(
         &action.message,
@@ -275,21 +266,9 @@ async fn handle_certified_command(
     }
     // The same locked Store and fresh caller proof continue into the command
     // (no second open and second proof of the identical caller).
-    handle_command(
-        root,
-        owner,
-        provider,
-        offer,
-        reads_supported,
-        evidence,
-        queued,
-        policy_time,
-        store,
-        caller,
-        reads,
-    )
-    .await
-    .map(Some)
+    handle_command(host, evidence, policy_time, store, caller)
+        .await
+        .map(Some)
 }
 /// Fresh retained status for the invocation the certified evidence itself
 /// names (its Invoke or Status). Read-only; the caller is re-authenticated
@@ -626,7 +605,8 @@ async fn run(
                         last_active = Instant::now();
                     }
                     let controls = read_attachment::OwnerControls { workers: workers.as_ref(), launcher: launcher.as_ref() };
-                    read_attachment::dispatch(command,&root,&owner,provider.as_ref(),offer.as_ref(),reads_supported,&mut queued,&mut reads,controls).await;
+                    let host = read_attachment::CommandHost { root: &root, owner: &owner, provider: provider.as_ref(), offer: offer.as_ref(), reads_supported, queued: &mut queued, reads: &mut reads };
+                    read_attachment::dispatch(command, host, controls).await;
                 }
             },
             // A submitted agent step runs its tick now (see STEP_WAKE).
@@ -810,23 +790,22 @@ async fn run(
         .and(worker_close)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is a distinct piece of custody or context the caller already holds"
-)]
 async fn handle_command(
-    root: &Path,
-    owner: &RuntimeOwner,
-    provider: Option<&Arc<AgentControlProvider>>,
-    offer: Option<&GrantOffer>,
-    reads_supported: bool,
+    host: read_attachment::CommandHost<'_>,
     evidence: &CertifiedAction,
-    queued: &mut AgentWorkQueue,
     policy_time: &tilo_action_broker::peer_actions::PolicyTime,
     store: crate::StoreGuard,
     caller: VerifiedAgentCaller,
-    reads: &mut read_attachment::ReadCache,
 ) -> Result<ActionMessage, String> {
+    let read_attachment::CommandHost {
+        root,
+        owner,
+        provider,
+        offer,
+        reads_supported,
+        queued,
+        reads,
+    } = host;
     let action = evidence.action();
     match &action.message {
         ActionMessage::CatalogueRefresh { scope } => {

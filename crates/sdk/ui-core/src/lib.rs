@@ -37,7 +37,6 @@
     clippy::significant_drop_tightening,
     clippy::similar_names,
     clippy::struct_excessive_bools,
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::type_complexity,
     clippy::unchecked_time_subtraction,
@@ -203,7 +202,7 @@ pub mod query_text;
 pub mod realtime_continuity;
 pub mod standalone_history_pane;
 pub mod ux_bench;
-pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange};
+pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
 pub mod text_assistance;
 pub mod text_break;
 pub use text_break::{LineBreakKind, line_break_opportunities};
@@ -305,7 +304,9 @@ pub use profiling::{
     FRAME_BUDGET_US, FrameProfiler, FrameTiming, Pass, PerfReport, PerfScenario, PerfStep,
     StatSummary, run_scenario, run_scenario_on,
 };
-pub use reader_hud::{HudAction, HudSwatch, MarkerDrag, ReaderHudStyle, SelectionHud};
+pub use reader_hud::{
+    HudAction, HudControls, HudPlacement, HudSwatch, MarkerDrag, ReaderHudStyle, SelectionHud,
+};
 pub use record::{RecordCheckout, RecordId, RecordKind, RecordRef, RecordSet, RecordStore};
 pub use remote_actions::{
     CatalogueCall, InvocationCall, RemoteActions, RemoteActionsGuard, RemoteCall,

@@ -781,10 +781,6 @@ fn cmd_unpack(dest: &Path, file: &Path) -> Result<()> {
     Ok(())
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the publish subcommand's explicit CLI options are kept visible at the command boundary"
-)]
 fn cmd_publish(
     file: &Path,
     registry: &str,
@@ -993,10 +989,6 @@ fn cmd_keygen(out: &Path) -> Result<()> {
     Ok(())
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the entry subcommand's explicit CLI options are kept visible at the command boundary"
-)]
 fn cmd_entry(
     file: &Path,
     url: &str,

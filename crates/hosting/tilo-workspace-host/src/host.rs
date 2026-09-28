@@ -978,10 +978,6 @@ fn console_lines() -> Result<tokio::sync::mpsc::Receiver<std::io::Result<String>
     Ok(receiver)
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "session and replaying are the live native-drain pair required for membership reconciliation"
-)]
 async fn handle_collaboration_exchange(
     owner: &mut SessionOwner,
     committed: &crate::committed_authority::CommittedAuthority,

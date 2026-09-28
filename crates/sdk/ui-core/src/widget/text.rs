@@ -1842,31 +1842,25 @@ mod tests {
 
             // Same string, size (16 default), wrap width (401.0) and family → a hit.
             let _ = tr.take_shape_stats();
-            tr.draw_text_font(
+            tr.draw_style(
                 &mut scene,
                 "Reading",
-                16.0,
                 theme.tokens.colors.text_primary,
                 Affine::IDENTITY,
                 Some(401.0),
-                TextWeight::Regular,
-                false,
-                &FontChoice::Named(fam),
+                &TextStyle::new(16.0).with_family(FontChoice::Named(fam)),
             );
             let (hits, _m, _ns) = tr.take_shape_stats();
             assert_eq!(hits, 1, "the label shaped its text in the named family");
 
             // Sans of the same string is a separate shape entry.
-            tr.draw_text_font(
+            tr.draw_style(
                 &mut scene,
                 "Reading",
-                16.0,
                 theme.tokens.colors.text_primary,
                 Affine::IDENTITY,
                 Some(401.0),
-                TextWeight::Regular,
-                false,
-                &FontChoice::SansSerif,
+                &TextStyle::new(16.0).with_family(FontChoice::SansSerif),
             );
             let (_h, misses, _ns) = tr.take_shape_stats();
             assert_eq!(misses, 1, "sans is a separate shape from the named family");

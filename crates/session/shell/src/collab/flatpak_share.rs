@@ -250,10 +250,6 @@ impl SharedFlatpakSession {
     /// Same failure modes as [`Self::start`], plus
     /// [`ShareError::EncoderUnavailable`] when this machine can produce no
     /// codec every receiver decodes.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the session identity, geometry, configuration, viewers and metrics are independent inputs"
-    )]
     pub fn start_with_metrics(
         host_user_id: PeerId,
         app_id: impl Into<String>,

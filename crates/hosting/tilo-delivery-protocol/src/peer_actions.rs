@@ -296,6 +296,13 @@ fn bounded_json(value: &serde_json::Value, depth: usize, remaining: &mut usize) 
     }
 }
 
+// Private leaves are accepted only when their JSON re-encodes byte for byte,
+// and catalogues carry `serde_json::Value` maps: without `preserve_order` a
+// target sorts their keys and refuses every catalogue a native host sends.
+// `shift_remove` exists only with that feature, so its absence fails the build.
+const _: fn(&mut serde_json::Map<String, serde_json::Value>, &str) -> Option<serde_json::Value> =
+    |map, key| map.shift_remove(key);
+
 impl DirectedAction {
     pub fn validate(&self) -> bool {
         !self.room.is_nil()

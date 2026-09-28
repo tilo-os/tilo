@@ -416,7 +416,6 @@ async fn serve_cli() -> anyhow::Result<()> {
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "each argument is a separately audited CronJob control at the CLI boundary"
 )]

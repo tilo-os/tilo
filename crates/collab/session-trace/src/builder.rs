@@ -272,10 +272,6 @@ impl TraceBuilder {
         self.push_event(at, Some(&key), event)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a segment is placed by its transfer, position and count"
-    )]
     fn take_segment(
         &mut self,
         at: Instant,

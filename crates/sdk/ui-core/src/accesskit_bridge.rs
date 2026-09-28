@@ -785,10 +785,6 @@ fn append_resource_nodes(
 // The walk threads three accumulators (nodes, the parent's child list, the
 // active descendant) alongside the tree it is reading; bundling them would only
 // move the arity into a struct.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the accessibility walk threads widget identity, scale and focus alongside node, child-list and active-descendant accumulators"
-)]
 /// One export walk: the nodes it emits, where each points, and the shared
 /// identity derivation that names them.
 struct Walk<'a, const BOUND: bool> {
@@ -881,6 +877,8 @@ struct SyntheticPlace<'p> {
     owner_focused: bool,
     key_path: &'p [u64],
     ordinal_path: &'p [usize],
+    /// Whose custody the owning widget is in.
+    scope: OwnerScope,
 }
 
 impl<const BOUND: bool> Walk<'_, BOUND> {
@@ -977,9 +975,9 @@ impl<const BOUND: bool> Walk<'_, BOUND> {
                     owner_focused,
                     key_path: &[key],
                     ordinal_path: &[ordinal],
+                    scope,
                 },
                 hosted.remove(&ordinal).unwrap_or_default(),
-                scope,
                 &mut my_children,
             );
         }
@@ -1031,10 +1029,6 @@ impl<const BOUND: bool> Walk<'_, BOUND> {
     /// its `ordinal` when it has none — so it survives repaints and unrelated
     /// changes elsewhere in the tree (see [`synthetic_node_id`]). The owning
     /// widget is recorded with both paths so an action reaches it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a synthetic node's identity, owner, hosted retained children and output list all come from the walk above it"
-    )]
     fn visit_synthetic(
         &mut self,
         access: &AccessNode,
@@ -1043,9 +1037,9 @@ impl<const BOUND: bool> Walk<'_, BOUND> {
         ordinal: usize,
         place: &SyntheticPlace<'_>,
         hosted: Vec<HostedWidget<'_>>,
-        scope: OwnerScope,
         parent_children: &mut Vec<AkNodeId>,
     ) {
+        let scope = place.scope;
         let key = access.key.unwrap_or(ordinal as u64);
         let id = synthetic_node_id(parent_id, key);
         let semantic_id = crate::semantic_identity::synthetic_id(semantic_parent, ordinal, access);
@@ -1096,9 +1090,9 @@ impl<const BOUND: bool> Walk<'_, BOUND> {
                         owner_focused: place.owner_focused,
                         key_path: &key_path,
                         ordinal_path: &ordinal_path,
+                        scope,
                     },
                     nested.remove(&i).unwrap_or_default(),
-                    scope,
                     &mut my_children,
                 );
             }

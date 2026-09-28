@@ -959,7 +959,7 @@ pub struct Providers {
     /// URI schemes handled by the application (without `:`), such as
     /// `https`, `mailto`, or `webcal`. `file`, `data`, and `javascript` are
     /// deliberately reserved and rejected by validation.
-    #[serde(default, alias = "uri-schemes", alias = "uri_schemes")]
+    #[serde(default)]
     pub schemes: Vec<String>,
 }
 

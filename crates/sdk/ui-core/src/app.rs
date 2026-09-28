@@ -49,6 +49,19 @@ mod handoff;
 mod history_actions;
 #[cfg(test)]
 mod history_actions_tests;
+
+/// What an app's own widgets need not handle because the App host performs
+/// it for every one of them: semantic (assistive) operations, requests to
+/// the app's own workspace, and document history. A surface is checked
+/// against these plus what its widgets declare, however it is mounted.
+pub(crate) fn with_host_operation_handlers(
+    mut handlers: std::collections::HashSet<String>,
+) -> std::collections::HashSet<String> {
+    handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
+    handlers.insert(tilo_actions::remote::WORKSPACE_REQUEST_TYPE.to_string());
+    handlers.insert(history_actions::OPERATION.to_string());
+    handlers
+}
 mod model_lifecycle;
 mod participants;
 mod published_invocations;
@@ -1152,11 +1165,12 @@ impl App {
                 &self.bindings,
                 &self.layout.node_map,
                 node,
-                &mut self.state.doc,
-                &self.state.root,
                 action,
-                &self.permission_ctx,
-                &author,
+                &mut self.state,
+                crate::bound_dispatch::SemanticCaller {
+                    authority: &self.permission_ctx,
+                    author: &author,
+                },
                 callback,
             )
         }
