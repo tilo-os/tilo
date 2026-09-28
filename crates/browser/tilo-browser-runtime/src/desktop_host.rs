@@ -723,6 +723,17 @@ pub(crate) struct DesktopRoot {
     /// The window the switcher settled on, focused during the next update.
     pending_switch: Option<tilo_desktop::window_switcher::WindowAddress>,
 }
+/// What a canonical desktop is built from: its admitted records, the storage
+/// they are cached in, the local permissions, and, for the page's own desktop,
+/// its content store and seeded local desktop.
+pub struct DesktopSources {
+    pub admission: Admission,
+    pub storage: PortableStorage,
+    pub permissions: ui::permissions::PermissionContext,
+    pub content: Option<tilo_content::ContentStore>,
+    pub local: Option<crate::local_desktop::LocalDesktop>,
+}
+
 impl DesktopRoot {
     /// LIVE_V1: record the laid-out window groups, the focused group and any
     /// window drag for the live overlay (rectangles only; no document reads).
@@ -826,17 +837,20 @@ impl DesktopRoot {
         Self::queue_activation_after_route_change(handle, tree, previous);
     }
     pub fn new(
-        admission: Admission,
-        storage: PortableStorage,
+        sources: DesktopSources,
         room: &str,
         device: &str,
         author: &str,
         instance: u64,
-        permissions: ui::permissions::PermissionContext,
         notify: Arc<dyn Fn() + Send + Sync>,
-        content: Option<tilo_content::ContentStore>,
-        local: Option<crate::local_desktop::LocalDesktop>,
     ) -> Result<(Self, DesktopHandle), String> {
+        let DesktopSources {
+            admission,
+            storage,
+            permissions,
+            content,
+            local,
+        } = sources;
         if !admission.complete() {
             return Err("required desktop records are not admitted".into());
         }
