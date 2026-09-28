@@ -5976,6 +5976,11 @@ impl ui::resources::PublishesResources for PdfApp {
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        // The framework root publishes this document. The widget tree would
+        // be a second door.
+        if self.actions.is_hosted() {
+            return Vec::new();
+        }
         self.publish_resources(doc)
     }
     fn action_directory_resource_page(

@@ -3470,6 +3470,9 @@ impl ui::resources::PublishesResources for CameraApp {
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.actions.is_hosted() {
+            return Vec::new();
+        }
         // Photos and Video Player are destinations, not Camera resources.
         // Their typed launch operation is attached only to the one current
         // capture resource, so search and agents cannot mistake Camera for a
