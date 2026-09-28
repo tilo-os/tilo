@@ -7568,6 +7568,15 @@ pub fn run() {
                 .host_mut()
                 .show_display_confirmation(confirmation.transaction, confirmation.tool);
         }
+        for notice in state.output_management.take_notices() {
+            match notice {
+                crate::compositor::output_management::DisplayToolNotice::ReappliedAfterRevert {
+                    tool,
+                } => frame_builder
+                    .host_mut()
+                    .report_refused_display_reapply(tool.as_ref()),
+            }
+        }
 
         // Re-derive everything depending on the output set once, after the whole
         // batch — a dock plug raises several udev edges, and per-edge re-derivation would advertise globals the next edge immediately supersedes.
