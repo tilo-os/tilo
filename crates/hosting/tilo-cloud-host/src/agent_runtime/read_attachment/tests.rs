@@ -152,7 +152,13 @@ async fn agent_read_attachment_real_private_projection_and_binding_never_write()
         Uuid::new_v4(),
         "secret task never published",
     );
-    let catalogue = certified(&store, ActionMessage::CatalogueRefresh { scope: None });
+    let catalogue = certified(
+        &store,
+        ActionMessage::CatalogueRefresh {
+            scope: None,
+            after: None,
+        },
+    );
     drop(store);
     let mut runtime = CloudAgentRuntime::start(dir.path(), "agent-admission", true)
         .await
@@ -226,7 +232,13 @@ async fn agent_read_attachment_real_private_projection_and_binding_never_write()
 #[tokio::test]
 async fn agent_read_attachment_deadline_shutdown_and_actual_queue_capacity() {
     let (dir, store, _) = crate::agent_owner_tests::enrolled();
-    let catalogue = certified(&store, ActionMessage::CatalogueRefresh { scope: None });
+    let catalogue = certified(
+        &store,
+        ActionMessage::CatalogueRefresh {
+            scope: None,
+            after: None,
+        },
+    );
     drop(store);
     let mut runtime = CloudAgentRuntime::start(dir.path(), "agent-admission", true)
         .await
@@ -280,7 +292,13 @@ async fn agent_read_attachment_deadline_shutdown_and_actual_queue_capacity() {
 async fn agent_read_attachment_result_retains_original_queue_custody() {
     use tilo_action_broker::{agent_reads::AgentReadCustody, peer_actions::PeerActionQueue};
     let (dir, store, _) = crate::agent_owner_tests::enrolled();
-    let evidence = certified(&store, ActionMessage::CatalogueRefresh { scope: None });
+    let evidence = certified(
+        &store,
+        ActionMessage::CatalogueRefresh {
+            scope: None,
+            after: None,
+        },
+    );
     drop(store);
     let mut runtime = CloudAgentRuntime::start(dir.path(), "agent-admission", true)
         .await
@@ -322,7 +340,13 @@ async fn agent_read_attachment_blocked_store_read_keeps_custody_after_waiter_dro
         peer_actions::{CarrierError, PeerActionQueue},
     };
     let (dir, store, _) = crate::agent_owner_tests::enrolled();
-    let evidence = certified(&store, ActionMessage::CatalogueRefresh { scope: None });
+    let evidence = certified(
+        &store,
+        ActionMessage::CatalogueRefresh {
+            scope: None,
+            after: None,
+        },
+    );
     drop(store);
     let owner = Arc::new(RuntimeOwner::open(dir.path(), "agent-admission").unwrap());
     let provider = AgentControlProvider::new_read_only(owner.clone());
@@ -474,7 +498,13 @@ async fn agent_read_attachment_original_retained_status_cancel_and_ordinary_fall
         before
     );
     let (foreign_dir, foreign, _) = crate::agent_owner_tests::enrolled();
-    let wrong = certified(&foreign, ActionMessage::CatalogueRefresh { scope: None });
+    let wrong = certified(
+        &foreign,
+        ActionMessage::CatalogueRefresh {
+            scope: None,
+            after: None,
+        },
+    );
     drop(foreign);
     assert_eq!(
         commands
@@ -494,7 +524,13 @@ async fn agent_read_attachment_original_retained_status_cancel_and_ordinary_fall
 #[tokio::test]
 async fn agent_read_attachment_expired_and_dropped_reads_skip_locked_store() {
     let (dir, store, _) = crate::agent_owner_tests::enrolled();
-    let evidence = certified(&store, ActionMessage::CatalogueRefresh { scope: None });
+    let evidence = certified(
+        &store,
+        ActionMessage::CatalogueRefresh {
+            scope: None,
+            after: None,
+        },
+    );
     drop(store);
     let owner = Arc::new(RuntimeOwner::open(dir.path(), "agent-admission").unwrap());
     let provider = AgentControlProvider::new_read_only(owner.clone());
@@ -568,7 +604,13 @@ async fn agent_read_attachment_ready_owner_reply_polled_after_absolute_deadline_
         peer_actions::{CarrierError, PeerActionQueue},
     };
     let (dir, store, _) = crate::agent_owner_tests::enrolled();
-    let evidence = certified(&store, ActionMessage::CatalogueRefresh { scope: None });
+    let evidence = certified(
+        &store,
+        ActionMessage::CatalogueRefresh {
+            scope: None,
+            after: None,
+        },
+    );
     drop(store);
     let mut runtime = CloudAgentRuntime::start(dir.path(), "agent-admission", true)
         .await
@@ -639,7 +681,13 @@ async fn agent_read_attachment_ready_owner_reply_polled_after_absolute_deadline_
 async fn cloud_policy_clock_real_command_keeps_request_origin_and_denies_retired_queue() {
     use tilo_action_broker::{agent_reads::AgentReadCustody, peer_actions::PeerActionQueue};
     let (dir, store, _) = crate::agent_owner_tests::enrolled();
-    let evidence = certified(&store, ActionMessage::CatalogueRefresh { scope: None });
+    let evidence = certified(
+        &store,
+        ActionMessage::CatalogueRefresh {
+            scope: None,
+            after: None,
+        },
+    );
     drop(store);
     let owner = Arc::new(RuntimeOwner::open(dir.path(), "agent-admission").unwrap());
     let source = owner.policy_context().clock().new_origin();

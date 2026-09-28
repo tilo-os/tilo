@@ -216,6 +216,7 @@ async fn a_person_opens_notes_through_the_cloud_broker() {
             resource: resource.clone(),
             action: "open".into(),
         }),
+        after: None,
     })
     .await
     else {
@@ -672,7 +673,10 @@ async fn repeated_open_close_cycles_keep_the_catalogue_bounded() {
             request_id: uuid::Uuid::new_v4(),
             source: caller.device_public_key,
             target: host,
-            message: ActionMessage::CatalogueRefresh { scope: None },
+            message: ActionMessage::CatalogueRefresh {
+                scope: None,
+                after: None,
+            },
         };
         let directory = directory.path().to_owned();
         let caller = caller.clone();

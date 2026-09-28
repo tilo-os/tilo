@@ -808,7 +808,7 @@ async fn handle_command(
     } = host;
     let action = evidence.action();
     match &action.message {
-        ActionMessage::CatalogueRefresh { scope } => {
+        ActionMessage::CatalogueRefresh { scope, .. } => {
             let machine = store.state.machine_id.clone();
             drop(store);
             let mut value = crate::broker::handle_with_policy_time(

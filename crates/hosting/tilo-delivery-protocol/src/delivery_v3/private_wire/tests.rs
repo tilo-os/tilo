@@ -25,7 +25,10 @@ fn private_wire_preserves_leaf_and_rejects_scope_direction_and_tail() {
     for (op, message) in [
         (
             PrivateOperation::Catalogue,
-            ActionMessage::CatalogueRefresh { scope: None },
+            ActionMessage::CatalogueRefresh {
+                scope: None,
+                after: None,
+            },
         ),
         (
             PrivateOperation::Status,
@@ -490,7 +493,10 @@ fn private_event_decoder_is_one_bounded_inert_correlated_response_family() {
 /// (`version` before `surfaces`); every reader must re-encode it unchanged.
 #[test]
 fn catalogue_response_keeps_insertion_ordered_keys_through_decode() {
-    let request = request(ActionMessage::CatalogueRefresh { scope: None });
+    let request = request(ActionMessage::CatalogueRefresh {
+        scope: None,
+        after: None,
+    });
     let catalogue: serde_json::Value = serde_json::from_str(
         r#"{"version":1,"surfaces":[{"peer_id":1,"app_id":"so.tilo.desktop","cluster_id":"c","record_id":"","live":true,"actions":[]}]}"#,
     )
@@ -503,6 +509,7 @@ fn catalogue_response_keeps_insertion_ordered_keys_through_decode() {
         message: ActionMessage::BrokerCatalogue {
             host: Uuid::from_u128(7),
             catalogue,
+            next: None,
         },
     };
     let reply = encode_response(PrivateOperation::Catalogue, &request, &response).unwrap();

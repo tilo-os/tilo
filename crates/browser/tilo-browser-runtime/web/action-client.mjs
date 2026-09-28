@@ -1,5 +1,5 @@
 // Private, device-owned outbox. No document/presence path imports this module.
-const MAX_ENTRIES=256,MAX_BYTES=4*1024*1024,MAX_PENDING=32;
+const MAX_ENTRIES=256,MAX_BYTES=4*1024*1024,MAX_PENDING=32,MAX_CATALOGUE_PAGES=64,MAX_CATALOGUE_RESTARTS=3;
 const copy=value=>structuredClone(value);
 const canonical=value=>JSON.stringify(value,(_,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.keys(v).sort().map(k=>[k,v[k]])):v);
 const equal=(a,b)=>canonical(a)===canonical(b);
@@ -112,14 +112,26 @@ export async function createActionClient({context,load,readLegacyImage,commit,re
     const revoke=()=>{if(!scope&&revision===capabilityRevision)capabilityRevision++;};
     if(!scope){control.signal.addEventListener('abort',revoke,{once:true});if(control.signal.aborted)revoke();}
     try{
-    control.check();const binding=copy(context());const response=await rpc(scope?{type:'catalogue_refresh',scope:copy(scope)}:{type:'catalogue_refresh'},control);control.check();healthy();
-    if(response.type!=='broker_catalogue'||!uuid(response.host)||response.catalogue?.version!==1||!Array.isArray(response.catalogue.surfaces)){
-      const code=response.type==='rejected'?response.code:'invalid-catalogue';
-      const message=code==='action_response_exceeds_limits'?(scope?'Desktop service returned too much data; command was not sent':'Action palette returned too much data'):code??'Broker unavailable';
-      throw actionError(code,'discovery',message,['Offline','Backpressure','AdmissionUnavailable'].includes(code));
+    control.check();const binding=copy(context());
+    // The broker answers a page at a time; follow its cursor to the last page. A catalogue that
+    // changes while it is paged is read again from its first page.
+    let response,surfaces=[],after,host,pages=0,restarts=0;
+    for(;;){
+      response=await rpc({type:'catalogue_refresh',...(scope?{scope:copy(scope)}:{}),...(after?{after}:{})},control);control.check();healthy();
+      if(response.type==='rejected'&&response.code==='catalogue_moved'&&after&&restarts<MAX_CATALOGUE_RESTARTS){restarts++;after=undefined;surfaces=[];pages=0;continue;}
+      const next=response.next;
+      if(response.type!=='broker_catalogue'||!uuid(response.host)||response.catalogue?.version!==1||!Array.isArray(response.catalogue.surfaces)||(after&&response.host!==host)||(next!==undefined&&(typeof next?.revision!=='string'||!Number.isSafeInteger(next.surface)))){
+        const code=response.type==='rejected'?response.code:'invalid-catalogue';
+        const message=code==='action_response_exceeds_limits'?(scope?'Desktop service returned too much data; command was not sent':'Action palette returned too much data'):code??'Broker unavailable';
+        throw actionError(code,'discovery',message,['Offline','Backpressure','AdmissionUnavailable'].includes(code));
+      }
+      surfaces.push(...response.catalogue.surfaces);
+      if(next===undefined)break;
+      if(++pages>=MAX_CATALOGUE_PAGES)throw actionError('invalid-catalogue','discovery','Action palette returned too much data',false);
+      after={revision:next.revision,surface:next.surface};host=response.host;
     }
     if(!equal(binding,context()))throw Error('Action identity changed during discovery');
-    const current={state:'ready',host:response.host,binding,catalogue:copy(response.catalogue)};
+    const current={state:'ready',host:response.host,binding,catalogue:{...copy(response.catalogue),surfaces:copy(surfaces)}};
     if(!scope&&revision===capabilityRevision&&!closed){capability=current;notify();}return copy(current);
   }catch(error){if(!scope&&revision===capabilityRevision&&!closed){capability={state:'unavailable',reason:String(error.message??error)};notify();}throw error;}
   finally{if(!scope)control.signal.removeEventListener('abort',revoke);}}

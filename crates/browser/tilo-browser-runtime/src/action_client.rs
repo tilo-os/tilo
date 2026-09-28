@@ -40,7 +40,9 @@ impl PendingActions {
                 }
                 let expected = request.message.invocation();
                 let valid = match &action.message {
-                    ActionMessage::BrokerCatalogue { host, catalogue } => {
+                    ActionMessage::BrokerCatalogue {
+                        host, catalogue, ..
+                    } => {
                         matches!(request.message, ActionMessage::CatalogueRefresh { .. })
                             && !host.is_nil()
                             && ActionMessage::Catalogue {
@@ -149,7 +151,10 @@ mod tests {
             request_id: Uuid::from_u128(2),
             source: [3; 32],
             target: [4; 32],
-            message: ActionMessage::CatalogueRefresh { scope: None },
+            message: ActionMessage::CatalogueRefresh {
+                scope: None,
+                after: None,
+            },
         }
     }
     fn response(a: &DirectedAction) -> DirectedAction {
@@ -159,6 +164,7 @@ mod tests {
             message: ActionMessage::BrokerCatalogue {
                 host: Uuid::from_u128(5),
                 catalogue: serde_json::json!({"version":1,"surfaces":[]}),
+                next: None,
             },
             ..a.clone()
         }
@@ -168,6 +174,7 @@ mod tests {
         let response = browser_response(ActionMessage::BrokerCatalogue {
             host: Uuid::from_u128(1),
             catalogue: serde_json::json!({"version":1,"surfaces":[{"peer_id":9_007_199_254_740_993u64}]}),
+            next: None,
         });
         assert_eq!(
             response["catalogue"]["surfaces"][0]["peer_id"],
@@ -183,6 +190,7 @@ mod tests {
         reply.message = ActionMessage::BrokerCatalogue {
             host: Uuid::from_u128(5),
             catalogue: serde_json::json!({"version":1,"surfaces":[{"actions":vec![serde_json::json!({"resource":"document","action":"edit","params":{}});1500]}]}),
+            next: None,
         };
         assert!(pending.receive(
             EnvelopeV2::Delivered {
@@ -208,6 +216,7 @@ mod tests {
                 resource: "desktop:session".into(),
                 action: "command".into(),
             }),
+            after: None,
         };
         p.insert(a.clone()).unwrap();
         let r = response(&a);

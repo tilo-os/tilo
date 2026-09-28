@@ -206,7 +206,13 @@ fn native_private_submission_retains_owner_policy_time_through_queue_and_termina
         clock: current.policy_clock().unwrap(),
         fences: HashMap::new(),
     };
-    let action = action(owner, ActionMessage::CatalogueRefresh { scope: None });
+    let action = action(
+        owner,
+        ActionMessage::CatalogueRefresh {
+            scope: None,
+            after: None,
+        },
+    );
     let pending = admitted(
         owner,
         &current,
@@ -246,7 +252,13 @@ fn native_private_rejects_another_owner_clock_before_queue_submission() {
         clock: unrelated.policy_clock().unwrap(),
         fences: HashMap::new(),
     };
-    let action = action(&owner, ActionMessage::CatalogueRefresh { scope: None });
+    let action = action(
+        &owner,
+        ActionMessage::CatalogueRefresh {
+            scope: None,
+            after: None,
+        },
+    );
     assert!(
         admitted(
             &owner,
@@ -317,7 +329,13 @@ async fn native_private_retained_real_broker_reply_rechecks_owner_before_output(
     let mut actions = ActionHost::start(&owner, authority, signing, sender).unwrap();
     let mut service = NativePrivateService::install(&actions).unwrap();
     let mut session = session(&owner, &current);
-    let action = action(&owner, ActionMessage::CatalogueRefresh { scope: None });
+    let action = action(
+        &owner,
+        ActionMessage::CatalogueRefresh {
+            scope: None,
+            after: None,
+        },
+    );
     let mut pending = admitted(
         &owner,
         &current,

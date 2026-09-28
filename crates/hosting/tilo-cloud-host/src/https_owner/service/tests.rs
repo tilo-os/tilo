@@ -631,7 +631,10 @@ async fn cloud_https_loopback_product_data_survives_owner_reopen() {
         request_id: uuid::Uuid::new_v4(),
         source: client.key.verifying_key().to_bytes(),
         target: peer_now.authority().device_public_key,
-        message: ActionMessage::CatalogueRefresh { scope: None },
+        message: ActionMessage::CatalogueRefresh {
+            scope: None,
+            after: None,
+        },
     };
     let scope = PrivateScope {
         room: action.room,
@@ -775,7 +778,10 @@ async fn cloud_https_upload_and_private_replies_are_answered_without_ticks() {
         request_id: uuid::Uuid::new_v4(),
         source: client.key.verifying_key().to_bytes(),
         target: peer_now.authority().device_public_key,
-        message: ActionMessage::CatalogueRefresh { scope: None },
+        message: ActionMessage::CatalogueRefresh {
+            scope: None,
+            after: None,
+        },
     };
     let scope = PrivateScope {
         room: action.room,
@@ -1767,7 +1773,10 @@ async fn cloud_https_private_lane_with_actual_agent_runtime_answers_every_operat
     let catalogue = private_action(
         &client,
         &root,
-        ActionMessage::CatalogueRefresh { scope: None },
+        ActionMessage::CatalogueRefresh {
+            scope: None,
+            after: None,
+        },
     );
     let reply = private_call(&client, PrivateOperation::Catalogue, &catalogue).await;
     assert!(
@@ -1837,7 +1846,10 @@ async fn cloud_https_private_lane_with_actual_agent_runtime_answers_every_operat
         let again = private_action(
             &client,
             &root,
-            ActionMessage::CatalogueRefresh { scope: None },
+            ActionMessage::CatalogueRefresh {
+                scope: None,
+                after: None,
+            },
         );
         let reply = private_call(&client, PrivateOperation::Catalogue, &again).await;
         assert!(matches!(

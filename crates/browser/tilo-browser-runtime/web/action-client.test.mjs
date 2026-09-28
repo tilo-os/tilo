@@ -375,3 +375,18 @@ test('background recovery backs off an unchanged row to 16 s, reuses its discove
  t+=1000;calls.length=0;await c.recover();assert.deepEqual(calls,['catalogue_refresh','status','status'],'an explicit recover probes at once');
  await c.close();
 });
+test('a catalogue answered in pages is read to its last page, and again from the first when it moves',async()=>{
+  const surface=n=>({peer_id:n,app_id:'writer',record_id:`tab:${n}`,actions:[{resource:'document',action:'insert',contract:{confirmation:{mode:'none'}}}]});
+  const revision='a'.repeat(64),moved='b'.repeat(64);let movedOnce=false;const sent=[];
+  const c=await createActionClient({context:()=>context,load:async()=>undefined,commit:async()=>{},request:async m=>{
+    sent.push(structuredClone(m));
+    if(!m.after)return{type:'broker_catalogue',host,catalogue:{version:1,surfaces:[surface(1)]},next:{revision:movedOnce?revision:moved,surface:1}};
+    if(m.after.revision===moved){movedOnce=true;return{type:'rejected',code:'catalogue_moved'};}
+    if(m.after.surface===1)return{type:'broker_catalogue',host,catalogue:{version:1,surfaces:[surface(2)]},next:{revision,surface:2}};
+    return{type:'broker_catalogue',host,catalogue:{version:1,surfaces:[surface(3)]}};
+  }});
+  const current=await c.catalogue();
+  assert.deepEqual(current.catalogue.surfaces.map(s=>s.peer_id),[1,2,3]);
+  assert.deepEqual(sent.map(m=>m.after?.surface??0),[0,1,0,1,2],'restarted from the first page once the catalogue moved');
+  assert.ok(sent.every(m=>m.type==='catalogue_refresh'&&!m.scope));
+});

@@ -1717,7 +1717,10 @@ mod scheduling_tests {
             request_id: Uuid::from_u128(2),
             source: [1; 32],
             target: [2; 32],
-            message: ActionMessage::CatalogueRefresh { scope: None },
+            message: ActionMessage::CatalogueRefresh {
+                scope: None,
+                after: None,
+            },
         })
     }
 
@@ -2202,6 +2205,7 @@ mod session_carrier_tests {
             target: [30; 32],
             message: tilo_delivery_protocol::peer_actions::ActionMessage::CatalogueRefresh {
                 scope: None,
+                after: None,
             },
         };
         let frame = |action| EnvelopeV2::CertifiedDelivered {

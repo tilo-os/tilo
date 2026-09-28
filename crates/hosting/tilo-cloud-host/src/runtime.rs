@@ -755,7 +755,10 @@ mod publication_tests {
             room,
             caller.device(),
             host,
-            A::CatalogueRefresh { scope: None },
+            A::CatalogueRefresh {
+                scope: None,
+                after: None,
+            },
         )
         .await;
         let A::BrokerCatalogue { catalogue, .. } = catalogue else {
@@ -1050,6 +1053,7 @@ mod publication_tests {
             target: [2; 32],
             message: tilo_delivery_protocol::peer_actions::ActionMessage::CatalogueRefresh {
                 scope: None,
+                after: None,
             },
         };
         let mut pending = std::collections::VecDeque::new();

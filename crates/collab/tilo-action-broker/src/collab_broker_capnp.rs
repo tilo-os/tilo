@@ -14547,6 +14547,7 @@ pub mod tests {
         let full_message = tilo_delivery_protocol::peer_actions::ActionMessage::BrokerCatalogue {
             host: uuid::Uuid::new_v4(),
             catalogue: full,
+            next: None,
         };
         assert!(
             full_message.validate(),
@@ -14608,6 +14609,7 @@ pub mod tests {
             message: tilo_delivery_protocol::peer_actions::ActionMessage::BrokerCatalogue {
                 host: uuid::Uuid::new_v4(),
                 catalogue: scoped,
+                next: None,
             },
         };
         assert!(

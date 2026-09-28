@@ -104,6 +104,7 @@ impl CapnpBrokerState {
                             None => Ok(ActionMessage::BrokerCatalogue {
                                 host,
                                 catalogue: serde_json::Value::Null,
+                                next: None,
                             }),
                             Some(evidence) => Ok(state
                                 .peer_action(
@@ -184,7 +185,7 @@ impl CapnpBrokerState {
             return Ok(observation);
         }
         match &evidence.action().message {
-            ActionMessage::CatalogueRefresh { scope } => {
+            ActionMessage::CatalogueRefresh { scope, .. } => {
                 let mut catalogue: serde_json::Value =
                     serde_json::from_str(&self.action_catalogue_json_for(
                         &caller.room,
@@ -213,7 +214,11 @@ impl CapnpBrokerState {
                         );
                     }
                 }
-                Ok(ActionMessage::BrokerCatalogue { host, catalogue })
+                Ok(ActionMessage::BrokerCatalogue {
+                    host,
+                    catalogue,
+                    next: None,
+                })
             }
             ActionMessage::AgentReadV1 { .. } => {
                 let owner = self
