@@ -648,6 +648,40 @@ pub fn load_or_create_device_key(
     }
 }
 
+/// Whether the `renameat2` that just failed did so because the filesystem
+/// has no `RENAME_NOREPLACE` (gVisor's gofer mounts answer `EINVAL`).
+#[cfg(target_os = "linux")]
+fn no_replace_rename_unsupported() -> bool {
+    matches!(
+        io::Error::last_os_error().raw_os_error(),
+        Some(libc::EINVAL | libc::ENOSYS)
+    )
+}
+
+/// Claim `destination` with a hard link, which fails on an existing name as
+/// `RENAME_NOREPLACE` would, then drop the source name. Both names are in the
+/// same private directory for the moment between. Returns 0 or -1 with
+/// `errno` set, like the syscall it stands in for.
+#[cfg(target_os = "linux")]
+fn link_claim(source: &CString, destination: &CString) -> libc::c_long {
+    // SAFETY: both pointers refer to live NUL-terminated path buffers.
+    let linked = unsafe {
+        libc::linkat(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            0,
+        )
+    };
+    if linked != 0 {
+        return -1;
+    }
+    // SAFETY: `source` is a live NUL-terminated path buffer.
+    unsafe { libc::unlink(source.as_ptr()) };
+    0
+}
+
 /// Publish a complete device key exactly once.
 ///
 /// `atomic_file::write_with_mode` is intentionally not used here: its final
@@ -656,7 +690,8 @@ pub fn load_or_create_device_key(
 /// The candidate is fully written and synced under a unique same-directory
 /// temporary name, then Linux `renameat2(RENAME_NOREPLACE)` atomically claims
 /// the final name only if it is still absent. Unlike a hard-link claim, the
-/// private key is never briefly reachable through two names. A caller that
+/// private key is never briefly reachable through two names; a filesystem
+/// without `RENAME_NOREPLACE` falls back to that claim. A caller that
 /// loses returns `Ok(false)` and must load the winner from disk.
 #[cfg(not(windows))]
 fn publish_device_key_no_clobber(path: &Path, key: &SigningKey) -> Result<bool, PersistError> {
@@ -709,6 +744,12 @@ fn publish_identity_bytes_no_clobber(
             destination.as_ptr(),
             libc::RENAME_NOREPLACE,
         )
+    };
+    #[cfg(target_os = "linux")]
+    let result = if result != 0 && no_replace_rename_unsupported() {
+        link_claim(&source, &destination)
+    } else {
+        result
     };
     #[cfg(target_os = "macos")]
     // SAFETY: both paths are live NUL-terminated strings. RENAME_EXCL is the
