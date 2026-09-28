@@ -24,7 +24,9 @@ tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 iroh-base = { workspace = true, features = ["key"] }
 serde.workspace = true
 serde_bytes.workspace = true
-serde_json.workspace = true
+# Private and catalogue leaves are checked by exact re-encoding, which needs
+# insertion-ordered JSON maps on every target, wasm32 included.
+serde_json = { workspace = true, features = ["preserve_order"] }
 postcard = { workspace = true, features = ["use-std"] }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 rand.workspace = true
