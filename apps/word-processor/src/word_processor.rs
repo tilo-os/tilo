@@ -505,22 +505,14 @@ impl WordProcessor {
     }
 
     /// Load the document's stylesheet from the **CRDT styles container** (the
-    /// field-level-mergeable, ODF-round-trippable source of truth). For documents
-    /// authored before the container was populated, fall back to the legacy
-    /// `meta["stylesheet"]` JSON blob (so old docs don't lose their styles), and
-    /// finally to the built-in defaults.
+    /// field-level-mergeable, ODF-round-trippable source of truth), or the
+    /// built-in defaults when it holds none.
     pub fn stylesheet(&self, state: &AutoCommit) -> StyleSheet {
         let Some(c) = self.containers.as_ref() else {
             return StyleSheet::default();
         };
         let ids = qdoc::model::style_ids(state, c);
         if ids.is_empty() {
-            // Legacy fallback: a doc saved with the old meta-JSON stylesheet.
-            if let Some(sheet) = qdoc::model::meta_str(state, c, "stylesheet")
-                .and_then(|j| StyleSheet::from_json(&j))
-            {
-                return sheet;
-            }
             return StyleSheet::default();
         }
         // Built-in defaults are the base layer so plain blocks always resolve to a
@@ -563,10 +555,9 @@ impl WordProcessor {
         }
     }
 
-    /// On first bind, populate the styles container if it is empty: migrate a
-    /// legacy `meta["stylesheet"]` JSON blob into it when present, else seed the
-    /// built-in defaults. Idempotent — a doc whose container already has styles is
-    /// left untouched.
+    /// On first bind, seed the built-in defaults into the styles container if it
+    /// is empty. Idempotent — a doc whose container already has styles is left
+    /// untouched.
     fn seed_styles(&mut self, state: &mut AutoCommit) {
         let Some(c) = self.containers.as_ref() else {
             return;
@@ -574,10 +565,7 @@ impl WordProcessor {
         if !qdoc::model::style_ids(state, c).is_empty() {
             return;
         }
-        let sheet = qdoc::model::meta_str(state, c, "stylesheet")
-            .and_then(|j| StyleSheet::from_json(&j))
-            .unwrap_or_default();
-        self.set_stylesheet(state, &sheet);
+        self.set_stylesheet(state, &StyleSheet::default());
     }
 
     /// The document's persisted page margins as `[top, right, bottom, left]` (px),
@@ -2316,8 +2304,8 @@ impl WordProcessor {
             // never re-mints (and overwrites) an existing block.
             self.ids = Some(qdoc::model::seeded_id_gen(state, &c));
             self.containers = Some(c.clone());
-            // Populate the styles container (built-in defaults, or migrate a
-            // legacy meta-JSON stylesheet) on first bind.
+            // Populate the styles container with the built-in defaults on
+            // first bind.
             self.seed_styles(state);
             c
         };
@@ -3454,10 +3442,9 @@ mod tests {
         }
     }
 
-    /// `bind` seeds builtin styles into the container, `set_stylesheet` persists through it, and legacy meta-JSON
-    /// stylesheets migrate into it.
+    /// `bind` seeds builtin styles into the container and `set_stylesheet` persists through it.
     #[test]
-    fn stylesheets_seed_persist_and_migrate_through_the_container() {
+    fn stylesheets_seed_and_persist_through_the_container() {
         // Phase: bind_seeds_builtin_styles_into_the_container.
         {
             let (wp, state) = bound();
@@ -3500,42 +3487,6 @@ mod tests {
             assert_eq!(back.get("body").size, 42.0, "edited built-in persisted");
             assert_eq!(back.get("custom").name, "Custom", "new style persisted");
             assert_eq!(back.get("custom").size, 19.0);
-        }
-
-        // Phase: legacy_meta_json_stylesheet_migrates_into_container.
-        {
-            // An "old" document: schema initialized + a stylesheet stored as the
-            // legacy meta-JSON blob, with the styles container still empty.
-            let mut state = AutoCommit::new();
-            let c = qdoc::model::init(&mut state, &ROOT);
-            let mut ids = qdoc::IdGen::new(state.get_actor().to_hex_string());
-            let mut legacy = StyleSheet::default();
-            legacy.styles.get_mut("body").unwrap().size = 99.0;
-            {
-                let mut dm = DocMut {
-                    doc: &mut state,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                dm.set_meta_str("stylesheet", &legacy.to_json());
-            }
-            assert!(
-                qdoc::model::style_ids(&state, &c).is_empty(),
-                "container starts empty (old doc)"
-            );
-
-            // Binding the editor migrates the legacy JSON into the container.
-            let mut wp = WordProcessor::new();
-            wp.bind(&mut state, &ROOT);
-            let migrated = qdoc::model::style_ids(&state, wp.containers.as_ref().unwrap());
-            assert!(
-                migrated.contains(&"body".to_string()),
-                "legacy styles migrated into container: {migrated:?}"
-            );
-            assert!(
-                (wp.stylesheet(&state).get("body").size - 99.0).abs() < 1e-6,
-                "custom legacy value survived migration"
-            );
         }
     }
 

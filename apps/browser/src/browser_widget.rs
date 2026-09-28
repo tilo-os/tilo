@@ -6442,8 +6442,6 @@ mod architecture_tests {
     fn bookmark_projection_benchmark() {
         use automerge::transaction::Transactable;
         let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "browser.bookmarks.v2.migrated", true)
-            .unwrap();
         for i in 0..1000 {
             let row = doc
                 .put_object(

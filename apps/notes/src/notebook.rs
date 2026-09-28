@@ -9,10 +9,9 @@ use crate::{
 use automerge::{
     AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-/// 3: page bodies are rich text (`body`). Pages written in the first format
-/// (a `blocks` List) still validate, and upgrade in place when opened.
+/// 3: page bodies are rich text (`body`).
 pub const NOTES_SCHEMA_VERSION: u32 = 3;
 const OWNED_FIELDS: [&str; 6] = [
     "notes_schema_version",
@@ -173,7 +172,7 @@ fn keyed_uuid(value: &str) -> Result<uuid::Uuid, String> {
 }
 
 fn validated_workspace(doc: &AutoCommit, validate_image_bytes: bool) -> Result<Workspace, String> {
-    if !matches!(schema_version(doc).ok(), Some(1..=3)) {
+    if schema_version(doc).ok() != Some(u64::from(NOTES_SCHEMA_VERSION)) {
         return Err("notebook schema version is missing or unsupported; migration required".into());
     }
     let pages = object(doc, &ROOT, "pages", ObjType::Map)?;
@@ -623,107 +622,12 @@ pub(crate) fn assets_complete(
         .all(|digest| snapshot.contains_key(&format!("asset:{digest}"))))
 }
 
-/// A page's body: rich text, or a block list in the first format.
+/// A page's body: rich text.
 fn validate_body(doc: &AutoCommit, page: &ObjId) -> Result<(), String> {
-    if doc
-        .get_all(page, "body")
-        .map_err(|e| e.to_string())?
-        .is_empty()
-    {
-        return validate_blocks(doc, page);
-    }
     let body = object(doc, page, "body", ObjType::Map)?;
     qdoc::model::open(doc, &body)
         .map(|_| ())
         .map_err(|error| format!("body is not rich text: {error}"))
-}
-
-fn validate_blocks(doc: &AutoCommit, page: &ObjId) -> Result<(), String> {
-    let blocks = object(doc, page, "blocks", ObjType::List)?;
-    let mut ids = HashSet::new();
-    let mut positions = HashSet::new();
-    for index in 0..doc.length(&blocks) {
-        let values = doc.get_all(&blocks, index).map_err(|e| e.to_string())?;
-        let [(Value::Object(ObjType::Map), block)] = values.as_slice() else {
-            return Err(format!("block {index} must be one Map"));
-        };
-        let id = uuid(&string(doc, block, "id")?)?;
-        if !ids.insert(id) {
-            return Err(format!("duplicate block {id}"));
-        }
-        if schema_version(doc)? >= 2 {
-            let rank = crate::block_order::stored(doc, block)
-                .ok_or_else(|| format!("block {id} requires order metadata"))?;
-            if !crate::block_order::valid(&rank) || !positions.insert(rank) {
-                return Err(format!("block {id} has invalid order metadata"));
-            }
-        }
-        if ui::widget::BlockKind::from_stored(&string(doc, block, "kind")?).is_none() {
-            return Err(format!("block {id} has invalid kind"));
-        }
-        if !doc
-            .get_all(block, "nesting")
-            .map_err(|e| e.to_string())?
-            .is_empty()
-        {
-            let depth = integer(doc, block, "nesting")?;
-            let kind = string(doc, block, "kind")?;
-            if depth > u64::from(crate::markdown::MAX_LIST_INDENT)
-                || kind.starts_with("bullet:")
-                || kind.starts_with("numbered:")
-                || kind.starts_with("checklist:")
-            {
-                return Err(format!("block {id} has invalid nesting"));
-            }
-        }
-        if !doc
-            .get_all(block, "code_group")
-            .map_err(|e| e.to_string())?
-            .is_empty()
-        {
-            uuid(&string(doc, block, "code_group")?)?;
-            if !string(doc, block, "kind")?.starts_with("code:") {
-                return Err(format!("block {id} has a code group but is not code"));
-            }
-        }
-        let text_obj = object(doc, block, "text", ObjType::Text)?;
-        let body = doc.text(&text_obj).map_err(|e| e.to_string())?;
-        if integer(doc, block, "notes_marks_version")? != 1 {
-            return Err(format!("block {id} requires native mark migration"));
-        }
-        for mark in doc.marks(&text_obj).map_err(|e| e.to_string())? {
-            let Some(name) = mark.name.strip_prefix("notes.inline.") else {
-                continue;
-            };
-            if mark.start >= mark.end || mark.end > body.chars().count() {
-                return Err(format!("block {id} has invalid mark range"));
-            }
-            match name {
-                "bold" | "italic" | "code" | "underline" | "strikethrough"
-                    if mark.value == ScalarValue::Boolean(true) => {}
-                name if name.starts_with("link:") || name.starts_with("transclusion:") => {
-                    let target = name
-                        .strip_prefix("link:")
-                        .or_else(|| name.strip_prefix("transclusion:"))
-                        .ok_or_else(|| "invalid link name".to_string())?;
-                    uuid(target)?;
-                    if mark.value != ScalarValue::Str(target.into()) {
-                        return Err(format!("block {id} has inconsistent link target"));
-                    }
-                }
-                "external-link" => {
-                    let ScalarValue::Str(url) = &mark.value else {
-                        return Err(format!("block {id} has invalid external link target"));
-                    };
-                    if !crate::markdown::safe_external_url(url) {
-                        return Err(format!("block {id} has invalid external link target"));
-                    }
-                }
-                _ => return Err(format!("block {id} has invalid native mark {name}")),
-            }
-        }
-    }
-    Ok(())
 }
 
 fn validate_receipt(doc: &AutoCommit) -> Result<(), String> {
@@ -772,7 +676,6 @@ fn validate_receipt(doc: &AutoCommit) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::actions::{InlineMark, InlineMarkSpan, NotesAction};
-    use automerge::marks::{ExpandMark, Mark};
 
     fn notebook_with(blocks: &[ui::widget::BlockContent]) -> (AutoCommit, PageId) {
         let mut doc = AutoCommit::new();
@@ -802,35 +705,6 @@ mod tests {
         .into_iter()
         .collect();
         notebook_with(&[read])
-    }
-
-    /// A page as the first format stored it, holding one paragraph; its text
-    /// object, for marks.
-    fn first_format_page(doc: &mut AutoCommit, text: &str) -> ObjId {
-        let pages = NotesDoc::pages_map(doc);
-        let id = uuid::Uuid::new_v4();
-        let page = doc
-            .put_object(&pages, id.to_string().as_str(), ObjType::Map)
-            .unwrap();
-        let title = doc.put_object(&page, "title", ObjType::Text).unwrap();
-        doc.splice_text(&title, 0, 0, "Old").unwrap();
-        doc.put(&page, "parent", "").unwrap();
-        doc.put(&page, "order", 1_i64).unwrap();
-        let list = doc.put_object(&page, "blocks", ObjType::List).unwrap();
-        let block = doc.insert_object(&list, 0, ObjType::Map).unwrap();
-        let block_id = uuid::Uuid::new_v4();
-        doc.put(&block, "id", block_id.to_string()).unwrap();
-        doc.put(&block, "kind", "paragraph").unwrap();
-        doc.put(
-            &block,
-            crate::block_order::BASE_FIELD,
-            crate::block_order::initial(0, block_id),
-        )
-        .unwrap();
-        doc.put(&block, "notes_marks_version", 1_i64).unwrap();
-        let body = doc.put_object(&block, "text", ObjType::Text).unwrap();
-        doc.splice_text(&body, 0, 0, text).unwrap();
-        body
     }
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
@@ -902,52 +776,6 @@ mod tests {
                     mark
                 );
             }
-        }
-
-        eprintln!("phase first_format_link_validation_refuses_unsafe_urls_and_non_string_values");
-        {
-            for value in [
-                ScalarValue::Str("javascript:alert(1)".into()),
-                ScalarValue::Boolean(true),
-            ] {
-                let (mut doc, _) = notebook_with(&[]);
-                let text = first_format_page(&mut doc, "Read this");
-                validate(&doc).unwrap();
-                doc.mark(
-                    &text,
-                    Mark::new("notes.inline.external-link".into(), value, 0, 9),
-                    ExpandMark::After,
-                )
-                .unwrap();
-                assert!(
-                    validate(&doc)
-                        .unwrap_err()
-                        .contains("invalid external link target")
-                );
-            }
-        }
-
-        eprintln!("phase first_format_embed_validation_refuses_a_mismatched_target");
-        {
-            let (mut doc, _) = notebook_with(&[]);
-            let text = first_format_page(&mut doc, "Read this");
-            let target = uuid::Uuid::new_v4();
-            doc.mark(
-                &text,
-                Mark::new(
-                    format!("notes.inline.transclusion:{target}"),
-                    ScalarValue::Str(uuid::Uuid::new_v4().to_string().into()),
-                    0,
-                    9,
-                ),
-                ExpandMark::After,
-            )
-            .unwrap();
-            assert!(
-                validate(&doc)
-                    .unwrap_err()
-                    .contains("inconsistent link target")
-            );
         }
     }
 
