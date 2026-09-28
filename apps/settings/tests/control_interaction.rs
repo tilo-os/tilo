@@ -26,7 +26,7 @@ use settings::SettingsApp;
 use settings::categories::Category;
 use taffy::{NodeId, TaffyTree};
 use ui::text_render::TextRenderer;
-use ui::widget::Widget;
+use ui::widget::{ResourceOperation, Widget};
 use vello::kurbo::{Point, Rect};
 
 const W: f32 = 1200.0;
@@ -150,11 +150,13 @@ fn click_at(
                 .expect("Settings control actions use the toolkit control resource");
             let payload = serde_json::to_vec(control).expect("control id is valid JSON");
             let started = app
-                .start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    "tilo.ui.control.invoke",
-                    &payload,
+                .start_operation(
+                    &ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        "tilo.ui.control.invoke",
+                        &payload,
+                    ),
                     doc,
                     &root,
                 )

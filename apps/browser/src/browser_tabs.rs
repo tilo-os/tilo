@@ -1986,12 +1986,14 @@ mod tests {
             let mut tabs = workspace().with_session(store).unwrap();
             // Exercise the exact action-bound button operation used by the host.
             let result = tabs
-                .start_resource_operation(
-                    ui::tilo_actions::InvocationId::new(),
-                    ui::tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec("browser.session.fresh").unwrap(),
-                    &AutoCommit::new(),
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        ui::tilo_actions::OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec("browser.session.fresh").unwrap(),
+                    ),
+                    &mut AutoCommit::new(),
                     &automerge::ROOT,
                 )
                 .unwrap();
@@ -2104,12 +2106,14 @@ mod tests {
                         .take_control_invocation()
                         .expect("ordinary input must emit the button's canonical action");
                     assert_eq!(invocation.address.resource, format!("tilo.control:{id}"));
-                    tabs.start_resource_operation(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec(id).unwrap(),
-                        &doc,
+                    tabs.start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            ui::tilo_actions::InvocationId::new(),
+                            ui::tilo_actions::OperationKind::Effect,
+                            "tilo.ui.control.invoke",
+                            &serde_json::to_vec(id).unwrap(),
+                        ),
+                        &mut doc,
                         &automerge::ROOT,
                     )
                     .unwrap()
@@ -2551,13 +2555,15 @@ mod tests {
             .expect("exit choice must reach the root action broker");
         assert_eq!(invocation.address.resource, format!("tilo.control:{id}"));
         assert!(
-            tabs.start_resource_operation(
-                ui::tilo_actions::InvocationId::new(),
-                ui::tilo_actions::OperationKind::Effect,
-                "tilo.ui.control.invoke",
-                &serde_json::to_vec(id).unwrap(),
+            tabs.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    ui::tilo_actions::OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec(id).unwrap()
+                ),
                 doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             )
             .unwrap()
             .is_some()
@@ -3017,12 +3023,14 @@ mod tests {
                 serde_json::from_value(serde_json::json!({"url": "https://one.test"})).unwrap();
             let encoded = navigate.build_json(&args).unwrap();
             let invocation = ui::tilo_actions::InvocationId::new();
-            tabs.start_resource_operation(
-                invocation,
-                navigate.kind,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
+            tabs.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    navigate.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut doc,
                 &root,
             )
             .unwrap();
@@ -3104,12 +3112,14 @@ mod tests {
                 .find(|action| action.id == "picture-in-picture")
                 .unwrap();
             let invocation = ui::tilo_actions::InvocationId::new();
-            tabs.start_resource_operation(
-                invocation,
-                pip.kind,
-                pip.operation_type.as_deref().unwrap(),
-                br#"{"operation":"toggle-picture-in-picture"}"#,
-                &doc,
+            tabs.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    pip.kind,
+                    pip.operation_type.as_deref().unwrap(),
+                    br#"{"operation":"toggle-picture-in-picture"}"#,
+                ),
+                &mut doc,
                 &root,
             )
             .unwrap();

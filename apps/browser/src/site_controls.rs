@@ -773,12 +773,14 @@ mod tests {
                 .expect("pointer emits the Done operation");
             assert_eq!(intent.address.resource, "tilo.control:browser.site.close");
             let result = panel
-                .start_resource_operation(
-                    ui::tilo_actions::InvocationId::new(),
-                    ui::tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec("browser.site.close").unwrap(),
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        ui::tilo_actions::OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec("browser.site.close").unwrap(),
+                    ),
+                    &mut doc,
                     &automerge::ROOT,
                 )
                 .unwrap();
