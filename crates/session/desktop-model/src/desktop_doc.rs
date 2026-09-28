@@ -507,7 +507,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             }
             None => Workspace::new(ws_id, name),
         };
-        // Absent or unparseable (a pre-rooms document) keeps the tree's.
+        // Absent or unparseable keeps the tree's.
         if let Some(room) = text(doc, entry, "room")
             .and_then(|v| RoomId::parse(v.as_str()))
             .filter(|r| !r.is_nil())

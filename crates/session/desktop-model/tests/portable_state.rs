@@ -1,5 +1,4 @@
-//! A desktop persisted by an earlier build still loads with its ids,
-//! defaults and local view intact.
+//! A persisted desktop loads with its ids, defaults and local view intact.
 
 #![allow(
     clippy::unwrap_used,
@@ -23,7 +22,7 @@ fn persisted_tree() -> DesktopTree {
     serde_json::from_value(json!({
         "schema_version": 1,
         "workspaces": [{
-            "id": 10, "name": "Research", "strips": [{
+            "id": 10, "room": "6f1c2d9e-4b3a-4e8f-9a7b-1c2d3e4f5a6b", "name": "Research", "strips": [{
                 "id": 11, "name": "Main", "window_groups": [{
                     "id": 12, "active_tab": 9_007_199_254_741_001_u64,
                     "width": {"Fraction": 500}, "tabs": [
@@ -32,7 +31,7 @@ fn persisted_tree() -> DesktopTree {
                     ]
                 }]
             }], "collaborators": [{"id":"stale", "name":"Stale"}]
-        }, {"id":20,"name":"Other","strips":[]}],
+        }, {"id":20,"room":"0b9a8c7d-6e5f-4a3b-8c2d-1e0f9a8b7c6d","name":"Other","strips":[]}],
         "active": 10, "active_strip": {"10":11},
         "collaborators": [{"id":"stale", "name":"Stale"}]
     })).unwrap()
@@ -42,7 +41,10 @@ fn persisted_tree() -> DesktopTree {
 fn persisted_state_preserves_ids_defaults_and_record_binding() {
     let tree = persisted_tree();
     assert_eq!(tree.schema_version, 1);
-    assert!(tree.workspaces[0].room.is_nil());
+    assert_eq!(
+        tree.workspaces[0].room.to_string(),
+        "6f1c2d9e-4b3a-4e8f-9a7b-1c2d3e4f5a6b"
+    );
     assert!(tree.workspaces[0].collaborators.is_empty());
     assert!(tree.collaborators.is_empty());
     let group = &tree.workspaces[0].strips[0].window_groups[0];
