@@ -108,14 +108,26 @@ impl InstalledApp {
     /// an unreadable manifest.
     #[must_use]
     pub fn declared_actions(&self) -> DeclaredActions {
-        std::fs::read_to_string(&self.manifest_path)
-            .ok()
-            .and_then(|source| tilo_app_package::manifest::Manifest::from_toml_str(&source).ok())
+        self.signed_manifest()
             .map(|manifest| DeclaredActions {
                 query: manifest.actions.query,
                 invoke: manifest.actions.invoke,
             })
             .unwrap_or_default()
+    }
+
+    /// The resource kinds the signed manifest's `[resources]` table declares
+    /// this app's records hold; none for an unreadable manifest.
+    #[must_use]
+    pub fn declared_resource_kinds(&self) -> Vec<String> {
+        self.signed_manifest()
+            .map(|manifest| manifest.resources.kinds)
+            .unwrap_or_default()
+    }
+
+    fn signed_manifest(&self) -> Option<tilo_app_package::manifest::Manifest> {
+        let source = std::fs::read_to_string(&self.manifest_path).ok()?;
+        tilo_app_package::manifest::Manifest::from_toml_str(&source).ok()
     }
 }
 
@@ -230,5 +242,34 @@ mod tests {
             .unwrap();
         assert!(!tool.has_gui);
         assert_eq!(tool.display_name, "Tool");
+    }
+
+    #[test]
+    fn declared_resource_kinds_come_from_the_signed_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let signed = "[package]\nid = \"so.tilo.notes\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
+             [publisher]\nidentity = \"\"\nsignature = \"\"\n\
+             [sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
+             [sandbox.net]\nmode = \"off\"\n";
+        let app = |manifest: &str| {
+            let path = tmp.path().join("manifest.toml");
+            std::fs::write(&path, manifest).unwrap();
+            InstalledApp {
+                package_id: "so.tilo.notes".into(),
+                display_name: "Notes".into(),
+                category: None,
+                version: "1.0.0".into(),
+                manifest_path: path,
+                payload_root: tmp.path().into(),
+                has_gui: true,
+                opens_extensions: Vec::new(),
+                opens_mime_types: Vec::new(),
+                opens_uri_schemes: Vec::new(),
+            }
+        };
+        assert!(app(signed).declared_resource_kinds().is_empty());
+        let declared = format!("{signed}[resources]\nkinds = [\"notes.notebook\"]\n");
+        assert_eq!(app(&declared).declared_resource_kinds(), ["notes.notebook"]);
+        assert!(app("not a manifest").declared_resource_kinds().is_empty());
     }
 }
