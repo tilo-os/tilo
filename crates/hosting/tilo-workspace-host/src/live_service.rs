@@ -328,6 +328,31 @@ impl<O: HostOwner> LiveService<O> {
             .map_err(|error| anyhow::anyhow!("live grant encoding failed: {error}"))
     }
 
+    /// Whether the device of an already admitted request may drive the room's
+    /// legacy windows: only a member live grants let publish (room write),
+    /// never a viewer, so watching stays read-only for pixels too.
+    ///
+    /// # Errors
+    ///
+    /// Why the device may not.
+    pub fn check_control(&self, turn: &O::Turn<'_>, request: &VerifiedRequest<'_>) -> Result<()> {
+        let session = request.session();
+        ensure!(
+            session.capabilities() & PRODUCT_DATA_V1 == PRODUCT_DATA_V1,
+            "input requires an authenticated data session"
+        );
+        let device = session.device_certificate().device_public_key;
+        let now = turn.fresh_now_ns().context("owner clock unavailable")?;
+        let (allowed, person) = permitted(turn.peer(), self.0.authority, device, at(now))
+            .context("input not permitted")?;
+        ensure!(
+            person == session.device_certificate().user_public_key,
+            "input participant root mismatch"
+        );
+        ensure!(allowed.publish, "viewers may not drive legacy windows");
+        Ok(())
+    }
+
     fn now_ns(&self) -> Option<u64> {
         self.0.owner.now_ns()
     }
