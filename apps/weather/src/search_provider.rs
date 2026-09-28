@@ -242,17 +242,21 @@ mod tests {
                 }
             };
             assert_eq!(spec.kind, tilo_actions::OperationKind::View);
-            assert!(
-                Widget::invoke_resource_operation(
+            assert!(matches!(
+                Widget::start_operation(
                     &mut app,
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
-                    &ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        spec.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
-                .expect("brokered open succeeds")
-            );
+                .expect("brokered open succeeds"),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(
                 app.selected_city(),
                 Some(id),
@@ -291,13 +295,16 @@ mod tests {
             assert!(tilo_actions::door::resolve(&resources, &address).is_none());
             let payload = serde_json::to_vec(&city.id.to_string()).unwrap();
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::View,
-                    crate::actions::OPEN_LOCATION_OPERATION,
-                    &payload,
-                    &doc,
-                    &ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        crate::actions::OPEN_LOCATION_OPERATION,
+                        &payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
                 .is_err()
             );

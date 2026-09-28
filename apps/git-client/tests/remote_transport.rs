@@ -384,12 +384,14 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion_after_sync() {
     .unwrap();
     fs::write(root.path().join("block"), "").unwrap();
     let started = app
-        .start_resource_operation(
-            invocation,
-            OperationKind::Effect,
-            GIT_CLIENT_OPERATION_TYPE,
-            &payload,
-            &doc,
+        .start_operation(
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                OperationKind::Effect,
+                GIT_CLIENT_OPERATION_TYPE,
+                &payload,
+            ),
+            &mut doc,
             &automerge::ROOT,
         )
         .unwrap();
@@ -407,37 +409,50 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion_after_sync() {
         std::thread::sleep(Duration::from_millis(10));
     }
     let view = serde_json::to_vec(&GitClientOperation::ShowHistory).unwrap();
-    assert!(
-        app.invoke_resource_operation(
-            OperationKind::View,
-            GIT_CLIENT_OPERATION_TYPE,
-            &view,
-            &doc,
+    assert!(matches!(
+        app.start_operation(
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                OperationKind::View,
+                GIT_CLIENT_OPERATION_TYPE,
+                &view
+            ),
+            &mut doc,
             &automerge::ROOT
         )
-        .unwrap()
-    );
+        .unwrap(),
+        Some(ui::widget::ResourceOperationStart::Completed(_))
+    ));
     let mutation = serde_json::to_vec(&GitClientOperation::StageAll).unwrap();
     assert!(
-        app.invoke_resource_operation(
-            OperationKind::Effect,
-            GIT_CLIENT_OPERATION_TYPE,
-            &mutation,
-            &doc,
+        app.start_operation(
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                OperationKind::Effect,
+                GIT_CLIENT_OPERATION_TYPE,
+                &mutation
+            ),
+            &mut doc,
             &automerge::ROOT
         )
         .is_err()
     );
     app.test_stage_all();
     assert!(
-        app.invoke_resource_operation(
-            OperationKind::View,
-            GIT_CLIENT_OPERATION_TYPE,
-            &view,
-            &doc,
-            &automerge::ROOT
-        )
-        .unwrap(),
+        matches!(
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    OperationKind::View,
+                    GIT_CLIENT_OPERATION_TYPE,
+                    &view
+                ),
+                &mut doc,
+                &automerge::ROOT
+            )
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ),
         "a rejected mutation must not disable navigation"
     );
     assert_eq!(
@@ -488,16 +503,20 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion_after_sync() {
             .is_none()
     );
     assert!(!app.needs_animation_frame());
-    assert!(
-        app.invoke_resource_operation(
-            OperationKind::Effect,
-            GIT_CLIENT_OPERATION_TYPE,
-            &mutation,
-            &doc,
+    assert!(matches!(
+        app.start_operation(
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                OperationKind::Effect,
+                GIT_CLIENT_OPERATION_TYPE,
+                &mutation
+            ),
+            &mut doc,
             &automerge::ROOT
         )
-        .unwrap()
-    );
+        .unwrap(),
+        Some(ui::widget::ResourceOperationStart::Completed(_))
+    ));
     assert_eq!(Repository::open(path).unwrap().index().unwrap().len(), 1);
 }
 
@@ -513,11 +532,14 @@ fn remote_failure_is_reported_to_the_invocation_and_visible_status() {
     // Settle the initial collapsed sidebar through a real view action so its
     // startup animation does not keep requesting frames after the job ends.
     let view = serde_json::to_vec(&GitClientOperation::ShowHistory).unwrap();
-    app.invoke_resource_operation(
-        OperationKind::View,
-        GIT_CLIENT_OPERATION_TYPE,
-        &view,
-        &doc,
+    app.start_operation(
+        &ui::widget::ResourceOperation::local(
+            ui::tilo_actions::InvocationId::new(),
+            OperationKind::View,
+            GIT_CLIENT_OPERATION_TYPE,
+            &view,
+        ),
+        &mut doc,
         &automerge::ROOT,
     )
     .unwrap();
@@ -528,12 +550,14 @@ fn remote_failure_is_reported_to_the_invocation_and_visible_status() {
     })
     .unwrap();
     assert!(matches!(
-        app.start_resource_operation(
-            invocation,
-            OperationKind::Effect,
-            GIT_CLIENT_OPERATION_TYPE,
-            &payload,
-            &doc,
+        app.start_operation(
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                OperationKind::Effect,
+                GIT_CLIENT_OPERATION_TYPE,
+                &payload
+            ),
+            &mut doc,
             &automerge::ROOT
         )
         .unwrap(),
