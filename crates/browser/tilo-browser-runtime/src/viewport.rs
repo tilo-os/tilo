@@ -8,6 +8,29 @@ pub(crate) const MAX_SURFACE_PIXELS: u64 = 3840 * 2160;
 /// Device pixel ratio the renderer draws at, whatever the page zoom.
 pub(crate) const MAX_DPR: f64 = 2.0;
 
+/// Bounds on the canvas backing store.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SurfaceCaps {
+    pub max_side: u32,
+    pub max_pixels: u64,
+    pub max_dpr: f64,
+}
+
+impl SurfaceCaps {
+    pub const STANDARD: Self = Self {
+        max_side: MAX_SURFACE_SIDE,
+        max_pixels: MAX_SURFACE_PIXELS,
+        max_dpr: MAX_DPR,
+    };
+    /// WebKit's GPU process holds every surface and binding of a frame
+    /// resident on top of a large fixed cost, under Safari's 600 MB limit.
+    pub const CONSERVATIVE: Self = Self {
+        max_side: 2560,
+        max_pixels: 2560 * 1600,
+        max_dpr: MAX_DPR,
+    };
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Viewport {
     pub width: u32,
@@ -24,15 +47,27 @@ impl Viewport {
         clippy::cast_precision_loss,
         reason = "canvas sizes are small positive pixel counts, clamped to at least 1"
     )]
+    #[cfg(test)]
     pub fn bounded(self) -> Self {
+        self.bounded_by(SurfaceCaps::STANDARD)
+    }
+
+    /// [`Self::bounded`] within `caps`.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "canvas sizes are small positive pixel counts, clamped to at least 1"
+    )]
+    pub fn bounded_by(self, caps: SurfaceCaps) -> Self {
         if self.width == 0 || self.height == 0 {
             return self;
         }
         let (width, height) = (f64::from(self.width), f64::from(self.height));
-        let scale = (f64::from(MAX_SURFACE_SIDE) / width.max(height))
-            .min((MAX_SURFACE_PIXELS as f64 / (width * height)).sqrt())
-            .min(if self.dpr > MAX_DPR {
-                MAX_DPR / self.dpr
+        let scale = (f64::from(caps.max_side) / width.max(height))
+            .min((caps.max_pixels as f64 / (width * height)).sqrt())
+            .min(if self.dpr > caps.max_dpr {
+                caps.max_dpr / self.dpr
             } else {
                 1.0
             });
@@ -61,6 +96,7 @@ impl Viewport {
 pub(crate) struct ViewportState {
     /// The canvas extent winit reports; pointer coordinates are relative to it.
     observed: (u32, u32),
+    caps: SurfaceCaps,
     requested: Viewport,
     applied: Viewport,
     presented: Option<Viewport>,
@@ -68,10 +104,16 @@ pub(crate) struct ViewportState {
 }
 impl ViewportState {
     /// `viewport` is the observed canvas extent; the state renders it bounded.
+    #[cfg(test)]
     pub fn new(viewport: Viewport) -> Self {
-        let bounded = viewport.bounded();
+        Self::with_caps(viewport, SurfaceCaps::STANDARD)
+    }
+
+    pub fn with_caps(viewport: Viewport, caps: SurfaceCaps) -> Self {
+        let bounded = viewport.bounded_by(caps);
         Self {
             observed: (viewport.width, viewport.height),
+            caps,
             requested: bounded,
             applied: bounded,
             presented: None,
@@ -80,7 +122,7 @@ impl ViewportState {
     }
     pub fn request(&mut self, observed: Viewport) -> bool {
         self.observed = (observed.width, observed.height);
-        let viewport = observed.bounded();
+        let viewport = observed.bounded_by(self.caps);
         if self.requested == viewport {
             return false;
         }
@@ -192,6 +234,12 @@ mod tests {
         assert_eq!(strip.width, MAX_SURFACE_SIDE);
 
         assert_eq!(INITIAL.bounded(), INITIAL);
+
+        let conservative = retina_6k.bounded_by(SurfaceCaps::CONSERVATIVE);
+        assert!(u64::from(conservative.width) * u64::from(conservative.height) <= 2560 * 1600);
+        assert!(conservative.width <= 2560);
+        let (lw, _) = conservative.logical_size();
+        assert!(lw.abs_diff(3008) <= 2, "{lw}");
     }
 
     #[test]

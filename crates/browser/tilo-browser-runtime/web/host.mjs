@@ -10,7 +10,7 @@ import {semanticBridge} from './semantics.mjs';
 import {recoverableClose} from './close-recovery.mjs';
 import {createDesktopNavigation} from './desktop-navigation.mjs';
 import {createLiveCursors} from './live-cursors.mjs';
-import {webgpuRefusal} from './webgpu-safety.mjs';
+import {isWebKit,webgpuRefusal} from './webgpu-safety.mjs';
 // Page host for the Tilo browser runtime. Ported from the Tilo browser runtime
 // (PR 541) without its desktop host and action palette.
 // `mountDesktop` mounts the session desktop (tilo-desktop-surface over the
@@ -65,7 +65,7 @@ export async function mountDesktop(target,options={}) {
   };
   const navigationFocus={errors(){},update(){},close(){}};
   const presentationWaiters=new Set();
-  const config={profile:'tilo-browser',device:'tilo-browser-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:options.peer?undefined:'Browser user',instance:1,mac:/Mac/.test(navigator.platform),...options};
+  const config={profile:'tilo-browser',device:'tilo-browser-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:options.peer?undefined:'Browser user',instance:1,mac:/Mac/.test(navigator.platform),conservativeGpu:isWebKit(navigator),...options};
   delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;
   let unsubscribeDesktopCommits;
   let liveOverlay,liveCursors,liveCarets;
