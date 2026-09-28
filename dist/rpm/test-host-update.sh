@@ -8,7 +8,7 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 helper=$repo_root/dist/rpm/host-update.sh
 work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+trap 'chmod -R u+w -- "$work" 2>/dev/null; rm -rf -- "$work"' EXIT
 arch=$(uname -m)
 version=$(<"$repo_root/dist/VERSION")
 
@@ -122,6 +122,16 @@ if FAKE_TILO_RUNNING=1 "$helper" --allow-dirty --no-build --apply-live >"$work/l
     fail "applied live under a running Tilo session"
 fi
 grep -q 'session is running' "$work/live.out" || fail "live refusal did not explain itself"
+
+# A written deployment's /etc is read-only; one that already carries the
+# packaged key, as it does once finalizing merged a live /etc, is left alone.
+status '"tilo-session-0.1.13-1.fc44.x86_64","tilo-session-apps-0.1.13-1.fc44.x86_64"'
+trees
+echo new-publisher >"$deployment/$trust"
+chmod a-w "$deployment/$trust" "$deployment/etc/tilo"
+"$helper" --allow-dirty --no-build >"$work/ro.out" 2>&1 \
+    || fail "rewrote a read-only deployment /etc that already matched: $(cat "$work/ro.out")"
+chmod u+w "$deployment/$trust" "$deployment/etc/tilo"
 
 # Left staged on request, or because finalizing failed: the install is not
 # durable, and the helper says so and fails rather than reporting success.
