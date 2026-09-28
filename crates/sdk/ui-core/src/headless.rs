@@ -2064,29 +2064,28 @@ impl FrameHarness {
     /// Rasterise the most recently laid-out frame to a PNG.
     ///
     /// `new`, input delivery, and `set_theme` all finish with `relayout`, so
-    /// this never runs a separate screenshot-only widget pipeline.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// this never runs a separate screenshot-only widget pipeline. A browser
+    /// page cannot read a frame back synchronously: there nothing is written.
     pub fn render_png(&self, out: &std::path::Path) {
         self.render_png_on(out, vello::peniko::Color::TRANSPARENT);
     }
 
     /// Capture the composited native-window appearance, including its theme
-    /// background. Use this for rendered contrast measurements.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// background. Use this for rendered contrast measurements. Nothing is
+    /// written in a browser page, as for [`FrameHarness::render_png`].
     pub fn render_window_png(&self, out: &std::path::Path) {
         self.render_png_on(out, self.theme.bg_app);
     }
 
     /// Rasterise the most recently laid-out frame over a transparent
     /// background, as tightly packed RGBA8 rows `viewport.0` pixels wide.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Empty in a browser page, which cannot read a frame back synchronously.
     pub fn render_rgba(&self) -> Vec<u8> {
         self.render_rgba_on(vello::peniko::Color::TRANSPARENT)
     }
 
     /// [`FrameHarness::render_rgba`] over the theme background, as the
     /// native window composites it.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn render_window_rgba(&self) -> Vec<u8> {
         self.render_rgba_on(self.theme.bg_app)
     }
@@ -2096,6 +2095,17 @@ impl FrameHarness {
         self.drain_component_wakes();
         let (w, h) = self.viewport;
         crate::offscreen::OffscreenRenderer::new(w, h).render_resilient(&self.scene, background)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn render_rgba_on(&self, _background: vello::peniko::Color) -> Vec<u8> {
+        tracing::warn!("a browser page has no offscreen renderer; the frame is empty");
+        Vec::new()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn render_png_on(&self, out: &std::path::Path, _background: vello::peniko::Color) {
+        tracing::warn!(path = %out.display(), "a browser page has no offscreen renderer; no PNG written");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
