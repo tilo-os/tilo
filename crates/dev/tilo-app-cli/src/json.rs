@@ -7,7 +7,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-use crate::portability::{FindingKind, PortabilityReport};
+use crate::portability::PortabilityReport;
 use crate::standalone::SdkSource;
 use crate::{
     AddOutcome, CreateOutcome, DoctorReport, DoctorStatus, LocaleSyncOutcome, PackageOutcome,
@@ -151,25 +151,18 @@ impl PortabilityReport {
     /// Every finding with its location, kind and remedy.
     #[must_use]
     pub fn to_json(&self) -> Value {
-        let findings = |findings: &[crate::portability::PortabilityFinding]| {
-            findings
-                .iter()
-                .map(|finding| {
-                    json!({
-                        "path": absolute(&finding.path),
-                        "line": finding.line,
-                        "kind": match finding.kind {
-                            FindingKind::OsStd => "os-std",
-                            FindingKind::NativeCrate => "native-crate",
-                            FindingKind::Ffi => "ffi",
-                            FindingKind::TargetCfg => "target-cfg",
-                            FindingKind::NativeDependency => "native-dependency",
-                            FindingKind::NativeSdkFeature => "native-sdk-feature",
-                            FindingKind::NativeOnlyStd => "native-only-std",
-                        },
-                        "what": finding.what,
-                        "help": finding.help,
-                    })
+        let findings = self
+            .findings
+            .iter()
+            .map(|finding| {
+                json!({
+                    "path": absolute(&finding.path),
+                    "line": finding.line,
+                    "kind": format!("{:?}", finding.kind),
+                    "rule": finding.kind.rule(),
+                    "severity": format!("{:?}", finding.severity),
+                    "what": finding.what,
+                    "help": finding.help,
                 })
                 .collect::<Vec<_>>()
         };
@@ -177,7 +170,9 @@ impl PortabilityReport {
             "app_dir": absolute(&self.app_dir),
             "lint": crate::portability::LINT,
             "passed": self.passed(),
-            "native": self.native,
+            "platforms": self.platforms.iter().map(|platform| platform.as_str()).collect::<Vec<_>>(),
+            "platform_reason": self.platform_reason,
+            "exempt": self.exempt,
             "files": self.files,
             "findings": findings(&self.findings),
             "web_capable": self.web_capable(),

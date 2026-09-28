@@ -33,6 +33,7 @@ pub mod portability;
 mod resource_kinds;
 pub mod size;
 pub mod standalone;
+pub mod targets;
 pub mod web;
 
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
@@ -4115,7 +4116,7 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
         &app_dir,
         "src/main.rs",
         "launch lifecycle",
-        &["framework::run::<", "LaunchSpec::new"],
+        &["ui::main!", "framework::run::<", "LaunchSpec::new"],
         &mut checks,
     );
     let draws_nothing = manifest
@@ -9387,7 +9388,7 @@ fn app_lib(spec: &AppSpec) -> String {
 
 fn app_main(spec: &AppSpec) -> String {
     format!(
-        "//! The app's entry point: the live window, and the standard `--shots`,\n//! `--headless-drive` and `--native-audit` modes, from one declaration.\n\n#[cfg(feature = \"thin\")]\nextern crate runtime_dylib;\n\nfn main() {{\n    ui::framework::run::<{crate_name}::App>();\n}}\n",
+        "//! The app's entry point on every target: the live window and the standard\n//! `--shots`, `--headless-drive` and `--native-audit` modes on Linux and macOS,\n//! registration with the page runtime on the web.\n\n#[cfg(feature = \"thin\")]\nextern crate runtime_dylib;\n\nui::main!({crate_name}::App);\n",
         crate_name = spec.crate_name,
     )
 }

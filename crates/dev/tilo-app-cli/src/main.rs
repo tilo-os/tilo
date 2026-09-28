@@ -20,7 +20,7 @@ mod publishing;
     long_about = "The short path from an app idea to a running Tilo window.\n\n\
                   Run `tilo-app new` for an interactive setup, or provide a name \
                   and flags for a reproducible, non-interactive scaffold. Then \
-                  use `add`, `locale`, `check`, `scenario`, `dev`, `test`, `run`, `shot`, `inspect`, `build`, and `package` from anywhere inside the app. Use `ui` to construct validated serialized screens."
+                  use `add`, `locale`, `check`, `scenario`, `dev`, `test`, `run`, `build`, `shot`, `inspect`, and `package` from anywhere inside the app; `--target linux|macos|web` picks the platform. Use `ui` to construct validated serialized screens."
 )]
 struct Cli {
     /// Write one JSON document describing the result to stdout. Progress and
@@ -54,8 +54,13 @@ enum Command {
     Check(CheckArgs),
     /// Prove the production root satisfies the live Tilo-native contract.
     Certify(CertifyArgs),
-    /// Run an app from any path inside it, after a structural preflight.
+    /// Run an app from any path inside it: natively after a structural
+    /// preflight, or with `--target` for Linux, macOS or the web.
+    #[command(after_long_help = TARGET_EXAMPLES)]
     Run(RunArgs),
+    /// Build the runnable artifact for a target: a binary, a dev `.app`, or a web bundle.
+    #[command(after_long_help = TARGET_EXAMPLES)]
+    Build(BuildArgs),
     /// Test an app from any path inside it, after a structural preflight.
     Test(AppTaskArgs),
     /// Run an app and rebuild/restart it after source or asset changes.
@@ -112,6 +117,21 @@ enum AddCommand {
         screen: Option<String>,
         #[command(flatten)]
         options: AddOptions,
+    },
+    /// Declare a host capability in tilo-app.toml (optional unless --required).
+    Capability {
+        /// Capability name, for example `network.http` or `files.save`.
+        #[arg(required_unless_present = "list")]
+        name: Option<String>,
+        /// The app cannot work without it; every platform must provide it.
+        #[arg(long)]
+        required: bool,
+        /// Print every capability and where it is available.
+        #[arg(long, conflicts_with_all = ["name", "required"])]
+        list: bool,
+        /// App directory or a file/directory inside it. Defaults to the current directory.
+        #[arg(long)]
+        app: Option<PathBuf>,
     },
     /// Add a workflow that checks, packages and publishes the app from CI.
     Ci {
@@ -379,21 +399,23 @@ struct SetupArgs {
 const CHECK_EXAMPLES: &str = "\
 Lints:
   portability  Apps call portable APIs; platform code lives in platform crates
-               (crates/system, crates/sdk). Flags std::os, native binding crates
-               (libc, nix, rustix, windows, zbus, xattr, ...), extern blocks,
-               cfg(target_os/unix/windows), native dependencies, and SDK backend
-               features in shipped code. tests/ and #[cfg(test)] are exempt.
-               An inherently platform-specific app declares it once in
-               tilo-app.toml:
+               (crates/platform). The rules are in
+               tools/policy/app_portability_rules.toml: target cfg (R1), std::os,
+               extern blocks and native binding crates (R2), platform paths and
+               environment (R3), OS tools (R4), platform and internal dependencies
+               (D1, D2), SDK backend features (F1), and the calls that fail on the
+               web: threads, std clocks, std fs/net (W1-W3, warnings for now).
+               tests/ and #[cfg(test)] are exempt. An inherently
+               platform-specific app narrows its platforms once in tilo-app.toml:
 
-                 [platform]
-                 native = \"Writes OS images to block devices.\"
+                 [package]
+                 platforms = [\"linux\", \"macos\"]
+                 platform-reason = \"Writes OS images to block devices.\"
 
 Examples:
   tilo-app check                     Everything, for the app in the current directory
   tilo-app check --lint apps/notes   Only the lints, without building
-  tilo-app check --lint --all        The lints for every Tilo app in the workspace (CI)
-  tilo-app check --platform all      Also Clippy for every other target, and the web build";
+  tilo-app check --lint --all        The lints for every Tilo app in the workspace (CI)";
 
 #[derive(clap::Args)]
 struct LintScope {
@@ -414,6 +436,15 @@ struct CheckArgs {
     #[command(flatten)]
     lints: LintScope,
 
+    /// Only check that the app builds for these targets: declared platforms,
+    /// required capabilities, then `cargo check` where this host can compile.
+    #[arg(long, value_enum, value_delimiter = ',', conflicts_with = "all")]
+    target: Vec<TargetArg>,
+
+    /// With --target: accept required capabilities whose backend is only planned.
+    #[arg(long, requires = "target")]
+    allow_planned: bool,
+
     /// Write each audited scenario's semantic, target, document, and audit JSON here.
     /// Relative paths are resolved from the app root.
     #[arg(long)]
@@ -430,15 +461,6 @@ struct CheckArgs {
     /// Apply rustfmt to the app package before running the remaining strict checks.
     #[arg(long)]
     fix: bool,
-
-    /// Also lint the app for another platform's target triple, or prove the
-    /// web build; repeat it or pass `all`. The host build is always checked.
-    #[arg(long = "platform", value_enum)]
-    platforms: Vec<CheckPlatformArg>,
-
-    /// CPU architecture for `--platform`. Defaults to the host's.
-    #[arg(long, value_enum)]
-    arch: Option<ArchArg>,
 
     /// Arguments forwarded to the Cargo test harness. Write them after `--`.
     #[arg(last = true, allow_hyphen_values = true)]
@@ -471,29 +493,84 @@ struct AppTaskArgs {
     forwarded: Vec<OsString>,
 }
 
-/// The platform and architecture a command builds for.
-#[derive(clap::Args)]
-struct TargetArgs {
-    /// The system to build for: Tilo OS, another Linux desktop, Windows,
-    /// macOS, the web, or Android.
-    #[arg(long, value_enum, default_value_t = PlatformArg::Tilo)]
-    platform: PlatformArg,
+const TARGET_EXAMPLES: &str = "\
+Targets:
+  linux   a native binary; `package` makes a signed .tapp
+  macos   an ad-hoc-signed .app; `package` signs (TILO_MAC_SIGNING_IDENTITY),
+          notarizes (TILO_NOTARY_KEYCHAIN_PROFILE) and zips it, with the
+          signing descriptor `tilo-app-package entry --platform macos` reads
+  web     a bundle for the browser runtime; `run` serves it on 127.0.0.1:7878
+          and reloads the page after each rebuild; `package` writes the
+          immutable versions/<digest>/ layout Cloud serves and its registry
+          zip (`tilo-app-package entry --platform web`)
 
-    /// CPU architecture to build for. Defaults to the host's; `wasm32` is the
-    /// web's only one. On Android, the device's for `run` and `dev`, else
-    /// `aarch64`.
-    #[arg(long, value_enum)]
-    arch: Option<ArchArg>,
+A target must be in the manifest's `package.platforms`, and every `required`
+capability must be available there (`tilo-app add capability --list`).
+
+Examples:
+  tilo-app run --target web            Serve, rebuild on change, reload the page
+  tilo-app build --target macos        target/tilo-app/macos/<app>/<Name>.app
+  tilo-app package --target web        dist/web/<app-id>/versions/<digest>/";
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum TargetArg {
+    Linux,
+    Macos,
+    Web,
 }
 
-impl TargetArgs {
-    fn resolve(
-        &self,
-    ) -> Result<(
-        tilo_app_cli::PackagePlatform,
-        Option<tilo_app_cli::PackageArch>,
-    )> {
-        platform_and_arch(self.platform, self.arch)
+impl From<TargetArg> for tilo_app_cli::targets::Target {
+    fn from(value: TargetArg) -> Self {
+        match value {
+            TargetArg::Linux => Self::Linux,
+            TargetArg::Macos => Self::Macos,
+            TargetArg::Web => Self::Web,
+        }
+    }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum BundleArg {
+    /// The desktop bundle for Tilo's own web apps, otherwise the app alone.
+    Auto,
+    /// The page runtime with only this app.
+    App,
+    /// Every web-capable Tilo app (inside a Tilo checkout).
+    Desktop,
+}
+
+#[derive(clap::Args)]
+struct TargetOptions {
+    /// Optimized build.
+    #[arg(long)]
+    release: bool,
+    /// Web only: which bundle to build.
+    #[arg(long, value_enum, default_value = "auto")]
+    bundle: BundleArg,
+    /// Build even when a required capability's backend is only planned.
+    #[arg(long)]
+    allow_planned: bool,
+    /// Comma-separated Cargo features enabled for the app.
+    #[arg(long, value_delimiter = ',')]
+    features: Vec<String>,
+    /// Disable the app's default Cargo features.
+    #[arg(long)]
+    no_default_features: bool,
+}
+
+impl TargetOptions {
+    fn request(&self, target: TargetArg) -> tilo_app_cli::targets::TargetRequest {
+        let mut request = tilo_app_cli::targets::TargetRequest::new(target.into());
+        request.release = self.release;
+        request.allow_planned = self.allow_planned;
+        request.bundle = match self.bundle {
+            BundleArg::Auto => tilo_app_cli::targets::WebBundle::Auto,
+            BundleArg::App => tilo_app_cli::targets::WebBundle::App,
+            BundleArg::Desktop => tilo_app_cli::targets::WebBundle::Desktop,
+        };
+        request.features.clone_from(&self.features);
+        request.no_default_features = self.no_default_features;
+        request
     }
 }
 
@@ -502,14 +579,20 @@ struct RunArgs {
     /// App directory or a file/directory inside it. Defaults to the current directory.
     path: Option<PathBuf>,
 
-    /// A native platform runs only on the system and architecture it is
-    /// built for; `web` builds once and serves the page.
-    #[command(flatten)]
-    target: TargetArgs,
+    /// Build for a target first; without it, `cargo run` for this host.
+    #[arg(long, value_enum)]
+    target: Option<TargetArg>,
 
-    /// Address the web page is served on (`--platform web`).
-    #[arg(long, default_value = "127.0.0.1:4321")]
-    bind: String,
+    #[command(flatten)]
+    options: TargetOptions,
+
+    /// Web only: loopback port to serve on.
+    #[arg(long, default_value = "7878")]
+    port: u16,
+
+    /// Web only: serve once, without rebuilding on change.
+    #[arg(long)]
+    no_watch: bool,
 
     /// The `adb` serial of the device or emulator to install on
     /// (`--platform android`). Defaults to `$ANDROID_SERIAL`, else the one
@@ -520,6 +603,19 @@ struct RunArgs {
     /// Arguments forwarded to the app. Write them after `--`.
     #[arg(last = true, allow_hyphen_values = true)]
     forwarded: Vec<OsString>,
+}
+
+#[derive(clap::Args)]
+struct BuildArgs {
+    /// App directory or a file/directory inside it. Defaults to the current directory.
+    path: Option<PathBuf>,
+
+    /// Target to build for.
+    #[arg(long, value_enum)]
+    target: TargetArg,
+
+    #[command(flatten)]
+    options: TargetOptions,
 }
 
 #[derive(clap::Args)]
@@ -541,10 +637,9 @@ struct DevArgs {
     timings: bool,
 
     /// `web` serves the app's web build and reloads the page into the same
-    /// document after each rebuild; a native platform runs on this machine
-    /// only when it is that system and architecture.
-    #[command(flatten)]
-    target: TargetArgs,
+    /// document after each rebuild, instead of running it natively.
+    #[arg(long, value_enum, default_value_t = DevPlatformArg::Tilo)]
+    platform: DevPlatformArg,
 
     /// Address the web page is served on (`--platform web`).
     #[arg(long, default_value = "127.0.0.1:4321")]
@@ -618,39 +713,10 @@ struct InspectArgs {
 }
 
 #[derive(clap::Args)]
-struct BuildArgs {
-    /// App directory or a file/directory inside it. Defaults to the current directory.
-    path: Option<PathBuf>,
-
-    /// `tilo` builds thin against the toolkit the OS ships; `linux`,
-    /// `windows` and `macos` one self-contained executable; `web` a page
-    /// with the toolkit core and the app, ready to serve.
-    #[command(flatten)]
-    target: TargetArgs,
-
-    /// For the web, the page directory [default: target/web]; for a native
-    /// platform, a directory to copy the executables into. Relative to the
-    /// app root unless absolute.
-    #[arg(short, long)]
-    output: Option<PathBuf>,
-
-    /// Relink only the app against the toolkit core already built
-    /// (`--platform web`).
-    #[arg(long)]
-    app_only: bool,
-
-    /// Cargo profile for a native build. Defaults to `thin-app`, or `release`
-    /// with `--static` and for the other desktops.
-    #[arg(long)]
-    profile: Option<String>,
-
-    /// Link the toolkit and `libstd` into a Tilo OS build instead of against
-    /// the copies the OS ships.
-    #[arg(long = "static")]
-    static_link: bool,
-}
-
-#[derive(clap::Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent command-line switches, not a state machine"
+)]
 struct PackageArgs {
     /// App directory or a file/directory inside it. Defaults to the current directory.
     path: Option<PathBuf>,
@@ -675,9 +741,8 @@ struct PackageArgs {
     static_link: bool,
 
     /// The system to build for: a thin Tilo OS app, one self-contained
-    /// Linux, Windows or macOS executable with the toolkit linked in, a
-    /// WebAssembly side module of the browser's toolkit core, or a signed
-    /// Android APK (and bundle).
+    /// Windows or macOS executable with the toolkit linked in, or a
+    /// WebAssembly side module of the browser's toolkit core.
     #[arg(long, value_enum, default_value_t = PlatformArg::Tilo)]
     platform: PlatformArg,
 
@@ -685,10 +750,15 @@ struct PackageArgs {
     #[arg(long, value_enum)]
     arch: Option<ArchArg>,
 
-    /// Rust target triple passed to Cargo; overrides the one --platform and
-    /// --arch pick (for example `x86_64-pc-windows-gnu`).
+    /// `linux`, `macos` or `web` packages the app for that SDK target; any
+    /// other value is a Rust target triple passed to Cargo, overriding the
+    /// one --platform and --arch pick (for example `x86_64-pc-windows-gnu`).
     #[arg(long)]
     target: Option<String>,
+
+    /// Package even when a required capability's backend is only planned.
+    #[arg(long)]
+    allow_planned: bool,
 
     /// Comma-separated Cargo features enabled for the package build.
     #[arg(long, value_delimiter = ',')]
@@ -887,6 +957,7 @@ fn main() -> ExitCode {
         Command::Check(args) => run_check(args),
         Command::Certify(args) => run_certify(args),
         Command::Run(args) => run_run(args),
+        Command::Build(args) => run_build(args),
         Command::Test(args) => run_app_task(args, tilo_app_cli::AppTask::Test),
         Command::Dev(args) => run_dev(args),
         Command::Shot(args) => run_shot(args),
@@ -990,6 +1061,7 @@ impl Command {
             Self::Check(_) => "check",
             Self::Certify(_) => "certify",
             Self::Run(_) => "run",
+            Self::Build(_) => "build",
             Self::Test(_) => "test",
             Self::Dev(_) => "dev",
             Self::Shot(_) => "shot",
@@ -1105,6 +1177,10 @@ fn run_locale(args: LocaleArgs) -> Result<Value> {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one dispatch over every artifact the command adds"
+)]
 fn run_add(args: AddArgs, interactive: bool) -> Result<Value> {
     let Some(command) = args.command else {
         anyhow::ensure!(
@@ -1117,6 +1193,12 @@ fn run_add(args: AddArgs, interactive: bool) -> Result<Value> {
         return Ok(outcome.to_json());
     };
     let (artifact, options) = match command {
+        AddCommand::Capability {
+            name,
+            required,
+            list,
+            app,
+        } => return run_add_capability(name, required, list, app),
         AddCommand::Ci {
             forge,
             runs_on,
@@ -1393,23 +1475,21 @@ fn read_ui_node(source: NodeSourceArgs) -> Result<tilo_ui_graph::UiNode> {
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum PlatformArg {
     Tilo,
-    Linux,
     Windows,
     Macos,
     Web,
     Android,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-enum CheckPlatformArg {
-    Tilo,
-    Linux,
-    Windows,
-    Macos,
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum BuildPlatformArg {
     Web,
-    Android,
-    /// Every platform above.
-    All,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum DevPlatformArg {
+    Tilo,
+    Web,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -1428,154 +1508,141 @@ enum ArchArg {
     Wasm32,
 }
 
-/// The platform and, for a native one, the architecture `--platform` and
-/// `--arch` name; `None` is the host's.
-fn platform_and_arch(
-    platform: PlatformArg,
-    arch: Option<ArchArg>,
-) -> Result<(
-    tilo_app_cli::PackagePlatform,
-    Option<tilo_app_cli::PackageArch>,
-)> {
-    let web = matches!(platform, PlatformArg::Web);
-    match arch {
-        Some(ArchArg::Wasm32) if !web => anyhow::bail!("--arch wasm32 is for --platform web"),
-        Some(ArchArg::X86_64 | ArchArg::Aarch64) if web => {
-            anyhow::bail!("--platform web builds for wasm32")
-        }
-        _ => {}
-    }
-    Ok((
-        match platform {
-            PlatformArg::Tilo => tilo_app_cli::PackagePlatform::Tilo,
-            PlatformArg::Linux => tilo_app_cli::PackagePlatform::Linux,
-            PlatformArg::Windows => tilo_app_cli::PackagePlatform::Windows,
-            PlatformArg::Macos => tilo_app_cli::PackagePlatform::Macos,
-            PlatformArg::Web => tilo_app_cli::PackagePlatform::Web,
-            PlatformArg::Android => tilo_app_cli::PackagePlatform::Android,
-        },
-        arch.and_then(|arch| match arch {
-            ArchArg::X86_64 => Some(tilo_app_cli::PackageArch::X86_64),
-            ArchArg::Aarch64 => Some(tilo_app_cli::PackageArch::Aarch64),
-            ArchArg::Wasm32 => None,
-        }),
-    ))
-}
-
 fn run_package(args: PackageArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    let (platform, arch) = platform_and_arch(args.platform, args.arch)?;
-    if platform != tilo_app_cli::PackagePlatform::Android
-        && (args.android.keystore.is_some() || args.android.no_bundle)
-    {
-        anyhow::bail!("--keystore and --no-bundle are for --platform android");
-    }
-    let request = tilo_app_cli::PackageRequest {
-        output: args.output,
-        identity: args.identity,
-        profile: args.profile,
-        static_link: args.static_link,
-        target: args.target,
-        platform,
-        arch,
-        features: args.features,
-        no_default_features: args.no_default_features,
-        force: args.force,
+    let platform = match args.target.as_deref() {
+        Some("linux") => Some(TargetArg::Linux),
+        Some("macos") => Some(TargetArg::Macos),
+        Some("web") => Some(TargetArg::Web),
+        _ => None,
     };
-    if platform == tilo_app_cli::PackagePlatform::Android {
-        let outcomes = tilo_app_cli::android::package(
+    if let Some(platform) = platform {
+        let mut build = tilo_app_cli::targets::TargetRequest::new(platform.into());
+        build.allow_planned = args.allow_planned;
+        build.features = args.features;
+        build.no_default_features = args.no_default_features;
+        let output = tilo_app_cli::targets::package(
             &path,
-            &request,
-            &tilo_app_cli::android::PackageOptions {
-                keystore: args.android.keystore,
-                bundle: args.android.no_bundle.then_some(false),
+            &tilo_app_cli::targets::TargetPackageRequest {
+                build,
+                output: args.output,
+                identity: args.identity,
+                force: args.force,
             },
         )?;
-        let mut packages: Vec<Value> = outcomes
-            .iter()
-            .map(tilo_app_cli::PackageOutcome::to_json)
-            .collect();
-        return Ok(if packages.len() == 1 {
-            packages.remove(0)
-        } else {
-            json!({ "packages": packages })
-        });
+        println!("{}", output.display());
+        return Ok(json!({"artifact": output}));
     }
-    Ok(tilo_app_cli::package_app(&path, &request)?.to_json())
+    let outcome = tilo_app_cli::package_app(
+        &path,
+        &tilo_app_cli::PackageRequest {
+            output: args.output,
+            identity: args.identity,
+            profile: args.profile,
+            static_link: args.static_link,
+            target: args.target,
+            platform: match args.platform {
+                PlatformArg::Tilo => tilo_app_cli::PackagePlatform::Tilo,
+                PlatformArg::Windows => tilo_app_cli::PackagePlatform::Windows,
+                PlatformArg::Macos => tilo_app_cli::PackagePlatform::Macos,
+                PlatformArg::Web => tilo_app_cli::PackagePlatform::Web,
+            },
+            arch: args.arch.and_then(|arch| match arch {
+                ArchArg::X86_64 => Some(tilo_app_cli::PackageArch::X86_64),
+                ArchArg::Aarch64 => Some(tilo_app_cli::PackageArch::Aarch64),
+                ArchArg::Wasm32 => None,
+            }),
+            features: args.features,
+            no_default_features: args.no_default_features,
+            force: args.force,
+        },
+    )?;
+    Ok(outcome.to_json())
+}
+
+fn run_run(args: RunArgs) -> Result<Value> {
+    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+    let Some(target) = args.target else {
+        let plan = tilo_app_cli::plan_app_task(&path, tilo_app_cli::AppTask::Run, &args.forwarded)?;
+        plan.execute()?;
+        return Ok(json!({"app_dir": plan.app_dir}));
+    };
+    let serve = tilo_app_cli::targets::ServeOptions {
+        address: std::net::SocketAddr::from(([127, 0, 0, 1], args.port)),
+        watch: !args.no_watch,
+        ..tilo_app_cli::targets::ServeOptions::default()
+    };
+    tilo_app_cli::targets::run(
+        &path,
+        &args.options.request(target),
+        &args.forwarded,
+        &serve,
+    )?;
+    Ok(json!({"app_dir": path}))
+}
+
+fn run_build(args: BuildArgs) -> Result<Value> {
+    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+    let outcome = tilo_app_cli::targets::build(&path, &args.options.request(args.target))?;
+    println!("{}", outcome.artifact.display());
+    Ok(json!({"artifact": outcome.artifact}))
+}
+
+fn run_add_capability(
+    name: Option<String>,
+    required: bool,
+    list: bool,
+    app: Option<PathBuf>,
+) -> Result<Value> {
+    if list {
+        print!("{}", tilo_app_cli::targets::capability_table());
+        return Ok(json!({"listed": true}));
+    }
+    let name = name.context("name a capability, or pass --list")?;
+    let start = app.map_or_else(std::env::current_dir, Ok)?;
+    let added = tilo_app_cli::targets::add_capability(&start, &name, required)?;
+    println!(
+        "Declared `{}` as {} in {}",
+        added.capability,
+        if added.required {
+            "required"
+        } else {
+            "optional"
+        },
+        added.manifest.display()
+    );
+    for (target, reason) in &added.unavailable {
+        println!("  note: not available on {target} ({reason}); the app must degrade there");
+    }
+    Ok(json!({
+        "capability": added.capability.to_string(),
+        "required": added.required,
+        "manifest": added.manifest,
+    }))
 }
 
 fn run_dev(args: DevArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    let (platform, arch) = args.target.resolve()?;
     let request = tilo_app_cli::DevRequest {
         forwarded: args.forwarded,
         watch_ui: !args.app_only,
         debounce: Duration::from_millis(args.debounce_ms.get()),
         timings: args.timings,
     };
-    if platform == tilo_app_cli::PackagePlatform::Web {
-        tilo_app_cli::web::dev_web(
+    match args.platform {
+        DevPlatformArg::Tilo => tilo_app_cli::dev_app(&path, &request)?,
+        DevPlatformArg::Web => tilo_app_cli::web::dev_web(
             &path,
             &request,
             &tilo_app_cli::web::WebDevOptions { bind: args.bind },
-        )?;
-    } else if platform == tilo_app_cli::PackagePlatform::Android {
-        tilo_app_cli::android::dev_on_device(
-            &path,
-            &request,
-            &tilo_app_cli::android::DeviceRequest {
-                device: args.device,
-                arch,
-            },
-        )?;
-    } else {
-        platform.ensure_runs_here(arch)?;
-        let reloads = tilo_app_cli::dev_app(&path, &request)?;
-        if request.timings {
-            return Ok(json!({"stopped": true, "reloads": reloads}));
-        }
+        )?,
     }
     Ok(json!({"stopped": true}))
 }
 
-fn run_run(args: RunArgs) -> Result<Value> {
-    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    let (platform, arch) = args.target.resolve()?;
-    if platform == tilo_app_cli::PackagePlatform::Web {
-        tilo_app_cli::web::run_web(&path, &tilo_app_cli::web::WebDevOptions { bind: args.bind })?;
-        return Ok(json!({"stopped": true}));
-    }
-    if platform == tilo_app_cli::PackagePlatform::Android {
-        if !args.forwarded.is_empty() {
-            anyhow::bail!("an Android app takes no command-line arguments");
-        }
-        let build = tilo_app_cli::android::run_on_device(
-            &path,
-            &tilo_app_cli::android::DeviceRequest {
-                device: args.device,
-                arch,
-            },
-        )?;
-        return Ok(build.to_json());
-    }
-    platform.ensure_runs_here(arch)?;
-    let plan = tilo_app_cli::plan_app_task(&path, tilo_app_cli::AppTask::Run, &args.forwarded)?;
-    plan.execute()?;
-    Ok(json!({"app_dir": plan.app_dir, "platform": platform.cli_name()}))
-}
-
 fn run_build(args: BuildArgs) -> Result<Value> {
-    let path = args.path.clone().map_or_else(std::env::current_dir, Ok)?;
-    let (platform, arch) = args.target.resolve()?;
-    if platform == tilo_app_cli::PackagePlatform::Android {
-        return build_android(&path, &args, arch);
-    }
-    if platform != tilo_app_cli::PackagePlatform::Web {
-        return build_native(&path, &args, platform, arch);
-    }
-    if args.profile.is_some() || args.static_link {
-        anyhow::bail!("--profile and --static are for a native build");
-    }
+    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+    let BuildPlatformArg::Web = args.platform;
     let build = tilo_app_cli::web::build_web(
         &path,
         &tilo_app_cli::web::WebBuildRequest {
@@ -1592,125 +1659,6 @@ fn run_build(args: BuildArgs) -> Result<Value> {
         build.core_bytes
     );
     Ok(build.to_json())
-}
-
-/// A debug-signed APK under `target/android/`, copied to `--output`.
-fn build_android(
-    path: &Path,
-    args: &BuildArgs,
-    arch: Option<tilo_app_cli::PackageArch>,
-) -> Result<Value> {
-    if args.app_only || args.static_link {
-        anyhow::bail!("--app-only and --static are not for --platform android");
-    }
-    let build = tilo_app_cli::android::build(
-        path,
-        &tilo_app_cli::android::BuildRequest {
-            arch: arch.unwrap_or(tilo_app_cli::PackageArch::Aarch64),
-            profile: args.profile.clone().unwrap_or_else(|| "dev".to_owned()),
-            signing: tilo_app_cli::android::Signing::Debug,
-            bundle: false,
-            features: Vec::new(),
-            no_default_features: false,
-        },
-    )?;
-    let mut json = build.to_json();
-    if let Some(output) = &args.output {
-        let output = if output.is_absolute() {
-            output.clone()
-        } else {
-            build.app_dir.join(output)
-        };
-        std::fs::create_dir_all(&output)
-            .with_context(|| format!("creating {}", output.display()))?;
-        let name = build
-            .apk
-            .file_name()
-            .ok_or_else(|| anyhow::anyhow!("{} has no file name", build.apk.display()))?;
-        let destination = output.join(name);
-        std::fs::copy(&build.apk, &destination).with_context(|| {
-            format!(
-                "copying {} to {}",
-                build.apk.display(),
-                destination.display()
-            )
-        })?;
-        if let Some(fields) = json.as_object_mut() {
-            fields.insert("copied".to_owned(), json!([destination]));
-        }
-    }
-    eprintln!(
-        "[tilo-app] built {} for android ({}) in {:.1} s: {}",
-        build.metadata.application_id,
-        build.arch.android_abi(),
-        build.elapsed.as_secs_f64(),
-        build.apk.display()
-    );
-    Ok(json)
-}
-
-fn build_native(
-    path: &Path,
-    args: &BuildArgs,
-    platform: tilo_app_cli::PackagePlatform,
-    arch: Option<tilo_app_cli::PackageArch>,
-) -> Result<Value> {
-    if args.app_only {
-        anyhow::bail!("--app-only is for --platform web");
-    }
-    let build = tilo_app_cli::build_native(
-        path,
-        &tilo_app_cli::PackageRequest {
-            output: None,
-            identity: None,
-            profile: args.profile.clone(),
-            static_link: args.static_link,
-            target: None,
-            platform,
-            arch,
-            features: Vec::new(),
-            no_default_features: false,
-            force: false,
-        },
-    )?;
-    let mut json = build.to_json();
-    if let Some(output) = &args.output {
-        let output = if output.is_absolute() {
-            output.clone()
-        } else {
-            build.app_dir.join(output)
-        };
-        std::fs::create_dir_all(&output)
-            .with_context(|| format!("creating {}", output.display()))?;
-        let mut copied = Vec::new();
-        for (_, executable) in &build.executables {
-            let name = executable
-                .file_name()
-                .ok_or_else(|| anyhow::anyhow!("{} has no file name", executable.display()))?;
-            let destination = output.join(name);
-            std::fs::copy(executable, &destination).with_context(|| {
-                format!(
-                    "copying {} to {}",
-                    executable.display(),
-                    destination.display()
-                )
-            })?;
-            copied.push(destination);
-        }
-        if let Some(fields) = json.as_object_mut() {
-            fields.insert("copied".to_owned(), json!(copied));
-        }
-    }
-    for (bin, executable) in &build.executables {
-        eprintln!(
-            "[tilo-app] built {bin} for {} ({}) in {:.1} s: {}",
-            platform.cli_name(),
-            build.triple.as_deref().unwrap_or("host"),
-            build.elapsed.as_secs_f64(),
-            executable.display()
-        );
-    }
-    Ok(json)
 }
 
 fn run_shot(args: ShotArgs) -> Result<Value> {
@@ -1819,6 +1767,13 @@ fn run_check(args: CheckArgs) -> Result<Value> {
     if args.lints.all {
         return lint_workspace(&path);
     }
+    if !args.target.is_empty() {
+        let targets: Vec<_> = args.target.iter().map(|target| (*target).into()).collect();
+        tilo_app_cli::targets::check_targets(&path, &targets, args.allow_planned)?;
+        return Ok(
+            json!({"targets": args.target.iter().map(|target| format!("{target:?}")).collect::<Vec<_>>()}),
+        );
+    }
     let mut stages = Vec::new();
     println!("[check] lint: {}", tilo_app_cli::portability::LINT);
     let lint = tilo_app_cli::lint_portability(&path)?;
@@ -1880,8 +1835,6 @@ fn run_check(args: CheckArgs) -> Result<Value> {
         stages.push(json!({"stage": stage, "passed": true}));
     }
 
-    check_other_platforms(&path, &args.platforms, args.arch, &mut stages)?;
-
     if !args.no_scenarios {
         println!("[check] isolated accessibility-audited scenarios");
         let plan = tilo_app_cli::plan_scenario_suite(&tilo_app_cli::ScenarioRunRequest {
@@ -1906,69 +1859,6 @@ fn run_check(args: CheckArgs) -> Result<Value> {
     }
     println!("All app checks passed");
     Ok(json!({"stages": stages}))
-}
-
-/// The `check --platform` stages, appended to `stages`: Clippy for each other
-/// native target, and a web build for `web`.
-fn check_other_platforms(
-    path: &Path,
-    requested: &[CheckPlatformArg],
-    arch: Option<ArchArg>,
-    stages: &mut Vec<Value>,
-) -> Result<()> {
-    for platform in check_platforms(requested) {
-        let (label, result) = if platform == tilo_app_cli::PackagePlatform::Web {
-            println!("[check] web build");
-            (
-                "web build".to_owned(),
-                tilo_app_cli::web::build_web(path, &tilo_app_cli::web::WebBuildRequest::default())
-                    .map(|_| ()),
-            )
-        } else if platform == tilo_app_cli::PackagePlatform::Android {
-            let (_, arch) = platform_and_arch(PlatformArg::Android, arch)?;
-            let arch = arch.unwrap_or(tilo_app_cli::PackageArch::Aarch64);
-            let label = format!("Clippy for android ({})", arch.android_abi());
-            println!("[check] {label}");
-            (label, tilo_app_cli::android::clippy(path, arch))
-        } else {
-            let (_, arch) = platform_and_arch(PlatformArg::Tilo, arch)?;
-            let Some(plan) = tilo_app_cli::plan_platform_clippy(path, platform, arch)? else {
-                continue;
-            };
-            let label = format!("Clippy for {}", platform.cli_name());
-            println!("[check] {label}");
-            (label, plan.execute())
-        };
-        let stage = format!("platform:{}", platform.cli_name());
-        if let Err(error) = result {
-            stages.push(json!({"stage": stage, "passed": false}));
-            return Err(error.context(failed(format!("{label} failed"), json!({"stages": stages}))));
-        }
-        stages.push(json!({"stage": stage, "passed": true}));
-    }
-    Ok(())
-}
-
-/// The platforms `check --platform` names, each once, in `ALL` order.
-fn check_platforms(requested: &[CheckPlatformArg]) -> Vec<tilo_app_cli::PackagePlatform> {
-    use tilo_app_cli::PackagePlatform;
-    PackagePlatform::ALL
-        .into_iter()
-        .filter(|platform| {
-            requested.iter().any(|arg| {
-                *arg == CheckPlatformArg::All
-                    || matches!(
-                        (arg, platform),
-                        (CheckPlatformArg::Tilo, PackagePlatform::Tilo)
-                            | (CheckPlatformArg::Linux, PackagePlatform::Linux)
-                            | (CheckPlatformArg::Windows, PackagePlatform::Windows)
-                            | (CheckPlatformArg::Macos, PackagePlatform::Macos)
-                            | (CheckPlatformArg::Web, PackagePlatform::Web)
-                            | (CheckPlatformArg::Android, PackagePlatform::Android)
-                    )
-            })
-        })
-        .collect()
 }
 
 /// A `check` stage: its JSON name, its progress label, and the work.
@@ -3120,61 +3010,6 @@ mod tests {
                 [OsString::from("--document"), OsString::from("sample.qdoc")]
             );
             assert!(Cli::try_parse_from(["tilo-app", "dev", "--debounce-ms", "0"]).is_err());
-        }
-
-        // Phase: every_build_command_takes_platform_and_arch.
-        {
-            let build = Cli::try_parse_from(["tilo-app", "build"]).expect("build CLI");
-            let Command::Build(build) = build.command else {
-                panic!("expected build command");
-            };
-            assert!(matches!(build.target.platform, PlatformArg::Tilo));
-            assert!(build.target.arch.is_none());
-            for command in ["run", "dev", "build"] {
-                let cli = Cli::try_parse_from([
-                    "tilo-app",
-                    command,
-                    "--platform",
-                    "linux",
-                    "--arch",
-                    "aarch64",
-                ])
-                .unwrap_or_else(|error| panic!("{command}: {error}"));
-                let target = match cli.command {
-                    Command::Run(args) => args.target,
-                    Command::Dev(args) => args.target,
-                    Command::Build(args) => args.target,
-                    _ => panic!("expected {command}"),
-                };
-                assert!(matches!(target.platform, PlatformArg::Linux));
-                assert!(matches!(target.arch, Some(ArchArg::Aarch64)));
-            }
-            let check = Cli::try_parse_from([
-                "tilo-app",
-                "check",
-                "--platform",
-                "windows",
-                "--platform",
-                "web",
-                "--arch",
-                "x86_64",
-            ])
-            .expect("check CLI");
-            let Command::Check(check) = check.command else {
-                panic!("expected check command");
-            };
-            assert_eq!(
-                check_platforms(&check.platforms),
-                [
-                    tilo_app_cli::PackagePlatform::Windows,
-                    tilo_app_cli::PackagePlatform::Web
-                ]
-            );
-            assert_eq!(
-                check_platforms(&[CheckPlatformArg::Web, CheckPlatformArg::All]),
-                tilo_app_cli::PackagePlatform::ALL
-            );
-            assert!(check_platforms(&[]).is_empty());
         }
 
         // Phase: package_exposes_reproducible_build_and_signing_options.

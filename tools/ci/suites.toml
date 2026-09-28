@@ -503,10 +503,18 @@ package = "tilo-app-cli"
 # `--from-example` embeds the example apps, and a test checks them and their index.
 inputs = [
   "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "crates/dev/ui-builder/Cargo.toml",
-  "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml",
-  "examples/apps/", "examples/README.md", "docs/examples.md",
+  ".cargo/config.toml",
+  # The portability lint compiles in the policy gate's rules table.
+  "tools/policy/app_portability_rules.toml",
+  # Standalone apps take the SDK's toolchain and lock file.
+  "rust-toolchain.toml", "Cargo.lock",
+  # The outside-repository test builds a generated app against the checkout.
+  "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
 ]
-readers = ["crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/standalone.rs"]
+readers = [
+  "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
+  "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
+]
 
 [[cargo]]
 package = "tilo-app-template-smoke"
