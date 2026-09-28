@@ -2393,16 +2393,13 @@ fn a_components_workspace_request_is_published_and_forwarded_by_the_host() {
         "the component surface carrying a workspace request is published"
     );
     WORKSPACE_REQUEST.set(true);
-    let started = fixture.app.invoke_bound_target_with_broker_scoped(
-        &fixture.target(0, "message"),
-        None,
-        "fixture-user",
-        true,
-        true,
-        None,
-        Some(tilo_actions::InvocationId::new()),
-        None,
-        None,
+    let target = fixture.target(0, "message");
+    let started = fixture.app.invoke_bound_target_with_broker(
+        &target,
+        &ResourceInvocation::new(&target.address.address, "fixture-user")
+            .confirmed(true)
+            .broker_admitted(true)
+            .invocation(Some(tilo_actions::InvocationId::new())),
         None,
     );
     WORKSPACE_REQUEST.set(false);
