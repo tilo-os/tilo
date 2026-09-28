@@ -673,10 +673,8 @@ impl LaunchSpec {
         self
     }
 
-    /// Override how the live app opens its persisted state. This is primarily
-    /// for apps importing an older on-disk document through
-    /// [`crate::persist::open_migrating`]; the runner still owns autosave and
-    /// the live event loop.
+    /// Override how the live app opens its persisted state; the runner still
+    /// owns autosave and the live event loop.
     #[must_use]
     pub fn open_state(mut self, open: OpenState) -> Self {
         self.history_app_global_storage = false;
@@ -4560,8 +4558,16 @@ mod tests {
         for head in heads {
             assert!(installed.get_change_by_hash(&head).is_some());
         }
-        let local_cache = app_state::DocStore::legacy_record_document_path(
+        let package_document =
+            app_state::DocStore::legacy_package_document_path("so.tilo.launch-fixture").unwrap();
+        let data_home = package_document
+            .parent()
+            .and_then(std::path::Path::parent)
+            .unwrap();
+        let local_cache = app_state::DocStore::room_record_dir_at(
+            data_home,
             "so.tilo.launch-fixture",
+            &room.to_string(),
             &want.id.storage_key(),
         )
         .unwrap();
