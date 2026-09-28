@@ -2385,21 +2385,20 @@ impl WordProcessor {
         del: isize,
         ins: &str,
     ) {
-        let Some(containers) = self.containers.clone() else {
+        let Ok(del) = usize::try_from(del) else {
             return;
         };
-        let region = self.region;
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            match region {
-                Region::Body => dm.splice_text(block, idx, del, ins),
-                r => dm.splice_text_in(r, block, idx, del, ins),
-            }
+        if self.containers.is_none() || self.ids.is_none() {
+            return;
         }
+        let action = crate::actions::RichTextAction::SpliceText {
+            region: self.action_region(),
+            block: block.to_string(),
+            at: idx,
+            del,
+            ins: ins.to_string(),
+        };
+        let _ = action.apply_under(state, &automerge::ROOT);
     }
 
     fn region_insert_block(
