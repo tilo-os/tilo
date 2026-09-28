@@ -1196,7 +1196,7 @@ impl MonitorApp {
     /// Queue the exact resource address every visible process control uses.
     /// The host re-resolves it against a fresh catalogue and enforces the
     /// published permission, confirmation, and retry contract before calling
-    /// [`Self::invoke_resource_operation`].
+    /// [`Self::answer_resource_operation`].
     fn request_process_control(&mut self, pid: u32, action: &'static str) {
         if let Some(process) = self
             .model

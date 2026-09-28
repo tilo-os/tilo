@@ -1480,9 +1480,7 @@ type in `Widget::local_resource_operation_handlers`. Read the request through
 caller's custody; a handler that honours that custody reads it through
 `op.with_custody()` instead and routes every effect and document write through
 the scope. Offer unhandled types to children with
-`ui::widget::start_in_children`. The older `invoke_resource_operation*` and
-`start_resource_operation*` hooks are legacy adapters; new code does not
-override them.
+`ui::widget::start_in_children`.
 Publication refuses duplicate addresses, unsafe confirmation declarations,
 unregistered document actions, empty availability reasons, incoherent job
 contracts, and other contract violations.

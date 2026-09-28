@@ -932,16 +932,14 @@ mod tests {
         #[cfg(unix)]
         {
             use std::time::Duration;
-            let result =
-                native::query("/usr/bin/printf", &["hello"], Duration::from_secs(1), 32).unwrap();
+            let bound = tilo_test_env::hang_bound();
+            let result = native::query("/usr/bin/printf", &["hello"], bound, 32).unwrap();
             assert_eq!(result.stdout, "hello");
-            assert!(
-                native::query("/usr/bin/printf", &["123456789"], Duration::from_secs(1), 4)
-                    .is_err()
-            );
+            assert!(native::query("/usr/bin/printf", &["123456789"], bound, 4).is_err());
             let start = std::time::Instant::now();
-            assert!(native::query("/bin/sleep", &["2"], Duration::from_millis(25), 32).is_err());
-            assert!(start.elapsed() < Duration::from_secs(1));
+            let sleep = (bound.as_secs() * 2).to_string();
+            assert!(native::query("/bin/sleep", &[&sleep], Duration::from_millis(25), 32).is_err());
+            assert!(start.elapsed() < bound);
         }
 
         // Phase `session_and_confinement_evidence_fail_closed`.

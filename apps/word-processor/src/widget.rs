@@ -1500,7 +1500,7 @@ pub struct WordProcessorWidget {
     file_choice_domain: Option<ui::ControlDomain>,
     pending_file_choice: Option<(tilo_actions::InvocationId, u64, bool)>,
     /// A resource-invoked revision to focus after the next mutable sync has
-    /// refreshed the history model. `invoke_resource_operation` only receives
+    /// refreshed the history model. `apply_operation` only receives
     /// an immutable document, so deferring avoids a second, stale timeline.
     pending_history_revision: Option<usize>,
     // ---- paragraph-style context menu -------------------------------------

@@ -231,7 +231,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
                 " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::operation(\"open\", \"Open\", OperationKind::View, \"app.open\", &()).unwrap())] }\n"
-                " fn invoke_resource_operation(&mut self) {} }\n"
+                " fn start_operation(&mut self) {} }\n"
             )
             violations, _ = contract.audit(root)
             self.assertTrue(any("handler registry" in item.reason for item in violations))
@@ -249,11 +249,11 @@ class AppResourceActionContractTests(unittest.TestCase):
                 " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::operation(\"open\", \"Open\", OperationKind::View, \"app.open\", &()).unwrap())] }\n"
                 " fn local_resource_operation_handlers(&self) -> &'static [&'static str] { &[\"app.open\"] }\n"
-                " fn invoke_resource_operation(&mut self) { Ok(false) } }\n"
+                " fn start_operation(&mut self) { Ok(None) } }\n"
             )
             violations, _ = contract.audit(root)
             self.assertTrue(any("not reachable" in item.reason for item in violations))
-        with self.subTest(phase='document aware canonical handler reaches registered helper'):
+        with self.subTest(phase='canonical handler reaches registered helper'):
             root = self.fixture(
                 "use tilo_actions::ActionSpec;\n"
                 "const APP_OPEN: &str = \"app.open\";\n"
@@ -261,7 +261,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::operation(\"open\", \"Open\", OperationKind::Effect, \"app.open\", &()).unwrap())] }\n"
                 " fn local_resource_operation_handlers(&self) -> &'static [&'static str] { &[APP_OPEN] }\n"
-                " fn start_resource_operation_with_document(&mut self) { self.start_local_operation(); } }\n"
+                " fn start_operation(&mut self) { self.start_local_operation(); } }\n"
                 "fn start_local_operation(&mut self) { let _ = APP_OPEN; }\n"
             )
             violations, _ = contract.audit(root)
