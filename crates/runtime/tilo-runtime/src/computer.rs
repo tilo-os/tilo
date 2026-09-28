@@ -454,6 +454,12 @@ impl Computer {
     }
 }
 
+impl crate::watch::WatchSink for Computer {
+    fn set_watching(&self, watching: bool) -> Result<(), String> {
+        self.send(&json!({"op":"watch","watching":watching}))
+    }
+}
+
 /// xdotool-style key combination, e.g. `ctrl+shift+Return`.
 #[derive(Debug, PartialEq, Eq)]
 struct Chord {

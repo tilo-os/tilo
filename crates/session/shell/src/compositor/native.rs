@@ -118,9 +118,16 @@ struct PendingLegacyStream {
     input_sink: Arc<dyn Fn(crate::network::streaming::InputEvent) + Send + Sync>,
 }
 
+/// The legacy windows to encode for viewers: none while nobody watches the
+/// backend, so a headless machine's encoders stop and receivers get
+/// `SurfaceStreamEnd` at once.
 fn desired_legacy_shares(
     tree: &crate::shell::state::WorkspaceTree,
+    watched: bool,
 ) -> HashMap<u64, (String, std::collections::HashSet<u64>)> {
+    if !watched {
+        return HashMap::new();
+    }
     let Some(workspace) = tree
         .desktop
         .workspaces
@@ -8537,7 +8544,7 @@ pub fn run() {
             let desired = {
                 let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
                 let tree = tree_handle.read();
-                desired_legacy_shares(&tree)
+                desired_legacy_shares(&tree, backend.watched())
             };
             pump_phase!(
                 "legacy-share-reconcile",
@@ -10907,7 +10914,39 @@ mod tests {
     }
 
     #[test]
-    fn the_agent_control_socket_serves_input_and_screenshots_only() {
+    fn shared_legacy_windows_are_encoded_only_while_watched() {
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let workspace = &mut tree.desktop.workspaces[0];
+        workspace.strips[0].window_groups.push(WindowGroup {
+            id: 11,
+            tabs: vec![Tab {
+                id: 12,
+                title: "GIMP".into(),
+                tile: TileContent::Foreign {
+                    app_id: "org.gimp.GIMP".into(),
+                    surface_id: 7,
+                },
+            }],
+            active_tab: 12,
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
+        workspace.shared_surfaces.share(7, 9);
+
+        let watched = desired_legacy_shares(&tree, true);
+        assert_eq!(
+            watched.get(&7),
+            Some(&("org.gimp.GIMP".to_string(), [9].into_iter().collect()))
+        );
+        assert!(
+            desired_legacy_shares(&tree, false).is_empty(),
+            "unwatched, every encoder stops"
+        );
+    }
+
+    #[test]
+    fn the_agent_control_socket_serves_input_screenshots_and_the_watch_signal_only() {
         use test_control::Command;
         for permitted in [
             r#"{"op":"click_at","x":1,"y":2}"#,
@@ -10916,6 +10955,8 @@ mod tests {
             r#"{"op":"snapshot","path":"/tmp/x.png"}"#,
             r#"{"op":"pointer_button","pressed":true,"button":"right"}"#,
             r#"{"op":"clipboard_paste"}"#,
+            r#"{"op":"watch","watching":true}"#,
+            r#"{"op":"watch","watching":false}"#,
         ] {
             let command: Command = serde_json::from_str(permitted).unwrap();
             assert!(command.agent_permitted(), "{permitted}");

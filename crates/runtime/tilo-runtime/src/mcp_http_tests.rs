@@ -385,6 +385,155 @@ fn client_labels_are_bounded_and_printable() {
     assert_eq!(client_label(&json!({})), "MCP agent");
 }
 
+#[derive(Default)]
+struct WatchRecorder(StdMutex<Vec<bool>>);
+
+impl crate::watch::WatchSink for WatchRecorder {
+    fn set_watching(&self, watching: bool) -> Result<(), String> {
+        self.0.lock().unwrap().push(watching);
+        Ok(())
+    }
+}
+
+fn watched_endpoint(token: Option<&str>) -> (Arc<Endpoint<StubHost>>, Arc<WatchRecorder>) {
+    let sink = Arc::new(WatchRecorder::default());
+    let lease = WatchLease::new(sink.clone(), WATCH_LEASE);
+    let endpoint = Endpoint::build(
+        StubHost::default(),
+        "room".into(),
+        "owner".into(),
+        token.map(str::to_owned),
+        None,
+        None,
+        Some(lease),
+    );
+    (endpoint, sink)
+}
+
+#[test]
+fn watch_is_a_bearer_authenticated_lease_answered_with_its_length() {
+    let (endpoint, sink) = watched_endpoint(Some("secret"));
+    let bearer = headers(&[("authorization", "Bearer secret")]);
+    run(async {
+        let refused = endpoint
+            .dispatch(
+                &Method::POST,
+                "/watch",
+                &headers(&[("authorization", "Bearer nope")]),
+                br#"{"watching":true}"#,
+            )
+            .await;
+        assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+        assert!(sink.0.lock().unwrap().is_empty());
+
+        for watching in [true, false] {
+            let body_bytes = json!({"watching": watching}).to_string();
+            let reply = endpoint
+                .dispatch(&Method::POST, "/watch", &bearer, body_bytes.as_bytes())
+                .await;
+            assert_eq!(reply.status(), StatusCode::OK);
+            assert_eq!(
+                body(reply).await,
+                json!({"watching": watching, "lease_seconds": 60})
+            );
+        }
+        let wrong_method = endpoint
+            .dispatch(&Method::GET, "/watch", &bearer, b"")
+            .await;
+        assert_eq!(wrong_method.status(), StatusCode::METHOD_NOT_ALLOWED);
+    });
+    assert_eq!(*sink.0.lock().unwrap(), [true, false]);
+}
+
+#[test]
+fn watch_accepts_exactly_one_boolean() {
+    let (endpoint, sink) = watched_endpoint(None);
+    run(async {
+        for bad in [
+            &b""[..],
+            b"true",
+            b"{}",
+            br#"{"watching":1}"#,
+            br#"{"watching":"true"}"#,
+            br#"{"watching":true,"lease_seconds":600}"#,
+        ] {
+            let reply = endpoint
+                .dispatch(&Method::POST, "/watch", &HeaderMap::new(), bad)
+                .await;
+            assert_eq!(
+                reply.status(),
+                StatusCode::BAD_REQUEST,
+                "{}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+    });
+    assert!(sink.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn watch_is_not_found_without_a_compositor() {
+    let endpoint = endpoint(StubHost::default(), None);
+    let reply = run(endpoint.dispatch(
+        &Method::POST,
+        "/watch",
+        &HeaderMap::new(),
+        br#"{"watching":true}"#,
+    ));
+    assert_eq!(reply.status(), StatusCode::NOT_FOUND);
+}
+
+#[test]
+fn watch_reaches_the_compositor_as_its_control_command() {
+    use std::io::{BufRead, BufReader, Write};
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("agent.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let compositor = std::thread::spawn(move || {
+        let mut lines = Vec::new();
+        for _ in 0..2 {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            lines.push(serde_json::from_str::<Value>(&line).unwrap());
+            (&stream).write_all(b"{\"ok\":{\"frame\":0}}\n").unwrap();
+        }
+        lines
+    });
+    let computer = Arc::new(crate::computer::Computer::new(
+        socket,
+        dir.path().join("scratch"),
+    ));
+    let endpoint = Endpoint::new(
+        StubHost::default(),
+        "room".into(),
+        "owner".into(),
+        None,
+        Some(computer),
+    );
+    run(async {
+        for watching in [true, false] {
+            let body_bytes = json!({"watching": watching}).to_string();
+            let reply = endpoint
+                .dispatch(
+                    &Method::POST,
+                    "/watch",
+                    &HeaderMap::new(),
+                    body_bytes.as_bytes(),
+                )
+                .await;
+            assert_eq!(reply.status(), StatusCode::OK);
+        }
+    });
+    assert_eq!(
+        compositor.join().unwrap(),
+        [
+            json!({"op":"watch","watching":true}),
+            json!({"op":"watch","watching":false})
+        ]
+    );
+}
+
 #[test]
 fn the_workspace_itself_is_addressable_for_installed_apps() {
     let host = StubHost::default();
