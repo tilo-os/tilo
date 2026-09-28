@@ -15727,6 +15727,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "http",
+ "iroh",
  "js-sys",
  "rcgen",
  "reqwest",
@@ -15748,6 +15749,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "web-transport-quinn",
+ "wire-frame",
  "workspace-hack",
 ]
 

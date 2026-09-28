@@ -30,8 +30,8 @@ paths = ["tilo_net::Client", "tilo_net::http"]
 
 [uses."network.sockets"]
 crates = ["iroh", "iroh-base", "tilo-callstream"]
-features = ["tilo-net/sockets", "tilo-net/ws", "tilo-net/webtransport"]
-paths = ["tilo_net::sockets", "tilo_net::ws", "tilo_net::webtransport"]
+features = ["tilo-net/sockets", "tilo-net/ws", "tilo-net/webtransport", "tilo-net/p2p"]
+paths = ["tilo_net::sockets", "tilo_net::ws", "tilo_net::webtransport", "tilo_net::p2p"]
 
 [uses."network.status"]
 paths = ["tilo_net::status"]
