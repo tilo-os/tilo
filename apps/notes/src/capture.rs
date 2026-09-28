@@ -250,9 +250,12 @@ fn prepare_fixture_owned(
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
         let document = record_dir.join(app_state::DOCUMENT_FILE);
         let (signal, wait) = std::sync::mpsc::channel();
-        let release =
-            atomic_file::block_replacement(&document, wait, std::time::Duration::from_secs(30))
-                .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        let release = tilo_files::native::atomic::block_replacement(
+            &document,
+            wait,
+            std::time::Duration::from_secs(30),
+        )
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
         SAVE_FAULT_RELEASE.with_borrow_mut(|slot| *slot = Some(signal.clone()));
         *directory.failed_save_signal.borrow_mut() = Some(signal);
         *directory.failed_save_release.borrow_mut() = Some(release);

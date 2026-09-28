@@ -64,7 +64,7 @@ const TOPBAR_HEIGHT: f64 = 44.0;
 fn workspace_image_fetcher(root: &std::path::Path) -> ui::Fetcher {
     const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
     let base = root.join(storage::PAGES_DIR);
-    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let canonical_root = crate::files::canonical(root).unwrap_or_else(|| root.to_path_buf());
     Arc::new(move |source: &str| {
         if source.contains("://") || source.starts_with('/') {
             return None;
@@ -78,7 +78,7 @@ fn workspace_image_fetcher(root: &std::path::Path) -> ui::Fetcher {
         if !crate::files::is_file(&metadata) || metadata.len > MAX_IMAGE_BYTES {
             return None;
         }
-        std::fs::read(candidate).ok()
+        crate::files::read(&candidate).ok()
     })
 }
 
@@ -239,8 +239,8 @@ fn adopt_portable_markdown_assets(
     let Some(parent) = markdown_path.parent() else {
         return Ok(markdown.to_string());
     };
-    let canonical_parent = file_effect(scope, || std::fs::canonicalize(parent))?
-        .unwrap_or_else(|_| parent.to_path_buf());
+    let canonical_parent = file_effect(scope, || crate::files::canonical(parent))?
+        .unwrap_or_else(|| parent.to_path_buf());
     let mut output = String::with_capacity(markdown.len());
     for segment in markdown.split_inclusive('\n') {
         let (line, newline) = segment
@@ -255,8 +255,7 @@ fn adopt_portable_markdown_assets(
             continue;
         }
         let Some(candidate) =
-            file_effect(scope, || std::fs::canonicalize(parent.join(destination)))?
-                .ok()
+            file_effect(scope, || crate::files::canonical(&parent.join(destination)))?
                 .filter(|candidate| candidate.starts_with(&canonical_parent))
         else {
             output.push_str(segment);
@@ -287,8 +286,8 @@ fn adopt_canonical_markdown_assets(
     let Some(parent) = markdown_path.parent() else {
         return Ok((markdown.to_string(), Vec::new()));
     };
-    let canonical_parent = file_effect(scope, || std::fs::canonicalize(parent))?
-        .unwrap_or_else(|_| parent.to_path_buf());
+    let canonical_parent = file_effect(scope, || crate::files::canonical(parent))?
+        .unwrap_or_else(|| parent.to_path_buf());
     let mut output = String::with_capacity(markdown.len());
     let mut assets = HashMap::<String, Vec<u8>>::new();
     let mut imported_paths = HashMap::<PathBuf, String>::new();
@@ -306,8 +305,7 @@ fn adopt_canonical_markdown_assets(
             continue;
         }
         let Some(candidate) =
-            file_effect(scope, || std::fs::canonicalize(parent.join(destination)))?
-                .ok()
+            file_effect(scope, || crate::files::canonical(&parent.join(destination)))?
                 .filter(|candidate| candidate.starts_with(&canonical_parent))
         else {
             output.push_str(segment);
@@ -349,7 +347,8 @@ fn available_export_asset_name(
 ) -> Result<String, String> {
     let candidate = folder.join(name);
     if !file_effect(scope, || candidate.exists())?
-        || file_effect(scope, || std::fs::read(&candidate))?.is_ok_and(|existing| existing == bytes)
+        || file_effect(scope, || crate::files::read(&candidate))?
+            .is_ok_and(|existing| existing == bytes)
     {
         return Ok(name.to_string());
     }
@@ -462,7 +461,7 @@ fn write_portable_markdown_export_scoped(
         let exported_name = if let Some(name) = copied.get(&source_name) {
             name.clone()
         } else {
-            file_effect(scope, || std::fs::create_dir_all(&folder))?
+            file_effect(scope, || crate::files::create_dir_all(&folder))?
                 .map_err(|error| error.to_string())?;
             let name = available_export_asset_name(&folder, &source_name, &bytes, scope)?;
             file_effect(scope, || atomic_file::write(&folder.join(&name), &bytes))?
@@ -507,7 +506,8 @@ fn import_image_asset_scoped(
 ) -> Result<String, String> {
     let (bytes, extension) = file_effect(scope, || read_image_asset(source))??;
     let assets = root.join("assets");
-    file_effect(scope, || std::fs::create_dir_all(&assets))?.map_err(|error| error.to_string())?;
+    file_effect(scope, || crate::files::create_dir_all(&assets))?
+        .map_err(|error| error.to_string())?;
     let name = format!("{}.{}", uuid::Uuid::new_v4(), extension);
     file_effect(scope, || atomic_file::write(&assets.join(&name), &bytes))?
         .map_err(|error| error.to_string())?;
@@ -1331,11 +1331,15 @@ impl NotesApp {
             ui::portal::open_uri_scoped(url, scope.effect_scope()?)
         } else {
             let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
+            let failed = tx.clone();
+            let spawned = ui::rt::spawn_thread("notes-open-link", move || {
                 let result =
                     ui::widget::try_open_external_url(&url).map_err(|error| error.to_string());
                 let _ = tx.send(result);
             });
+            if let Err(error) = spawned {
+                let _ = failed.send(Err(format!("could not open the link: {error}")));
+            }
             rx
         };
         self.external_link_opens.push(ExternalLinkJob {
@@ -1578,10 +1582,11 @@ impl NotesApp {
             let url =
                 url::Url::parse(target).map_err(|error| format!("Invalid file URL: {error}"))?;
             ui::portal::to_local_path(&url).ok_or_else(|| {
-                if cfg!(target_arch = "wasm32") {
-                    "Markdown launch does not support local file URLs in the browser".to_string()
-                } else {
-                    "Markdown launch requires a local file URL".to_string()
+                match tilo_files::availability(tilo_files::Feature::NativePaths) {
+                    tilo_files::Availability::Unsupported(reason) => {
+                        format!("Markdown launch does not support local file URLs here: {reason}")
+                    }
+                    _ => "Markdown launch requires a local file URL".to_string(),
                 }
             })?
         } else if target.contains("://") {
@@ -3061,10 +3066,20 @@ impl NotesApp {
                     .legacy_fixture_storage
                     .as_ref()
                     .map(|legacy| legacy.root.clone());
-                std::thread::spawn(move || {
+                let source = path.clone();
+                let spawned = ui::rt::spawn_thread("notes-insert-image", move || {
                     let result = load_image(root.as_deref(), &path, scope.as_ref());
                     completion.complete(MarkdownJobResult::Image { page, path, result });
                 });
+                if let Err(error) = spawned {
+                    self.markdown_job
+                        .begin()
+                        .complete(MarkdownJobResult::Image {
+                            page,
+                            path: source,
+                            result: Err(format!("could not start the image import: {error}")),
+                        });
+                }
             }
             (_, ui::portal::PortalOutcome::Cancelled) => {
                 if let Some(operation) = self.markdown_invocation.take() {
