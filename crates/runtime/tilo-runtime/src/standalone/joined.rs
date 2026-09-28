@@ -1,8 +1,9 @@
 //! Rooms this profile joined: enrolled replicas of rooms a Tilo device or a
 //! cloud host governs. Their record is this profile's own file, never the
 //! desktop session's; each room syncs over one relay session with the host
-//! its enrollment pins. The room's governor applies a foreign device's limits
-//! to this device there, as it does to every member.
+//! its enrollment pins, which also carries the room's channel governance
+//! between this device and the room's steward. The room's governor applies a
+//! foreign device's limits to this device there, as it does to every member.
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -11,6 +12,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 use tilo_action_broker::{
+    channel_encryption::{GovernanceTransport, InboundChannelGovernance},
     collab_broker::FanoutState,
     collab_core::BrokerChannels,
     collab_inbound::{self, RemoteDocument},
@@ -43,8 +45,16 @@ pub(super) struct Joined {
     refused: BTreeSet<RoomId>,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
-    /// Wakes a room's session to send what its owner holds for it.
-    sessions: Mutex<BTreeMap<RoomId, Arc<Notify>>>,
+    sessions: Mutex<BTreeMap<RoomId, RoomSession>>,
+    /// Channel governance the sessions received, for the channel service.
+    governance: Mutex<Vec<InboundChannelGovernance>>,
+}
+
+struct RoomSession {
+    /// Wakes the session to send what its owner holds for it.
+    wake: Arc<Notify>,
+    /// The connected session, while there is one.
+    live: Option<Arc<RelayCoeditSession>>,
 }
 
 impl Joined {
@@ -67,6 +77,7 @@ impl Joined {
             channels: broker.0,
             fanout: broker.1,
             sessions: Mutex::new(BTreeMap::new()),
+            governance: Mutex::new(Vec::new()),
         });
         for room in joined.owner.rooms() {
             joined.hold_session(room);
@@ -124,6 +135,17 @@ impl Joined {
             .collect()
     }
 
+    /// The device key of `room`'s governor, which stewards its channels.
+    pub(super) fn steward_of(&self, room: RoomId) -> Option<collab_types::Ed25519PublicKey> {
+        self.owner
+            .with_current(room, |view| {
+                Ok(collab_types::Ed25519PublicKey::from_bytes(
+                    view.governor().device_public_key,
+                ))
+            })
+            .ok()
+    }
+
     fn invited_room(&self, invitation: &str) -> Result<RoomId, String> {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -146,7 +168,13 @@ impl Joined {
             return;
         }
         let wake = Arc::new(Notify::new());
-        sessions.insert(room, Arc::clone(&wake));
+        sessions.insert(
+            room,
+            RoomSession {
+                wake: Arc::clone(&wake),
+                live: None,
+            },
+        );
         drop(sessions);
         let joined = Arc::clone(self);
         tilo_rt::app().spawn(async move { joined.keep_session(room, &wake).await });
@@ -168,16 +196,20 @@ impl Joined {
 
     async fn run_session(&self, connect: Connect, wake: &Notify) -> Result<(), String> {
         let (hint, device, revocations, continuity) = connect.material(&self.custody)?;
-        let session = session::dial(
-            self.endpoint.clone(),
-            room_topic(connect.room())?,
-            &hint,
-            device.clone(),
-            self.custody.device_signing_key.clone(),
-            revocations,
-        )
-        .await?;
+        let room = connect.room();
+        let session = Arc::new(
+            session::dial(
+                self.endpoint.clone(),
+                room_topic(room)?,
+                &hint,
+                device.clone(),
+                self.custody.device_signing_key.clone(),
+                revocations,
+            )
+            .await?,
+        );
         let scope = Arc::new(Scope::new(connect, hint, device, continuity));
+        self.set_live(room, Some(Arc::clone(&session)));
         self.publish(&scope, &session);
         let mut replay = true;
         let mut refresh = tokio::time::interval(REFRESH_INTERVAL);
@@ -192,7 +224,8 @@ impl Joined {
                         }
                         self.publish(&scope, &session);
                     }
-                    Some(Inbound::Presence { .. } | Inbound::RemoteAction { .. }) => {}
+                    Some(Inbound::Presence { payload, .. }) => self.receive_governance(&payload),
+                    Some(Inbound::RemoteAction { .. }) => {}
                 },
                 () = wake.notified() => self.publish(&scope, &session),
                 _ = refresh.tick() => {
@@ -204,7 +237,30 @@ impl Joined {
             }
         }
         scope.close();
+        self.set_live(room, None);
         Ok(())
+    }
+
+    fn set_live(&self, room: RoomId, live: Option<Arc<RelayCoeditSession>>) {
+        if let Ok(mut sessions) = self.sessions.lock()
+            && let Some(session) = sessions.get_mut(&room)
+        {
+            session.live = live;
+        }
+    }
+
+    /// Room members' presence carries channel governance; nothing else of it
+    /// concerns this host.
+    fn receive_governance(&self, payload: &[u8]) {
+        let Some(inbound) = postcard::from_bytes(payload)
+            .ok()
+            .and_then(InboundChannelGovernance::from_message)
+        else {
+            return;
+        };
+        if let Ok(mut governance) = self.governance.lock() {
+            governance.push(inbound);
+        }
     }
 
     fn publish(&self, scope: &Scope, session: &RelayCoeditSession) {
@@ -264,7 +320,7 @@ impl Joined {
             .sessions
             .lock()
             .ok()
-            .and_then(|s| s.get(&room).cloned())
+            .and_then(|sessions| sessions.get(&room).map(|session| Arc::clone(&session.wake)))
         {
             wake.notify_one();
         }
@@ -289,6 +345,36 @@ impl OwnerCommitService for Joined {
 
     fn health(&self) -> Result<(), String> {
         self.owner.health()
+    }
+}
+
+/// Governance goes to every member of its room, the steward among them, as
+/// the room's host fans presence out; it is signed end to end.
+impl GovernanceTransport for Joined {
+    fn publish(&self, message: NeighbourMsg) -> bool {
+        let room = match &message {
+            NeighbourMsg::MlsGovernance { room, .. }
+            | NeighbourMsg::MlsAccessRequest { room, .. }
+            | NeighbourMsg::MlsGovernanceAck { room, .. } => RoomId::parse(room),
+            _ => None,
+        };
+        let live = room.and_then(|room| {
+            self.sessions
+                .lock()
+                .ok()
+                .and_then(|sessions| sessions.get(&room).and_then(|s| s.live.clone()))
+        });
+        let (Some(live), Ok(bytes)) = (live, postcard::to_allocvec(&message)) else {
+            return false;
+        };
+        live.publish_presence(bytes).is_ok()
+    }
+
+    fn take_inbound(&self) -> Vec<InboundChannelGovernance> {
+        self.governance
+            .lock()
+            .map(|mut governance| std::mem::take(&mut *governance))
+            .unwrap_or_default()
     }
 }
 

@@ -161,7 +161,7 @@ mod tests {
     )]
     #[test]
     fn a_temporary_service_member_reads_until_its_grant_expires() {
-        use crate::shell::channel_encryption::tests::{
+        use crate::shell::channel_encryption::testing::{
             Directory, Endpoint, Policy, Room, key, public,
         };
         use crate::shell::channel_encryption::{

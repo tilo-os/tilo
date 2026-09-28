@@ -1331,27 +1331,7 @@ pub struct InboundDocument {
     pub envelope: Box<collab_types::SignedOp>,
 }
 
-/// One received piece of channel governance, addressed to a room this
-/// device is in. Every variant is signed by a device key and verified by
-/// the channel service before it changes any state.
-#[derive(Debug, Clone)]
-pub enum InboundChannelGovernance {
-    /// A frame from a channel's steward.
-    Frame {
-        room: RoomId,
-        frame: Box<collab_types::MlsGovernanceFrameV1>,
-    },
-    /// A device asking a channel's steward for membership.
-    AccessRequest {
-        room: RoomId,
-        request: Box<collab_types::MlsAccessRequestV1>,
-    },
-    /// A device's cumulative acknowledgement of a channel's frames.
-    Ack {
-        room: RoomId,
-        ack: Box<collab_types::MlsGovernanceAckV1>,
-    },
-}
+pub use tilo_action_broker::channel_encryption::InboundChannelGovernance;
 
 /// One received cooperative-scrollback request. The broker's drainer
 /// may answer with a `ScrollbackResponse` if its op log holds the range.
