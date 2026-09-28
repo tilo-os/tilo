@@ -298,8 +298,13 @@ mod tests {
 
     #[test]
     fn cjk_text_without_spaces_yields_words() {
-        let words = words("東京都に住んでいます");
-        assert!(words.len() >= 2, "ICU splits the sentence: {words:?}");
+        // The browser build carries no dictionary models for scripts
+        // written without spaces.
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let words = words("東京都に住んでいます");
+            assert!(words.len() >= 2, "ICU splits the sentence: {words:?}");
+        }
         let words = super::words("msg-4411@Example.org sent");
         assert!(words.iter().any(|word| word == "msg"), "{words:?}");
         assert!(words.iter().any(|word| word == "sent"), "{words:?}");

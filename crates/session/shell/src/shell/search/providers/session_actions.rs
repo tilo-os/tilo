@@ -12,6 +12,7 @@ use crate::shell::chrome_state::Chrome;
 use crate::shell::i18n::{t, t_args};
 use crate::shell::search::action_api::{ActionParam, ParamType};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
+use ui::search::FieldWeight;
 
 pub const PROVIDER_ID: &str = "session";
 pub const LOGOUT_ID: &str = "logout";
@@ -57,6 +58,20 @@ const QUEUED_ACTIONS: [QueuedAction; 5] = [
         "power-shut-down-detail",
     ),
 ];
+
+/// The other words people type for each action, by action id. Like the
+/// ids, they are the stable English vocabulary scripts use too.
+fn synonyms(id: &str) -> &'static str {
+    match id {
+        "lock" => "lock screen",
+        "switch-user" => "switch account",
+        "suspend" => "sleep",
+        "restart" => "reboot",
+        "shut-down" => "shutdown power off turn off",
+        LOGOUT_ID => "log out logout sign out",
+        _ => "",
+    }
+}
 
 /// One admission path for every shell-owned session lifecycle entry point.
 ///
@@ -186,11 +201,16 @@ fn logout_contract() -> tilo_actions::ActionContract {
 
 pub struct SessionActionsProvider {
     policy: SessionActionPolicy,
+    /// The rows' searchable text, indexed while it stays the same.
+    ranker: ui::search::ListIndex,
 }
 
 impl SessionActionsProvider {
     pub fn new(policy: SessionActionPolicy) -> Self {
-        Self { policy }
+        Self {
+            policy,
+            ranker: ui::search::ListIndex::default(),
+        }
     }
 }
 
@@ -215,22 +235,27 @@ impl SearchProvider for SessionActionsProvider {
         if !ctx.wanted.contains(&ResourceKind::Action) {
             return Vec::new();
         }
-        let needle = ctx.needle.trim().to_lowercase();
-        let mut results: Vec<SearchResult> = QUEUED_ACTIONS
+        let mut rows: Vec<SearchResult> = QUEUED_ACTIONS
             .iter()
             .filter(|(_, action, ..)| self.policy.offers(*action))
-            .filter_map(|&entry| {
-                let title = t(entry.2);
-                let matches = needle.is_empty()
-                    || title.to_lowercase().contains(&needle)
-                    || entry.0.contains(&needle);
-                matches.then(|| self.queued_result(entry, title, &needle))
+            .map(|&entry| self.queued_result(entry))
+            .collect();
+        rows.insert(1.min(rows.len()), self.logout_result());
+        let fields: Vec<_> = rows
+            .iter()
+            .map(|row| {
+                vec![
+                    (row.title.clone(), FieldWeight::TITLE),
+                    (row.id.clone(), FieldWeight::IDENTITY),
+                    (synonyms(&row.id).to_owned(), FieldWeight::IDENTITY),
+                    (
+                        row.subtitle.clone().unwrap_or_default(),
+                        FieldWeight::SUBTITLE,
+                    ),
+                ]
             })
             .collect();
-        if let Some(logout) = self.logout_result(&needle) {
-            results.insert(1.min(results.len()), logout);
-        }
-        results
+        crate::shell::search::rank_rows(&self.ranker, ctx.needle.trim(), rows, &fields)
     }
 }
 
@@ -248,8 +273,8 @@ fn confirmation_params(contract: &tilo_actions::ActionContract) -> Vec<ActionPar
 }
 
 impl SessionActionsProvider {
-    fn queued_result(&self, entry: QueuedAction, title: String, needle: &str) -> SearchResult {
-        let (id, action, _, detail_key) = entry;
+    fn queued_result(&self, entry: QueuedAction) -> SearchResult {
+        let (id, action, title_key, detail_key) = entry;
         let contract = queued_contract(id, action);
         let policy = self.policy.clone();
         SearchResult {
@@ -257,10 +282,10 @@ impl SessionActionsProvider {
             operation_kind: tilo_actions::OperationKind::Effect,
             provider_id: PROVIDER_ID.into(),
             id: id.into(),
-            title,
+            title: t(title_key),
             subtitle: Some(t(detail_key)),
             badge: Some(t("search-badge-session")),
-            score: if needle.is_empty() { 0 } else { 100 },
+            score: 0,
             params: confirmation_params(&contract),
             contract: Some(contract),
             on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args| {
@@ -275,27 +300,18 @@ impl SessionActionsProvider {
         }
     }
 
-    fn logout_result(&self, needle: &str) -> Option<SearchResult> {
-        let title = t("search-session-logout");
-        if !needle.is_empty()
-            && !title.to_lowercase().contains(needle)
-            && !"log out".contains(needle)
-            && !"logout".contains(needle)
-            && !LOGOUT_ID.contains(needle)
-        {
-            return None;
-        }
+    fn logout_result(&self) -> SearchResult {
         let contract = logout_contract();
         let policy = self.policy.clone();
-        Some(SearchResult {
+        SearchResult {
             kind: ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::Effect,
             provider_id: PROVIDER_ID.into(),
             id: LOGOUT_ID.into(),
-            title,
+            title: t("search-session-logout"),
             subtitle: Some(t("search-session-logout-detail")),
             badge: Some(t("search-badge-session")),
-            score: if needle.is_empty() { 0 } else { 100 },
+            score: 0,
             params: confirmation_params(&contract),
             contract: Some(contract),
             on_open: Rc::new(move |_doc, _root, _chrome: &Chrome, _args| {
@@ -305,7 +321,7 @@ impl SessionActionsProvider {
             }),
             on_invoke: None,
             on_begin_invoke: None,
-        })
+        }
     }
 }
 
@@ -442,6 +458,41 @@ mod tests {
                     .borrow_mut()
                     .take_session_action_requests()
                     .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn the_words_people_type_find_their_session_action() {
+        let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
+        let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
+        policy.set_user_switching(true);
+        let provider = SessionActionsProvider::new(policy);
+        let state = chrome.borrow();
+        let doc = AutoCommit::new();
+        for (needle, id) in [
+            ("lock", "lock"),
+            ("sign out", LOGOUT_ID),
+            ("logout", LOGOUT_ID),
+            ("shutdown", "shut-down"),
+            ("power off", "shut-down"),
+            ("turn off", "shut-down"),
+            ("reboot", "restart"),
+            ("sleep", "suspend"),
+            ("switch user", "switch-user"),
+        ] {
+            let mut rows = provider.query(SearchContext {
+                needle,
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &ROOT,
+            });
+            rows.sort_by_key(|row| std::cmp::Reverse(row.score));
+            assert_eq!(
+                rows.first().map(|row| row.id.as_str()),
+                Some(id),
+                "{needle}"
             );
         }
     }
