@@ -9894,7 +9894,6 @@ mod tests {
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let rooms: Vec<_> = {
             let mut t = tree.write();
-            t.adopt_roomless_workspaces();
             // `bootstrap_demo` leaves the owner `None`; `may_administer`
             // reads it, so an unset owner would refuse every name below
             // for the wrong reason.
@@ -9937,7 +9936,6 @@ mod tests {
             let room = tree.read().rooms()[0];
             {
                 let mut tree = tree.write();
-                tree.adopt_roomless_workspaces();
                 let local_user = crate::shell::state::local_user_id();
                 for workspace in &mut tree.desktop.workspaces {
                     workspace.set_owner(local_user.clone());
