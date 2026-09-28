@@ -11,6 +11,7 @@ thread_local! { static CAPTURES: RefCell<Vec<(&'static str, crate::LatestRequest
 thread_local! { static DISCOVERY_COUNT: Cell<usize> = const { Cell::new(0) }; }
 thread_local! { static CONTROL_AUTHORITY: RefCell<Vec<(bool, bool)>> = const { RefCell::new(vec![]) }; }
 thread_local! { static COMPOUND_MODE: Cell<u8> = const { Cell::new(0) }; }
+thread_local! { static WORKSPACE_REQUEST: Cell<bool> = const { Cell::new(false) }; }
 thread_local! {
     static PAGED_SEARCH_COUNTS: RefCell<Option<Rc<[Cell<usize>; 2]>>> = const { RefCell::new(None) };
 }
@@ -257,33 +258,56 @@ impl Widget for Probe {
         if self.strict {
             action.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
         }
+        let mut probe = tilo_actions::Resource::new(
+            self.collision.as_deref().unwrap_or("bound:probe"),
+            "probe",
+            "Probe",
+        );
+        if WORKSPACE_REQUEST.get() {
+            let request = tilo_actions::remote::WorkspaceRequest::new(
+                tilo_actions::remote::PEOPLE_RESOURCE,
+                tilo_actions::remote::PERSON_MESSAGE_ACTION,
+                tilo_actions::remote::InvokeArgument::Text("someone".into()),
+            );
+            probe = probe.with_action(tilo_actions::ActionSpec::typed_operation(
+                "message",
+                "Message",
+                "Open the conversation only the two of you are in",
+                tilo_actions::OperationKind::Effect,
+                tilo_actions::remote::WORKSPACE_REQUEST_TYPE,
+                Vec::new(),
+                move |_| {
+                    tilo_actions::EncodedAction::encode_operation(
+                        tilo_actions::remote::WORKSPACE_REQUEST_TYPE,
+                        &request,
+                    )
+                    .unwrap()
+                },
+            ));
+        }
         vec![
-            tilo_actions::Resource::new(
-                self.collision.as_deref().unwrap_or("bound:probe"),
-                "probe",
-                "Probe",
-            )
-            .with_action(action)
-            .with_action(
-                tilo_actions::ActionSpec::immediate(
-                    "apply",
-                    "Apply follow up",
-                    "bound.apply",
-                    &FollowUp,
+            probe
+                .with_action(action)
+                .with_action(
+                    tilo_actions::ActionSpec::immediate(
+                        "apply",
+                        "Apply follow up",
+                        "bound.apply",
+                        &FollowUp,
+                    )
+                    .unwrap(),
                 )
-                .unwrap(),
-            )
-            .with_action(
-                tilo_actions::ActionSpec::operation(
-                    "view",
-                    "View",
-                    tilo_actions::OperationKind::View,
-                    "bound.view",
-                    &(),
-                )
-                .unwrap()
-                .with_contract(tilo_actions::ActionContract::view()),
-            ),
+                .with_action(
+                    tilo_actions::ActionSpec::operation(
+                        "view",
+                        "View",
+                        tilo_actions::OperationKind::View,
+                        "bound.view",
+                        &(),
+                    )
+                    .unwrap()
+                    .with_contract(tilo_actions::ActionContract::view()),
+                ),
         ]
     }
     fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
@@ -2343,4 +2367,49 @@ fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
         !wake_handles.borrow()[0].is_active(),
         "callback captured the component lifetime, not detached execution"
     );
+}
+
+/// A component's request to its own workspace (message someone, invite
+/// them) is the App host's to forward, as it is for an unbound app: the
+/// component's surface is published with it rather than withheld for want
+/// of a handler, and invoking it reaches the workspace, not the widget.
+#[test]
+fn a_components_workspace_request_is_published_and_forwarded_by_the_host() {
+    WORKSPACE_REQUEST.set(true);
+    let mut fixture = ActionFixture::broker();
+    let resources = fixture.app.publication_resources();
+    WORKSPACE_REQUEST.set(false);
+    assert!(
+        tilo_actions::door::survey(&resources)
+            .iter()
+            .any(|descriptor| descriptor.address.action == "message"),
+        "the component surface carrying a workspace request is published"
+    );
+    WORKSPACE_REQUEST.set(true);
+    let started = fixture.app.invoke_bound_target_with_broker_scoped(
+        &fixture.target(0, "message"),
+        None,
+        "fixture-user",
+        true,
+        true,
+        None,
+        Some(tilo_actions::InvocationId::new()),
+        None,
+        None,
+        None,
+    );
+    WORKSPACE_REQUEST.set(false);
+    match started {
+        Ok(crate::widget::ResourceOperationStart::Accepted) => assert!(
+            !fixture.app.actions.workspace_request_sources.is_empty(),
+            "the request went to the workspace"
+        ),
+        Err(tilo_actions::DoorError::Unavailable { code, .. }) => {
+            assert_eq!(
+                code, "workspace_unavailable",
+                "the host tried the workspace"
+            );
+        }
+        other => panic!("the workspace request was not forwarded: {other:?}"),
+    }
 }

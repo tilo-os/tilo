@@ -137,11 +137,9 @@ impl App {
         complete.extend(self.history_action_resources());
         trace.finish(CacheResult::NotApplicable);
         let trace = self.trace_resource_stage(Stage::SurfaceValidation);
-        let mut operation_handlers = self.root_widget.resource_operation_handlers();
-        operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
-        // The host forwards workspace requests to the shell itself.
-        operation_handlers.insert(tilo_actions::remote::WORKSPACE_REQUEST_TYPE.to_string());
-        operation_handlers.insert(history_actions::OPERATION.to_string());
+        let operation_handlers = crate::app::with_host_operation_handlers(
+            self.root_widget.resource_operation_handlers(),
+        );
         let violations = tilo_actions::validate_surface(
             &complete,
             &self.actions.action_registry,
@@ -690,11 +688,9 @@ impl App {
             }
             return;
         }
-        let mut operation_handlers = self.root_widget.resource_operation_handlers();
-        operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
-        // The host forwards workspace requests to the shell itself.
-        operation_handlers.insert(tilo_actions::remote::WORKSPACE_REQUEST_TYPE.to_string());
-        operation_handlers.insert(history_actions::OPERATION.to_string());
+        let operation_handlers = crate::app::with_host_operation_handlers(
+            self.root_widget.resource_operation_handlers(),
+        );
         // Bound components have already been validated against their own registries
         // by publication_resources. Only legacy resources use the host registry.
         let unbound_resources = resources
@@ -2244,6 +2240,17 @@ impl App {
                 evidence,
                 broker_delivery,
             );
+        }
+        // A request to the app's own workspace is the host's to forward,
+        // whichever widget declared it — as for an unbound surface.
+        if spec.operation_type.as_deref() == Some(tilo_actions::remote::WORKSPACE_REQUEST_TYPE) {
+            let encoded = Self::encode_resource_action(
+                &snapshot.resources,
+                &target.address.address,
+                arguments.as_ref(),
+                argument,
+            )?;
+            return self.forward_workspace_request(&target.address.address, &encoded, invocation);
         }
         let id = invocation.unwrap_or_default();
         let started = crate::bound_dispatch::invoke_resource_action_scoped(
