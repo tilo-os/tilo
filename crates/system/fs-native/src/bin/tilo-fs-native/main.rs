@@ -10,14 +10,19 @@
 //! store volume; `userns-probe` shows what an unprivileged user namespace
 //! can and cannot do.
 
+#[cfg(target_os = "linux")]
 use std::path::Path;
 use std::process::ExitCode;
 
+#[cfg(target_os = "linux")]
 use fs_native::probe::{self, K5Params};
 
+#[cfg(target_os = "linux")]
 mod bench;
+#[cfg(target_os = "linux")]
 mod userns;
 
+#[cfg(target_os = "linux")]
 fn usage() -> ExitCode {
     eprintln!(
         "usage:\n  tilo-fs-native probe <store> [--k5 FILES,DIRTY_MIB,SAMPLES]\n  \
@@ -27,6 +32,7 @@ fn usage() -> ExitCode {
     ExitCode::from(2)
 }
 
+#[cfg(target_os = "linux")]
 fn parse_k5(spec: &str) -> Option<K5Params> {
     let mut it = spec.split(',');
     let files = it.next()?.parse().ok()?;
@@ -39,6 +45,7 @@ fn parse_k5(spec: &str) -> Option<K5Params> {
     })
 }
 
+#[cfg(target_os = "linux")]
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -75,4 +82,10 @@ fn main() -> ExitCode {
         }
         _ => usage(),
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn main() -> ExitCode {
+    eprintln!("tilo-fs-native: the native data plane uses Linux kernel interfaces");
+    ExitCode::FAILURE
 }
