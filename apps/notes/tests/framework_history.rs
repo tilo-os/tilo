@@ -224,7 +224,9 @@ fn production_preparation_imports_once_and_reopens_the_same_graph() {
             notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, true)
                 .unwrap();
         let mut surfaces = 0;
-        ui::Widget::visit_framework_history(&prepared.root, &mut |_, _| surfaces += 1);
+        ui::history_mode::capability::visit_framework_history(&prepared.root, &mut |_, _| {
+            surfaces += 1;
+        });
         assert_eq!(surfaces, 1);
         let checkout = prepared.checkout.clone();
         let original = prepared

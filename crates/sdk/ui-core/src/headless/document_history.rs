@@ -21,7 +21,7 @@ impl FrameHarness {
     pub fn enable_document_history_chrome(&mut self) {
         if self.history.is_some()
             || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
-            || self.root.provides_document_history()
+            || crate::history_mode::capability::provides_document_history(self.root.as_ref())
         {
             return;
         }

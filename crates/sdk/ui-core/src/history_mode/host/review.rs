@@ -119,7 +119,9 @@ impl HistoryHost {
         let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else {
             return false;
         };
-        if let Err(reason) = root.history_restore_readiness(scope.key) {
+        if let Err(reason) =
+            crate::history_mode::capability::history_restore_readiness(root, scope.key)
+        {
             if let Some(files) = &mut self.files {
                 files.cancel_review();
             }

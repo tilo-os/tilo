@@ -432,11 +432,11 @@ impl Default for WeatherApp {
 }
 
 impl Widget for WeatherApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory
+    );
 
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             crate::actions::OPEN_LOCATION_OPERATION,
@@ -888,6 +888,12 @@ impl Widget for WeatherApp {
 
     fn modal_capture(&self) -> Option<Rect> {
         self.nav.modal_capture()
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for WeatherApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 
@@ -2408,7 +2414,10 @@ mod history_regressions {
         }
         // Case `history_root_declares_registration`.
         {
-            assert!(WeatherApp::new().document_history_definition().is_some());
+            assert!(
+                ui::history_mode::capability::document_history_definition(&WeatherApp::new())
+                    .is_some()
+            );
         }
         // Case `history_blank_sync_preserves_graph`.
         {

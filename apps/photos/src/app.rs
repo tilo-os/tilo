@@ -14285,11 +14285,11 @@ impl PhotosApp {
 }
 
 impl Widget for PhotosApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory
+    );
 
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.places_motion_reduced = reduced;
         if reduced {
@@ -16098,6 +16098,12 @@ impl Widget for PhotosApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for PhotosApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 
