@@ -147,6 +147,32 @@ impl HostSigning {
             owner: self.ordinary.clone(),
         })
     }
+    /// Documents proposed into `room` and the owner's answers, decided in
+    /// the owner's serialized turn.
+    pub fn document_imports(
+        &self,
+        room: String,
+    ) -> Arc<dyn tilo_action_broker::services::DocumentImports> {
+        struct Imports {
+            room: String,
+            owner: OwnerCommitHandle,
+        }
+        impl tilo_action_broker::services::DocumentImports for Imports {
+            fn room(&self) -> &str {
+                &self.room
+            }
+            fn execute(
+                &self,
+                request: OwnerCommitRequest,
+            ) -> tilo_action_broker::services::DesktopCommandFuture {
+                self.owner.document_import(request)
+            }
+        }
+        Arc::new(Imports {
+            room,
+            owner: self.ordinary.clone(),
+        })
+    }
     pub fn new(ordinary: OwnerCommitHandle) -> (Self, SignatureMailbox) {
         let (shared, receiver) = HostDocuments::new(Arc::new(ordinary.clone()));
         let policy_time = Arc::new(OnceLock::new());

@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use agent_provider_config::{
     EndpointLocation, ModelDescriptor, ProviderConfig, ProviderProfile, ProviderProtocol,
@@ -18,7 +19,7 @@ use ui::theme::Theme;
 use ui::widget::{Button, ProgressBar, Row, Spacer, Text, TextInput, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 use zeroize::Zeroize;
 
 use crate::widgets::{El, caption, card, card_with_action, hgap, rows, value_row};
@@ -1371,7 +1372,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for AgentModelsPane {
-    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
+        let (shared, _) = ui::doc::document(shared, root);
         let isolated = self.isolate_document;
         let mut state = if isolated {
             std::mem::take(&mut self.local_doc)
@@ -1420,7 +1422,7 @@ impl Widget for AgentModelsPane {
         }
     }
 
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
         if self.is_busy() && self.last_poll.elapsed() >= POLL_INTERVAL {
             self.refresh();
             return true;
@@ -1484,37 +1486,12 @@ impl Widget for AgentModelsPane {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The Widget event contract forwards input, CRDT state, focus/handled outputs, and layout to the composed settings pane."
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child) = children.first()
         {
-            composed.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child,
-                taffy,
-            );
+            composed.handle_event(event, &mut ctx.reborrow(ctx.path, child));
         }
     }
 

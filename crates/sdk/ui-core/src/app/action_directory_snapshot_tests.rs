@@ -35,7 +35,8 @@ impl Widget for DeclaredDirectory {
             .map(|provider| vec![Box::new(provider) as Box<dyn crate::search::SearchProvider>])
             .unwrap_or_default()
     }
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = crate::doc::document(doc, path);
         if let Some(change) = self.sync_change.as_ref().and_then(|change| change.take()) {
             doc.put(ROOT, change, true).unwrap();
         }
@@ -50,19 +51,6 @@ impl Widget for DeclaredDirectory {
     }
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
     fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
-    fn handle_event(
-        &mut self,
-        _: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
     }
     fn name(&self) -> &'static str {
         "declared-directory"
@@ -298,17 +286,23 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
         publish_declared_directory(&mut app);
         let first = app.action_directory_page(directory_query("", "declared:0", 128, 65536, 512));
         assert!(first.rows.len() > 1 && first.rows.len() <= 128);
-        let mut query = directory_query(&first.revision, "declared:0", 128, 65536, 512);
-        query.cursor = first.next_cursor;
-        let tail = app.action_directory_page(query);
-        let addresses = first
+        let mut addresses = first
             .rows
             .iter()
-            .chain(&tail.rows)
             .map(|row| row.action.clone().unwrap())
             .collect::<std::collections::HashSet<_>>();
+        let mut cursor = first.next_cursor;
+        let mut exhausted = first.exhausted;
+        while !exhausted {
+            let mut query = directory_query(&first.revision, "declared:0", 128, 65536, 512);
+            query.cursor = cursor;
+            let page = app.action_directory_page(query);
+            assert!(!page.rows.is_empty());
+            addresses.extend(page.rows.iter().map(|row| row.action.clone().unwrap()));
+            cursor = page.next_cursor;
+            exhausted = page.exhausted;
+        }
         assert_eq!(addresses.len(), 141);
-        assert!(tail.exhausted);
         assert_eq!(calls.get(), 1);
         let (mut effect_app, _) = declared_directory(1);
         effect_app
@@ -634,7 +628,6 @@ impl ExtendedDirectory {
     }
 }
 impl Widget for ExtendedDirectory {
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         t: &mut TaffyTree<()>,
@@ -645,19 +638,6 @@ impl Widget for ExtendedDirectory {
     }
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
     fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
-    fn handle_event(
-        &mut self,
-        _: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
     }
     fn name(&self) -> &'static str {
         "extended-directory"
@@ -691,8 +671,10 @@ fn connected_declared_directory() -> (App, std::rc::Rc<Cell<usize>>) {
     app.init_layout();
     // Join delivers an initial catalogue event. Drain it before measuring an
     // otherwise idle pump, so startup traffic cannot mask missing refresh.
+    app.collaboration.manager.wait_for_commands_for_test();
     app.pump_collab_presence();
     app.publish_action_surface();
+    app.collaboration.manager.wait_for_commands_for_test();
     assert!(
         !app.pump_collab_presence(),
         "fixture must be idle after the join baseline"

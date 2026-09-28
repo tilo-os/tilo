@@ -42,14 +42,16 @@ fn dispatch_with<T: 'static, M: TreeModel + 'static>(
     let mut doc = AutoCommit::new();
     view.handle_event(
         event,
-        1.0,
-        &Modifiers::from(modifiers),
-        &mut doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus_target,
-        node,
-        taffy,
+        &mut crate::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::from(modifiers),
+            state: &mut doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy,
+        },
     );
     handled
 }

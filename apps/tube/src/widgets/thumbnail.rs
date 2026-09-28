@@ -10,8 +10,8 @@
 //! diagnostics screen.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -285,7 +285,7 @@ impl Thumbnail {
 }
 
 impl Widget for Thumbnail {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         // Lazily resolve the real thumbnail. Once we have it, stop touching the
         // store; a freshly-decoded image flips `dirty` so the next frame repaints
         // it — no structural rebuild.
@@ -337,20 +337,6 @@ impl Widget for Thumbnail {
         _presence: &PresenceCtx,
     ) {
         self.paint(scene, transform, text_renderer);
-    }
-
-    fn handle_event(
-        &mut self,
-        _e: &winit::event::WindowEvent,
-        _sf: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<NodeId>,
-        _n: NodeId,
-        _t: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

@@ -15,6 +15,7 @@ use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId, transaction::Transactable};
 use taffy::style_helpers::length;
@@ -3368,7 +3369,7 @@ impl NotesApp {
     }
 
     /// Execute Notes' one typed view operation locally. Search, agents and
-    /// collaboration invoke this through [`Widget::invoke_resource_operation`];
+    /// collaboration invoke this through [`Widget::start_operation`];
     /// the private jump palette and in-document links construct the identical
     /// operation and arrive here too, so every open path validates the same
     /// durable page/block resource before changing presentation state.
@@ -4200,6 +4201,82 @@ impl ui::widget::AppWidget for NotesApp {
     }
 }
 
+impl NotesApp {
+    /// A local operation keeps the order the retained host gave it before
+    /// the single entry: document writes, then file transfers and links,
+    /// then the children, then this app's own view of the notebook.
+    fn start_local_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        let kind = request.kind;
+        let operation = actions::decode_operation(request.type_id, request.payload)?;
+        let effect = kind == tilo_actions::OperationKind::Effect;
+        let started = match operation {
+            Some(actions::NotesOperation::FinalizeImport) => {
+                if !effect {
+                    return Err("Import completion requires an Effect invocation".into());
+                }
+                self.finish_pending_markdown_import(doc, None)?;
+                ui::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            }
+            Some(actions::NotesOperation::ImportMarkdownContent { title, body }) => {
+                if !effect {
+                    return Err("Markdown content import requires an Effect invocation".into());
+                }
+                if body.len() > usize::try_from(MAX_MARKDOWN_IMPORT_BYTES).unwrap_or(usize::MAX) {
+                    return Err("Markdown content is larger than 1 MiB".into());
+                }
+                if crate::markdown::parse(&body).len() > MAX_MARKDOWN_IMPORT_BLOCKS {
+                    return Err("Markdown content contains more than 10,000 blocks".into());
+                }
+                let page = self.finish_direct_markdown_import(doc, &title, &body)?;
+                let mut output = tilo_actions::ActionOutput::default();
+                output.resources.push(actions::page_resource_id(page));
+                ui::widget::ResourceOperationStart::Completed(output)
+            }
+            Some(
+                operation @ (actions::NotesOperation::ImportMarkdown
+                | actions::NotesOperation::ExportMarkdown { .. }
+                | actions::NotesOperation::InsertImage { .. }),
+            ) => {
+                if !effect {
+                    return Err("File transfers require an Effect invocation".into());
+                }
+                self.open_notes_operation(operation, doc)?;
+                self.markdown_invocation = Some(PendingOperation::local(request.invocation));
+                ui::widget::ResourceOperationStart::Accepted
+            }
+            Some(actions::NotesOperation::OpenExternalLink { url }) => {
+                if !effect {
+                    return Err("Opening a link requires an Effect invocation".into());
+                }
+                self.start_external_link(url, Some(PendingOperation::local(request.invocation)))?;
+                ui::widget::ResourceOperationStart::Accepted
+            }
+            operation => {
+                if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+                    return Ok(Some(started));
+                }
+                let Some(operation) = operation else {
+                    return Ok(None);
+                };
+                if kind == tilo_actions::OperationKind::Document {
+                    return Ok(None);
+                }
+                self.open_notes_operation(operation, doc)?;
+                ui::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            }
+        };
+        Ok(Some(started))
+    }
+}
+
 impl Widget for NotesApp {
     fn has_pending_control_invocation(&self) -> bool {
         !self.adopted
@@ -4268,28 +4345,22 @@ impl Widget for NotesApp {
         }
     }
 
-    fn start_resource_operation_scoped(
+    fn start_operation(
         &mut self,
-        scope: &ResourceInvocationScope,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &ui::widget::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let (request, Some(scope)) = op.with_custody() else {
+            return self.start_local_operation(op, doc, path);
+        };
         scope.check()?;
+        let (kind, type_id, payload) = (request.kind, request.type_id, request.payload);
         if self.legacy_fixture_storage.is_some() {
             return Err("Scoped operations require the canonical Notes record owner".into());
         }
         let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            for child in self.children_mut() {
-                if let Some(result) = child
-                    .start_resource_operation_scoped(scope, kind, type_id, payload, doc, path)?
-                {
-                    return Ok(Some(result));
-                }
-            }
-            return Ok(None);
+            return ui::widget::start_in_children(self, op, doc, path);
         };
         if matches!(
             operation,
@@ -4358,86 +4429,6 @@ impl Widget for NotesApp {
         Ok(Some(started))
     }
 
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let operation = actions::decode_operation(type_id, payload)?;
-        if operation == Some(actions::NotesOperation::FinalizeImport) {
-            if kind != tilo_actions::OperationKind::Effect {
-                return Err("Import completion requires an Effect invocation".into());
-            }
-            self.finish_pending_markdown_import(doc, None)?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
-        }
-        if let Some(actions::NotesOperation::ImportMarkdownContent { title, body }) = operation {
-            if kind != tilo_actions::OperationKind::Effect {
-                return Err("Markdown content import requires an Effect invocation".into());
-            }
-            if body.len() > usize::try_from(MAX_MARKDOWN_IMPORT_BYTES).unwrap_or(usize::MAX) {
-                return Err("Markdown content is larger than 1 MiB".into());
-            }
-            if crate::markdown::parse(&body).len() > MAX_MARKDOWN_IMPORT_BLOCKS {
-                return Err("Markdown content contains more than 10,000 blocks".into());
-            }
-            let page = self.finish_direct_markdown_import(doc, &title, &body)?;
-            let mut output = tilo_actions::ActionOutput::default();
-            output.resources.push(actions::page_resource_id(page));
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(output)));
-        }
-        self.start_resource_operation(invocation, kind, type_id, payload, doc, path)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let operation = actions::decode_operation(type_id, payload)?;
-        if matches!(
-            operation,
-            Some(
-                actions::NotesOperation::ImportMarkdown
-                    | actions::NotesOperation::ExportMarkdown { .. }
-                    | actions::NotesOperation::InsertImage { .. }
-            )
-        ) {
-            if kind != tilo_actions::OperationKind::Effect {
-                return Err("File transfers require an Effect invocation".into());
-            }
-            self.open_notes_operation(operation.ok_or("Missing file operation")?, doc)?;
-            self.markdown_invocation = Some(PendingOperation::local(invocation));
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if let Some(actions::NotesOperation::OpenExternalLink { url }) = operation {
-            if kind != tilo_actions::OperationKind::Effect {
-                return Err("Opening a link requires an Effect invocation".into());
-            }
-            self.start_external_link(url, Some(PendingOperation::local(invocation)))?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        for child in self.children_mut() {
-            if let Some(started) =
-                child.start_resource_operation(invocation, kind, type_id, payload, doc, path)?
-            {
-                return Ok(Some(started));
-            }
-        }
-        self.invoke_resource_operation_v2(kind, type_id, payload, doc, path)
-            .map(|result| result.map(ui::widget::ResourceOperationStart::Completed))
-    }
-
     fn poll_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -4473,43 +4464,8 @@ impl Widget for NotesApp {
         &[crate::actions::NOTES_OPERATION_TYPE]
     }
 
-    fn invoke_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        self.open_notes_operation(operation, doc)?;
-        Ok(true)
-    }
-
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(None);
-        }
-        let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
-        };
-        self.open_notes_operation(operation, doc)?;
-        Ok(Some(tilo_actions::ActionOutput::default()))
-    }
-
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         self.refresh_canonical_assets(state);
         if self.legacy_fixture_storage.is_none() {
             self.offer_inline_asset_move(state);
@@ -4958,101 +4914,42 @@ impl Widget for NotesApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // An open note menu owns input before shortcuts and the narrow drawer,
         // including the click that dismisses it.
         if self.note_menu.is_open() {
-            self.handle_note_context_menu(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.handle_note_context_menu(event, ctx);
             return;
         }
-        if self.handle_shortcuts_overlay(event, scale_factor, handled) {
+        if self.handle_shortcuts_overlay(event, ctx.scale_factor, ctx.handled) {
             return;
         }
-        if self.handle_help_key(event, handled) {
+        if self.handle_help_key(event, ctx.handled) {
             return;
         }
-        if self.handle_find_shortcut(event, *modifiers, focus_target, handled) {
+        if self.handle_find_shortcut(event, *ctx.modifiers, ctx.focus_target, ctx.handled) {
             return;
         }
-        if self.handle_new_child_shortcut(event, *modifiers, state, handled) {
+        if self.handle_new_child_shortcut(event, *ctx.modifiers, ctx.state, ctx.handled) {
             return;
         }
-        if self.handle_route_history_shortcut(event, *modifiers, state, handled) {
+        if self.handle_route_history_shortcut(event, *ctx.modifiers, ctx.state, ctx.handled) {
             return;
         }
-        self.transfer_toasts.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
-        if *handled {
+        self.transfer_toasts.handle_event(event, ctx);
+        if *ctx.handled {
             return;
         }
-        if self.handle_narrow_drawer(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            taffy,
-        ) {
+        if self.handle_narrow_drawer(event, ctx) {
             return;
         }
-        if self.handle_note_context_menu(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
+        if self.handle_note_context_menu(event, ctx) {
             return;
         }
-        if self.handle_link_click(event, state, handled) {
+        if self.handle_link_click(event, ctx.state, ctx.handled) {
             return;
         }
-        self.route_to_children(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            taffy,
-        );
+        self.route_to_children(event, ctx);
     }
 
     fn name(&self) -> &'static str {
@@ -5098,8 +4995,8 @@ impl Widget for NotesApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if target == "notes.drawer"
             && self.built_narrow
@@ -5416,20 +5313,10 @@ impl NotesApp {
     /// Narrow-mode overlay drawer. The top-bar button toggles it; while
     /// open it captures pointer/keys so the page tree behaves like a
     /// modal flyout over the editor.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the exact Widget::handle_event context bundle"
-    )]
     fn handle_narrow_drawer(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if !self.built_narrow {
             return false;
@@ -5439,24 +5326,15 @@ impl NotesApp {
         if self.sidebar.menu_is_open() {
             let selected = self.workspace.selected();
             if let Some(n) = self.sidebar_node {
-                self.sidebar.handle_event(
-                    event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
-                self.claim_sidebar_focus(*focus_target);
+                self.sidebar
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+                self.claim_sidebar_focus(*ctx.focus_target);
             }
-            self.drain_sidebar_events(state);
+            self.drain_sidebar_events(ctx.state);
             if self.workspace.selected() != selected && !self.sidebar.menu_is_open() {
                 self.set_drawer_open(false);
             }
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         // Toggle button — hit-test the hamburger in the top bar.
@@ -5468,7 +5346,7 @@ impl NotesApp {
             && self.menu_btn_rect.contains(self.last_mouse)
         {
             self.set_drawer_open(!self.drawer.is_open());
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         if !self.drawer.is_open() {
@@ -5486,7 +5364,7 @@ impl NotesApp {
         } = event
         {
             self.set_drawer_open(false);
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         // A press on the scrim (outside the drawer) closes it.
@@ -5498,31 +5376,23 @@ impl NotesApp {
             && !self.sidebar.get_rect().contains(self.last_mouse)
         {
             self.set_drawer_open(false);
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         // Route to the page tree; auto-close once a page is picked.
         let sel_before = self.workspace.selected();
         if let Some(n) = self.sidebar_node {
-            self.sidebar.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-            self.claim_sidebar_focus(*focus_target);
+            self.sidebar
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            self.claim_sidebar_focus(*ctx.focus_target);
         }
-        self.drain_sidebar_events(state);
+        self.drain_sidebar_events(ctx.state);
         if self.workspace.selected() != sel_before && !self.sidebar.menu_is_open() {
             self.set_drawer_open(false);
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_mouse =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         self.refresh_status();
         true
@@ -5574,42 +5444,21 @@ impl NotesApp {
 
     /// Route note commands before pointer or keyboard events reach the editor.
     #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the Widget event context"
-    )]
-    #[allow(
         clippy::too_many_lines,
         reason = "routes the complete context-menu event lifecycle through one stateful boundary"
     )]
     fn handle_note_context_menu(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if self.note_menu.is_open() {
-            self.note_menu.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.note_menu.handle_event(event, ctx);
             if let Some(index) = self.note_menu.take_selection() {
-                self.apply_note_menu_selection(index, state);
+                self.apply_note_menu_selection(index, ctx.state);
             }
             self.self_dirty = true;
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         let pointer_open = matches!(
@@ -5623,7 +5472,7 @@ impl NotesApp {
         let keyboard_open = matches!(event, WindowEvent::KeyboardInput { event: KeyEvent {
             state: ElementState::Pressed, logical_key, ..
         }, .. } if matches!(logical_key, Key::Named(NamedKey::ContextMenu))
-            || (modifiers.state().shift_key() && matches!(logical_key, Key::Named(NamedKey::F10))))
+            || (ctx.modifiers.state().shift_key() && matches!(logical_key, Key::Named(NamedKey::F10))))
             && !self.sidebar.is_focused()
             && (self.main.editor().is_focused() || self.main.title_focused());
         if !(pointer_open || keyboard_open) {
@@ -5703,7 +5552,7 @@ impl NotesApp {
             .open_at([num::f32_of_f64(anchor.x), num::f32_of_f64(anchor.y)]);
         self.note_menu_target = Some(page);
         self.self_dirty = true;
-        *handled = true;
+        *ctx.handled = true;
         true
     }
 
@@ -5804,21 +5653,7 @@ impl NotesApp {
         self.refresh_status();
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the exact Widget::handle_event context bundle"
-    )]
-    fn route_to_children(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn route_to_children(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Modal focus capture: while the editor's `/` block menu (or the
         // `[[` link popover) is open, keyboard nav belongs to it — not the
         // page list behind it; symmetrically, while the sidebar's
@@ -5834,21 +5669,12 @@ impl NotesApp {
         // (wide mode). In narrow mode the drawer block above owns it.
         if !self.built_narrow && (!editor_menu_open || !is_keyboard) {
             if let Some(n) = self.sidebar_node {
-                self.sidebar.handle_event(
-                    event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
-                self.claim_sidebar_focus(*focus_target);
+                self.sidebar
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+                self.claim_sidebar_focus(*ctx.focus_target);
             }
             // Drain any commands the sidebar produced.
-            self.drain_sidebar_events(state);
+            self.drain_sidebar_events(ctx.state);
         }
         // The editor never sees keystrokes the sidebar is capturing — its
         // right-click menu OR an in-progress inline rename — so a rename
@@ -5857,17 +5683,8 @@ impl NotesApp {
         if !(sidebar_capturing_kbd && is_keyboard)
             && let Some(n) = self.main_node
         {
-            self.main.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            self.main
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
         // The body editor has applied the person's edit as a Notes action.
         // `editor_is_dirty` drains the widget's edit edge, so a pointer move
@@ -5878,17 +5695,19 @@ impl NotesApp {
         // A committed edit of the note's in-page title renames the current
         // page on the same replayable action path the sidebar's inline rename
         // uses, then re-syncs the sidebar so the new name shows in the tree.
-        self.drain_title_rename(state);
+        self.drain_title_rename(ctx.state);
         // A fresh workspace has no selected page, so its central first-use
         // action creates a root note. Route it through the same replayable
         // action path as the sidebar + and Cmd/Ctrl-N; a first note must be
         // just as collaborative and undoable as every later one.
-        self.drain_empty_note_request(state);
+        self.drain_empty_note_request(ctx.state);
         // Update the last-mouse cache so the next MouseInput knows
         // where to hit-test for link clicks.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let logical =
-                vello::kurbo::Point::new(position.x / scale_factor, position.y / scale_factor);
+            let logical = vello::kurbo::Point::new(
+                position.x / ctx.scale_factor,
+                position.y / ctx.scale_factor,
+            );
             self.last_mouse = logical;
         }
         // Status bar refresh runs at the tail of every event so word
@@ -5933,11 +5752,13 @@ mod tests {
             Some(actions::NotesOperation::FinalizeImport)
         );
         let started = app
-            .start_resource_operation_with_document(
-                tilo_actions::InvocationId::new(),
-                spec.kind,
-                &encoded.type_id,
-                &encoded.payload,
+            .start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    spec.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
                 &mut state.doc,
                 &state.root,
             )
@@ -7272,11 +7093,13 @@ mod tests {
         let _host = ui::host::enter(&services);
         recorder.respond_to_pick(outcome);
         assert_eq!(
-            app.start_resource_operation_with_document(
-                invocation,
-                spec.kind,
-                &encoded.type_id,
-                &encoded.payload,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    spec.kind,
+                    &encoded.type_id,
+                    &encoded.payload
+                ),
                 &mut state.doc,
                 &state.root
             )
@@ -7372,13 +7195,15 @@ mod tests {
             let before = state.doc.save();
             let block_count = NotesDoc::page_block_snapshots(&state.doc, page).len();
             assert_eq!(
-                app.start_resource_operation_with_document(
-                    invocation,
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        spec.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
                     &mut state.doc,
-                    &state.root,
+                    &state.root
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -7613,15 +7438,19 @@ mod tests {
             let payload = serde_json::to_vec(&operation).unwrap();
 
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::View,
-                    crate::actions::NOTES_OPERATION_TYPE,
-                    &payload,
-                    &state.doc,
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        crate::actions::NOTES_OPERATION_TYPE,
+                        &payload,
+                    ),
+                    &mut state.doc,
                     &state.root,
                 )
                 .expect("broker accepts the exported Notes view operation")
+                .is_some()
             );
             app.sync(&mut state.doc, &state.root);
 
@@ -7757,15 +7586,19 @@ mod tests {
                 .expect("the original block's resource resolves lazily");
             assert_eq!(resolved.id.0, old_address.resource);
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::View,
-                    crate::actions::NOTES_OPERATION_TYPE,
-                    &payload,
-                    &state.doc,
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        crate::actions::NOTES_OPERATION_TYPE,
+                        &payload,
+                    ),
+                    &mut state.doc,
                     &state.root,
                 )
                 .expect("durable block identity still resolves")
+                .is_some()
             );
             app.sync(&mut state.doc, &state.root);
             assert_eq!(

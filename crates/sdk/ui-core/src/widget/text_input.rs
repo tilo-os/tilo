@@ -6,6 +6,7 @@
 //! below the caret.
 
 use crate::time::{Duration, Instant};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
@@ -3904,7 +3905,8 @@ impl Widget for TextInput {
         self.is_hovered &= environment.supports_hover();
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = crate::doc::document(state, root);
         let local_value = self
             .local_state
             .as_mut()
@@ -4195,18 +4197,7 @@ impl Widget for TextInput {
         self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Single guard that makes both pointer and keyboard input no-ops when disabled.
         if self.effectively_disabled() {
             return;
@@ -4218,17 +4209,17 @@ impl Widget for TextInput {
             WindowEvent::MouseWheel { delta, .. }
                 if self.multiline && self.is_hovered && !self.effectively_disabled() =>
             {
-                self.handle_mouse_wheel(delta, handled);
+                self.handle_mouse_wheel(delta, ctx.handled);
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(*position, scale_factor, handled);
+                self.handle_cursor_moved(*position, ctx.scale_factor, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
             } if self.is_hovered && !self.effectively_disabled() => {
-                self.handle_right_click(focus_target, node_id, handled);
+                self.handle_right_click(ctx.focus_target, ctx.node_id, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: element_state,
@@ -4237,12 +4228,12 @@ impl Widget for TextInput {
             } => {
                 self.handle_left_click(
                     *element_state,
-                    *modifiers,
-                    state,
-                    root,
-                    focus_target,
-                    node_id,
-                    handled,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
+                    ctx.node_id,
+                    ctx.handled,
                 );
             }
             WindowEvent::MouseInput {
@@ -4250,10 +4241,22 @@ impl Widget for TextInput {
                 button: MouseButton::Middle,
                 ..
             } if self.is_hovered && !self.effectively_disabled() => {
-                self.handle_middle_click(state, root, focus_target, node_id, handled);
+                self.handle_middle_click(
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
+                    ctx.node_id,
+                    ctx.handled,
+                );
             }
             WindowEvent::Touch(touch) => {
-                self.handle_touch_event(touch, scale_factor, focus_target, node_id, handled);
+                self.handle_touch_event(
+                    touch,
+                    ctx.scale_factor,
+                    ctx.focus_target,
+                    ctx.node_id,
+                    ctx.handled,
+                );
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -4269,17 +4272,17 @@ impl Widget for TextInput {
                     logical_key,
                     text.as_deref(),
                     *element_state,
-                    *modifiers,
-                    state,
-                    root,
-                    handled,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
                 );
             }
             WindowEvent::Ime(winit::event::Ime::Commit(t)) => {
-                self.handle_ime_commit(t, state, root, handled);
+                self.handle_ime_commit(t, ctx.state, ctx.path, ctx.handled);
             }
             WindowEvent::Ime(winit::event::Ime::Preedit(t, cursor)) => {
-                self.handle_ime_preedit(t, *cursor, handled);
+                self.handle_ime_preedit(t, *cursor, ctx.handled);
             }
             _ => {}
         }
@@ -4487,10 +4490,11 @@ impl Widget for TextInput {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, root) = crate::doc::document(state, root);
 
         if self.effectively_disabled() {
             return false;

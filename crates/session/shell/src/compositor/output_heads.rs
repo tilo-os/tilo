@@ -8,11 +8,11 @@
 //! that carry it live in [`super::output_management`]; everything here is
 //! plain data so the mapping is covered without a display.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use settings_store::hardware::{
-    DisplayConfig, DisplayConfigError, DisplayOutputSnapshot, OutputConfig, OutputDescriptor,
-    OutputMode, OutputTransform,
+    DisplayConfig, DisplayConfigError, DisplayOutputSnapshot, MonitorHistory, OutputConfig,
+    OutputDescriptor, OutputMode, OutputTransform, same_scale,
 };
 
 use super::backend::{Output, OutputId};
@@ -254,6 +254,96 @@ pub fn plan_arrangement(
     Ok(plan)
 }
 
+/// Whether a tool's display change can apply without asking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChangeRisk {
+    /// Applies directly, the way every other compositor treats the tool.
+    Safe,
+    /// Could leave the person unable to see or reach their screen: they are
+    /// asked to keep it, unless they trust the tool.
+    Risky,
+    /// Leaves no display on. Asked about whoever the tool is.
+    NoDisplay,
+}
+
+/// What the person is looking at and what their monitors have shown, for
+/// [`assess_change`].
+#[derive(Clone, Copy, Debug)]
+pub struct ChangeContext<'a> {
+    /// Heads holding the pointer or the keyboard focus.
+    pub watched: &'a BTreeSet<String>,
+    /// Modes and scales each head's monitor has shown in a kept layout.
+    pub history: &'a BTreeMap<String, MonitorHistory>,
+}
+
+/// How risky `plan`, built from `requests` over `heads`, is to apply.
+///
+/// Risky is: a custom mode, or a mode the connector does not list; turning
+/// off a display the person is using; or giving a display they are using a
+/// mode or scale it has never shown in a layout that was kept. Everything
+/// else — arranging, rotating, lighting up a newly plugged monitor at a
+/// listed mode — is safe.
+pub fn assess_change(
+    plan: &DisplayConfig,
+    heads: &[OutputHead],
+    requests: &BTreeMap<String, HeadRequest>,
+    context: ChangeContext<'_>,
+) -> ChangeRisk {
+    if !leaves_a_display_on(plan, heads) {
+        return ChangeRisk::NoDisplay;
+    }
+    let risky = heads.iter().any(|head| {
+        let Some(output) = plan.output_for(head.name()) else {
+            return false;
+        };
+        let changes = match requests.get(head.name()) {
+            Some(HeadRequest::Enable(changes)) => Some(changes),
+            _ => None,
+        };
+        let custom = changes.is_some_and(|c| matches!(c.mode, Some(ModeRequest::Custom { .. })));
+        let unlisted = output.enabled
+            && output
+                .mode
+                .is_some_and(|mode| !head.descriptor.modes.contains(&mode));
+        if custom || unlisted {
+            return true;
+        }
+        if !head.enabled || !context.watched.contains(head.name()) {
+            return false;
+        }
+        if !output.enabled {
+            return true;
+        }
+        let Some(changes) = changes else {
+            return false;
+        };
+        let history = context.history.get(head.name());
+        let new_mode = changes
+            .mode
+            .and(output.mode)
+            .filter(|mode| Some(*mode) != head.current_mode)
+            .is_some_and(|mode| !history.is_some_and(|h| h.has_mode(mode)));
+        let new_scale = changes
+            .scale
+            .filter(|scale| !same_scale(*scale, head.scale))
+            .is_some_and(|scale| !history.is_some_and(|h| h.has_scale(scale)));
+        new_mode || new_scale
+    });
+    if risky {
+        ChangeRisk::Risky
+    } else {
+        ChangeRisk::Safe
+    }
+}
+
+/// Whether `plan` keeps at least one of `heads` enabled.
+pub fn leaves_a_display_on(plan: &DisplayConfig, heads: &[OutputHead]) -> bool {
+    heads.iter().any(|head| {
+        plan.output_for(head.name())
+            .is_some_and(|output| output.enabled)
+    })
+}
+
 fn resolve_mode(head: &OutputHead, request: ModeRequest) -> Result<OutputMode, ArrangementError> {
     let found = match request {
         ModeRequest::Advertised(mode) => head.descriptor.modes.iter().find(|m| **m == mode),
@@ -325,6 +415,148 @@ mod tests {
                 (1280, 0),
             ),
         ]
+    }
+
+    fn risk_of(
+        requests: &BTreeMap<String, HeadRequest>,
+        watched: &[&str],
+        history: &BTreeMap<String, MonitorHistory>,
+    ) -> ChangeRisk {
+        let heads = two_heads();
+        let plan = plan_arrangement(&DisplayConfig::default(), &heads, requests).expect("valid");
+        let watched: BTreeSet<String> = watched.iter().map(|name| (*name).to_owned()).collect();
+        assess_change(
+            &plan,
+            &heads,
+            requests,
+            ChangeContext {
+                watched: &watched,
+                history,
+            },
+        )
+    }
+
+    fn panel_and(monitor: HeadRequest) -> BTreeMap<String, HeadRequest> {
+        BTreeMap::from([
+            (
+                "eDP-1".to_owned(),
+                HeadRequest::Enable(HeadChanges::default()),
+            ),
+            ("DP-1".to_owned(), monitor),
+        ])
+    }
+
+    fn monitor_changes(changes: HeadChanges) -> BTreeMap<String, HeadRequest> {
+        panel_and(HeadRequest::Enable(changes))
+    }
+
+    #[test]
+    fn arranging_and_listed_modes_apply_directly() {
+        let requests = monitor_changes(HeadChanges {
+            mode: Some(ModeRequest::Advertised(mode(2560, 1440, 59_951))),
+            position: Some((-2560, 0)),
+            transform: Some(OutputTransform::Rotate90),
+            scale: Some(1.25),
+            adaptive_sync: Some(true),
+        });
+        assert_eq!(
+            risk_of(&requests, &["eDP-1"], &BTreeMap::new()),
+            ChangeRisk::Safe
+        );
+        // Turning off a display nobody is using is safe too.
+        assert_eq!(
+            risk_of(
+                &panel_and(HeadRequest::Disable),
+                &["eDP-1"],
+                &BTreeMap::new()
+            ),
+            ChangeRisk::Safe
+        );
+    }
+
+    #[test]
+    fn a_custom_mode_is_risky_even_where_nobody_looks() {
+        let requests = monitor_changes(HeadChanges {
+            mode: Some(ModeRequest::Custom {
+                width: 2560,
+                height: 1440,
+                refresh_mhz: 59_700,
+            }),
+            ..HeadChanges::default()
+        });
+        assert_eq!(
+            risk_of(&requests, &["eDP-1"], &BTreeMap::new()),
+            ChangeRisk::Risky
+        );
+    }
+
+    #[test]
+    fn turning_off_the_display_in_use_is_risky() {
+        assert_eq!(
+            risk_of(
+                &panel_and(HeadRequest::Disable),
+                &["DP-1"],
+                &BTreeMap::new()
+            ),
+            ChangeRisk::Risky
+        );
+    }
+
+    #[test]
+    fn a_mode_or_scale_the_display_in_use_never_showed_is_risky_until_it_has() {
+        let new_mode = monitor_changes(HeadChanges {
+            mode: Some(ModeRequest::Advertised(mode(2560, 1440, 59_951))),
+            ..HeadChanges::default()
+        });
+        let new_scale = monitor_changes(HeadChanges {
+            scale: Some(1.5),
+            ..HeadChanges::default()
+        });
+        let same_again = monitor_changes(HeadChanges {
+            mode: Some(ModeRequest::Advertised(mode(2560, 1440, 144_000))),
+            scale: Some(1.0),
+            ..HeadChanges::default()
+        });
+        let none = BTreeMap::new();
+        assert_eq!(risk_of(&new_mode, &["DP-1"], &none), ChangeRisk::Risky);
+        assert_eq!(risk_of(&new_scale, &["DP-1"], &none), ChangeRisk::Risky);
+        assert_eq!(risk_of(&same_again, &["DP-1"], &none), ChangeRisk::Safe);
+
+        let shown = BTreeMap::from([(
+            "DP-1".to_owned(),
+            MonitorHistory {
+                modes: vec![mode(2560, 1440, 59_951)],
+                scales: vec![1.5],
+            },
+        )]);
+        assert_eq!(risk_of(&new_mode, &["DP-1"], &shown), ChangeRisk::Safe);
+        assert_eq!(risk_of(&new_scale, &["DP-1"], &shown), ChangeRisk::Safe);
+    }
+
+    #[test]
+    fn a_plan_with_every_display_off_is_its_own_risk() {
+        let heads = two_heads();
+        let mut plan = plan_arrangement(
+            &DisplayConfig::default(),
+            &heads,
+            &monitor_changes(HeadChanges::default()),
+        )
+        .expect("valid");
+        for output in plan.outputs.values_mut() {
+            output.enabled = false;
+        }
+        assert_eq!(
+            assess_change(
+                &plan,
+                &heads,
+                &BTreeMap::new(),
+                ChangeContext {
+                    watched: &BTreeSet::new(),
+                    history: &BTreeMap::new(),
+                },
+            ),
+            ChangeRisk::NoDisplay
+        );
     }
 
     #[test]
@@ -442,6 +674,7 @@ mod tests {
                 monitor: None,
             },
             current_mode: mode(1920, 1080, 60_000),
+            scale: 1.0,
             builtin: connector == "eDP-1",
             sink_hdr: false,
             hdr_unavailable_reason: None,

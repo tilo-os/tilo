@@ -10,6 +10,7 @@ e264f0639ab775338311036f207b35cebe99bc417b016b53931ebca8b30b3d94	steam-runtime-s
 65cd49136305dccaa3d327cc948fa508f8e1d33de3e6c36ba0d9bf4646ca1727	bottles-programs-d1160b8.tar.gz	https://github.com/bottlesdevs/programs/archive/d1160b816ca44a1cc803ab9a0050071517cc1960.tar.gz
 e6c213bb221f4598e7e5e35804e8066b5b49a15ca2fb685729c9cf4ad82a20b7	doubletake-ae06722.tar.gz	https://github.com/omarroth/doubletake/archive/ae067228d76df011375164814b729932ed55ca2f.tar.gz
 bfa0e96a25928cb7c9d906643e8947182ad124b35bcad3f0c765f4fc011c47ab	fluxcast-a74f39f.tar.gz	https://github.com/IlyaP358/fluxcast/archive/a74f39fe3f2012e20315cd37e13e9803871e587f.tar.gz
+a78c32ec651aa445a2e5fbae08b91fb046aa9c538547ada4019f9d3ada9ba4d1	joycond-0df025a.tar.gz	https://github.com/DanielOgorchock/joycond/archive/0df025ac5dc284b1f31172b6b252321ba788c4de.tar.gz
 67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006	sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz	https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
 821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77	sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz	https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz
 c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d	linuxdeploy-1-alpha-20251107-1-x86_64.AppImage	https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage
@@ -23,6 +24,7 @@ c880fa8d607b2aa6eadde7d6d6302b1396ebc38368fe2332fa20e193c7ee1420	libwpe-1.16.3.t
 b2bafef2751625b7fdf530f230ff0f542ff0eeba3590c3a989d931b2a55c858e	wpewebkit-2.52.6.tar.xz	https://wpewebkit.org/releases/wpewebkit-2.52.6.tar.xz
 e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118	doubletake-ae06722-LICENSE	https://raw.githubusercontent.com/omarroth/doubletake/ae067228d76df011375164814b729932ed55ca2f/LICENSE
 3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986	fluxcast-a74f39f-LICENSE	https://raw.githubusercontent.com/IlyaP358/fluxcast/a74f39fe3f2012e20315cd37e13e9803871e587f/LICENSE
+3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986	joycond-0df025a-LICENSE	https://raw.githubusercontent.com/DanielOgorchock/joycond/0df025ac5dc284b1f31172b6b252321ba788c4de/LICENSE
 # Official v4l2loopback tag archive; built and signed with the exact Tilo kernel.
 1efa0d3535523df1d45da00ec09bba0b5fdbf44c3efd775dd480fa7c803c3034	v4l2loopback-0.15.3-a7e4a4d.tar.gz	https://github.com/v4l2loopback/v4l2loopback/archive/a7e4a4dea36187ad3550c797d647bcc50faced42.tar.gz
 # Libvirt source archive: upstream signature provenance is recorded in platform-support.md.

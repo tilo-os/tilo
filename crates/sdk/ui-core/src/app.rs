@@ -46,6 +46,9 @@ mod bound_record_sync;
 mod close_admission;
 mod document_history;
 mod handoff;
+mod history_actions;
+#[cfg(test)]
+mod history_actions_tests;
 mod model_lifecycle;
 mod participants;
 mod published_invocations;
@@ -663,7 +666,7 @@ impl AppConstructionInputs {
             binding,
             Self::production(
                 crate::collaboration::native_initial::take_manager()
-                    .unwrap_or_else(|| CollaborationManager::for_record(&binding.checkout.id)),
+                    .unwrap_or_else(|| CollaborationManager::for_record(&binding.checkout)),
             ),
         )
     }
@@ -2788,7 +2791,6 @@ mod legacy_owner_routing_tests {
     }
 
     impl Widget for OwnerProbe {
-        fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
         fn build_layout(
             &mut self,
             tree: &mut taffy::TaffyTree<()>,
@@ -2807,19 +2809,6 @@ mod legacy_owner_routing_tests {
             _: &mut TextRenderer,
             _: &Theme,
             _: &PresenceCtx,
-        ) {
-        }
-        fn handle_event(
-            &mut self,
-            _: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &taffy::TaffyTree<()>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -2844,9 +2833,10 @@ mod legacy_owner_routing_tests {
             &mut self,
             target: &str,
             action: &crate::a11y::Action,
-            doc: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
         ) -> bool {
+            let (doc, _) = crate::doc::document(doc, path);
             if target != "owner:named" {
                 return false;
             }
@@ -2864,9 +2854,10 @@ mod legacy_owner_routing_tests {
             &mut self,
             action: &crate::a11y::Action,
             keys: &[u64],
-            doc: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
         ) -> bool {
+            let (doc, _) = crate::doc::document(doc, path);
             if keys != [7] || !matches!(action, crate::a11y::Action::Activate) {
                 return false;
             }
@@ -3112,6 +3103,7 @@ mod private_continuity_route_tests {
             app_id: route.app_id,
             cluster_id: route.cluster_id,
             record: route.record,
+            record_kind: None,
             handle: None,
         }));
         manager.poll();
@@ -3251,6 +3243,7 @@ mod private_continuity_route_tests {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,
             record: route.record.clone(),
+            record_kind: None,
             handle: None,
         }));
         app.collaboration.manager.poll();
@@ -3281,6 +3274,7 @@ mod private_continuity_route_tests {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,
             record: route.record.clone(),
+            record_kind: None,
             handle: None,
         }));
         app.collaboration.manager.poll();
@@ -3391,23 +3385,21 @@ pub(crate) mod ordinary_confirmation_tests {
             handlers.insert("fixture.control".into());
             handlers
         }
-        fn start_resource_operation_with_document(
+        fn start_operation(
             &mut self,
-            invocation: tilo_actions::InvocationId,
-            kind: tilo_actions::OperationKind,
-            operation: &str,
-            payload: &[u8],
+            op: &crate::widget::ResourceOperation<'_>,
             doc: &mut automerge::AutoCommit,
             path: &automerge::ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-            if operation != "fixture.control" {
-                return self.child.start_resource_operation_with_document(
-                    invocation, kind, operation, payload, doc, path,
-                );
-            }
+            let Some(request) = op
+                .unscoped()
+                .filter(|request| request.type_id == "fixture.control")
+            else {
+                return self.child.start_operation(op, doc, path);
+            };
             self.ledger
                 .borrow_mut()
-                .push(serde_json::from_slice(payload).unwrap());
+                .push(serde_json::from_slice(request.payload).unwrap());
             Ok(Some(crate::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             )))

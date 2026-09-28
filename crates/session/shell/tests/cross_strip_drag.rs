@@ -180,14 +180,16 @@ fn pump_no_op(host: &mut ShellOverlayHost, layout: &Layout) {
     let mut focus: Option<NodeId> = None;
     host.handle_event(
         &event,
-        1.0,
-        &modifiers,
-        &mut doc,
-        &doc_root,
-        &mut handled,
-        &mut focus,
-        layout.child_node,
-        &layout.taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: &mut doc,
+            path: &doc_root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: layout.child_node,
+            taffy: &layout.taffy,
+        },
     );
     // This harness stops short of `Widget::update`; tests invoke the
     // cross-strip dispatch via `tick_cross_strip_dispatch_for_tests`.

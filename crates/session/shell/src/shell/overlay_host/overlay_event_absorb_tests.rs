@@ -34,8 +34,6 @@ impl RecordingContent {
 }
 
 impl Widget for RecordingContent {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -74,18 +72,7 @@ impl Widget for RecordingContent {
     ) {
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, _ctx: &mut ui::widget::EventCtx<'_>) {
         let label = match event {
             WindowEvent::CursorMoved { .. } => "CursorMoved",
             WindowEvent::MouseInput {
@@ -462,14 +449,16 @@ fn pump_with_modifiers(
     let mut handled = false;
     h.host.handle_event(
         event,
-        1.0,
-        &modifiers,
-        &mut doc,
-        &root,
-        &mut handled,
-        &mut focus,
-        h.root_node,
-        &h.taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: &mut doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: h.root_node,
+            taffy: &h.taffy,
+        },
     );
     handled
 }
@@ -1736,7 +1725,7 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
 
         let _ = pump(&mut h, &cursor_moved_at(power.center()));
         assert!(pump(&mut h, &left_button_pressed()));
-        assert!(h.host.power_menu.is_open());
+        assert!(h.host.layers.power_menu.is_open());
         assert!(!h.chrome.borrow().overlays.quick_settings);
     }
 
@@ -1758,7 +1747,7 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
         let _ = pump(&mut h, &cursor_moved_at(painted_power));
         assert!(pump(&mut h, &left_button_pressed()));
         assert!(
-            h.host.power_menu.is_open(),
+            h.host.layers.power_menu.is_open(),
             "clicking the visibly transformed Power tile must open its menu"
         );
         assert!(!h.chrome.borrow().overlays.quick_settings);
@@ -2569,4 +2558,49 @@ fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
     workspace_lens_promotes_to_one_inset_sheet_on_narrow_outputs();
     compact_shortcut_help_keeps_content_inside_a_comfortable_footer_inset();
     wide_shortcut_help_remains_a_contextual_card();
+}
+
+#[test]
+fn shortcut_guide_tab_stops_only_land_on_painted_bindings() {
+    let (vw, vh) = (1280.0, 800.0);
+    let mut h = build_harness_sized(vw, vh);
+    h.chrome.borrow_mut().overlays.shortcut_help = true;
+    settle(&mut h, vw, vh);
+    let painted: Vec<settings_store::hardware::ShortcutAction> = h
+        .host
+        .shortcut_binding_rects
+        .iter()
+        .map(|(action, _)| *action)
+        .collect();
+    assert!(!painted.is_empty(), "the guide paints its bindings");
+
+    let mut focused = Vec::new();
+    for _ in 0..64 {
+        let mut handled = false;
+        assert!(h.host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Tab),
+            winit::event::Modifiers::default(),
+            false,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        match h.host.shortcut_guide_focus {
+            Some(ShortcutGuideFocus::Binding(action)) => focused.push(action),
+            Some(ShortcutGuideFocus::Done) => break,
+            _ => {}
+        }
+    }
+    let hidden: Vec<_> = focused
+        .iter()
+        .filter(|action| !painted.contains(action))
+        .collect();
+    assert!(
+        hidden.is_empty(),
+        "Tab must never focus a binding the guide does not draw: {hidden:?}"
+    );
+    assert_eq!(
+        focused, painted,
+        "Tab walks the painted bindings in painted order"
+    );
 }

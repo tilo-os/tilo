@@ -29,6 +29,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size as TSize, Style, TaffyTree};
@@ -4380,14 +4381,16 @@ impl MailApp {
             if let Some(first_run_node) = self.first_run_node {
                 self.first_run.handle_event(
                     event,
-                    ctx.scale_factor,
-                    &ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.handled,
-                    ctx.focus_target,
-                    first_run_node,
-                    ctx.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: &ctx.modifiers,
+                        state: ctx.state,
+                        path: ctx.path,
+                        handled: ctx.handled,
+                        focus_target: ctx.focus_target,
+                        node_id: first_run_node,
+                        taffy: ctx.taffy,
+                    },
                 );
             }
             if self.first_run.take_action() {
@@ -4860,7 +4863,8 @@ impl Widget for MailApp {
         &[crate::actions::MAIL_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         self.background_poll_deadline.set(None);
         if self.first_run.take_action() {
             self.open_setup_edit(None);
@@ -4944,120 +4948,32 @@ impl Widget for MailApp {
         Self::publish_resource(self, doc, id)
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match kind {
-            tilo_actions::OperationKind::Effect => self.invoke_resource_effect(&operation),
-            tilo_actions::OperationKind::View => self.invoke_resource_view(operation, doc),
-            tilo_actions::OperationKind::Document => Ok(false),
-        }
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect
-            || type_id != crate::actions::MAIL_OPERATION_TYPE
-        {
-            return Ok(None);
-        }
-        let operation = crate::actions::decode_operation(type_id, payload)?;
-        if let Some(crate::actions::MailOperation::SaveAttachment { message_id, index }) = operation
-        {
-            let message_id = message_id
-                .parse::<MessageId>()
-                .map_err(|_| "invalid message id")?;
-            self.begin_attachment_save(message_id, index)?;
-            self.resource_attachment_save_invocation = Some(invocation);
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if self.resource_refresh_invocation.is_some() || self.awaiting_engine {
-            return Err("a mail operation is already running".into());
-        }
-        if matches!(
-            operation,
-            Some(crate::actions::MailOperation::RefreshCurrentFolder)
-        ) {
-            let request_id = self
-                .refresh_active_folder()
-                .ok_or_else(|| "mail refresh could not be queued".to_string())?;
-            self.resource_refresh_invocation = Some((request_id, invocation));
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        if !self.awaiting_engine {
-            return Err("mail refresh could not be queued".into());
-        }
-        Ok(None)
-    }
-
-    /// Admit the compound normal-open operation at the one framework boundary
-    /// allowed to mutate the document.  The view transition and its canonical
-    /// `SetRead` action are therefore one explicit Open interaction, never a
-    /// deferred consequence of rendering or navigation.  Preview deliberately
-    /// stays on the read-only operation route above.
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &ui::widget::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let operation = crate::actions::decode_operation(type_id, payload)?;
-        if kind == tilo_actions::OperationKind::Effect
-            && let Some(crate::actions::MailOperation::PrepareCalendarInvitation {
-                to,
-                subject,
-                body,
-                calendar_ics,
-            }) = operation.clone()
-        {
-            let draft = prepare_calendar_invitation_draft(&to, &subject, &body, &calendar_ics)?;
-            self.shared.borrow_mut().save_draft(doc, &draft);
-            self.compose.open_with_draft(&draft);
-            self.editing_draft = None;
-            self.shared.borrow_mut().status =
-                Some("Invitation prepared — review it before sending".into());
-            self.dirty = true;
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput {
-                    value: None,
-                    resources: vec!["mail.draft".into()],
-                },
-            )));
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = self.admit_resource_operation_with_document(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        if kind == tilo_actions::OperationKind::View
-            && let Some(crate::actions::MailOperation::RevealMessage { id }) = operation
-        {
-            let id = id.parse::<MessageId>().map_err(|_| "invalid message id")?;
-            if !self.shared.borrow_mut().open_message(doc, id) {
-                return Err("message is no longer loaded".into());
-            }
-            self.process_intents();
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
-        }
-        self.start_resource_operation(invocation, kind, type_id, payload, doc, path)
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -5240,42 +5156,31 @@ impl Widget for MailApp {
         self.shortcuts.draw(scene, t, tr, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+            let point = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             self.shared.borrow_mut().last_mouse = point;
             self.dirty = true;
         }
 
         // The shortcut sheet is a genuine modal first-responder.  It must
         // consume all input before any Mail command can observe it.
-        if self.shortcuts.handle_event(event, scale_factor) {
-            *handled = true;
+        if self.shortcuts.handle_event(event, ctx.scale_factor) {
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
 
         let modal_consumed = {
             let mut context = EventContext {
-                scale_factor,
-                modifiers: *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                scale_factor: ctx.scale_factor,
+                modifiers: *ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
+                handled: ctx.handled,
+                focus_target: ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
             };
             self.handle_app_modal_event(event, &mut context)
         };
@@ -5283,21 +5188,11 @@ impl Widget for MailApp {
             return;
         }
 
-        self.nav.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+        self.nav.handle_event(event, ctx);
         self.process_intents();
 
-        if !*handled {
-            self.global_shortcuts(event, *modifiers, state, handled);
+        if !*ctx.handled {
+            self.global_shortcuts(event, *ctx.modifiers, ctx.state, ctx.handled);
         }
 
         self.dirty = true;
@@ -5443,9 +5338,10 @@ impl Widget for MailApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if let Some(raw) = target.strip_prefix("mail.context:") {
             let Some((message_raw, index_raw)) = raw.rsplit_once(':') else {
                 return false;
@@ -5581,6 +5477,124 @@ impl Widget for MailApp {
         for i in &mut self.setup_inputs {
             i.mark_drawn();
         }
+    }
+}
+
+impl MailApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match kind {
+            tilo_actions::OperationKind::Effect => self.invoke_resource_effect(&operation),
+            tilo_actions::OperationKind::View => self.invoke_resource_view(operation, doc),
+            tilo_actions::OperationKind::Document => Ok(false),
+        }
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != tilo_actions::OperationKind::Effect
+            || type_id != crate::actions::MAIL_OPERATION_TYPE
+        {
+            return Ok(None);
+        }
+        let operation = crate::actions::decode_operation(type_id, payload)?;
+        if let Some(crate::actions::MailOperation::SaveAttachment { message_id, index }) = operation
+        {
+            let message_id = message_id
+                .parse::<MessageId>()
+                .map_err(|_| "invalid message id")?;
+            self.begin_attachment_save(message_id, index)?;
+            self.resource_attachment_save_invocation = Some(invocation);
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if self.resource_refresh_invocation.is_some() || self.awaiting_engine {
+            return Err("a mail operation is already running".into());
+        }
+        if matches!(
+            operation,
+            Some(crate::actions::MailOperation::RefreshCurrentFolder)
+        ) {
+            let request_id = self
+                .refresh_active_folder()
+                .ok_or_else(|| "mail refresh could not be queued".to_string())?;
+            self.resource_refresh_invocation = Some((request_id, invocation));
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        if !self.awaiting_engine {
+            return Err("mail refresh could not be queued".into());
+        }
+        Ok(None)
+    }
+
+    /// Admit the compound normal-open operation at the one framework boundary
+    /// allowed to mutate the document.  The view transition and its canonical
+    /// `SetRead` action are therefore one explicit Open interaction, never a
+    /// deferred consequence of rendering or navigation.  Preview deliberately
+    /// stays on the read-only operation route above.
+    fn admit_resource_operation_with_document(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let operation = crate::actions::decode_operation(type_id, payload)?;
+        if kind == tilo_actions::OperationKind::Effect
+            && let Some(crate::actions::MailOperation::PrepareCalendarInvitation {
+                to,
+                subject,
+                body,
+                calendar_ics,
+            }) = operation.clone()
+        {
+            let draft = prepare_calendar_invitation_draft(&to, &subject, &body, &calendar_ics)?;
+            self.shared.borrow_mut().save_draft(doc, &draft);
+            self.compose.open_with_draft(&draft);
+            self.editing_draft = None;
+            self.shared.borrow_mut().status =
+                Some("Invitation prepared — review it before sending".into());
+            self.dirty = true;
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput {
+                    value: None,
+                    resources: vec!["mail.draft".into()],
+                },
+            )));
+        }
+        if kind == tilo_actions::OperationKind::View
+            && let Some(crate::actions::MailOperation::RevealMessage { id }) = operation
+        {
+            let id = id.parse::<MessageId>().map_err(|_| "invalid message id")?;
+            if !self.shared.borrow_mut().open_message(doc, id) {
+                return Err("message is no longer loaded".into());
+            }
+            self.process_intents();
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
+        self.admit_resource_operation(invocation, kind, type_id, payload, doc, path)
     }
 }
 
@@ -5989,14 +6003,16 @@ impl MailApp {
             if let Some(i) = focused.and_then(|i| self.setup_inputs.get_mut(i)) {
                 i.handle_event(
                     event,
-                    ctx.scale_factor,
-                    &ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.handled,
-                    ctx.focus_target,
-                    ctx.node_id,
-                    ctx.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: &ctx.modifiers,
+                        state: ctx.state,
+                        path: ctx.path,
+                        handled: ctx.handled,
+                        focus_target: ctx.focus_target,
+                        node_id: ctx.node_id,
+                        taffy: ctx.taffy,
+                    },
                 );
             }
             // Typing in the email field pre-fills the server settings from the
@@ -6338,14 +6354,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &Modifiers::default(),
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -6929,13 +6947,15 @@ mod tests {
             })
             .unwrap();
             assert!(matches!(
-                app.start_resource_operation_with_document(
-                    tilo_actions::InvocationId::default(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::MAIL_OPERATION_TYPE,
-                    &payload,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::default(),
+                        tilo_actions::OperationKind::View,
+                        crate::actions::MAIL_OPERATION_TYPE,
+                        &payload
+                    ),
                     &mut doc,
-                    &automerge::ROOT,
+                    &automerge::ROOT
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Completed(_))
@@ -6993,13 +7013,15 @@ mod tests {
                 })
                 .unwrap();
                 assert!(matches!(
-                    app.start_resource_operation_with_document(
-                        tilo_actions::InvocationId::default(),
-                        tilo_actions::OperationKind::View,
-                        crate::actions::MAIL_OPERATION_TYPE,
-                        &payload,
+                    app.start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            tilo_actions::InvocationId::default(),
+                            tilo_actions::OperationKind::View,
+                            crate::actions::MAIL_OPERATION_TYPE,
+                            &payload
+                        ),
                         &mut doc,
-                        &automerge::ROOT,
+                        &automerge::ROOT
                     )
                     .unwrap(),
                     Some(ui::widget::ResourceOperationStart::Completed(_))
@@ -7049,7 +7071,7 @@ mod tests {
             .unwrap();
 
             let error = app
-                .invoke_resource_operation(
+                .answer_resource_operation(
                     tilo_actions::OperationKind::View,
                     crate::actions::MAIL_OPERATION_TYPE,
                     &payload,
@@ -7092,16 +7114,20 @@ mod tests {
             })
             .unwrap();
             let heads_before_preview = doc.get_heads();
-            assert!(
-                app.invoke_resource_operation(
-                    tilo_actions::OperationKind::View,
-                    crate::actions::MAIL_OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &automerge::ROOT,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        crate::actions::MAIL_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
-                .unwrap()
-            );
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(app.selected_message(), Some(id));
             assert!(
                 !app.shared.borrow().mailbox.get(id).unwrap().read,
@@ -7219,16 +7245,20 @@ mod tests {
             let heads_before = doc.get_heads();
 
             let compose = serde_json::to_vec(&crate::actions::MailOperation::ComposeNew).unwrap();
-            assert!(
-                app.invoke_resource_operation(
-                    tilo_actions::OperationKind::View,
-                    crate::actions::MAIL_OPERATION_TYPE,
-                    &compose,
-                    &doc,
-                    &automerge::ROOT,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        crate::actions::MAIL_OPERATION_TYPE,
+                        &compose
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
-                .unwrap()
-            );
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert!(
                 app.compose.open,
                 "mailbox Compose opens the normal composer"
@@ -7239,16 +7269,20 @@ mod tests {
                 id: message.id.to_string(),
             })
             .unwrap();
-            assert!(
-                app.invoke_resource_operation(
-                    tilo_actions::OperationKind::View,
-                    crate::actions::MAIL_OPERATION_TYPE,
-                    &reply,
-                    &doc,
-                    &automerge::ROOT,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        crate::actions::MAIL_OPERATION_TYPE,
+                        &reply
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
-                .unwrap()
-            );
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert!(app.compose.open, "message Reply opens the normal composer");
             assert_eq!(
                 app.compose.to_draft(&mut doc.clone()).to,
@@ -7723,7 +7757,7 @@ mod tests {
 
         // Phase `completed_refresh_cannot_be_replaced_before_its_owner_polls`.
         {
-            let (mut app, doc) = app();
+            let (mut app, mut doc) = app();
             let (outgoing, _outgoing_rx) = std::sync::mpsc::channel();
             let (_incoming_tx, incoming) = std::sync::mpsc::channel();
             app.engine = Some(EngineHandle {
@@ -7741,13 +7775,15 @@ mod tests {
             let payload =
                 serde_json::to_vec(&crate::actions::MailOperation::RefreshCurrentFolder).unwrap();
             assert!(
-                app.start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MAIL_OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &automerge::ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::MAIL_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .is_err()
             );
@@ -8573,7 +8609,7 @@ mod tests {
     fn attachment_save_waits_for_the_portal_and_settles_truthfully_once() {
         // Phase `attachment_resource_save_waits_for_portal_and_real_write`.
         {
-            let (mut app, doc) = app();
+            let (mut app, mut doc) = app();
             let (message_id, index, filename, bytes) = {
                 let state = app.shared.borrow();
                 let (message_id, attachment) = state
@@ -8608,13 +8644,15 @@ mod tests {
             let _host = ui::host::enter(&services);
             recorder.respond_to_pick(PortalOutcome::Opened(destination.clone()));
             assert!(matches!(
-                app.start_resource_operation(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MAIL_OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &automerge::ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::MAIL_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -8660,12 +8698,12 @@ mod tests {
             })
             .unwrap();
             assert!(
-                app.invoke_resource_operation(
+                app.answer_resource_operation(
                     tilo_actions::OperationKind::Effect,
                     crate::actions::MAIL_OPERATION_TYPE,
                     &payload,
                     &doc,
-                    &automerge::ROOT,
+                    &automerge::ROOT
                 )
                 .expect_err("only the admitted portal route may save an attachment")
                 .contains("admitted portal")

@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
 mod json_stdout;
+mod publishing;
 
 #[derive(Parser)]
 #[command(
@@ -62,6 +63,12 @@ enum Command {
     Ui(UiArgs),
     /// Build, assemble, sign, and verify an installable Tilo package.
     Package(PackageArgs),
+    /// Create or show the publisher key that signs packages and entries.
+    Keys(publishing::KeysArgs),
+    /// Ask a registry to let your key publish under namespaces you prove.
+    Apply(publishing::ApplyArgs),
+    /// Upload packages and ask the registry to list them.
+    Publish(publishing::PublishArgs),
 }
 
 #[derive(clap::Args)]
@@ -95,6 +102,18 @@ enum AddCommand {
         /// Derive actions from a registered graph screen reachable from main.
         #[arg(long)]
         screen: Option<String>,
+        #[command(flatten)]
+        options: AddOptions,
+    },
+    /// Add a workflow that checks, packages and publishes the app from CI.
+    Ci {
+        /// The forge the repository is hosted on; Codeberg is forgejo.
+        #[arg(long, value_enum)]
+        forge: ForgeArg,
+        /// Linux runner label. Defaults to `ubuntu-latest`, or `docker` on
+        /// Forgejo (`codeberg-small` on Codeberg).
+        #[arg(long)]
+        runs_on: Option<String>,
         #[command(flatten)]
         options: AddOptions,
     },
@@ -500,11 +519,28 @@ struct PackageArgs {
     #[arg(long)]
     identity: Option<PathBuf>,
 
-    /// Cargo profile used to build the declared entrypoints.
-    #[arg(long, default_value = "release")]
-    profile: String,
+    /// Cargo profile used to build the declared entrypoints. Defaults to
+    /// `thin-app`, or `release` with `--static`.
+    #[arg(long)]
+    profile: Option<String>,
 
-    /// Rust target triple passed to Cargo.
+    /// Link the toolkit and `libstd` into the binary instead of against the
+    /// copies the OS ships. The result is far over the application size limit;
+    /// use it for local experiments only.
+    #[arg(long = "static")]
+    static_link: bool,
+
+    /// The system to build for: a thin Tilo OS app, or one self-contained
+    /// Windows or macOS executable with the toolkit linked in.
+    #[arg(long, value_enum, default_value_t = PlatformArg::Tilo)]
+    platform: PlatformArg,
+
+    /// CPU architecture to build for. Defaults to the host's.
+    #[arg(long, value_enum)]
+    arch: Option<ArchArg>,
+
+    /// Rust target triple passed to Cargo; overrides the one --platform and
+    /// --arch pick (for example `x86_64-pc-windows-gnu`).
     #[arg(long)]
     target: Option<String>,
 
@@ -655,6 +691,9 @@ fn main() -> ExitCode {
         Command::Inspect(args) => run_inspect(args),
         Command::Ui(args) => run_ui(args),
         Command::Package(args) => run_package(args),
+        Command::Keys(args) => publishing::run_keys(args),
+        Command::Apply(args) => publishing::run_apply(args),
+        Command::Publish(args) => publishing::run_publish(args),
     };
     let code = match &result {
         Ok(_) => ExitCode::SUCCESS,
@@ -752,6 +791,9 @@ impl Command {
             Self::Inspect(_) => "inspect",
             Self::Ui(_) => "ui",
             Self::Package(_) => "package",
+            Self::Keys(_) => "keys",
+            Self::Apply(_) => "apply",
+            Self::Publish(_) => "publish",
         }
     }
 }
@@ -869,6 +911,13 @@ fn run_add(args: AddArgs, interactive: bool) -> Result<Value> {
         return Ok(outcome.to_json());
     };
     let (artifact, options) = match command {
+        AddCommand::Ci {
+            forge,
+            runs_on,
+            options,
+        } => {
+            return run_add_ci(forge, runs_on.as_deref(), &options);
+        }
         AddCommand::Screen {
             name,
             title,
@@ -910,14 +959,7 @@ fn run_add(args: AddArgs, interactive: bool) -> Result<Value> {
             props,
             options,
         } => {
-            let template = match template {
-                ComponentTemplateArg::Display => tilo_app_cli::ComponentTemplate::Display,
-                ComponentTemplateArg::Form => tilo_app_cli::ComponentTemplate::Form,
-                ComponentTemplateArg::Tree => tilo_app_cli::ComponentTemplate::Tree,
-                ComponentTemplateArg::List => tilo_app_cli::ComponentTemplate::List,
-                ComponentTemplateArg::Table => tilo_app_cli::ComponentTemplate::Table,
-                ComponentTemplateArg::Text => tilo_app_cli::ComponentTemplate::Text,
-            };
+            let template = component_template(template);
             let artifact = if let Some(screen) = mount {
                 let mut mount = match template {
                     tilo_app_cli::ComponentTemplate::Display => {
@@ -955,6 +997,37 @@ fn run_add(args: AddArgs, interactive: bool) -> Result<Value> {
         dry_run: options.dry_run,
     })?;
     print_add_outcome(&outcome);
+    Ok(outcome.to_json())
+}
+
+fn component_template(template: ComponentTemplateArg) -> tilo_app_cli::ComponentTemplate {
+    match template {
+        ComponentTemplateArg::Display => tilo_app_cli::ComponentTemplate::Display,
+        ComponentTemplateArg::Form => tilo_app_cli::ComponentTemplate::Form,
+        ComponentTemplateArg::Tree => tilo_app_cli::ComponentTemplate::Tree,
+        ComponentTemplateArg::List => tilo_app_cli::ComponentTemplate::List,
+        ComponentTemplateArg::Table => tilo_app_cli::ComponentTemplate::Table,
+        ComponentTemplateArg::Text => tilo_app_cli::ComponentTemplate::Text,
+    }
+}
+
+fn run_add_ci(forge: ForgeArg, runs_on: Option<&str>, options: &AddOptions) -> Result<Value> {
+    let start = options.app.clone().map_or_else(std::env::current_dir, Ok)?;
+    let forge = match forge {
+        ForgeArg::Github => tilo_app_cli::ci::Forge::Github,
+        ForgeArg::Forgejo => tilo_app_cli::ci::Forge::Forgejo,
+        ForgeArg::Gitea => tilo_app_cli::ci::Forge::Gitea,
+    };
+    let outcome = tilo_app_cli::ci::add_ci(&start, forge, runs_on, options.force, options.dry_run)?;
+    let verb = if outcome.written {
+        "Created"
+    } else {
+        "Would create"
+    };
+    println!("{verb} {}", outcome.path.display());
+    println!(
+        "Next: add the TILO_PUBLISHER_KEY secret (the file `tilo-app keys new` wrote), then push a v* tag to publish"
+    );
     Ok(outcome.to_json())
 }
 
@@ -1111,6 +1184,27 @@ fn read_ui_node(source: NodeSourceArgs) -> Result<tilo_ui_graph::UiNode> {
     tilo_app_cli::parse_ui_node(&source)
 }
 
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum PlatformArg {
+    Tilo,
+    Windows,
+    Macos,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ForgeArg {
+    Github,
+    Forgejo,
+    Gitea,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ArchArg {
+    #[value(name = "x86_64")]
+    X86_64,
+    Aarch64,
+}
+
 fn run_package(args: PackageArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
     let outcome = tilo_app_cli::package_app(
@@ -1119,7 +1213,17 @@ fn run_package(args: PackageArgs) -> Result<Value> {
             output: args.output,
             identity: args.identity,
             profile: args.profile,
+            static_link: args.static_link,
             target: args.target,
+            platform: match args.platform {
+                PlatformArg::Tilo => tilo_app_cli::PackagePlatform::Tilo,
+                PlatformArg::Windows => tilo_app_cli::PackagePlatform::Windows,
+                PlatformArg::Macos => tilo_app_cli::PackagePlatform::Macos,
+            },
+            arch: args.arch.map(|arch| match arch {
+                ArchArg::X86_64 => tilo_app_cli::PackageArch::X86_64,
+                ArchArg::Aarch64 => tilo_app_cli::PackageArch::Aarch64,
+            }),
             features: args.features,
             no_default_features: args.no_default_features,
             force: args.force,
@@ -2409,7 +2513,7 @@ mod tests {
             assert_eq!(package.path, Some(PathBuf::from("apps/demo/src")));
             assert_eq!(package.output, Some(PathBuf::from("dist/demo-dev.tapp")));
             assert_eq!(package.identity, Some(PathBuf::from("publisher.json")));
-            assert_eq!(package.profile, "distribution");
+            assert_eq!(package.profile, Some("distribution".into()));
             assert_eq!(package.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
             assert_eq!(package.features, ["sqlite", "telemetry"]);
             assert!(package.no_default_features);
@@ -2419,7 +2523,8 @@ mod tests {
             let Command::Package(defaults) = defaults.command else {
                 panic!("expected package command");
             };
-            assert_eq!(defaults.profile, "release");
+            assert_eq!(defaults.profile, None);
+            assert!(!defaults.static_link);
             assert!(!defaults.force);
         }
     }

@@ -38,6 +38,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 mod file_workflow;
 mod lsp_workflow;
@@ -135,7 +136,7 @@ impl BottomPanelToggle {
 }
 
 impl Widget for BottomPanelToggle {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.button.sync(state, path);
     }
 
@@ -209,18 +210,7 @@ impl Widget for BottomPanelToggle {
         icon.draw(scene, transform, icon_rect, theme.text_primary);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.is_focused()
             && matches!(
                 event,
@@ -237,22 +227,12 @@ impl Widget for BottomPanelToggle {
             )
             && self
                 .button
-                .perform_action(&ui::a11y::Action::Activate, state, path)
+                .perform_action(&ui::a11y::Action::Activate, ctx.state, ctx.path)
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
-        self.button.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+        self.button.handle_event(event, ctx);
     }
 
     fn name(&self) -> &'static str {
@@ -318,8 +298,8 @@ impl Widget for BottomPanelToggle {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.button.perform_action(action, state, path)
     }
@@ -3309,41 +3289,18 @@ impl CodeApp {
     /// The find bar takes keyboard input while it is open (its fields own
     /// typing; Enter and Escape are its transport). Returns `true` when the
     /// find bar newly consumed the event (the caller should stop routing).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards one WindowEvent's already-decoded fields to the find bar's own Widget::handle_event, whose signature this crate does not own"
-    )]
-    fn handle_find_bar(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn handle_find_bar(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         if !self.find.is_visible() {
             return false;
         }
         let Some(n) = self.find_node else {
             return false;
         };
-        let before = *handled;
-        self.find.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            n,
-            taffy,
-        );
-        self.drain_find_events(state);
-        *handled && !before
+        let before = *ctx.handled;
+        self.find
+            .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+        self.drain_find_events(ctx.state);
+        *ctx.handled && !before
     }
 
     /// While the Terminal dock tab shows a live terminal, a click in its
@@ -3379,14 +3336,16 @@ impl CodeApp {
             let mut tf = None;
             t.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                &tr,
-                &mut th,
-                &mut tf,
-                NodeId::new(0),
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor,
+                    modifiers: &modifiers,
+                    state,
+                    path: &tr,
+                    handled: &mut th,
+                    focus_target: &mut tf,
+                    node_id: NodeId::new(0),
+                    taffy,
+                },
             );
             if th {
                 *handled = true;
@@ -3411,20 +3370,10 @@ impl CodeApp {
     ///    hit-tests against its taffy-derived column rect.
     ///  * Overlay: route only while the flap is open. The tree hit-tests
     ///    against the off-flow overlay rect set in `draw` via `place_at`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards one WindowEvent's already-decoded fields to each child widget's own Widget::handle_event, whose signature this crate does not own"
-    )]
     fn route_to_children(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
         overlay: bool,
     ) {
         let sidebar_active = match self.sidebar_layout() {
@@ -3432,17 +3381,8 @@ impl CodeApp {
             SplitLayout::Overlay => self.sidebar_open(),
         };
         if sidebar_active && let Some(n) = self.sidebar_node {
-            self.sidebar.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            self.sidebar
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
 
         // While the overlay sidebar is open, it captures pointer presses over
@@ -3458,63 +3398,29 @@ impl CodeApp {
             } = event
             && self.overlay_sidebar_rect.contains(self.last_cursor)
         {
-            *handled = true;
+            *ctx.handled = true;
         }
 
         if let Some(n) = self.panel_toggle_node {
-            self.panel_toggle.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            self.panel_toggle
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
-        if !*handled && let Some(n) = self.tabs_node {
-            self.tabs.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+        if !*ctx.handled
+            && let Some(n) = self.tabs_node
+        {
+            self.tabs
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
         if self.panel_visible
             && let Some(n) = self.panel_node
         {
-            self.panel.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            self.panel
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
         if let Some(n) = self.editor_node {
-            self.editor.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-            self.dispatch_editor_text_edits(state);
+            self.editor
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            self.dispatch_editor_text_edits(ctx.state);
         }
     }
 }
@@ -3581,10 +3487,11 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
 }
 
 impl Widget for CodeApp {
-    fn native_input_snapshot(&self, doc: &AutoCommit, _path: &ObjId) -> Option<serde_json::Value> {
+    fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
         fn rect(rect: Rect) -> [f64; 4] {
             [rect.x0, rect.y0, rect.x1, rect.y1]
         }
+        let (doc, _) = ui::doc::document_ref(doc, path);
         // Read authoritative text, never the editor's optimistic render cache.
         // Only the opt-in native input observer invokes this O(buffer length) read.
         let buffer_id = self.active_file_node().map(|node| self.buffer_key(node));
@@ -3626,7 +3533,8 @@ impl Widget for CodeApp {
         clippy::too_many_lines,
         reason = "the widget lifecycle deliberately sequences every asynchronous projection in one auditable frame boundary"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         if let Some((id, argument)) = self.pending_resource_command.take()
             && let Some(command) = Command::from_id(&id)
         {
@@ -4032,19 +3940,14 @@ impl Widget for CodeApp {
         self.draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if self.handle_palette_and_prompt_cursor(event, scale_factor, *modifiers, state, handled) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.handle_palette_and_prompt_cursor(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.handled,
+        ) {
             return;
         }
 
@@ -4052,17 +3955,23 @@ impl Widget for CodeApp {
         // because closing the tab either way changes which of two versions of
         // the file survives.
         if self.close_prompt.is_some() {
-            self.handle_close_prompt(event, state, handled);
+            self.handle_close_prompt(event, ctx.state, ctx.handled);
             return;
         }
 
         let overlay = self.sidebar_layout() == SplitLayout::Overlay;
 
-        if self.handle_overlay_shortcuts(event, overlay, handled) {
+        if self.handle_overlay_shortcuts(event, overlay, ctx.handled) {
             return;
         }
 
-        if self.handle_global_shortcuts(event, *modifiers, state, handled, focus_target) {
+        if self.handle_global_shortcuts(
+            event,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.handled,
+            ctx.focus_target,
+        ) {
             return;
         }
 
@@ -4070,22 +3979,13 @@ impl Widget for CodeApp {
         // is "which of these two versions of your file survives", and letting
         // keystrokes fall through to the buffer underneath it would be wrong.
         if self.conflict.is_some() {
-            self.handle_conflict_prompt(event, state, handled);
+            self.handle_conflict_prompt(event, ctx.state, ctx.handled);
             return;
         }
 
         // The find bar takes keyboard input while it is open (its fields own
         // typing; Enter and Escape are its transport).
-        if self.handle_find_bar(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            taffy,
-        ) {
+        if self.handle_find_bar(event, ctx) {
             return;
         }
 
@@ -4106,8 +4006,8 @@ impl Widget for CodeApp {
             )
         {
             self.close_bottom_panel();
-            *focus_target = self.panel_toggle_node;
-            *handled = true;
+            *ctx.focus_target = self.panel_toggle_node;
+            *ctx.handled = true;
             return;
         }
 
@@ -4115,22 +4015,19 @@ impl Widget for CodeApp {
         // terminal, a click in its content region focuses the shell and routes
         // keyboard + pointer input to it (like clicking into any terminal); a
         // press elsewhere returns focus to the editor.
-        if self.handle_terminal_input(event, scale_factor, *modifiers, state, taffy, handled) {
+        if self.handle_terminal_input(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.taffy,
+            ctx.handled,
+        ) {
             return;
         }
 
         // Route to child widgets.
-        self.route_to_children(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            taffy,
-            overlay,
-        );
+        self.route_to_children(event, ctx, overlay);
 
         // If the editor asked for a language-server action (Ctrl+Space, F1,
         // F12), issue it now with the caret position.
@@ -4145,8 +4042,8 @@ impl Widget for CodeApp {
         }
 
         // Drain whatever the children produced, then refresh derived views.
-        self.drain_child_events(state);
-        self.refresh_diagnostics(state);
+        self.drain_child_events(ctx.state);
+        self.refresh_diagnostics(ctx.state);
         self.refresh_status();
         // Mirror panel tab changes into focus, if the panel switched itself.
         let _ = self.panel.take_tab_changed();
@@ -4536,7 +4433,7 @@ impl Widget for CodeApp {
 
     /// The explorer eases wheel scrolling and row transitions on its own
     /// clock; it is the one child whose per-frame update this root runs.
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.sidebar.update(state, path)
     }
 

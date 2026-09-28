@@ -7,7 +7,6 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -253,12 +252,6 @@ impl StandaloneHistoryPane {
 }
 
 impl Widget for StandaloneHistoryPane {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        for child in self.children_mut() {
-            child.sync(state, path);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -332,32 +325,11 @@ impl Widget for StandaloneHistoryPane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let nodes = self.child_nodes.clone();
         for (child, node) in self.children_mut().into_iter().zip(nodes) {
-            child.handle_event(
-                event,
-                scale,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
-            );
-            if *handled {
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled {
                 break;
             }
         }
@@ -396,6 +368,7 @@ mod tests {
     use super::*;
     use crate::a11y::{Action, Role};
     use crate::widget::history::HistoryAuthor;
+    use automerge::AutoCommit;
     use automerge::transaction::Transactable;
 
     fn entry(id: u8) -> HistoryEntry {

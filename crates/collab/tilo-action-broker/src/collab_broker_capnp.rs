@@ -76,7 +76,7 @@ use crate::collab_broker::{
 };
 use crate::collab_outbound::PeerPublisher;
 use crate::services::{HostServices, WorkspaceAuthorityHandle as WorkspaceTreeHandle};
-use collab_types::foreign_device::foreign_device_role;
+use collab_types::foreign_device::{cap_applies, foreign_device_role, on_foreign_device};
 use collab_types::{Principal, Role as CapRole};
 use tilo_desktop_model::{DesktopTree, WorkspaceTaskStatus};
 
@@ -87,10 +87,6 @@ struct AuthorizedDocumentRoute {
     payload: collab_types::WholeDocumentPayload,
 }
 
-/// Launcher preambles are deliberately tiny: they only bind a socket to the
-/// shell's already-created process record. The cert presented by the
-/// app still decides workspace membership and delegated-agent authority.
-const MAX_COLLAB_LAUNCH_HANDOFF_BYTES: usize = 1024;
 const LAUNCH_RECORD_RACE_RETRIES: u8 = 30;
 const LAUNCH_RECORD_RACE_DELAY: Duration = Duration::from_millis(10);
 
@@ -419,18 +415,46 @@ struct CollabLaunchHandoff {
 struct VerifiedJoinIdentity {
     user_public_key: [u8; 32],
     device_public_key: [u8; 32],
-    /// The certificate marks a foreign device, so its role is capped.
-    foreign: bool,
+    /// A foreign device in a room it does not govern: its role is capped.
+    capped: bool,
 }
 
 impl VerifiedJoinIdentity {
-    fn of(cert: &tilo_user_identity::DeviceCert) -> Self {
+    fn of(cert: &tilo_user_identity::DeviceCert, capped: bool) -> Self {
         Self {
             user_public_key: cert.user_public_key,
             device_public_key: cert.device_public_key,
-            foreign: cert.capabilities.foreign,
+            capped,
         }
     }
+}
+
+/// Whether a device is held to the foreign-device cap in `room`, as far as
+/// `authority` knows who governs it; `device` `None` is this host's own.
+fn cap_applies_in(
+    authority: Option<&dyn super::peer_actions::CertificateAuthority>,
+    room: &str,
+    foreign: bool,
+    device: Option<&[u8; 32]>,
+) -> bool {
+    let governs = authority
+        .zip(uuid::Uuid::parse_str(room).ok())
+        .is_some_and(|(authority, room)| authority.governs(room, device));
+    cap_applies(foreign, governs)
+}
+
+/// [`cap_applies_in`] for `cert`'s device.
+fn cert_capped_in(
+    authority: Option<&dyn super::peer_actions::CertificateAuthority>,
+    room: &str,
+    cert: &tilo_user_identity::DeviceCert,
+) -> bool {
+    cap_applies_in(
+        authority,
+        room,
+        cert.capabilities.foreign,
+        Some(&cert.device_public_key),
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -459,6 +483,8 @@ struct AdmittedJoinIdentity {
 pub struct BrokerActor {
     id: String,
     is_agent: bool,
+    /// A person acting from a foreign device in a room it does not govern.
+    capped: bool,
 }
 
 impl BrokerActor {
@@ -467,6 +493,7 @@ impl BrokerActor {
         Self {
             id: id.into(),
             is_agent: false,
+            capped: false,
         }
     }
 
@@ -475,6 +502,7 @@ impl BrokerActor {
         Self {
             id: id.into(),
             is_agent: true,
+            capped: false,
         }
     }
 
@@ -499,37 +527,62 @@ impl BrokerActor {
         if self.is_agent {
             workspace.actor_for_agent(self.id.strip_prefix("agent:").unwrap_or(&self.id))
         } else {
-            workspace.actor_for_person_at(&self.id, now)
+            crate::policy::WorkspacePolicy::actor_for_person_on_device_at(
+                workspace,
+                &self.id,
+                self.capped,
+                now,
+            )
         }
+    }
+}
+
+/// `actor`, held to `workspace`'s foreign-device cap when `capped`.
+fn capped_if(
+    actor: Actor,
+    capped: bool,
+    workspace: &tilo_desktop_model::Workspace,
+    now: u64,
+) -> Actor {
+    if capped {
+        on_foreign_device(actor, &workspace.capabilities, now)
+    } else {
+        actor
     }
 }
 
 impl AdmittedJoinIdentity {
     fn broker_actor(&self) -> BrokerActor {
-        BrokerActor {
-            id: self.agent_id.as_ref().map_or_else(
-                || self.principal_id.clone(),
-                |agent| format!("agent:{agent}"),
-            ),
-            is_agent: self.agent_id.is_some(),
+        match &self.agent_id {
+            Some(agent) => BrokerActor::agent(format!("agent:{agent}")),
+            None => BrokerActor {
+                capped: self.verified.capped,
+                ..BrokerActor::person(self.principal_id.clone())
+            },
         }
     }
 
     /// The caller this admitted connection is, confined to its room.
     fn caller(&self, room: &str) -> tilo_actions::remote::Caller {
+        let foreign = self
+            .certificate
+            .as_ref()
+            .is_some_and(|cert| cert.capabilities.foreign);
         match &self.agent_id {
             Some(agent) => tilo_actions::remote::Caller::local_agent(agent.clone()),
             None => tilo_actions::remote::Caller::local_person(self.principal_id.clone()),
         }
         .in_room(room)
+        .from_foreign_device(foreign)
     }
 
-    fn policy_actor(&self, room: &str) -> Actor {
-        match &self.agent_id {
-            Some(agent) => Actor::agent(agent),
-            None => Actor::person(Some(self.role), self.principal_id.clone()),
+    fn policy_actor(&self, workspace: &tilo_desktop_model::Workspace, now: u64) -> Actor {
+        let room = workspace.room.to_string();
+        if let Some(agent) = &self.agent_id {
+            return Actor::agent(agent).in_room(room);
         }
-        .in_room(room.to_string())
+        let person = Actor::person(Some(self.role), self.principal_id.clone()).in_room(room);
+        capped_if(person, self.verified.capped, workspace, now)
     }
 }
 
@@ -604,7 +657,7 @@ fn admit_verified_join_at(
     let mut role = workspace
         .role_of_at(&principal_id, now)
         .ok_or_else(|| "certified collaboration identity is not a workspace member".to_string())?;
-    if verified.foreign {
+    if verified.capped {
         role = foreign_device_role(role, &workspace.capabilities, now);
     }
     if role == CapRole::Denied {
@@ -653,7 +706,7 @@ fn admit_agent_delegation_at(
         .iter()
         .find(|workspace| workspace.room.to_string() == route.cluster_id)
         .ok_or_else(|| "agent delegation names an unavailable workspace".to_string())?;
-    if admitted.verified.foreign
+    if admitted.verified.capped
         || (workspace.owner.as_ref() != Some(&admitted.principal_id)
             && workspace.decide_at(
                 &workspace.actor_for_person_at(&admitted.principal_id, now),
@@ -718,7 +771,9 @@ fn verify_join_presentation(
             &Signature::from_bytes(&proof),
         )
         .map_err(|_| "collaboration join proof was signed by an unknown device".to_string())?;
-    Ok(VerifiedJoinIdentity::of(&cert))
+    // Without an authority to ask who governs the room, every foreign device
+    // is held to the cap; the caller refines this where it has one.
+    Ok(VerifiedJoinIdentity::of(&cert, cert.capabilities.foreign))
 }
 
 fn verify_join_identity(
@@ -783,14 +838,17 @@ fn verify_join_identity_with_host_scope(
         super::peer_actions::CertificateAuthority::policy_time,
     )?;
     let now_ns = policy_context::sample(registered.clone(), registered.as_ref())?.1;
-    let verified = verify_join_presentation(
-        route,
-        &presentation,
-        &expected_root,
-        now_ns,
-        revoked,
-        enrolled,
-    )?;
+    let verified = VerifiedJoinIdentity {
+        capped: cert_capped_in(authority, &route.cluster_id, &cert),
+        ..verify_join_presentation(
+            route,
+            &presentation,
+            &expected_root,
+            now_ns,
+            revoked,
+            enrolled,
+        )?
+    };
     let membership = membership
         .ok_or_else(|| "certified join has no workspace membership authority".to_string())?;
     let mut admitted = admit_verified_join_at(
@@ -831,7 +889,10 @@ fn verify_enrolled_join_identity(
     let now_ns = policy_context::sample(registered.clone(), registered.as_ref())?.1;
     tilo_user_identity::verify_device_cert_at(&cert, now_ns)
         .map_err(|error| format!("device certificate was rejected: {error}"))?;
-    let verified = VerifiedJoinIdentity::of(&cert);
+    let verified = VerifiedJoinIdentity::of(
+        &cert,
+        cert_capped_in(Some(authority), &route.cluster_id, &cert),
+    );
     let membership = membership
         .ok_or_else(|| "certified join has no workspace membership authority".to_string())?;
     let tree = membership.snapshot()?;
@@ -1191,6 +1252,8 @@ mod launchable;
 pub use launchable::launchable_provider;
 #[path = "desktop_commands.rs"]
 mod desktop_commands;
+#[path = "document_imports.rs"]
+mod document_imports;
 #[path = "peer_action_broker.rs"]
 mod peer_action_broker;
 #[path = "policy_context.rs"]
@@ -1255,6 +1318,40 @@ impl CapnpBrokerState {
             policy_time: self.registered_policy_time()?,
             admitted,
         })
+    }
+
+    /// Whether `cert`'s device is held to the foreign-device cap in `room`.
+    fn capped_in(&self, room: &str, cert: &tilo_user_identity::DeviceCert) -> bool {
+        cert_capped_in(
+            self.certificate_authority.get().map(AsRef::as_ref),
+            room,
+            cert,
+        )
+    }
+
+    /// The broker actor `caller` is in `room`.
+    pub(super) fn caller_actor(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        room: &str,
+    ) -> BrokerActor {
+        BrokerActor {
+            capped: cap_applies_in(
+                self.certificate_authority.get().map(AsRef::as_ref),
+                room,
+                caller.is_foreign_device(),
+                caller.device_public_key(),
+            ),
+            ..BrokerActor::for_caller(caller)
+        }
+    }
+
+    /// The person `cert` certifies, acting in `room` from that certificate's device.
+    fn certified_person(&self, room: &str, cert: &tilo_user_identity::DeviceCert) -> BrokerActor {
+        BrokerActor {
+            capped: self.capped_in(room, cert),
+            ..BrokerActor::person(principal_id_for_root(cert.user_public_key))
+        }
     }
 
     fn current_action_caller(
@@ -2540,7 +2637,7 @@ impl CapnpBrokerState {
         admit_verified_join_at(
             &tree,
             &route,
-            VerifiedJoinIdentity::of(certificate),
+            VerifiedJoinIdentity::of(certificate, self.capped_in(&route.cluster_id, certificate)),
             now / 1_000_000_000,
         )?;
         let mut workers = self
@@ -2715,6 +2812,7 @@ impl CapnpBrokerState {
     async fn commit_owner_request(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        record_kind: Option<String>,
     ) -> Result<(), capnp::Error> {
         // Dropping the waiting RPC cannot convert an admitted effect into a
         // refusal or leave the standalone capability apparently healthy.
@@ -2738,7 +2836,7 @@ impl CapnpBrokerState {
             complete: false,
         };
         self.publisher
-            .commit_owner(request)
+            .commit_owner(request, record_kind)
             .await
             .map_err(capnp::Error::failed)?;
         waiting.complete = true;
@@ -2769,14 +2867,17 @@ impl CapnpBrokerState {
             pending.context.clone(),
             status,
         );
-        self.commit_owner_request(tilo_peer_state::owner_commit::OwnerCommitRequest {
-            room: pending.cluster_id.clone(),
-            operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-                invocation: update.invocation().0,
-                redacted: serde_json::to_vec(&receipt)
-                    .map_err(|e| capnp::Error::failed(e.to_string()))?,
+        self.commit_owner_request(
+            tilo_peer_state::owner_commit::OwnerCommitRequest {
+                room: pending.cluster_id.clone(),
+                operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                    invocation: update.invocation().0,
+                    redacted: serde_json::to_vec(&receipt)
+                        .map_err(|e| capnp::Error::failed(e.to_string()))?,
+                },
             },
-        })
+            None,
+        )
         .await
     }
 
@@ -3661,14 +3762,7 @@ impl CapnpBrokerState {
     )]
     #[cfg(test)]
     fn action_catalogue_json(&self, cluster_id: &str, actor: &str) -> Result<String, String> {
-        self.action_catalogue_json_for(
-            cluster_id,
-            &BrokerActor {
-                id: actor.to_string(),
-                is_agent: false,
-            },
-            None,
-        )
+        self.action_catalogue_json_for(cluster_id, &BrokerActor::person(actor), None)
     }
 
     #[allow(
@@ -4005,10 +4099,7 @@ impl CapnpBrokerState {
             resource,
             action,
             argument,
-            &BrokerActor {
-                id: actor.to_string(),
-                is_agent: false,
-            },
+            &BrokerActor::person(actor),
             confirmation_token,
             None,
         )
@@ -4288,6 +4379,7 @@ impl CapnpBrokerState {
                 workspace,
                 now,
                 tilo_agent_control_protocol::InvokingActor::Person { id: &actor.id },
+                actor.capped,
                 None,
                 &offered.0,
                 &offered.1,
@@ -4935,10 +5027,7 @@ impl CapnpBrokerState {
             resource,
             action,
             argument,
-            &BrokerActor {
-                id: run.agent_id,
-                is_agent: true,
-            },
+            &BrokerActor::agent(run.agent_id),
             None,
             Some(run.action_context),
         )
@@ -5198,13 +5287,13 @@ impl CapnpBrokerState {
             None => workspace.role_of_at(&admitted.principal_id, now),
         }
         .ok_or_else(|| capnp::Error::failed("current document membership expired".into()))?;
-        if admitted.verified.foreign {
+        if admitted.verified.capped {
             role = foreign_device_role(role, &workspace.capabilities, now);
         }
         let mut current = admitted.clone();
         current.role = role;
         let actor = current
-            .policy_actor(&route.cluster_id)
+            .policy_actor(workspace, now)
             .with_principal(Principal::App(route.app_id.clone()));
         let resource = ResourceRef::Artifact {
             app: Some(route.app_id.clone()),
@@ -5697,6 +5786,7 @@ impl collab_service::Server for CapnpCollabService {
             let participant_kind = reader.get_participant_kind()?.to_str().map_err(|error| {
                 capnp::Error::failed(format!("participant kind not utf8: {error}"))
             })?;
+            let record_kind = joined_record_kind(reader.get_record_kind()?)?;
             if (verified_identity.host_scope.is_some()
                 || verified_identity.worker_registration.is_some())
                 && !matches!(participant_kind, "" | "person")
@@ -5788,12 +5878,30 @@ impl collab_service::Server for CapnpCollabService {
                 channel_id,
                 peer_id,
                 verified_identity,
+                record_kind,
                 lease: Some(Rc::clone(&self.lease)),
             });
             results.get().set_handle(client);
             Ok(())
         })
     }
+}
+
+/// The resource kind a join names for its record: none when empty, and
+/// refused unless it is a record kind the toolkit accepts.
+fn joined_record_kind(kind: capnp::text::Reader<'_>) -> Result<Option<String>, capnp::Error> {
+    let kind = kind
+        .to_str()
+        .map_err(|error| capnp::Error::failed(format!("record kind not utf8: {error}")))?;
+    if kind.is_empty() {
+        return Ok(None);
+    }
+    if !ui::record::RecordKind::new(kind).is_valid() {
+        return Err(capnp::Error::failed(format!(
+            "invalid record kind `{kind}`"
+        )));
+    }
+    Ok(Some(kind.to_owned()))
 }
 
 /// Per-channel handle established by `join_channel`; every subsequent
@@ -5805,6 +5913,8 @@ struct CapnpChannelHandle {
     channel_id: String,
     peer_id: u64,
     verified_identity: AdmittedJoinIdentity,
+    /// The resource kind the app named for this channel's record, if any.
+    record_kind: Option<String>,
     /// Production handles share the root RPC connection lease. Direct unit
     /// fixtures use `None` and retain the legacy one-handle cleanup behavior.
     lease: Option<Rc<ConnectionLease>>,
@@ -6541,14 +6651,18 @@ impl channel_handle::Server for CapnpChannelHandle {
                 let _order = state.owner_commit_order.lock().await;
                 state.revalidate_admission(&route, &identity)?;
                 state
-                    .commit_owner_request(tilo_peer_state::owner_commit::OwnerCommitRequest {
-                        room: surface.route.cluster_id,
-                        operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-                            invocation: update.invocation().0,
-                            redacted: serde_json::to_vec(&receipt)
-                                .map_err(|e| capnp::Error::failed(e.to_string()))?,
+                    .commit_owner_request(
+                        tilo_peer_state::owner_commit::OwnerCommitRequest {
+                            room: surface.route.cluster_id,
+                            operation:
+                                tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                                    invocation: update.invocation().0,
+                                    redacted: serde_json::to_vec(&receipt)
+                                        .map_err(|e| capnp::Error::failed(e.to_string()))?,
+                                },
                         },
-                    })
+                        None,
+                    )
                     .await?;
                 state.revalidate_admission(&route, &identity)?;
                 Ok(())
@@ -6629,6 +6743,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         let peer_id = self.peer_id;
         let route = self.route();
         let verified_identity = self.verified_identity.clone();
+        let record_kind = self.record_kind.clone();
         Promise::from_future(async move {
             let op_bytes = params.get()?.get_op()?.to_vec();
             let envelope: SignedOp = postcard::from_bytes(&op_bytes).map_err(|e| {
@@ -6651,14 +6766,17 @@ impl channel_handle::Server for CapnpChannelHandle {
             {
                 state.revalidate_admission(&route, &verified_identity)?;
                 state
-                    .commit_owner_request(tilo_peer_state::owner_commit::OwnerCommitRequest {
-                        room: route.cluster_id.clone(),
-                        operation: tilo_peer_state::owner_commit::CommitOperation::Document {
-                            app: route.app_id.clone(),
-                            record: route.record_id.clone(),
-                            envelope: Box::new(envelope.clone()),
+                    .commit_owner_request(
+                        tilo_peer_state::owner_commit::OwnerCommitRequest {
+                            room: route.cluster_id.clone(),
+                            operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                                app: route.app_id.clone(),
+                                record: route.record_id.clone(),
+                                envelope: Box::new(envelope.clone()),
+                            },
                         },
-                    })
+                        record_kind,
+                    )
                     .await?;
             }
             let current_identity = state.revalidate_admission(&route, &verified_identity)?;
@@ -8052,11 +8170,11 @@ impl channel_handle::Server for CapnpChannelHandle {
             };
             let workspace = workspace.clone();
             drop(tree);
-            let caller = current.policy_actor(&self.route().cluster_id);
             let now = match self.state.policy_now_ns() {
                 Ok(now) => now / 1_000_000_000,
                 Err(error) => return Promise::err(capnp::Error::failed(error)),
             };
+            let caller = current.policy_actor(&workspace, now);
             if workspace.decide_at(&caller, &ResourceRef::App(app_id.clone()), Verb::Write, now)
                 != CapDecision::Allow
             {
@@ -9961,6 +10079,12 @@ pub(super) fn spawn_configured(
                     }
                     return;
                 }
+                if let Err(error) = state.start_document_imports() {
+                    if let Ok(mut failure) = state.owner_commit_failure.lock() {
+                        failure.get_or_insert(error);
+                    }
+                    return;
+                }
                 if let Err(error) = state.start_workspace_collaboration() {
                     if let Ok(mut failure) = state.owner_commit_failure.lock() {
                         failure.get_or_insert(error);
@@ -10231,26 +10355,27 @@ async fn authenticate_launcher_handoff(
             "collaboration launch marker changed while being read".into(),
         ));
     }
-    let mut length = [0_u8; 4];
-    stream.read_exact(&mut length).await.map_err(|error| {
-        capnp::Error::failed(format!(
-            "could not read collaboration launch handoff length: {error}"
-        ))
-    })?;
-    let length = usize::try_from(u32::from_le_bytes(length)).map_err(|_| {
-        capnp::Error::failed("collaboration launch handoff length overflows usize".into())
-    })?;
-    if length == 0 || length > MAX_COLLAB_LAUNCH_HANDOFF_BYTES {
-        return Err(capnp::Error::failed(
-            "collaboration launch handoff has an invalid length".into(),
-        ));
-    }
-    let mut bytes = vec![0_u8; length];
-    stream.read_exact(&mut bytes).await.map_err(|error| {
-        capnp::Error::failed(format!(
-            "could not read collaboration launch handoff: {error}"
-        ))
-    })?;
+    let bytes = match launcher::services::COLLAB_LAUNCH_FRAMING
+        .read_async(stream)
+        .await
+    {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            return Err(capnp::Error::failed(
+                "collaboration launch handoff is missing".into(),
+            ));
+        }
+        Err(wire_frame::FrameError::EmptyFrame | wire_frame::FrameError::TooLarge(_)) => {
+            return Err(capnp::Error::failed(
+                "collaboration launch handoff has an invalid length".into(),
+            ));
+        }
+        Err(error) => {
+            return Err(capnp::Error::failed(format!(
+                "could not read collaboration launch handoff: {error}"
+            )));
+        }
+    };
     let handoff: CollabLaunchHandoff = serde_json::from_slice(&bytes).map_err(|error| {
         capnp::Error::failed(format!("invalid collaboration launch handoff: {error}"))
     })?;
@@ -10582,6 +10707,19 @@ pub mod tests {
 
         fn health(&self) -> Result<(), String> {
             Ok(())
+        }
+    }
+
+    #[test]
+    fn a_join_names_a_valid_record_kind_or_none() {
+        let joined = |kind: &str| super::joined_record_kind(kind.into());
+        assert_eq!(joined("").unwrap(), None);
+        assert_eq!(
+            joined("notes.notebook").unwrap().as_deref(),
+            Some("notes.notebook")
+        );
+        for invalid in ["1note", "note book", "note/page"] {
+            assert!(joined(invalid).is_err(), "{invalid}");
         }
     }
 
@@ -11321,13 +11459,14 @@ pub mod tests {
                     verified: VerifiedJoinIdentity {
                         user_public_key: [0; 32],
                         device_public_key: [0; 32],
-                        foreign: false,
+                        capped: false,
                     },
                     principal_id: "fixture-application".into(),
                     display_handle: None,
                     role: CapRole::Editor,
                     agent_id: None,
                 },
+                record_kind: None,
                 lease: None,
             })
         }
@@ -12169,7 +12308,7 @@ pub mod tests {
         VerifiedJoinIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: [42; 32],
-            foreign: false,
+            capped: false,
         }
     }
 
@@ -12233,6 +12372,119 @@ pub mod tests {
     }
 
     #[test]
+    fn a_foreign_device_is_refused_actions_above_the_workspace_cap() {
+        use tilo_actions::PermissionRequirement::{Admin, Invite, Write};
+        let root = SigningKey::from_bytes(&[24; 32]);
+        let mut workspace =
+            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(4), "Actions");
+        workspace.owner = Some(principal_id_for_root(root.verifying_key().to_bytes()));
+        let room = workspace.room.to_string();
+        let route = CrdtRoute::cluster(room.clone());
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let native = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
+        let foreign = VerifiedJoinIdentity {
+            capped: true,
+            ..verified_device(&root)
+        };
+        let foreign = admit_verified_join(&tree, &route, foreign).unwrap();
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.shared()),
+            None,
+        );
+        let authorize = |admitted: &AdmittedJoinIdentity, permission| {
+            state.authorize_invocation_permission(
+                &room,
+                "so.tilo.settings",
+                "workspace.rename",
+                permission,
+                &admitted.broker_actor(),
+                0,
+            )
+        };
+
+        for permission in [Admin, Invite, Write] {
+            authorize(&native, permission).unwrap();
+        }
+        assert!(authorize(&foreign, Admin).is_err());
+        assert!(authorize(&foreign, Invite).is_err());
+        authorize(&foreign, Write).unwrap();
+    }
+
+    /// Governs every room for one device; admits every certificate.
+    #[cfg(test)]
+    struct GovernedBy([u8; 32]);
+
+    #[cfg(test)]
+    impl crate::peer_actions::CertificateAuthority for GovernedBy {
+        fn authorize(
+            &self,
+            _room: uuid::Uuid,
+            _certificate: &tilo_user_identity::DeviceCert,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn governs(&self, _room: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
+            device == Some(&self.0)
+        }
+    }
+
+    #[test]
+    fn a_foreign_device_is_capped_only_in_rooms_it_does_not_govern() {
+        let root = SigningKey::from_bytes(&[25; 32]);
+        let mut workspace =
+            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(5), "Own");
+        workspace.owner = Some(principal_id_for_root(root.verifying_key().to_bytes()));
+        let room = workspace.room.to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.clone().shared()),
+            None,
+        );
+        let governor = [7; 32];
+        let authority: Arc<dyn crate::peer_actions::CertificateAuthority> =
+            Arc::new(GovernedBy(governor));
+        assert!(state.certificate_authority.set(authority).is_ok());
+        let foreign_cert = |device| tilo_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device,
+            device_label: "mac".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities {
+                foreign: true,
+                ..tilo_user_identity::DeviceCapabilities::primary()
+            },
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        let admin = |cert: &tilo_user_identity::DeviceCert| {
+            let identity = VerifiedJoinIdentity::of(cert, state.capped_in(&room, cert));
+            let admitted =
+                admit_verified_join(&tree, &CrdtRoute::cluster(&room), identity).unwrap();
+            let actor = state.certified_person(&room, cert);
+            let admin = state.authorize_invocation_permission(
+                &room,
+                "so.tilo.settings",
+                "workspace.rename",
+                tilo_actions::PermissionRequirement::Admin,
+                &actor,
+                0,
+            );
+            (admitted.role, admin.is_ok())
+        };
+
+        assert_eq!(admin(&foreign_cert(governor)), (CapRole::Owner, true));
+        assert_eq!(admin(&foreign_cert([8; 32])), (CapRole::Editor, false));
+    }
+
+    #[test]
     fn a_foreign_device_joins_with_at_most_the_workspace_cap() {
         let root = SigningKey::from_bytes(&[23; 32]);
         let mut workspace =
@@ -12247,7 +12499,7 @@ pub mod tests {
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let foreign = VerifiedJoinIdentity {
-            foreign: true,
+            capped: true,
             ..verified_device(&root)
         };
 
@@ -12319,7 +12571,7 @@ pub mod tests {
         assert_eq!(admitted.role, CapRole::Commenter);
         assert!(
             admitted
-                .policy_actor(&route.cluster_id)
+                .policy_actor(&tree.workspaces[0], 0)
                 .principals
                 .contains(&Principal::Agent("scribe".into()))
         );
@@ -12519,7 +12771,7 @@ pub mod tests {
             VerifiedJoinIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_public_key: device.verifying_key().to_bytes(),
-                foreign: false,
+                capped: false,
             },
         )
         .expect("owner is admitted");
@@ -13119,10 +13371,7 @@ pub mod tests {
             );
         }
         drop(surfaces);
-        let actor = BrokerActor {
-            id: "owner".into(),
-            is_agent: false,
-        };
+        let actor = BrokerActor::person("owner");
         let full: serde_json::Value = serde_json::from_str(
             &state
                 .action_catalogue_json_for(&cluster, &actor, None)
@@ -13158,10 +13407,7 @@ pub mod tests {
             scoped["surfaces"][0]["actions"].as_array().unwrap().len(),
             1
         );
-        let denied = BrokerActor {
-            id: "stranger".into(),
-            is_agent: false,
-        };
+        let denied = BrokerActor::person("stranger");
         let denied: serde_json::Value = serde_json::from_str(
             &state
                 .action_catalogue_json_for(&cluster, &denied, Some(&scope))
@@ -14352,6 +14598,7 @@ pub mod tests {
                             channel_id: fixture.route.channel_key(),
                             peer_id: fixture.peer_id,
                             verified_identity: caller.admitted.clone(),
+                            record_kind: None,
                             lease: None,
                         });
                     let legacy = client
@@ -14399,6 +14646,7 @@ pub mod tests {
                     state: fixture.state.clone(), directories: fixture.directories.clone(),
                     channel_id: fixture.route.channel_key(), peer_id: 999,
                     verified_identity: caller.admitted.clone(),
+                    record_kind: None,
                     lease: None,
                 });
                 assert!(update_app(&foreign, admitted.wire_id, &tilo_actions::InvocationUpdate::Succeeded {
@@ -14903,7 +15151,7 @@ mod host_worker_capacity_tests {
             verified: VerifiedJoinIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_public_key: [92; 32],
-                foreign: false,
+                capped: false,
             },
             principal_id: "host".into(),
             display_handle: None,

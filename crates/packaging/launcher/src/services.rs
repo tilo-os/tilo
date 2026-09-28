@@ -75,10 +75,24 @@ pub const BLOB_SOCKET_ENV: &str = "TILO_FS_BLOB_SOCKET";
 /// holds the descriptor; the daemon reads it before any Cap'n Proto.
 pub const BLOB_HANDOFF_MAGIC: [u8; 4] = *b"QBL1";
 const BLOB_HANDOFF_PROTOCOL: u16 = 1;
+const BLOB_HANDOFF_FRAMING: Framing = Framing::little_endian(4096).reject_empty();
 /// In-sandbox descriptor slot of the automatic document-media service.
 const BLOB_CHILD_FD: i32 = 30;
 /// Slot of the automatic identity service.
 const IDENTITY_CHILD_FD: i32 = 31;
+/// Slots bwrap reads its two seccomp programs from (`--add-seccomp-fd`).
+/// They sit above bwrap's own descriptors and outside the numbers declared
+/// services are handed on, so no service can replace a filter.
+pub(crate) const CLONE3_COMPAT_SECCOMP_CHILD_FD: i32 = 40;
+pub(crate) const BASELINE_SECCOMP_CHILD_FD: i32 = 41;
+/// Every fixed child slot; declared services are numbered around them.
+pub(crate) const RESERVED_CHILD_FDS: [i32; 5] = [
+    runtime_identity::broker::BROKER_CHILD_FD,
+    BLOB_CHILD_FD,
+    IDENTITY_CHILD_FD,
+    CLONE3_COMPAT_SECCOMP_CHILD_FD,
+    BASELINE_SECCOMP_CHILD_FD,
+];
 const STORE_APP_ID: &str = "so.tilo.store";
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
 /// After [`APP_HOST_LAUNCH_MAGIC`]: a big-endian `u32` length, then the JSON
@@ -168,13 +182,10 @@ pub struct ServiceLaunchContext<'a> {
 
 /// Discover `$XDG_RUNTIME_DIR/tilo/services/`.
 pub fn services_root() -> PathBuf {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
-        || {
-            let uid = unsafe { libc::geteuid() };
-            PathBuf::from(format!("/run/user/{uid}"))
-        },
-        PathBuf::from,
-    );
+    let runtime = xdg_paths::xdg::runtime_dir().unwrap_or_else(|| {
+        let uid = unsafe { libc::geteuid() };
+        PathBuf::from(format!("/run/user/{uid}"))
+    });
     runtime.join("tilo/services")
 }
 
@@ -378,11 +389,8 @@ fn write_blob_handoff(stream: &mut UnixStream, app_id: &str, room: &str) -> std:
         "app_id": app_id,
     }))
     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let length = u32::try_from(bytes.len())
-        .map_err(|_| std::io::Error::other("document media handoff is too large"))?;
     stream.write_all(&BLOB_HANDOFF_MAGIC)?;
-    stream.write_all(&length.to_le_bytes())?;
-    stream.write_all(&bytes)?;
+    BLOB_HANDOFF_FRAMING.write(stream, &bytes)?;
     stream.flush()
 }
 
@@ -622,7 +630,7 @@ fn resolve_service_binds_inner(
         // proxy and the egress gate.
         let host = OwnedFd::from(stream);
 
-        while next_child_fd == BLOB_CHILD_FD || next_child_fd == IDENTITY_CHILD_FD {
+        while RESERVED_CHILD_FDS.contains(&next_child_fd) {
             next_child_fd = next_child_fd.saturating_add(1);
         }
         let child_fd = next_child_fd;

@@ -73,6 +73,10 @@ pub enum Symbol {
     Return,
     Space,
     Tab,
+    /// Move the caret one character left (the space-bar cursor drag).
+    Left,
+    /// Move the caret one character right.
+    Right,
 }
 
 impl Symbol {
@@ -107,6 +111,8 @@ impl Symbol {
             Symbol::Return => "Return".to_string(),
             Symbol::Space => "space".to_string(),
             Symbol::Tab => "Tab".to_string(),
+            Symbol::Left => "Left".to_string(),
+            Symbol::Right => "Right".to_string(),
             Symbol::Unicode(c) => format!("U{:04X}", c as u32),
         }
     }

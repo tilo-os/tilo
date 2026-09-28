@@ -14,9 +14,9 @@
 //! [`crate::webview::WebViewEvent`]s from the engine during `sync` and
 //! owns that state in its CRDT.
 
+use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -280,8 +280,6 @@ impl Widget for WebView {
         Some(self)
     }
 
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -413,20 +411,9 @@ impl Widget for WebView {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if (f64::from(self.scale_factor) - scale_factor).abs() > f64::EPSILON {
-            self.scale_factor = to_f32(scale_factor);
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if (f64::from(self.scale_factor) - ctx.scale_factor).abs() > f64::EPSILON {
+            self.scale_factor = to_f32(ctx.scale_factor);
             // Force a resize eagerly, to keep engine DPI in step without a re-layout.
             self.last_sent_size = (0, 0);
             self.send_resize_if_needed();
@@ -434,7 +421,8 @@ impl Widget for WebView {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let logical =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_mouse = logical;
                 if self.rect.contains(logical) {
                     let (x, y) = self.to_engine(logical);
@@ -461,7 +449,7 @@ impl Widget for WebView {
                             _ => MouseButton::Right,
                         };
                         if down && mapped == MouseButton::Left {
-                            *focus_target = Some(node_id);
+                            *ctx.focus_target = Some(ctx.node_id);
                         }
                         crate::webview::profile::record_input("mouse");
                         self.engine.send(WebViewCommand::MouseButton {
@@ -470,19 +458,19 @@ impl Widget for WebView {
                             x,
                             y,
                         });
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     // Mouse side buttons drive history, as in every desktop browser.
                     winit::event::MouseButton::Back => {
                         if down {
                             self.engine.send(WebViewCommand::GoBack);
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                     winit::event::MouseButton::Forward => {
                         if down {
                             self.engine.send(WebViewCommand::GoForward);
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                     winit::event::MouseButton::Other(_) => {}
@@ -494,8 +482,8 @@ impl Widget for WebView {
                 }
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (
-                        to_f32(f64::from(*x) * WHEEL_LINE_PX * scale_factor),
-                        to_f32(f64::from(*y) * WHEEL_LINE_PX * scale_factor),
+                        to_f32(f64::from(*x) * WHEEL_LINE_PX * ctx.scale_factor),
+                        to_f32(f64::from(*y) * WHEEL_LINE_PX * ctx.scale_factor),
                     ),
                     // PixelDelta is already physical.
                     MouseScrollDelta::PixelDelta(p) => (to_f32(p.x), to_f32(p.y)),
@@ -503,7 +491,7 @@ impl Widget for WebView {
                 let (x, y) = self.to_engine(self.last_mouse);
                 crate::webview::profile::record_input("scroll");
                 self.engine.send(WebViewCommand::Scroll { dx, dy, x, y });
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
@@ -513,7 +501,7 @@ impl Widget for WebView {
                 }
                 if let Some(key) = Self::map_key(&key_event.logical_key) {
                     crate::webview::profile::record_input("key");
-                    let m = modifiers.state();
+                    let m = ctx.modifiers.state();
                     self.engine.send(WebViewCommand::Key {
                         key,
                         down: key_event.state == ElementState::Pressed,
@@ -524,7 +512,7 @@ impl Widget for WebView {
                             meta: m.super_key(),
                         },
                     });
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -573,8 +561,8 @@ impl Widget for WebView {
     fn on_nav_gesture(
         &mut self,
         dir: NavDirection,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         self.engine.send(match dir {
             NavDirection::Back => WebViewCommand::GoBack,
@@ -608,6 +596,7 @@ mod tests {
     use super::*;
     use crate::webview::WebViewEngine; // send()/commands() on the concrete TestEngine
     use crate::webview::test_engine::TestEngine;
+    use automerge::AutoCommit;
     use std::sync::Arc;
     use winit::event::{DeviceId, ElementState, WindowEvent};
 
@@ -690,14 +679,16 @@ mod tests {
         let mods = winit::event::Modifiers::default();
         w.handle_event(
             event,
-            1.0,
-            &mods,
-            &mut state,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut state,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: tree,
+            },
         );
     }
 

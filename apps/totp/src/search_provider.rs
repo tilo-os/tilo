@@ -223,19 +223,23 @@ mod tests {
             assert_eq!(operation.kind, tilo_actions::OperationKind::View);
             assert!(palette.take_navigation().is_none());
             assert!(
-                app.invoke_resource_operation(
-                    operation.kind,
-                    &operation
-                        .encoded()
-                        .expect("test requires prepared encoding")
-                        .type_id,
-                    &operation
-                        .encoded()
-                        .expect("test requires prepared encoding")
-                        .payload,
-                    &doc,
-                    &ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        operation.kind,
+                        &operation
+                            .encoded()
+                            .expect("test requires prepared encoding")
+                            .type_id,
+                        &operation
+                            .encoded()
+                            .expect("test requires prepared encoding")
+                            .payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
+                .map(|started| started.is_some())
                 .expect("Authenticator handles its exported operation")
             );
             assert_eq!(app.selected_account(), Some(id));

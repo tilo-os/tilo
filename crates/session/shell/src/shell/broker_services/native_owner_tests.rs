@@ -95,9 +95,7 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
             drop(service);
             let mut reopened = super::super::persist::load_tree_from(&path).unwrap();
             reopened.persist_path = Some(path);
-            let owner =
-                super::super::native_workspace_owner::NativeWorkspaceOwner::open(reopened.shared())
-                    .unwrap();
+            let owner = super::super::native_workspace_owner::open(reopened.shared()).unwrap();
             owner
                 .with_current(room, |view| {
                     let bytes = view.peer().document("so.tilo.chat", "").unwrap();

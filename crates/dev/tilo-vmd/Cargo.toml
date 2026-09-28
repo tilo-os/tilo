@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 advisory-lock = { path = "../../system/advisory-lock" }
+atomic-file = { path = "../../system/atomic-file" }
 base64.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 clap.workspace = true

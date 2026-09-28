@@ -1517,6 +1517,50 @@ fn select_passage_operation(book_id: String, chapter: usize) -> ActionSpec {
     )
 }
 
+/// Move this reader to a chapter and block, as revealing an annotation does:
+/// the page holding the block's start opens, nothing is selected, and any
+/// selection is cleared. Each mount keeps its own position.
+#[allow(
+    clippy::expect_used,
+    reason = "EbookOperation contains only JSON-representable strings and integers"
+)]
+fn go_to_operation(book_id: String, chapter: usize) -> ActionSpec {
+    let index = |name: &'static str, description: &'static str| {
+        ActionParam::optional(name, ParamType::Integer, description)
+            .with_schema(serde_json::json!({"minimum": 0}))
+    };
+    ActionSpec::typed_operation(
+        "go-to",
+        "Go to",
+        "open the book at a chapter and paragraph without selecting",
+        OperationKind::View,
+        EBOOK_OPERATION_TYPE,
+        vec![
+            index(
+                "chapter",
+                "Chapter, counted from 0; the open chapter when omitted",
+            ),
+            index(
+                "block",
+                "Block (paragraph or heading) to open at, counted from 0 in the chapter; its start when omitted",
+            ),
+        ],
+        move |args: &ActionArgs| {
+            let value = |name| args.integer(name).and_then(|v| usize::try_from(v).ok());
+            let operation = EbookOperation::Reveal {
+                book_id: book_id.clone(),
+                chapter: value("chapter").unwrap_or(chapter),
+                page: 0,
+                block: Some(value("block").unwrap_or(0)),
+            };
+            EncodedAction {
+                type_id: EBOOK_OPERATION_TYPE.into(),
+                payload: serde_json::to_vec(&operation).expect("EbookOperation serializes"),
+            }
+        },
+    )
+}
+
 /// The open book's annotations as resources: one per highlight (its comments
 /// beneath it), note and bookmark, with the ids search resolves, each opening
 /// its passage.
@@ -1658,6 +1702,7 @@ pub(crate) fn current_book_actions(mut resource: Resource, ctx: &BookResourceCtx
         ));
     }
     resource = resource.with_action(select_passage_operation(ctx.book_id.clone(), ctx.chapter));
+    resource = resource.with_action(go_to_operation(ctx.book_id.clone(), ctx.chapter));
     resource.children = annotation_resources(&ctx.annotations);
     let book_id = ctx.book_id.clone();
     let chapter = ctx.chapter;

@@ -7,6 +7,7 @@
 //! and Activity paths used everywhere else.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ObjId, ReadDoc as _, ScalarValue, Value};
@@ -365,8 +366,6 @@ impl CollaborationLaunchpad {
 }
 
 impl Widget for CollaborationLaunchpad {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -593,29 +592,18 @@ impl Widget for CollaborationLaunchpad {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if *handled {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if *ctx.handled {
             return;
         }
         let before = (self.hover_target(), self.selected);
         self.handle_launchpad_event(
             event,
-            scale_factor,
-            modifiers.state().shift_key(),
-            state,
-            path,
-            handled,
+            ctx.scale_factor,
+            ctx.modifiers.state().shift_key(),
+            ctx.state,
+            ctx.path,
+            ctx.handled,
         );
         self.dirty |= (self.hover_target(), self.selected) != before;
     }
@@ -709,9 +697,10 @@ impl Widget for CollaborationLaunchpad {
         &mut self,
         target: &str,
         action: &Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = ui::doc::document(state, path);
         if target == EMPTY_WORKSPACE_OPEN_APP && matches!(action, Action::Activate) {
             let _ = state.put(path, EMPTY_WORKSPACE_OPEN_APP, true);
             return true;

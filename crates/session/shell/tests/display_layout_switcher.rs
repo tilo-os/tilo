@@ -44,6 +44,7 @@ fn output(connector: &str, builtin: bool, modes: &[OutputMode]) -> DisplayOutput
             monitor: None,
         },
         current_mode: modes[0],
+        scale: 1.0,
         builtin,
         sink_hdr: false,
         hdr_unavailable_reason: None,
@@ -157,14 +158,16 @@ pub(crate) fn press(
     let mut focus_target = None;
     host.handle_event(
         &event,
-        1.0,
-        &Modifiers::from(mods),
-        &mut state,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus_target,
-        layout.1,
-        &layout.0,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::from(mods),
+            state: &mut state,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: layout.1,
+            taffy: &layout.0,
+        },
     );
     assert!(handled, "{event:?} must be consumed by the shell");
 }

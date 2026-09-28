@@ -432,22 +432,26 @@ mod tests {
                 .expect("canonical result queued a broker operation");
             assert_eq!(operation.kind, tilo_actions::OperationKind::View);
             assert!(palette.take_navigation().is_none());
-            assert!(
-                app.invoke_resource_operation(
-                    operation.kind,
-                    &operation
-                        .encoded()
-                        .expect("test requires prepared encoding")
-                        .type_id,
-                    &operation
-                        .encoded()
-                        .expect("test requires prepared encoding")
-                        .payload,
-                    &doc,
-                    &ROOT,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        operation.kind,
+                        &operation
+                            .encoded()
+                            .expect("test requires prepared encoding")
+                            .type_id,
+                        &operation
+                            .encoded()
+                            .expect("test requires prepared encoding")
+                            .payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
-                .expect("Feeds handles its exported view operation")
-            );
+                .expect("Feeds handles its exported view operation"),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(app.selected_article(), Some(target));
             assert!(
                 matches!(app.active_filter(), crate::model::Filter::Feed(_)),

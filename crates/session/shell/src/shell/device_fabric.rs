@@ -449,21 +449,28 @@ pub enum PersonalFabricAction {
     RemoteCaptureChunk {
         chunk: crate::shell::remote_capture::device::RemoteCaptureChunk,
     },
-    /// Shell-owned liveness, RTT and clock probe. The random nonce is bound to
-    /// the exact authenticated peer and is never exposed through an app
-    /// contract. `sent_us` is the prober's `CLOCK_MONOTONIC` send time in
-    /// microseconds, echoed back so the report closes a four-timestamp
-    /// exchange.
+    /// Shell-owned liveness and RTT probe. The random nonce is bound to the
+    /// exact authenticated peer and is never exposed through an app contract.
     DeviceHealthProbe {
+        nonce: [u8; 16],
+    },
+    /// Power is diagnostic routing context, never authorization. Latency is
+    /// deliberately absent because the probing compositor measures it.
+    DeviceHealthReport {
+        report: crate::shell::spatial_calibration::DeviceHealthReport,
+    },
+    /// Fabric clock probe, sent only while something on the prober holds
+    /// this peer's clock in sync. `sent_us` is the prober's
+    /// `CLOCK_MONOTONIC` send time in microseconds, echoed back so the
+    /// report closes a four-timestamp exchange. Carries nothing else.
+    FabricClockProbe {
         nonce: [u8; 16],
         sent_us: u64,
     },
-    /// Power is diagnostic routing context, never authorization. Latency is
-    /// deliberately absent because the probing compositor measures it; the
-    /// reporter's receive and reply times let the prober estimate clock
-    /// offset and skew.
-    DeviceHealthReport {
-        report: crate::shell::spatial_calibration::DeviceHealthReport,
+    /// The reporter's receive and reply times for one clock probe, from
+    /// which the prober estimates clock offset and skew.
+    FabricClockReport {
+        report: crate::shell::fabric_clock::ClockReport,
     },
     /// Consent-bound request, grant, sealed credential, or teardown for an
     /// exact certified phone. Plaintext Wi-Fi secrets are not representable.
@@ -513,6 +520,10 @@ pub enum PersonalFabricAction {
     RemoteAudioKeepalive {
         session_id: [u8; 16],
         authorization: [u8; 16],
+        /// Sent by the playing device only: whether it has the source's
+        /// clock, so the source can show a member still syncing, or why it
+        /// cannot play in time.
+        playout: Option<crate::shell::fabric_clock::ClockSyncState>,
     },
     /// Ask one exact member device to join a group. The member's own
     /// compositor asks its user; nothing plays until it approves.
@@ -558,11 +569,44 @@ pub enum PersonalFabricAction {
     },
     /// The group's leader, calibrating, asks a member to play the
     /// measurement sweep so its first sample leaves the speaker at `start_ns`
-    /// on the leader's `CLOCK_MONOTONIC`. The member converts that through
-    /// its own estimate of the leader's clock.
+    /// on the member's own `CLOCK_MONOTONIC`. The leader converts its
+    /// schedule through its estimate of the member's clock, and refuses to
+    /// calibrate without one.
     SpeakerSweep {
         group: crate::shell::speaker_group::SpeakerGroupId,
         start_ns: i64,
+    },
+    /// The group's leader asks one of the person's devices to let it listen
+    /// with `microphone` while calibrating the group. That device's own
+    /// compositor asks its user; nothing is recorded until it approves.
+    SpeakerListenInvite {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        name: String,
+        microphone: crate::shell::speaker_group::EndpointSelector,
+    },
+    /// The answer. The durable consent itself is the listener record the
+    /// device authors in its own snapshot; this only reports promptly.
+    SpeakerListenDecision {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        accepted: bool,
+    },
+    /// The calibrating leader asks a consenting device to record around one
+    /// member's sweep, whose first sample leaves the speaker at `start_ns` on
+    /// the listening device's own `CLOCK_MONOTONIC`. The leader converts its
+    /// schedule through the fabric clock estimate it holds of that device, so
+    /// the listener needs no estimate of its own.
+    SpeakerListen {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        sweep: [u8; 16],
+        microphone: crate::shell::speaker_group::EndpointSelector,
+        start_ns: i64,
+    },
+    /// What that microphone heard of the sweep, measured on the device. The
+    /// recording itself never crosses the fabric.
+    SpeakerHeard {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        sweep: [u8; 16],
+        hearing: crate::shell::speaker_calibration::SpeakerHearing,
     },
 }
 
@@ -892,6 +936,7 @@ impl PersonalFabricActionEnvelope {
             | PersonalFabricAction::RemoteAudioKeepalive {
                 session_id,
                 authorization,
+                ..
             } => {
                 if session_id == &[0; 16] || authorization == &[0; 16] {
                     return Err(FabricError::InvalidAction);
@@ -921,7 +966,39 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
+            PersonalFabricAction::SpeakerListenInvite {
+                group,
+                name,
+                microphone,
+            } => {
+                if !group.valid()
+                    || !crate::shell::speaker_group::valid_group_name(name)
+                    || !microphone.valid()
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpeakerListen {
+                group,
+                sweep,
+                microphone,
+                start_ns,
+            } => {
+                if !group.valid() || sweep == &[0; 16] || !microphone.valid() || *start_ns <= 0 {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpeakerHeard {
+                group,
+                sweep,
+                hearing,
+            } => {
+                if !group.valid() || sweep == &[0; 16] || !hearing.valid() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
             PersonalFabricAction::SpeakerGroupDecision { group, .. }
+            | PersonalFabricAction::SpeakerListenDecision { group, .. }
             | PersonalFabricAction::SpeakerGroupLeave { group } => {
                 if !group.valid() {
                     return Err(FabricError::InvalidAction);
@@ -973,13 +1050,19 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::DeviceHealthProbe { nonce, .. }
+            PersonalFabricAction::DeviceHealthProbe { nonce }
+            | PersonalFabricAction::FabricClockProbe { nonce, .. }
             | PersonalFabricAction::InputLeaseRevoked { nonce } => {
                 if nonce == &[0; 16] {
                     return Err(FabricError::InvalidAction);
                 }
             }
             PersonalFabricAction::DeviceHealthReport { report } => {
+                if !report.valid() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::FabricClockReport { report } => {
                 if !report.valid() {
                     return Err(FabricError::InvalidAction);
                 }
@@ -3552,6 +3635,7 @@ mod tests {
                 envelope(PersonalFabricAction::RemoteAudioKeepalive {
                     session_id: [4; 16],
                     authorization: [5; 16],
+                    playout: None,
                 })
                 .validate_at(&source, &target, 10_100),
                 Ok(())
@@ -3560,6 +3644,7 @@ mod tests {
                 envelope(PersonalFabricAction::RemoteAudioKeepalive {
                     session_id: [4; 16],
                     authorization: [0; 16],
+                    playout: None,
                 })
                 .validate_at(&source, &target, 10_100),
                 Err(FabricError::InvalidAction)

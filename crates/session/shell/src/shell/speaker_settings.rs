@@ -11,20 +11,26 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use runtime_collab::{
-    CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationPhaseInfo,
+    CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationMicrophoneInfo,
+    CalibrationMicrophoneRun, CalibrationMicrophoneState, CalibrationPhaseInfo, MicrophoneStatus,
     SpeakerCommand, SpeakerDeviceInfo, SpeakerEndpointInfo, SpeakerGroupInfo, SpeakerMemberInfo,
-    SpeakerMemberSpec, SpeakerMemberStatus, SpeakerReply, SpeakerRoleSpec, SpeakerSnapshot,
-    SpeakerTrimInfo,
+    SpeakerMemberSpec, SpeakerMemberStatus, SpeakerPlaybackInfo, SpeakerReply, SpeakerRoleSpec,
+    SpeakerSnapshot, SpeakerTrimInfo,
 };
 
 use crate::shell::device_fabric::DeviceFabric;
 use crate::shell::personal_continuity::DeviceId;
-use crate::shell::speaker_calibration::{CalibrationPhase, CalibrationRun, MemberProgress};
+use crate::shell::speaker_calibration::{
+    CalibrationPhase, CalibrationRun, MemberProgress, MicrophoneConsent, MicrophoneProgress,
+    RunMicrophone,
+};
 use crate::shell::speaker_group::{
     AudioEndpointKind, EndpointSelector, RoomPoint, SpeakerGroupId, SpeakerMemberState,
     SpeakerRole, SpeakerTrim, StereoSide, SurroundChannel,
 };
-use crate::shell::speaker_group_runtime::MemberSpec;
+use crate::shell::speaker_group_runtime::{
+    ListenerCandidate, ListenerState, MemberSpec, SpeakerGroupsView, SpeakerSessionStatus,
+};
 
 /// Shortest interval between two identify sounds on one device.
 pub const IDENTIFY_INTERVAL: Duration = Duration::from_millis(800);
@@ -104,6 +110,34 @@ fn parse_group(value: &str) -> Result<SpeakerGroupId, String> {
         .ok_or_else(|| crate::shell::i18n::t("speaker-error-group-invalid"))
 }
 
+/// The most urgent state of any session on `group`, as Settings shows it.
+#[must_use]
+pub fn playback_info(
+    view: &SpeakerGroupsView,
+    group: SpeakerGroupId,
+) -> Option<SpeakerPlaybackInfo> {
+    let urgency = |status: SpeakerSessionStatus| match status {
+        SpeakerSessionStatus::ClockFailed(_) => 0,
+        SpeakerSessionStatus::SyncingClocks => 1,
+        SpeakerSessionStatus::Connecting => 2,
+        SpeakerSessionStatus::Playing => 3,
+    };
+    let status = view
+        .sessions
+        .iter()
+        .filter(|session| session.group == group)
+        .map(crate::shell::speaker_group_runtime::SpeakerSessionView::status)
+        .min_by_key(|status| urgency(*status))?;
+    Some(match status {
+        SpeakerSessionStatus::Playing => SpeakerPlaybackInfo::Playing,
+        SpeakerSessionStatus::Connecting => SpeakerPlaybackInfo::Connecting,
+        SpeakerSessionStatus::SyncingClocks => SpeakerPlaybackInfo::SyncingClocks,
+        SpeakerSessionStatus::ClockFailed(reason) => SpeakerPlaybackInfo::ClockFailed {
+            reason: bounded_reason(crate::shell::i18n::t(reason.message_key())),
+        },
+    })
+}
+
 /// Every device's endpoints as Settings shows them.
 #[must_use]
 pub fn devices(fabric: &DeviceFabric, local: &DeviceId) -> Vec<SpeakerDeviceInfo> {
@@ -132,13 +166,7 @@ pub fn devices(fabric: &DeviceFabric, local: &DeviceId) -> Vec<SpeakerDeviceInfo
                 local: &snapshot.owner == local,
                 can_join: &snapshot.owner == local || snapshot.presence.capabilities.audio_group,
                 outputs: endpoints(AudioEndpointKind::Output),
-                // Calibration listens on the device that runs it, so only this
-                // device's microphones are offered.
-                microphones: if &snapshot.owner == local {
-                    endpoints(AudioEndpointKind::Microphone)
-                } else {
-                    Vec::new()
-                },
+                microphones: endpoints(AudioEndpointKind::Microphone),
             }
         })
         .collect()
@@ -163,15 +191,38 @@ impl Calibrations {
         self.runs.remove(&group)
     }
 
+    /// Groups of the runs still waiting for microphone consent.
+    #[must_use]
+    pub fn awaiting_consent(&self) -> Vec<SpeakerGroupId> {
+        self.runs
+            .iter()
+            .filter(|(_, run)| run.phase() == CalibrationPhase::WaitingForMicrophones)
+            .map(|(group, _)| *group)
+            .collect()
+    }
+
     /// Advance every run, and drop runs whose group changed or vanished.
-    pub fn pump(&mut self, fabric: &DeviceFabric) {
+    /// `consent` answers, per group, where each device's microphone prompt
+    /// stands.
+    pub fn pump(
+        &mut self,
+        fabric: &DeviceFabric,
+        consent: &BTreeMap<SpeakerGroupId, Vec<ListenerCandidate>>,
+        now: Instant,
+    ) {
         self.runs.retain(|group, run| {
             fabric
                 .speaker_group(*group)
                 .is_some_and(|published| run.matches(published))
-                || run.phase() == CalibrationPhase::Measuring
+                || matches!(
+                    run.phase(),
+                    CalibrationPhase::Measuring | CalibrationPhase::WaitingForMicrophones
+                )
         });
-        for run in self.runs.values_mut() {
+        for (group, run) in &mut self.runs {
+            if let Some(candidates) = consent.get(group) {
+                run.update_consent(|device| microphone_consent(candidates, device), now);
+            }
             run.tick();
         }
     }
@@ -182,12 +233,46 @@ impl Calibrations {
     }
 }
 
+/// Where one device's microphone prompt stands for a run.
+fn microphone_consent(candidates: &[ListenerCandidate], device: &DeviceId) -> MicrophoneConsent {
+    match candidates
+        .iter()
+        .find(|candidate| &candidate.device == device)
+        .map(|candidate| candidate.state)
+    {
+        Some(ListenerState::Ready) => MicrophoneConsent::Given,
+        Some(ListenerState::NotAsked | ListenerState::AwaitingConsent) => MicrophoneConsent::Asked,
+        Some(ListenerState::Declined | ListenerState::Offline | ListenerState::Unavailable)
+        | None => MicrophoneConsent::Refused,
+    }
+}
+
+const fn microphone_status(state: ListenerState) -> MicrophoneStatus {
+    match state {
+        ListenerState::Ready => MicrophoneStatus::Ready,
+        ListenerState::NotAsked => MicrophoneStatus::NotAsked,
+        ListenerState::AwaitingConsent => MicrophoneStatus::AwaitingConsent,
+        ListenerState::Declined => MicrophoneStatus::Declined,
+        ListenerState::Offline => MicrophoneStatus::Offline,
+        ListenerState::Unavailable => MicrophoneStatus::Unavailable,
+    }
+}
+
+fn microphone_label(candidate: &ListenerCandidate) -> String {
+    format!("{} · {}", candidate.device_label, candidate.label)
+}
+
+fn saturating_u8(value: usize) -> u8 {
+    u8::try_from(value).unwrap_or(u8::MAX)
+}
+
 #[must_use]
 pub fn calibration_info(run: &CalibrationRun) -> CalibrationInfo {
     let after = run.after();
     CalibrationInfo {
         group: run.group().to_hex(),
         phase: match run.phase() {
+            CalibrationPhase::WaitingForMicrophones => CalibrationPhaseInfo::WaitingForMicrophones,
             CalibrationPhase::Measuring => CalibrationPhaseInfo::Measuring,
             CalibrationPhase::Proposed => CalibrationPhaseInfo::Proposed,
             CalibrationPhase::Applied => CalibrationPhaseInfo::Applied,
@@ -202,12 +287,12 @@ pub fn calibration_info(run: &CalibrationRun) -> CalibrationInfo {
                 label: member.label.clone(),
                 state: match run.progress().get(index) {
                     Some(MemberProgress::Measuring) => CalibrationMemberState::Measuring,
-                    Some(MemberProgress::Measured(measurement)) => {
-                        CalibrationMemberState::Measured {
-                            delay_ms: i64_ms(measurement.arrival_ns),
-                            level_db: measurement.level_db,
-                        }
-                    }
+                    Some(MemberProgress::Measured(result)) => CalibrationMemberState::Measured {
+                        delay_ms: i64_ms(result.arrival_ns),
+                        level_db: result.level_db,
+                        output_latency_ms: result.output_latency_ns.map(i64_ms),
+                        acoustic_ms: result.acoustic_ns.map(i64_ms),
+                    },
                     Some(MemberProgress::Failed(reason)) => CalibrationMemberState::Failed {
                         reason: reason.clone(),
                     },
@@ -217,6 +302,38 @@ pub fn calibration_info(run: &CalibrationRun) -> CalibrationInfo {
                 after: after.and_then(|after| after.get(index)).map(trim_info),
             })
             .collect(),
+        microphones: run
+            .microphones()
+            .iter()
+            .zip(run.microphone_progress())
+            .enumerate()
+            .map(|(index, (microphone, progress))| CalibrationMicrophoneRun {
+                device: microphone.device.as_str().to_string(),
+                label: microphone.label.clone(),
+                listening: index == run.listening(),
+                state: match progress {
+                    MicrophoneProgress::AwaitingConsent => {
+                        CalibrationMicrophoneState::AwaitingConsent
+                    }
+                    MicrophoneProgress::Declined => CalibrationMicrophoneState::Declined,
+                    MicrophoneProgress::Listening => CalibrationMicrophoneState::Listening,
+                    MicrophoneProgress::Used { heard, rejected } => {
+                        CalibrationMicrophoneState::Used {
+                            heard: saturating_u8(*heard),
+                            rejected: saturating_u8(*rejected),
+                        }
+                    }
+                    MicrophoneProgress::NotHeard => CalibrationMicrophoneState::NotHeard,
+                    MicrophoneProgress::Failed(reason) => CalibrationMicrophoneState::Failed {
+                        reason: reason.clone(),
+                    },
+                },
+            })
+            .collect(),
+        listening_label: run
+            .microphones()
+            .get(run.listening())
+            .map(|microphone| microphone.label.clone()),
         message: run.message().map(str::to_string),
     }
 }
@@ -262,8 +379,22 @@ pub(crate) fn admit_identify(now: Instant) -> bool {
 /// Advance calibration runs; called from the fabric runtime's pump.
 pub(crate) fn pump(network: &crate::shell::network::ShellNetwork) {
     let fabric = network.device_fabric();
+    let waiting = state()
+        .lock()
+        .map(|state| state.calibrations.awaiting_consent())
+        .unwrap_or_default();
+    let consent = waiting
+        .into_iter()
+        .filter_map(|group| {
+            let published = fabric.speaker_group(group)?;
+            Some((
+                group,
+                crate::shell::speaker_group_runtime::listener_candidates(network, published),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
     if let Ok(mut state) = state().lock() {
-        state.calibrations.pump(&fabric);
+        state.calibrations.pump(&fabric, &consent, Instant::now());
     }
 }
 
@@ -300,6 +431,24 @@ fn snapshot(network: &crate::shell::network::ShellNetwork) -> SpeakerSnapshot {
                     role: role_to_spec(member.role),
                     status: status(member.state),
                     trim: trim_info(&member.trim),
+                })
+                .collect(),
+            playback: playback_info(&view, group.id),
+            microphones: fabric
+                .speaker_group(group.id)
+                .filter(|_| group.led_locally)
+                .map(|published| {
+                    crate::shell::speaker_group_runtime::listener_candidates(network, published)
+                })
+                .unwrap_or_default()
+                .iter()
+                .take(runtime_collab::MAX_SPEAKER_DEVICES)
+                .map(|candidate| CalibrationMicrophoneInfo {
+                    device: candidate.device.as_str().to_string(),
+                    device_label: candidate.device_label.clone(),
+                    label: candidate.label.clone(),
+                    local: candidate.local,
+                    status: microphone_status(candidate.state),
                 })
                 .collect(),
         })
@@ -385,9 +534,9 @@ fn run_command(
         }
         SpeakerCommand::StartCalibration {
             group,
-            microphone_device,
-            microphone,
-        } => start_calibration(network, &group, &microphone_device, &microphone)
+            excluded,
+            listening,
+        } => start_calibration(network, &group, &excluded, listening.as_deref())
             .map(|()| Some(group)),
         SpeakerCommand::CancelCalibration { group } => {
             let id = parse_group(&group)?;
@@ -448,43 +597,98 @@ fn with_run<T>(
     result
 }
 
-/// Measure with this device's microphone; remote members are asked over the
-/// fabric to play the sweep at the scheduled instant.
+/// Measure with the timed audio path; remote members and listening devices
+/// are asked over the fabric.
 fn timed_source(
     network: &std::sync::Arc<crate::shell::network::ShellNetwork>,
     local: DeviceId,
+    peers: &[DeviceId],
 ) -> Box<dyn crate::shell::speaker_calibration::MeasurementSource> {
     let network = std::sync::Arc::downgrade(network);
     Box::new(crate::shell::speaker_calibration::TimedMeasurement::new(
         local,
-        Box::new(move |request, start_ns| {
+        Box::new(move |target, action| {
             let network = network
                 .upgrade()
                 .ok_or_else(|| crate::shell::i18n::t("speaker-error-network-unavailable"))?;
             network
-                .send_personal_fabric_action(
-                    &request.member,
-                    crate::shell::device_fabric::PersonalFabricAction::SpeakerSweep {
-                        group: request.group,
-                        start_ns,
-                    },
-                )
+                .send_personal_fabric_action(target, action)
                 .map(|_| ())
         }),
+        peers,
     ))
+}
+
+/// The microphones a run listens with: every candidate that is not
+/// excluded and could still take part, and which of them sits at the
+/// listening position (`listening`, or this device when unnamed).
+///
+/// # Errors
+///
+/// When the listening device is excluded, cannot take part, or has no
+/// microphone.
+pub fn plan_microphones(
+    candidates: &[ListenerCandidate],
+    excluded: &[DeviceId],
+    listening: Option<&DeviceId>,
+) -> Result<(Vec<RunMicrophone>, usize), String> {
+    let microphones = candidates
+        .iter()
+        .filter(|candidate| !excluded.contains(&candidate.device))
+        .filter_map(|candidate| {
+            let consent = match candidate.state {
+                ListenerState::Ready => MicrophoneConsent::Given,
+                ListenerState::NotAsked | ListenerState::AwaitingConsent => {
+                    MicrophoneConsent::Asked
+                }
+                ListenerState::Declined | ListenerState::Offline | ListenerState::Unavailable => {
+                    return None;
+                }
+            };
+            Some(RunMicrophone {
+                device: candidate.device.clone(),
+                microphone: candidate.microphone,
+                label: microphone_label(candidate),
+                consent,
+            })
+        })
+        .collect::<Vec<_>>();
+    let listening = listening.map_or_else(
+        || {
+            candidates
+                .iter()
+                .find(|candidate| candidate.local)
+                .map(|candidate| candidate.device.clone())
+        },
+        |device| Some(device.clone()),
+    );
+    let index = listening
+        .and_then(|device| {
+            microphones
+                .iter()
+                .position(|microphone| microphone.device == device)
+        })
+        .ok_or_else(|| crate::shell::i18n::t("speaker-error-listening-unavailable"))?;
+    Ok((microphones, index))
+}
+
+fn parse_device(value: &str) -> Result<DeviceId, String> {
+    DeviceId::new(value.to_string())
+        .map_err(|_| crate::shell::i18n::t("speaker-error-device-invalid"))
 }
 
 fn start_calibration(
     network: &std::sync::Arc<crate::shell::network::ShellNetwork>,
     group: &str,
-    microphone_device: &str,
-    microphone: &str,
+    excluded: &[String],
+    listening: Option<&str>,
 ) -> Result<(), String> {
     let id = parse_group(group)?;
-    let microphone_device = DeviceId::new(microphone_device.to_string())
-        .map_err(|_| crate::shell::i18n::t("speaker-error-device-invalid"))?;
-    let microphone = EndpointSelector::from_hex(microphone)
-        .ok_or_else(|| crate::shell::i18n::t("speaker-error-microphone-invalid"))?;
+    let excluded = excluded
+        .iter()
+        .map(|device| parse_device(device))
+        .collect::<Result<Vec<_>, _>>()?;
+    let listening = listening.map(parse_device).transpose()?;
     let (local, _) = network
         .local_device_fabric_identity()
         .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
@@ -495,21 +699,6 @@ fn start_calibration(
     if published.leader != local {
         return Err(crate::shell::i18n::t("speaker-error-calibrate-on-leader"));
     }
-    let offers_microphone = fabric
-        .snapshots()
-        .get(&microphone_device)
-        .is_some_and(|snapshot| {
-            snapshot.presence.online
-                && snapshot.speakers.endpoints.iter().any(|endpoint| {
-                    endpoint.selector == microphone
-                        && endpoint.kind == AudioEndpointKind::Microphone
-                })
-        });
-    if !offers_microphone {
-        return Err(crate::shell::i18n::t(
-            "speaker-error-microphone-unavailable",
-        ));
-    }
     if fabric
         .speaker_member_states(published)
         .iter()
@@ -517,6 +706,14 @@ fn start_calibration(
     {
         return Err(crate::shell::i18n::t("speaker-error-not-all-ready"));
     }
+    let candidates = crate::shell::speaker_group_runtime::listener_candidates(network, published);
+    let (microphones, listening) = plan_microphones(&candidates, &excluded, listening.as_ref())?;
+    let ask = microphones
+        .iter()
+        .filter(|microphone| microphone.consent == MicrophoneConsent::Asked)
+        .map(|microphone| (microphone.device.clone(), microphone.microphone))
+        .collect::<Vec<_>>();
+    crate::shell::speaker_group_runtime::invite_listeners(network, published, &ask)?;
     let labels = published
         .members
         .iter()
@@ -527,13 +724,25 @@ fn start_calibration(
             )
         })
         .collect::<Vec<_>>();
+    let peers = published
+        .members
+        .iter()
+        .map(|member| member.device.clone())
+        .chain(
+            microphones
+                .iter()
+                .map(|microphone| microphone.device.clone()),
+        )
+        .collect::<Vec<_>>();
     let run = CalibrationRun::start(
         published,
         &labels,
-        microphone_device,
-        microphone,
-        timed_source(network, local),
-    );
+        microphones,
+        listening,
+        timed_source(network, local, &peers),
+        Box::new(crate::shell::speaker_group_runtime::random_nonzero_16),
+        Instant::now(),
+    )?;
     state()
         .lock()
         .map_err(|_| crate::shell::i18n::t("speaker-error-calibration-unavailable"))?

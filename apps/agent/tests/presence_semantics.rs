@@ -20,6 +20,7 @@ fn hello(handle: &str) -> CollabRequest {
         app_id: "so.tilo.word-processor".into(),
         cluster_id: typed_peer::room(),
         record: None,
+        record_kind: None,
         handle: Some(handle.into()),
     }
 }

@@ -1280,6 +1280,8 @@ impl ShellDriver {
             "peer-sync" => self.scene_peer_sync(),
             "projection" => self.scene_projection(),
             "window-switcher" => self.scene_window_switcher(),
+            "emoji-picker" => self.scene_emoji_picker(),
+            "display-confirm" => self.scene_display_confirm(),
             "portal-permission" => self.scene_portal_permission(),
             "room-activity" => self.scene_room_activity(),
             "room-activity-named" => self.scene_room_activity_named(),
@@ -1685,6 +1687,19 @@ impl ShellDriver {
         self.set_modifiers(ModifiersState::ALT);
         self.press_key(&Key::Named(NamedKey::Tab));
         self.step_frames(12);
+    }
+
+    /// The emoji picker with no focused field reporting a caret, so it opens
+    /// centred on the display.
+    fn scene_emoji_picker(&mut self) {
+        self.host_mut().toggle_emoji_picker();
+        self.step_frames(2);
+    }
+
+    /// The keep-or-revert prompt a layout tool's display change raises. No
+    /// staged transaction carries a deadline here, so it shows no countdown.
+    fn scene_display_confirm(&mut self) {
+        self.host_mut().show_display_confirmation(1, None);
     }
 
     /// The display sheet (`projection_overlay.rs`, Win+P), settled
@@ -2440,6 +2455,8 @@ impl ShellDriver {
         "peer-sync",
         "projection",
         "window-switcher",
+        "emoji-picker",
+        "display-confirm",
         "portal-permission",
         "notifications",
         "notifications-one",

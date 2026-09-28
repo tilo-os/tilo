@@ -1,5 +1,8 @@
 mod action_directory_identity;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
+mod resource_operation;
+pub(crate) use resource_operation::start_without_document_writes;
+pub use resource_operation::{OperationRequest, ResourceOperation, start_in_children};
 
 use crate::dnd::DragPayload;
 use crate::permissions::PermissionScope;
@@ -16,6 +19,15 @@ use crate::time::Instant;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+/// The app's model, lent to a widget pass. The toolkit only passes it on to
+/// children; the layer that owns the model reads it (the document runtime
+/// through [`crate::doc::document`]). A host passes its model by reference
+/// and it coerces: `widget.sync(&mut doc, &root)`.
+pub type AppModel = dyn std::any::Any;
+
+/// Where in the [`AppModel`] a widget is bound, forwarded alongside it.
+pub type ModelPath = dyn std::any::Any;
+
 /// Shared disabled-state opacity: wrap draw output in
 /// `scene.push_layer(.., DISABLED_ALPHA, ..)` / `pop_layer()`.
 pub const DISABLED_ALPHA: f32 = 0.45;
@@ -30,6 +42,17 @@ pub const DISABLED_ALPHA: f32 = 0.45;
 pub enum ResourceOperationStart {
     Completed(tilo_actions::ActionOutput),
     Accepted,
+}
+
+impl ResourceOperationStart {
+    /// The output of an operation that finished on return; `None` while it
+    /// is still pending.
+    pub fn completed(self) -> Option<tilo_actions::ActionOutput> {
+        match self {
+            Self::Completed(output) => Some(output),
+            Self::Accepted => None,
+        }
+    }
 }
 
 /// Machine-readable classification of a control's activation path.
@@ -791,8 +814,8 @@ pub trait Widget {
     /// This verifies widget state, not rendered pixels or display presentation.
     fn native_input_snapshot(
         &self,
-        _state: &AutoCommit,
-        _path: &ObjId,
+        _state: &AppModel,
+        _path: &ModelPath,
     ) -> Option<serde_json::Value> {
         None
     }
@@ -1057,7 +1080,14 @@ pub trait Widget {
         }
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId);
+    /// Pull model state into this widget before layout. The default syncs the
+    /// children [`Widget::children_mut`] returns; a widget overrides it only to
+    /// read state of its own, or to sync children it does not expose there.
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        for child in self.children_mut() {
+            child.sync(state, path);
+        }
+    }
 
     /// Expose cross-device continuation for app roots that support it.
     fn continuable(&self) -> Option<&dyn Continuable> {
@@ -1069,7 +1099,7 @@ pub trait Widget {
         None
     }
 
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
         false
     }
     fn build_layout(
@@ -1134,43 +1164,8 @@ pub trait Widget {
         presence: &PresenceCtx,
     );
 
-    /// Compatibility dispatcher for retained containers and host code.
-    ///
-    /// New widgets implement [`Widget::handle_event_ctx`]. Existing positional
-    /// implementations remain valid while call sites migrate independently.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "temporary compatibility adapter; implementations use EventCtx"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.handle_event_ctx(
-            event,
-            &mut EventCtx {
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            },
-        );
-    }
-
     /// Handle one input event with the runtime services for this retained node.
-    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {}
+    fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {}
     fn children(&self) -> Vec<&dyn Widget> {
         vec![]
     }
@@ -1188,8 +1183,8 @@ pub trait Widget {
 
     /// Effect/view operation type ids this widget can actually dispatch.
     ///
-    /// Implementors that override `invoke_resource_operation(_v2)` must list
-    /// their locally handled types here. The host combines these declarations
+    /// Implementors of [`Self::start_operation`] must list their locally
+    /// handled types here, beside it. The host combines these declarations
     /// across the retained tree and refuses to publish an action whose type has
     /// no handler, preventing a catalogue entry that can only fail at runtime.
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -1423,8 +1418,8 @@ pub trait Widget {
     fn perform_action(
         &mut self,
         _action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         false
     }
@@ -1473,8 +1468,8 @@ pub trait Widget {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         let _ = key_path;
         self.perform_action(action, state, path)
@@ -1492,8 +1487,8 @@ pub trait Widget {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         // `AccessNode::with_keyed_action_routes` publishes a custom-painted
         // control through the same semantic target that search and agents
@@ -1658,7 +1653,7 @@ pub trait Widget {
     /// [`crate::app::UserEvent::External`] (e.g. a worker thread streaming
     /// output into a status log). Default no-op; the App redraws and
     /// re-syncs after dispatch, so mutating state here is enough.
-    fn on_external_event(&mut self, _payload: &str, _state: &mut AutoCommit, _root: &ObjId) {}
+    fn on_external_event(&mut self, _payload: &str, _state: &mut AppModel, _root: &ModelPath) {}
 
     /// Global back/forward gesture (swipe/edge-pull), recognised by
     /// [`crate::gesture::NavGestureRecognizer`] and delivered to the whole
@@ -1667,8 +1662,8 @@ pub trait Widget {
     fn on_nav_gesture(
         &mut self,
         dir: crate::gesture::NavDirection,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         for child in self.children_mut() {
             if child.on_nav_gesture(dir, state, path) {
@@ -1954,7 +1949,8 @@ pub trait Widget {
 
     /// Presentation (navigation), not a CRDT action — mutate the doc only
     /// if selecting changes shared state.
-    fn activate_search_result(&mut self, _action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {}
+    fn activate_search_result(&mut self, _action_id: &str, _doc: &mut AppModel, _path: &ModelPath) {
+    }
 
     /// The affordance-driven twin of the Ctrl+K palette: when a widget's own
     /// control dispatches the same [`tilo_actions`] action its
@@ -2046,10 +2042,63 @@ pub trait Widget {
         false
     }
 
-    /// Perform an exported non-document operation owned by this widget.
-    /// Containers inherit recursive routing; an application overrides only
-    /// for the effect/view types it publishes and returns `Ok(true)` when it
-    /// handled the payload. Document operations never enter this hook.
+    /// Admit an exported effect or view operation: the one entry every
+    /// handler implements. Document operations never enter it.
+    ///
+    /// Return `Ok(None)` to decline so routing continues;
+    /// [`ResourceOperationStart::Completed`] with the output the action's
+    /// `ActionContract` promises when the work is done on return; or
+    /// [`ResourceOperationStart::Accepted`] for work that later reports
+    /// through [`Self::poll_resource_operation`]. Declare every handled type
+    /// in [`Self::local_resource_operation_handlers`].
+    ///
+    /// Read the operation through [`ResourceOperation::unscoped`] unless the
+    /// handler honours a required invocation's custody; a custody-aware
+    /// handler reads it through [`ResourceOperation::with_custody`], retains
+    /// the scope with any job it starts and uses its checked callbacks at each
+    /// later effect or document mutation. Hand operations a widget does not
+    /// own to [`start_in_children`], which is also the default.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first admission or synchronous-operation error.
+    fn start_operation(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        // Widgets that still override the legacy hooks below are reached
+        // through their adapter chain; a required operation never is. The
+        // legacy chains disagreed: an override of the read-only start could
+        // decline a type its synchronous handler answers, so both are offered.
+        let Some(request) = op.unscoped() else {
+            return start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = self.start_resource_operation_with_document(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .invoke_resource_operation_v2(
+                request.kind,
+                request.type_id,
+                request.payload,
+                doc,
+                path,
+            )?
+            .map(ResourceOperationStart::Completed))
+    }
+
+    /// Legacy adapter for [`Self::start_operation`]; the repository policy
+    /// ratchets its remaining overrides to zero. Returns `Ok(true)` when the
+    /// widget handled the payload.
     ///
     /// # Errors
     ///
@@ -2074,9 +2123,7 @@ pub trait Widget {
         Ok(false)
     }
 
-    /// V2 operation route with a typed result. Existing widgets inherit the
-    /// legacy adapter; migrated operations override this method and return the
-    /// output promised by their `ActionContract`.
+    /// Legacy adapter for [`Self::start_operation`] with a typed result.
     ///
     /// # Errors
     ///
@@ -2094,11 +2141,7 @@ pub trait Widget {
             .map(|handled| handled.then(tilo_actions::ActionOutput::default))
     }
 
-    /// Admit an exported non-document operation with a stable invocation id.
-    ///
-    /// Existing synchronous handlers inherit this adapter. A background or
-    /// streaming handler overrides it, records `invocation`, and returns
-    /// [`ResourceOperationStart::Accepted`].
+    /// Legacy read-only adapter for [`Self::start_operation`].
     ///
     /// # Errors
     ///
@@ -2128,25 +2171,12 @@ pub trait Widget {
             .map(|result| result.map(ResourceOperationStart::Completed))
     }
 
-    /// Admit an operation that may need to commit a document follow-up after
-    /// completing device I/O. The mutable document is deliberately available
-    /// only at this top-level admission boundary: ordinary effect handlers
-    /// inherit the read-only adapter above, while a compound operation can
-    /// perform its effect and dispatch the exact replayable metadata action in
-    /// one host-owned turn instead of publishing a permanently disabled UI.
+    /// Legacy mutable adapter for [`Self::start_operation`].
     ///
-    /// The default offers the operation to every retained child with the
-    /// mutable document first, so a handler nested under any container —
-    /// including one that only reports [`children_mut`](Self::children_mut) —
-    /// receives mutable admission. When no child starts it, the widget's own
-    /// read-only admission ([`Self::start_resource_operation`]) runs, which
-    /// keeps an existing read-only override on this widget working.
-    ///
-    /// That fallback offers the operation to children a second time, read-only;
-    /// a child that declined the mutable offer declines again, so the result is
-    /// the same. Pure layout containers that own no handler (`Column`, `Row`,
-    /// `Container`, `TileHost`) override this to stop after the mutable pass and
-    /// offer each handler exactly once.
+    /// The default offers the operation to every retained child through
+    /// [`Self::start_operation`] first, then falls back to this widget's own
+    /// read-only adapter; a child that declined the first offer declines the
+    /// read-only one again.
     ///
     /// # Errors
     ///
@@ -2161,10 +2191,9 @@ pub trait Widget {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
+        let op = ResourceOperation::local(invocation, kind, type_id, payload);
         for child in self.children_mut() {
-            if let Some(started) = child.start_resource_operation_with_document(
-                invocation, kind, type_id, payload, doc, path,
-            )? {
+            if let Some(started) = child.start_operation(&op, doc, path)? {
                 return Ok(Some(started));
             }
         }
@@ -2177,35 +2206,6 @@ pub trait Widget {
         &self,
     ) -> &'static [crate::semantic_document_read::RegisteredSemanticReader] {
         &[]
-    }
-
-    /// Required hosted operations enter here with immutable original-caller
-    /// custody. Async implementations must retain `scope` with their own job
-    /// and use its checked callbacks at each later effect or document mutation.
-    /// The default never calls an unscoped handler, even speculatively.
-    fn start_resource_operation_scoped(
-        &mut self,
-        scope: &crate::invocation_scope::ResourceInvocationScope,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        scope.check()?;
-        for child in self.children_mut() {
-            // A nested canonical owner is an independent destination. Its
-            // handler must be selected by that owner's checked dispatch frame.
-            if child.has_separate_document_owner() {
-                continue;
-            }
-            if let Some(started) =
-                child.start_resource_operation_scoped(scope, kind, type_id, payload, doc, path)?
-            {
-                return Ok(Some(started));
-            }
-        }
-        Ok(None)
     }
 
     /// Poll one admitted operation without blocking the UI thread.
@@ -2234,7 +2234,7 @@ pub trait Widget {
     fn accepts_drop(&self, _payload: &DragPayload) -> bool {
         false
     }
-    fn on_drop(&mut self, _payload: DragPayload, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn on_drop(&mut self, _payload: DragPayload, _state: &mut AppModel, _path: &ModelPath) {}
     fn wants_pointer_capture(&self) -> bool {
         false
     }
@@ -2752,6 +2752,7 @@ impl TaffyTreeExt for TaffyTree<()> {
 
 pub type Element = Box<dyn Widget>;
 
+pub mod binding;
 pub mod decorator;
 pub use decorator::Decorator;
 
@@ -3191,7 +3192,7 @@ mod tests {
             Some(self)
         }
 
-        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+        fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
 
         fn build_layout(
             &mut self,
@@ -3211,20 +3212,6 @@ mod tests {
             _: &mut TextRenderer,
             _: &Theme,
             _: &PresenceCtx,
-        ) {
-        }
-
-        fn handle_event(
-            &mut self,
-            _: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut AutoCommit,
-            _: &ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
         ) {
         }
 
@@ -3270,14 +3257,14 @@ mod tests {
             impl Widget for Observed {
                 fn native_input_snapshot(
                     &self,
-                    doc: &AutoCommit,
-                    path: &ObjId,
+                    doc: &crate::widget::AppModel,
+                    path: &crate::widget::ModelPath,
                 ) -> Option<serde_json::Value> {
                     use automerge::ReadDoc;
+                    let (doc, path) = crate::doc::document_ref(doc, path);
                     self.0.set(self.0.get() + 1);
                     Some(serde_json::json!({"keys": doc.keys(path).collect::<Vec<_>>() }))
                 }
-                fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
                 fn build_layout(
                     &mut self,
                     _: &mut TaffyTree<()>,
@@ -3302,14 +3289,7 @@ mod tests {
                 fn handle_event(
                     &mut self,
                     _: &WindowEvent,
-                    _: f64,
-                    _: &winit::event::Modifiers,
-                    _: &mut AutoCommit,
-                    _: &ObjId,
-                    _: &mut bool,
-                    _: &mut Option<NodeId>,
-                    _: NodeId,
-                    _: &TaffyTree<()>,
+                    _ctx: &mut crate::widget::EventCtx<'_>,
                 ) {
                     unreachable!()
                 }
@@ -3550,7 +3530,6 @@ pub(crate) mod control_result_probe {
                 }
             })
         }
-        fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
         fn build_layout(
             &mut self,
             tree: &mut TaffyTree<()>,
@@ -3569,23 +3548,6 @@ pub(crate) mod control_result_probe {
             _: &mut TextRenderer,
             _: &Theme,
             _: &PresenceCtx,
-        ) {
-        }
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "test probe implements the Widget event contract"
-        )]
-        fn handle_event(
-            &mut self,
-            _: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut AutoCommit,
-            _: &ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -3651,16 +3613,16 @@ pub(crate) mod control_result_probe {
         ) {
             self.observed.results.borrow_mut().push(result.clone());
         }
-        fn start_resource_operation(
+        fn start_operation(
             &mut self,
-            _: tilo_actions::InvocationId,
-            _: tilo_actions::OperationKind,
-            _: &str,
-            payload: &[u8],
-            _: &AutoCommit,
+            op: &ResourceOperation<'_>,
+            _: &mut AutoCommit,
             _: &ObjId,
         ) -> Result<Option<ResourceOperationStart>, String> {
-            if let Ok(text) = serde_json::from_slice::<String>(payload) {
+            let Some(request) = op.unscoped() else {
+                return Ok(None);
+            };
+            if let Ok(text) = serde_json::from_slice::<String>(request.payload) {
                 self.observed.payloads.borrow_mut().push(text);
             }
             self.observed

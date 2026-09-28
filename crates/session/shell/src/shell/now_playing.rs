@@ -360,6 +360,67 @@ pub fn resolve_output(
         })
 }
 
+/// A speaker group this device is playing to, as the card reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpeakerPlayback {
+    pub group: String,
+    pub status: crate::shell::speaker_group_runtime::SpeakerSessionStatus,
+}
+
+impl SpeakerPlayback {
+    /// The session this device plays to a group, most urgent first: a
+    /// member that cannot play in time outranks one still syncing.
+    #[must_use]
+    pub fn from_view(view: &DeviceFabricView) -> Option<Self> {
+        use crate::shell::speaker_group_runtime::SpeakerSessionStatus;
+        let urgency = |status: SpeakerSessionStatus| match status {
+            SpeakerSessionStatus::ClockFailed(_) => 0,
+            SpeakerSessionStatus::SyncingClocks => 1,
+            SpeakerSessionStatus::Connecting => 2,
+            SpeakerSessionStatus::Playing => 3,
+        };
+        view.speaker_groups
+            .sessions
+            .iter()
+            .filter(|session| !session.inbound)
+            .map(|session| Self {
+                group: session.name.clone(),
+                status: session.status(),
+            })
+            .min_by_key(|playback| urgency(playback.status))
+    }
+
+    /// Failures read as errors, everything else as a caption.
+    #[must_use]
+    pub const fn failed(&self) -> bool {
+        matches!(
+            self.status,
+            crate::shell::speaker_group_runtime::SpeakerSessionStatus::ClockFailed(_)
+        )
+    }
+
+    /// The line the card shows.
+    #[must_use]
+    pub fn text(&self) -> String {
+        use crate::shell::i18n::{t, t_args};
+        use crate::shell::speaker_group_runtime::SpeakerSessionStatus;
+        let group = || ("group", self.group.as_str().into());
+        match self.status {
+            SpeakerSessionStatus::Playing => t_args("now-playing-speakers-playing", &[group()]),
+            SpeakerSessionStatus::Connecting => {
+                t_args("now-playing-speakers-connecting", &[group()])
+            }
+            SpeakerSessionStatus::SyncingClocks => {
+                t_args("now-playing-speakers-syncing", &[group()])
+            }
+            SpeakerSessionStatus::ClockFailed(reason) => t_args(
+                "now-playing-speakers-clock-failed",
+                &[group(), ("reason", t(reason.message_key()).into())],
+            ),
+        }
+    }
+}
+
 /// Everything the card paints for one frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NowPlayingView {
@@ -368,6 +429,8 @@ pub struct NowPlayingView {
     /// The player at `active`, held apart so it is always present.
     shown: PlayerSnapshot,
     pub outputs: Vec<OutputTarget>,
+    /// A speaker group this device plays to, shown under the track.
+    pub speakers: Option<SpeakerPlayback>,
     pub now: Instant,
 }
 
@@ -388,8 +451,16 @@ impl NowPlayingView {
             active,
             shown,
             outputs,
+            speakers: None,
             now,
         })
+    }
+
+    /// Report a speaker group this device is playing to.
+    #[must_use]
+    pub fn with_speakers(mut self, speakers: Option<SpeakerPlayback>) -> Self {
+        self.speakers = speakers;
+        self
     }
 
     #[must_use]

@@ -1,7 +1,8 @@
 use super::*;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Widget};
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, ScalarValue};
+use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tilo_actions::{Action, ActionError, ActionSpec, Doc, Resource};
@@ -29,7 +30,9 @@ impl crate::search::SearchProvider for PeopleProvider {
     fn search(&self, query: &str) -> Vec<crate::search::SearchResult> {
         ["Ada Lovelace", "Grace Hopper"]
             .into_iter()
-            .filter(|n| crate::search::fuzzy_score(query, n).is_some())
+            .filter(|n| {
+                crate::search::fold_search_text(n).contains(&crate::search::fold_search_text(query))
+            })
             .map(|n| crate::search::SearchResult::new("People", n, format!("person:{n}")))
             .collect()
     }
@@ -63,7 +66,6 @@ impl crate::search::SearchProvider for LazyProvider {
 struct Publisher;
 struct ConsumingKeyboardRoot;
 impl Widget for ConsumingKeyboardRoot {
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -77,24 +79,13 @@ impl Widget for ConsumingKeyboardRoot {
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
     fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        _: &ObjId,
-        handled: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if matches!(
             event,
             WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
         ) {
-            doc.put(&ROOT, "escaped_keyboard", true).unwrap();
-            *handled = true;
+            ctx.state.put(&ROOT, "escaped_keyboard", true).unwrap();
+            *ctx.handled = true;
         }
     }
     fn get_rect(&self) -> KurboRect {
@@ -105,7 +96,6 @@ impl Widget for ConsumingKeyboardRoot {
     }
 }
 impl Widget for Publisher {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -124,19 +114,6 @@ impl Widget for Publisher {
         _tr: &mut TextRenderer,
         _th: &Theme,
         _p: &PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _e: &WindowEvent,
-        _sf: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<NodeId>,
-        _ni: NodeId,
-        _t: &TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {
@@ -179,7 +156,8 @@ impl Widget for Publisher {
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         vec![Box::new(PeopleProvider), Box::new(LazyProvider)]
     }
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _p: &ObjId) {
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, p: &ModelPath) {
+        let (doc, _) = crate::doc::document(doc, p);
         doc.put(&ROOT, "navigated", ScalarValue::Str(action_id.into()))
             .unwrap();
     }
@@ -188,7 +166,6 @@ impl Widget for Publisher {
 struct CountingPublisher(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
 impl Widget for CountingPublisher {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -207,19 +184,6 @@ impl Widget for CountingPublisher {
         _tr: &mut TextRenderer,
         _th: &Theme,
         _p: &PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _e: &WindowEvent,
-        _sf: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<NodeId>,
-        _ni: NodeId,
-        _t: &TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {

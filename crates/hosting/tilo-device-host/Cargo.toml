@@ -30,6 +30,8 @@ rcgen.workspace = true
 tilo-doc = { path = "../../doc/tilo-doc" }
 tilo-browser-runtime = { path = "../../browser/tilo-browser-runtime" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
+# Proposed documents are real notebooks, as the owner checks them.
+notes = { path = "../../../apps/notes" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 collab-types = { path = "../../collab/collab-types" }
 # Seals an edit the way an endpoint holding channel keys would.

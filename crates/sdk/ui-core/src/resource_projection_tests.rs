@@ -141,7 +141,7 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
 }
 
 impl Widget for SemanticCountingPublisher {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+    fn sync(&mut self, _s: &mut AppModel, _p: &ModelPath) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -160,19 +160,6 @@ impl Widget for SemanticCountingPublisher {
         _tr: &mut TextRenderer,
         _th: &Theme,
         _p: &PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _e: &WindowEvent,
-        _sf: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<NodeId>,
-        _ni: NodeId,
-        _t: &TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {
@@ -334,7 +321,6 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
 }
 
 impl Widget for InventoryOnlyPublisher {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -353,19 +339,6 @@ impl Widget for InventoryOnlyPublisher {
         _tr: &mut TextRenderer,
         _th: &Theme,
         _p: &PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _e: &WindowEvent,
-        _sf: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<NodeId>,
-        _ni: NodeId,
-        _t: &TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {
@@ -416,7 +389,6 @@ struct FastInventoryPublisher {
 }
 
 impl Widget for FastInventoryPublisher {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -435,19 +407,6 @@ impl Widget for FastInventoryPublisher {
         _tr: &mut TextRenderer,
         _th: &Theme,
         _p: &PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _e: &WindowEvent,
-        _sf: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<NodeId>,
-        _ni: NodeId,
-        _t: &TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {

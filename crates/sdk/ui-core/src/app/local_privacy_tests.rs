@@ -19,8 +19,6 @@ struct LocalEffectProbe {
 }
 
 impl Widget for LocalEffectProbe {
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -42,21 +40,6 @@ impl Widget for LocalEffectProbe {
         _: &mut TextRenderer,
         _: &Theme,
         _: &PresenceCtx,
-    ) {
-    }
-
-    #[allow(clippy::too_many_arguments, reason = "Widget callback signature")]
-    fn handle_event(
-        &mut self,
-        _: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
     ) {
     }
 
@@ -99,14 +82,15 @@ impl Widget for LocalEffectProbe {
         &[EFFECT_TYPE]
     }
 
-    fn invoke_resource_operation_v2(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        _: &[u8],
-        _: &automerge::AutoCommit,
+        op: &crate::widget::ResourceOperation<'_>,
+        _: &mut automerge::AutoCommit,
         _: &automerge::ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(crate::widget::OperationRequest { kind, type_id, .. }) = op.unscoped() else {
+            return Ok(None);
+        };
         assert!(matches!(
             kind,
             tilo_actions::OperationKind::Effect | tilo_actions::OperationKind::View
@@ -114,7 +98,9 @@ impl Widget for LocalEffectProbe {
         assert_eq!(type_id, EFFECT_TYPE);
         self.operations.set(self.operations.get().saturating_add(1));
         self.captured.borrow().as_ref().unwrap().wake();
-        Ok(Some(tilo_actions::ActionOutput::default()))
+        Ok(Some(crate::widget::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        )))
     }
 
     fn continuable(&self) -> Option<&dyn crate::widget::Continuable> {

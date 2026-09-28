@@ -3,10 +3,11 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
+use ui::widget::{AppModel, ModelPath};
 
 use tilo_doc::snapshot::BlockView;
 use tilo_document::{ChangeCursor, RichText, RichTextAction, RichTextState};
-use ui::automerge::{AutoCommit, ChangeHash, ObjId};
+use ui::automerge::{AutoCommit, ChangeHash};
 use ui::framework::{ResourceSurface, SurfaceCx};
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::Doc;
@@ -604,7 +605,8 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         &mut self.editor
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         self.source.sync(state);
         // An edit made outside an input event (an accessibility action).
         self.commit(state);
@@ -614,23 +616,13 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         self.editor.sync(state, path);
     }
 
-    fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         if let Some(outcome) = self.outcome_of(event, *ctx.modifiers) {
             self.outcome = Some(outcome);
             *ctx.handled = true;
             return;
         }
-        self.editor.handle_event(
-            event,
-            ctx.scale_factor,
-            ctx.modifiers,
-            ctx.state,
-            ctx.path,
-            ctx.handled,
-            ctx.focus_target,
-            ctx.node_id,
-            ctx.taffy,
-        );
+        self.editor.handle_event(event, ctx);
         self.commit(ctx.state);
     }
 
@@ -650,9 +642,10 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         match action {
             ui::a11y::Action::Focus => {
                 Widget::set_focus(&mut self.editor, true);

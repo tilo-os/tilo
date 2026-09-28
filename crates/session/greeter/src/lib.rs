@@ -8,7 +8,9 @@
 //!
 //! Modules:
 //! * [`sessions`] — parse `/usr/share/wayland-sessions/*.desktop`.
-//! * [`greetd_client`] — the greetd auth/start exchange over `$GREETD_SOCK`.
+//! * [`greetd_client`] — the greetd auth/start exchange over `$GREETD_SOCK`
+//!   (its own crate, so the compositor's lock screen shares it without
+//!   depending on the greeter).
 //! * [`auth`] — background auth worker + the UI-facing update protocol.
 //! * [`greeter_app`] — the root [`GreeterApp`] `Widget` (the login card).
 //! * [`local_users`] — conservative local-account discovery for one-passcode login.
@@ -27,10 +29,10 @@
 )]
 
 pub mod auth;
-pub mod greetd_client;
 pub mod greeter_app;
 pub mod local_users;
 pub mod sessions;
 
+pub use greetd_client;
 pub use greeter_app::GreeterApp;
 pub use sessions::{Session, read_sessions};

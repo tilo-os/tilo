@@ -414,14 +414,16 @@ fn press(wp: &mut WordProcessorWidget, state: &mut ui::State, input: &Input) {
             event: ev,
             is_synthetic: false,
         },
-        1.0,
-        &mods,
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus,
-        NodeId::new(0),
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: NodeId::new(0),
+            taffy: &taffy,
+        },
     );
 }
 
@@ -685,13 +687,17 @@ fn view_operations_move_only_the_invokers_view() {
         to: CaretTarget::DocumentStart,
     });
     assert!(
-        wp.invoke_resource_operation(
-            tilo_actions::OperationKind::View,
-            &start.type_id,
-            &start.payload,
-            &state.doc,
-            &state.root,
+        wp.start_operation(
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
+                &start.type_id,
+                &start.payload
+            ),
+            &mut state.doc,
+            &state.root
         )
+        .map(|started| started.is_some())
         .unwrap()
     );
     assert_eq!(wp.model().caret().offset, 0);
@@ -817,7 +823,7 @@ fn plain_paste_matches_the_paste_primitive() {
 fn a_delivered_view_operation_moves_only_its_participants_view() {
     use crate::actions::editing::CaretTarget;
     use crate::actions::view_ops::{ViewOperation, WORD_PROCESSOR_VIEW_OPERATION_TYPE};
-    let (mut wp, state, ids) = widget_with(&["one", "two"]);
+    let (mut wp, mut state, ids) = widget_with(&["one", "two"]);
     let local_before = wp.local_participant_view();
     let agent = pid("agent-task:3");
     let op = tilo_actions::EncodedAction::encode_operation(
@@ -832,13 +838,17 @@ fn a_delivered_view_operation_moves_only_its_participants_view() {
             ActionInvoker::actor("agent-actor").with_participant(agent.clone()),
         );
         assert!(
-            wp.invoke_resource_operation(
-                tilo_actions::OperationKind::View,
-                &op.type_id,
-                &op.payload,
-                &state.doc,
-                &state.root,
+            wp.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &op.type_id,
+                    &op.payload
+                ),
+                &mut state.doc,
+                &state.root
             )
+            .map(|started| started.is_some())
             .unwrap()
         );
     }

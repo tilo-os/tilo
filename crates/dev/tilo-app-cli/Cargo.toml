@@ -23,10 +23,13 @@ anyhow.workspace = true
 clap.workspace = true
 fluent.workspace = true
 fluent-syntax.workspace = true
+hex.workspace = true
 libc.workspace = true
 notify.workspace = true
 image = { workspace = true, features = ["png"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
+registry-types = { path = "../../packaging/registry-types" }
+registry-client = { path = "../../packaging/registry-client" }
 atomic-file = { path = "../../system/atomic-file" }
 # serde comes in through serde_json. A direct dependency is unused and fails machete.
 serde_json.workspace = true
@@ -40,6 +43,8 @@ tilo-headless-schema = { path = "../headless-schema" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+serde_yaml = "0.9"
+tempfile.workspace = true
 tilo-test-env = { path = "../test-env" }
 
 [lints]

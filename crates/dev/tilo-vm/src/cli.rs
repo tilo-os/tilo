@@ -383,6 +383,24 @@ pub fn parse_age(text: &str) -> Result<u64, String> {
     Ok(value.saturating_mul(scale))
 }
 
+/// `--resolution`: `WIDTHxHEIGHT`, each 320 to 16384 pixels.
+///
+/// # Errors
+/// Anything else.
+pub fn parse_resolution(text: &str) -> Result<String, String> {
+    let size = |part: &str| {
+        part.parse::<u16>()
+            .ok()
+            .filter(|n| (320..=16_384).contains(n))
+    };
+    match text.trim().split_once('x') {
+        Some((w, h)) if size(w).is_some() && size(h).is_some() => Ok(format!("{w}x{h}")),
+        _ => Err(format!(
+            "'{text}' is not WIDTHxHEIGHT with each side 320 to 16384, e.g. 5120x2880"
+        )),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Builder {
     /// Sync the worktree into the VM and build there with the dev image's toolchain.
@@ -618,7 +636,7 @@ pub enum VmCommand {
     },
     /// Download the published dev disk (or use a local one), create the VM with the host's hypervisor, and register it.
     #[command(
-        after_help = "Checks the hypervisor and its tools, --image, the published disk and free space\nbefore it downloads or creates anything, and names the missing piece with its fix.\n\nExamples:\n  tilo-vm vm create dev                       # newest published disk (needs FORGEJO_TOKEN, or fgj/tea login)\n  tilo-vm vm create dev --tag main-1a2b3c4\n  tilo-vm vm create dev --image ~/images/tilo-vm.qcow2 --disk ~/vms/dev.qcow2\n  tilo-vm vm create try1 --image os/output/disk/disk.raw   # a raw disk from os/dev/disk-image.sh --raw\n  tilo-vm vm create esp1 --image base.raw --boot-esp override.raw   # boot a candidate ESP (os/dev/make-boot-esp.sh) first\n  tilo-vm vm create mac --hypervisor utm --template 'Tilo Dev'\n  tilo-vm vm create arm --arch aarch64 --emulated --image arm.qcow2 --disk arm-dev.qcow2"
+        after_help = "Checks the hypervisor and its tools, --image, the published disk and free space\nbefore it downloads or creates anything, and names the missing piece with its fix.\n\nExamples:\n  tilo-vm vm create dev                       # newest published disk (needs FORGEJO_TOKEN, or fgj/tea login)\n  tilo-vm vm create dev --tag main-1a2b3c4\n  tilo-vm vm create dev --image ~/images/tilo-vm.qcow2 --disk ~/vms/dev.qcow2\n  tilo-vm vm create try1 --image os/output/disk/disk.raw   # a raw disk from os/dev/disk-image.sh --raw\n  tilo-vm vm create esp1 --image base.raw --boot-esp override.raw   # boot a candidate ESP (os/dev/make-boot-esp.sh) first\n  tilo-vm vm create mac --hypervisor utm --template 'Tilo Dev'\n  tilo-vm vm create arm --arch aarch64 --emulated --image arm.qcow2 --disk arm-dev.qcow2\n  tilo-vm vm create 5k --heads 2 --resolution 5120x2880   # 5K first monitor, 1080p-capable second"
     )]
     Create(CreateArgs),
     /// Boot the VM and wait until SSH answers.
@@ -750,6 +768,12 @@ pub struct CreateArgs {
     /// WHPX only: omit the virtual display and USB devices for SSH-only development.
     #[arg(long)]
     pub headless: bool,
+    /// libvirt only: virtio-gpu outputs, e.g. 2 for a two-monitor layout.
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=16))]
+    pub heads: Option<u8>,
+    /// libvirt only: the first output's preferred mode, `WIDTHxHEIGHT` (e.g. `5120x2880`).
+    #[arg(long, value_parser = parse_resolution)]
+    pub resolution: Option<String>,
     /// Guest CPUs (default: the adapter's).
     #[arg(long)]
     pub cpus: Option<u32>,
@@ -1082,6 +1106,10 @@ mod tests {
             assert_eq!(parse_age("2d"), Ok(172_800));
             assert!(parse_age("1w").is_err());
             assert!(parse_age("soon").is_err());
+            assert_eq!(parse_resolution("5120x2880"), Ok("5120x2880".into()));
+            assert!(parse_resolution("5120").is_err());
+            assert!(parse_resolution("100x100").is_err());
+            assert!(parse_resolution("5120X2880").is_err());
             let cli = Cli::try_parse_from(["tilo-vm", "gc", "--min-age", "0"]).unwrap();
             assert!(matches!(
                 cli.command,

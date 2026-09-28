@@ -163,12 +163,12 @@ impl SecretServiceMlsVault {
     ///
     /// Returns an error when session state or vault material cannot be opened.
     pub fn open_for_session() -> Result<Self, MlsAuthorityError> {
-        let state = std::env::var_os("XDG_STATE_HOME").ok_or_else(|| {
+        let state = xdg_paths::env_dir("XDG_STATE_HOME").ok_or_else(|| {
             MlsAuthorityError::VaultUnavailable(
                 "launcher did not provide XDG_STATE_HOME for MLS state".into(),
             )
         })?;
-        Self::open(PathBuf::from(state).join("tilo/collaboration/mls"))
+        Self::open(state.join("tilo/collaboration/mls"))
     }
 
     /// Broker-owned WAL location paired with this provider. It is derived

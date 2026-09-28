@@ -242,6 +242,10 @@ impl HistoryPreview for KeyboardPreview {
                 pressed_sugg: None,
                 empty_hint: "Historical preferences · no typed text",
                 emoji_panel_open: false,
+                preview: None,
+                alternates: None,
+                cursor_mode: false,
+                hit_cells: &[],
             }
             .draw(scene, transform, text, theme);
         }

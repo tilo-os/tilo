@@ -348,6 +348,101 @@ fn a_handed_epub_opens_into_the_library_and_a_second_mount_shows_it_and_its_high
     );
 }
 
+#[test]
+fn go_to_moves_each_mount_to_its_own_chapter_and_block_without_a_selection() {
+    let fixture = Fixture::new("books-browser-go-to");
+    let definition = super::bundled_library_definition();
+    let content = tilo_content::ContentStore::memory();
+    let bytes = crate::test_epub::verse_classic(6);
+    let book_id = crate::epub::content_id(&bytes);
+    let book = super::book_resource(&book_id);
+    let (file, _receipt) =
+        ui::application::OpenFile::new("odyssey.epub", super::EPUB_MEDIA_TYPE, bytes).unwrap();
+    let lent = content.clone();
+    let (mut phone, checkout) =
+        fixture.driver_with(definition, 1, LaunchTarget::New, &book, move |host| {
+            host.provide_content(lent);
+            host.provide_open_file(file);
+        });
+    let target = LaunchTarget::Record {
+        checkout: checkout.clone(),
+        reveal: None,
+    };
+    let (mut laptop, _) = fixture.driver_with(definition, 2, target, &book, move |host| {
+        host.provide_content(content);
+    });
+    let actions = |driver: &FrameHarness| -> Vec<String> {
+        driver.bound_resources(Some(&book)).unwrap()[0]
+            .actions
+            .iter()
+            .map(|action| action.id.clone())
+            .collect()
+    };
+    assert!(actions(&phone).contains(&"go-to".to_string()));
+    assert!(actions(&laptop).contains(&"go-to".to_string()));
+
+    // A selection on the phone is dropped by going somewhere.
+    invoke(
+        &mut phone,
+        &book,
+        "select-passage",
+        serde_json::json!({"chapter": 2, "start_block": 3}),
+    )
+    .expect("select");
+    assert!(actions(&phone).contains(&"highlight-selection".to_string()));
+    invoke(
+        &mut phone,
+        &book,
+        "go-to",
+        serde_json::json!({"chapter": 4, "block": 3}),
+    )
+    .expect("phone goes to Book 3");
+    assert!(
+        !actions(&phone).contains(&"highlight-selection".to_string()),
+        "going to a passage selects nothing"
+    );
+    invoke(
+        &mut laptop,
+        &book,
+        "go-to",
+        serde_json::json!({"chapter": 6, "block": 3}),
+    )
+    .expect("laptop goes to Book 5");
+    assert!(!actions(&laptop).contains(&"highlight-selection".to_string()));
+
+    // Each mount is where it went: a passage selected without a chapter lands
+    // in that mount's chapter.
+    highlight_passage(&mut phone, &book, serde_json::json!({"start_block": 4}));
+    highlight_passage(&mut laptop, &book, serde_json::json!({"start_block": 5}));
+    let highlights = book_highlights(&fixture, &checkout, &book_id);
+    let at: Vec<_> = highlights
+        .iter()
+        .map(|(chapter, block, _)| (*chapter, *block))
+        .collect();
+    assert!(
+        at.contains(&(4, 4)) && at.contains(&(6, 5)),
+        "{highlights:?}"
+    );
+    assert!(
+        highlights
+            .iter()
+            .any(|(_, _, excerpt)| excerpt.starts_with("Book 3, stanza 2: tell me")),
+        "{highlights:?}"
+    );
+
+    // A target the book does not have is refused, not clamped.
+    for missing in [
+        serde_json::json!({"chapter": 40}),
+        serde_json::json!({"chapter": 4, "block": 60}),
+        serde_json::json!({"block": -1}),
+    ] {
+        assert!(
+            invoke(&mut phone, &book, "go-to", missing.clone()).is_err(),
+            "{missing}"
+        );
+    }
+}
+
 /// Select a passage through the book's action door and highlight it.
 fn highlight_passage(driver: &mut FrameHarness, book: &str, passage: serde_json::Value) {
     invoke(driver, book, "select-passage", passage).expect("select");

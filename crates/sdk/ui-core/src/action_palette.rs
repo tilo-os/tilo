@@ -28,6 +28,7 @@
 //! [`take_navigation`](ActionPalette::take_navigation) (content).
 
 use crate::bound_dispatch::{DeferredIntent, PreparedActionIntent};
+use crate::widget::{AppModel, ModelPath};
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -41,7 +42,8 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
 use crate::search::{
-    SearchCursor, SearchGroup, SearchProvider, SearchResult, fuzzy_score, result_relevance,
+    FieldWeight, ListIndex, SearchCursor, SearchGroup, SearchProvider, SearchResult,
+    result_relevance,
 };
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -299,6 +301,9 @@ pub struct ActionPalette {
     /// A revoked selection stays unselected until restored or deliberately changed.
     missing_selection: Option<String>,
     search_generation: u64,
+    /// The exported actions' titles and descriptions, indexed while they
+    /// stay the same.
+    action_index: ListIndex,
     search_announcement: Option<String>,
     open: bool,
     /// `Some` while collecting a prompted action's argument in the field.
@@ -406,6 +411,7 @@ impl ActionPalette {
             search_query: String::new(),
             missing_selection: None,
             search_generation: 0,
+            action_index: ListIndex::default(),
             search_announcement: None,
             open: false,
             arg: None,
@@ -634,14 +640,16 @@ impl ActionPalette {
         if let Some(node) = self.controls_node {
             self.controls.handle_event(
                 event,
-                scale,
-                &modifiers,
-                doc,
-                path,
-                &mut handled,
-                &mut focus,
-                node,
-                &self.field_taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &modifiers,
+                    state: doc,
+                    path,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &self.field_taffy,
+                },
             );
             if let Some(focus) = focus {
                 if let Some(index) = self
@@ -659,14 +667,16 @@ impl ActionPalette {
                 let mut focus = None;
                 self.field.handle_event(
                     event,
-                    scale,
-                    &modifiers,
-                    doc,
-                    path,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &self.field_taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: scale,
+                        modifiers: &modifiers,
+                        state: doc,
+                        path,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &self.field_taffy,
+                    },
                 );
                 if focus.is_some() {
                     self.focus_part(0);
@@ -1746,12 +1756,13 @@ impl ActionPalette {
         })
     }
 
-    /// Rebuild the result set for `query`: exported actions (fuzzy-filtered)
-    /// as the **Actions** group, then each provider's hits as its own group.
+    /// Rebuild the result set for `query`: exported actions matching it as
+    /// the **Actions** group, then each provider's hits as its own group.
     fn rebuild(&mut self, query: &str) {
         self.missing_selection = None;
-        let mut rows: Vec<SearchResult> = Vec::new();
-        let mut index: HashMap<String, RowResolution> = HashMap::new();
+        // Every available action is a candidate row with the text it is
+        // found by; the index then keeps the ones matching the query.
+        let mut candidates: Vec<(SearchResult, Option<String>, RowResolution)> = Vec::new();
 
         // Keep only inert addresses in the row index. Encoding and callbacks
         // are resolved later, against the authority snapshot current at the
@@ -1762,40 +1773,28 @@ impl ActionPalette {
                 continue;
             }
             let title = format!("{} \u{2014} {}", fa.resource_label, fa.action.label);
-            if fuzzy_score(query, &title).is_some()
-                || fa
-                    .action
-                    .description
-                    .as_deref()
-                    .and_then(|d| fuzzy_score(query, d))
-                    .is_some()
+            let mut r = SearchResult::new(ACTIONS_KIND, title, fa.key.clone());
+            if let Some(desc) = &fa.action.description {
+                r = r.with_subtitle(desc.clone());
+            } else if let Some(detail) = fa
+                .resource_presentation
+                .as_ref()
+                .and_then(|presentation| presentation.detail.as_ref())
             {
-                let mut r = SearchResult::new(ACTIONS_KIND, title, fa.key.clone());
-                if let Some(desc) = &fa.action.description {
-                    r = r.with_subtitle(desc.clone());
-                } else if let Some(detail) = fa
-                    .resource_presentation
-                    .as_ref()
-                    .and_then(|presentation| presentation.detail.as_ref())
-                {
-                    r = r.with_subtitle(detail.clone());
-                }
-                if let Some(preview) = fa
-                    .resource_presentation
-                    .as_ref()
-                    .and_then(|presentation| presentation.preview.as_ref())
-                {
-                    r = r.with_preview(preview.clone());
-                }
-                index.insert(
-                    fa.key.clone(),
-                    RowResolution::Address(tilo_actions::ActionAddress::new(
-                        fa.resource_id.as_str(),
-                        fa.action.id.as_str(),
-                    )),
-                );
-                rows.push(r);
+                r = r.with_subtitle(detail.clone());
             }
+            if let Some(preview) = fa
+                .resource_presentation
+                .as_ref()
+                .and_then(|presentation| presentation.preview.as_ref())
+            {
+                r = r.with_preview(preview.clone());
+            }
+            let resolution = RowResolution::Address(tilo_actions::ActionAddress::new(
+                fa.resource_id.as_str(),
+                fa.action.id.as_str(),
+            ));
+            candidates.push((r, fa.action.description.clone(), resolution));
         }
 
         for snapshot in &self.bound_resources {
@@ -1815,9 +1814,6 @@ impl ActionPalette {
                         "{} — {} · {}",
                         fa.resource_label, fa.action.label, snapshot.binding.instance_id
                     );
-                    if fuzzy_score(query, &title).is_none() {
-                        continue;
-                    }
                     let target = crate::bound_dispatch::BoundActionTarget {
                         binding: snapshot.binding.clone(),
                         address: crate::bound_dispatch::BoundActionAddress {
@@ -1829,9 +1825,33 @@ impl ActionPalette {
                         },
                     };
                     let key = target.key();
-                    rows.push(SearchResult::new(ACTIONS_KIND, title, key.clone()));
-                    index.insert(key, RowResolution::Bound(target));
+                    candidates.push((
+                        SearchResult::new(ACTIONS_KIND, title, key),
+                        None,
+                        RowResolution::Bound(target),
+                    ));
                 }
+            }
+        }
+
+        let ranks = self.action_index.ranks(
+            query,
+            candidates.iter().map(|(row, description, _)| {
+                [
+                    (row.title.as_str(), FieldWeight::TITLE),
+                    (
+                        description.as_deref().unwrap_or_default(),
+                        FieldWeight::SUBTITLE,
+                    ),
+                ]
+            }),
+        );
+        let mut rows: Vec<SearchResult> = Vec::new();
+        let mut index: HashMap<String, RowResolution> = HashMap::new();
+        for ((row, _, resolution), rank) in candidates.into_iter().zip(ranks) {
+            if rank.is_some() {
+                index.insert(row.action_id.clone(), resolution);
+                rows.push(row);
             }
         }
 
@@ -2438,14 +2458,16 @@ impl ActionPalette {
         let mut ft = None;
         self.field.handle_event(
             event,
-            1.0,
-            &modifiers,
-            doc,
-            path,
-            &mut handled,
-            &mut ft,
-            node,
-            &self.field_taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: doc,
+                path,
+                handled: &mut handled,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &self.field_taffy,
+            },
         );
     }
 
@@ -2467,14 +2489,16 @@ impl ActionPalette {
         let mut ft = None;
         self.results.handle_event(
             event,
-            1.0,
-            &modifiers,
-            doc,
-            path,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: doc,
+                path,
+                handled: &mut handled,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 }
@@ -2551,7 +2575,6 @@ impl Widget for ActionPalette {
     fn modal_capture(&self) -> Option<Rect> {
         self.is_presented().then_some(self.rect)
     }
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -2580,19 +2603,9 @@ impl Widget for ActionPalette {
     ) {
         ActionPalette::draw(self, scene, transform, text, theme, presence);
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-        *handled |= self.route_event(event, scale, *modifiers, doc, path);
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        *ctx.handled |=
+            self.route_event(event, ctx.scale_factor, *ctx.modifiers, ctx.state, ctx.path);
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         if !self.is_presented() {
@@ -2644,8 +2657,8 @@ impl Widget for ActionPalette {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        doc: &mut AutoCommit,
-        path: &ObjId,
+        doc: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         if !self.is_presented() {
             return false;
@@ -2665,6 +2678,7 @@ impl Widget for ActionPalette {
                     self.focus_part(index + 1);
                 }
                 let handled = self.controls.children_mut()[index].perform_action(action, doc, path);
+                let (doc, path) = crate::doc::document(doc, path);
                 self.drain_command(doc, path);
                 return handled;
             }
@@ -2786,7 +2800,10 @@ mod tests {
         fn search(&self, query: &str) -> Vec<SearchResult> {
             ["Ada Lovelace", "Alan Turing"]
                 .into_iter()
-                .filter(|n| fuzzy_score(query, n).is_some())
+                .filter(|n| {
+                    crate::search::fold_search_text(n)
+                        .contains(&crate::search::fold_search_text(query))
+                })
                 .map(|n| SearchResult::new("People", n, format!("person:{n}")))
                 .collect()
         }
@@ -2802,15 +2819,16 @@ mod tests {
         }
 
         fn search(&self, query: &str) -> Vec<SearchResult> {
-            fuzzy_score(query, "Ada Lovelace")
-                .map(|_| {
-                    vec![SearchResult::for_action(
-                        "People",
-                        "Ada Lovelace",
-                        tilo_actions::ActionAddress::new("test.thing:1", "mark"),
-                    )]
-                })
-                .unwrap_or_default()
+            if !crate::search::fold_search_text("Ada Lovelace")
+                .contains(&crate::search::fold_search_text(query))
+            {
+                return Vec::new();
+            }
+            vec![SearchResult::for_action(
+                "People",
+                "Ada Lovelace",
+                tilo_actions::ActionAddress::new("test.thing:1", "mark"),
+            )]
         }
     }
 

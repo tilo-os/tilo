@@ -1,7 +1,7 @@
 use std::collections::HashMap;
+use ui_core::widget::{AppModel, ModelPath};
 
 use tilo_app as ui;
-use ui::automerge::{AutoCommit, ObjId};
 use ui::control_custody::{CustodyAttachment, RawControlEmission, RawControlSlot};
 use ui::taffy::{NodeId, TaffyTree};
 use ui::tilo_actions::{ActionAddress, ControlInvocation};
@@ -10,7 +10,7 @@ use ui::vello::{
     kurbo::{Affine, Point},
 };
 use ui::widget::{Text, Widget};
-use ui::winit::event::{Modifiers, WindowEvent};
+use ui::winit::event::WindowEvent;
 use ui::{PresenceCtx, TextRenderer, Theme};
 
 struct ExternalRawWidget {
@@ -28,7 +28,7 @@ impl ExternalRawWidget {
 }
 
 impl Widget for ExternalRawWidget {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.content.sync(state, path);
     }
 
@@ -57,29 +57,8 @@ impl Widget for ExternalRawWidget {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.content.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui_core::widget::EventCtx<'_>) {
+        self.content.handle_event(event, ctx);
     }
 
     fn name(&self) -> &'static str {

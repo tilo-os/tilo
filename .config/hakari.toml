@@ -106,3 +106,12 @@ workspace-members = [
     "registry-web",
     "registry-web-bindgen",
 ]
+# A -sys crate in the hack is linked into runtime-dylib, whose exports carry
+# Rust symbols only. A thin app that monomorphises its safe wrapper (Imager's
+# zstd Reader) then references C symbols no library provides and fails to link.
+# Keep such crates out of the hack so each user links its own copy.
+third-party = [
+    { name = "zstd" },
+    { name = "zstd-safe" },
+    { name = "zstd-sys" },
+]

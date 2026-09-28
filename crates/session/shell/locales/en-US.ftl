@@ -39,11 +39,14 @@ display-confirm-keep = Keep
 display-confirm-revert = Revert
 display-rejected = Couldn't apply this layout: { $reason }
 
-# Keep or revert a change a display tool (kanshi, wlr-randr) made
-display-confirm-tool-title = Keep the display settings { $tool } applied?
-display-confirm-tool-unknown-title = Keep the display settings a tool applied?
-display-confirm-always = Always keep changes from { $tool }
-display-confirm-a11y-description = A display tool changed your screens. Enter keeps the change, Escape restores the previous layout.
+# Keep or revert a risky change a display tool (kanshi, wlr-randr) made:
+# one that could leave a screen blank or turn off the one in use
+display-confirm-tool-title = Keep the display change from { $tool }?
+display-confirm-tool-unknown-title = Keep this display change?
+display-confirm-always = Keep, and don't ask again for { $tool }
+display-confirm-a11y-description = A display tool changed a screen you're using, or picked a mode it hasn't shown before, which can leave it blank. Enter keeps the change; Escape, or waiting, restores the previous layout.
+display-tool-reapply-refused = { $tool } tried to reapply a display layout you reverted
+display-tool-reapply-refused-unknown = A display tool tried to reapply a display layout you reverted
 
 # Wireless receivers, the lower section of the same sheet
 wireless-heading = Wireless displays
@@ -575,6 +578,9 @@ host-fabric-speaker-stopped = Stopped playing on { $group }
 host-fabric-speaker-playing = Playing on { $group }
 host-fabric-speaker-playing-media = Playing on { $group }; the media keeps playing from here
 host-fabric-speaker-left = This device left { $group }
+host-fabric-speaker-listen-allowed = { $group } can calibrate with this microphone
+host-fabric-speaker-listen-declined = { $group } will not use this microphone
+host-fabric-speaker-listen-stopped = { $group } can no longer use this microphone
 host-fabric-audio-route-dismissed = Dismissed interrupted { $route }
 host-fabric-audio-route-stopped = Stopped routing { $route }
 host-fabric-input-allowed = Allowed { $app } to use this input once
@@ -861,8 +867,17 @@ qs-devices-speakers-playing = { $count ->
         [one] { $count } speaker playing · select to stop
        *[other] { $count } speakers playing · select to stop
     }
+qs-devices-speaker-syncing = { $playing } playing, { $syncing } syncing clocks… · select to stop
+qs-devices-speaker-clock-failed = { $count ->
+        [one] { $count } speaker can't play in time: { $reason } · select to stop
+       *[other] { $count } speakers can't play in time: { $reason } · select to stop
+    }
 qs-devices-speaker-setup-note = Stereo pair or room speakers · opens Settings → Speakers
 qs-devices-speaker-membership-note = set up on { $leader } · select to leave
+qs-devices-speaker-listen = Let { $leader } use this microphone for { $group }?
+qs-devices-speaker-listen-note = only during speaker calibration · the recording stays here
+qs-devices-speaker-listen-note-microphone = uses { $microphone } · only during speaker calibration · the recording stays here
+qs-devices-speaker-listener-note = set up on { $leader } · select to stop
 qs-devices-another-certified = Another certified device
 qs-devices-requested-allow-once = { $source } requested this · allow once or decline
 qs-devices-audio-app = Focused app audio · stops when focus changes
@@ -871,6 +886,8 @@ qs-devices-certified-device = certified device
 qs-devices-audio-awaiting = waiting for approval with { $peer } · select to stop
 qs-devices-audio-streaming = streaming with { $peer } · select to stop
 qs-devices-audio-interrupted = interrupted with { $peer } · select to dismiss
+qs-devices-audio-syncing = syncing clocks with { $peer }… · select to stop
+qs-devices-audio-clock-failed = can't play in time with { $peer }: { $reason } · select to stop
 qs-devices-capture-share = Share this device's { $input }
 qs-devices-capture-requested = { $source } requested this for { $app } · allow once or decline
 qs-devices-capture-use-remote = Use remote { $input }
@@ -1478,6 +1495,11 @@ search-continuity-speaker-play-subtitle = Play through every ready speaker of th
 search-continuity-speaker-media-subtitle = Keep playing here and send the sound to this speaker group
 search-continuity-speaker-stop = Stop playing on { $group }
 search-continuity-speaker-stop-subtitle = End this speaker group playback on every speaker
+search-continuity-speaker-listen-allow = Let { $group } calibrate with this microphone
+search-continuity-speaker-listen-decline = Do not let { $group } use this microphone
+search-continuity-speaker-listen-subtitle = { $device } asked to listen with this device's microphone while calibrating speakers
+search-continuity-speaker-listen-stop = Stop { $group } using this microphone
+search-continuity-speaker-listen-stop-subtitle = Speaker calibration set up on { $leader } may listen with this microphone
 search-continuity-place-left = Place { $device } left
 search-continuity-place-right = Place { $device } right
 search-continuity-place-above = Place { $device } above
@@ -1882,7 +1904,7 @@ window-move-unknown-workspace = That workspace is gone.
 window-move-same-workspace = The window is already in that workspace.
 window-move-pinned = This window belongs to its workspace and cannot move.
 window-move-document-refused = The workspace document did not accept the change, so nothing was moved.
-window-move-hosted-workspace = A room owner keeps that workspace's documents, so windows can't be carried into or out of it from this device yet.
+window-move-hosted-workspace = That workspace is run by its owner, and this device can't reach it right now, so windows can't be carried into or out of it.
 window-move-not-permitted = That workspace doesn't let you open this app there.
 window-move-already-moving = This window is already being moved.
 window-move-nobody-to-confirm = Moving a window needs the person at this desktop to agree to what crosses, and nobody is here to ask.
@@ -1918,6 +1940,26 @@ window-transfer-lost-title = “{ $window }” closed while it was moving
 window-transfer-lost-detail = The app closed unexpectedly, so edits from its last few seconds may be missing. Everything it had saved is now in { $to }.
 window-transfer-late-edits-title = Your last edits in “{ $window }” came along
 window-transfer-late-edits-detail = Changes made in { $from } while the window was moving were added to the document.
+window-transfer-move-needs-window = Move needs the window open in { $from }, so it can mark the original as moved there. Open it first, or make a copy.
+window-transfer-owner-accepts = { $to } is run by its owner, who has to accept the document before it opens there.
+window-transfer-awaiting-owner = Waiting for the owner of { $to } to accept it…
+window-transfer-too-large-hosted = It is too large to move into { $to } yet.
+window-transfer-proposal-failed = { $to } didn't take it: { $reason }
+window-transfer-declined = The owner of { $to } declined it.
+window-transfer-owner-timeout = The owner of { $to } didn't answer in time.
+window-transfer-kept-as-copy-title = “{ $window }” was copied, not moved
+window-transfer-kept-as-copy-detail = It changed in { $from } while the owner of { $to } decided, so both stay. { $to } has it as it was when you moved it.
+window-transfer-not-retired-title = “{ $window }” is still in { $from }
+window-transfer-not-retired-detail = Its window closed before it could mark the document as moved, so the original stays in { $from } as well.
+window-transfer-late-edits-stay-title = Your last edits stayed in { $from }
+window-transfer-late-edits-stay-detail = Changes made in { $from } just before its window closed are in the document's history there, not in { $to }.
+document-import-title = Accept “{ $title }” into { $to }?
+document-import-detail = { $person } wants to move “{ $title }” ({ $app }) into { $to }, with its history. Everyone in { $to } will be able to open it.
+document-import-accept = Accept it into { $to }
+document-import-decline = Decline
+document-import-confirm = Answer
+document-import-someone = Someone
+document-import-answer-failed-title = Your answer about “{ $title }” didn't reach its workspace
 window-transfer-moved-away-title = “{ $window }” was moved to another workspace
 window-transfer-moved-away-to = { $person } moved it to { $to }, where it opens for you now. What you see here is how it was when it left; it can't be edited here any more.
 window-transfer-moved-away-elsewhere = { $person } moved it to a workspace you're not in. What you see here is how it was when it left; it can't be edited here any more.
@@ -2047,9 +2089,7 @@ speaker-error-no-applied-calibration = there is no applied calibration to revert
 speaker-error-calibration-unavailable = calibration is unavailable
 speaker-error-calibration-gone = that calibration is no longer available
 speaker-error-network-unavailable = the device network is unavailable
-speaker-error-microphone-invalid = that microphone is not valid
 speaker-error-calibrate-on-leader = calibrate this group on the device that set it up
-speaker-error-microphone-unavailable = that microphone is not available
 speaker-error-not-all-ready = every speaker must be ready before calibrating
 speaker-error-request-failed = the speaker request failed
 speaker-error-app-stopped = that application stopped playing
@@ -2057,11 +2097,24 @@ speaker-error-audio-unavailable = speaker group audio is unavailable
 speaker-error-other-session = another speaker group session is already playing from this device
 
 # Measuring speakers for calibration
-speaker-calibration-reason-remote-microphone = calibrate with a microphone on the device that set up the speakers
 speaker-calibration-reason-microphone-gone = that microphone is no longer connected
 speaker-calibration-reason-output-gone = that speaker's output is no longer connected
 speaker-calibration-reason-play-failed = could not play the sweep: { $error }
-speaker-calibration-reason-listen-failed = could not start listening: { $error }
+speaker-calibration-reason-clock = could not sync clocks with that speaker: { $reason }
+clock-sync-failure-media-disabled = media continuity is off on this device
+clock-sync-failure-no-reply = the other device did not answer clock sync
+now-playing-speakers-playing = Playing on { $group }
+now-playing-speakers-connecting = { $group }: connecting…
+now-playing-speakers-syncing = { $group }: syncing clocks…
+now-playing-speakers-clock-failed = { $group }: can't play in time — { $reason }
+speaker-calibration-reason-not-heard = no sweep stood out of the noise there
+speaker-calibration-reason-not-allowed = that device has not allowed its microphone
+speaker-calibration-reason-out-of-window = the request reached that device too late
+speaker-calibration-reason-busy = that microphone was busy with another sweep
+speaker-calibration-reason-capture-failed = the recording failed
+speaker-calibration-reason-clock-unknown = that device's clock is not synchronised yet
+speaker-calibration-reason-no-answer = that device did not answer in time
+speaker-calibration-reason-not-at-seat = no microphone heard it clearly enough
 speaker-calibration-failed = Could not measure { $speaker }: { $reason }
 speaker-calibration-cancelled = Calibration was cancelled
 
@@ -2213,3 +2266,12 @@ remote-capture-source-label = { $app } on certified device
 
 # Print jobs: the title a print queue shows when the app gave none
 print-untitled-document = Document
+
+a11y-speaker-listen = Let { $leader } use this microphone to calibrate { $group }
+a11y-speaker-listen-description = It records only while each speaker plays a test sweep; the recording stays on this device and only timing and level are sent
+a11y-speaker-listen-allow = Allow this microphone
+a11y-speaker-listen-decline = Do not allow this microphone
+a11y-speaker-listener = { $group } can calibrate with this microphone
+a11y-speaker-listener-description = Speaker calibration may listen with this microphone; activate to stop
+speaker-calibration-listening-refused = { $microphone } was not allowed to listen, so nothing can be measured from where you sit
+speaker-error-listening-unavailable = choose a microphone that can listen where you sit

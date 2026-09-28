@@ -85,6 +85,7 @@ fn peer(path: &std::path::Path, app: &str) -> TypedPeer {
             app_id: app.into(),
             cluster_id: typed_peer::room(),
             record: None,
+            record_kind: None,
             handle: Some("quinten".into()),
         },
     )
@@ -153,6 +154,7 @@ fn scenario_outcome(
             app_id: CHAT.into(),
             cluster_id: typed_peer::room(),
             record: record.map(str::to_string),
+            record_kind: None,
             handle: Some("quinten".into()),
         },
     )

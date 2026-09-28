@@ -127,16 +127,17 @@ impl Widget for Probe {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["probe.effect"]
     }
-    fn start_resource_operation_scoped(
+    fn start_operation(
         &mut self,
-        scope: &ui::invocation_scope::ResourceInvocationScope,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        _: &[u8],
+        op: &ui::widget::ResourceOperation<'_>,
         _: &mut AutoCommit,
         _: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect || type_id != "probe.effect" {
+        let (request, Some(scope)) = op.with_custody() else {
+            return Ok(None);
+        };
+        if request.kind != tilo_actions::OperationKind::Effect || request.type_id != "probe.effect"
+        {
             return Ok(None);
         }
         scope.with_effect(|| {
@@ -147,7 +148,6 @@ impl Widget for Probe {
             tilo_actions::ActionOutput::default(),
         )))
     }
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
     fn build_layout(
         &mut self,
         tree: &mut ui::taffy::TaffyTree<()>,
@@ -172,19 +172,6 @@ impl Widget for Probe {
         _: &mut ui::TextRenderer,
         _: &ui::Theme,
         _: &ui::PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _: &ui::winit::event::WindowEvent,
-        _: f64,
-        _: &ui::winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<ui::taffy::NodeId>,
-        _: ui::taffy::NodeId,
-        _: &ui::taffy::TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {

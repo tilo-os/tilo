@@ -229,34 +229,6 @@ fn delivery_admission_metadata_and_unsupported_families_have_no_operation_receip
         &InputDisposition::UnsupportedFamily
     );
     assert_eq!(receiver.durable().unwrap(), before);
-    let messages = receiver.bootstrap_messages(&key, now).unwrap();
-    let mut encrypted = messages[1].clone();
-    if let NeighbourMsg::AppDocument {
-        envelope,
-        app_id,
-        cluster_id,
-        record_id,
-        ..
-    } = &mut encrypted
-    {
-        envelope.seq += 1;
-        envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(
-            1,
-            collab_types::document_channel_id(app_id, cluster_id, record_id),
-        ));
-        envelope.payload = vec![1, 2, 3];
-        collab_types::sign_op(envelope, &key).unwrap();
-    }
-    let report = receiver
-        .receive_from_report(origin, encrypted, now)
-        .unwrap();
-    assert_eq!(
-        report.primary(),
-        &InputDisposition::RetryLater(MissingPrerequisite::PersistedMls)
-    );
-    assert!(report.summary().metadata_changed);
-    assert!(report.settled().is_empty());
-    assert!(restore(&receiver, now).incomplete_reason().is_some());
 }
 #[test]
 fn delivery_admission_exact_retry_rechecks_signature_route_and_current_revocation() {

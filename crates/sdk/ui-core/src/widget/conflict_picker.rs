@@ -22,7 +22,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -505,8 +504,6 @@ fn draw_card(
 }
 
 impl Widget for ConflictPicker {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -625,25 +622,14 @@ impl Widget for ConflictPicker {
         self.dirty = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if matches!(self.kind, ConflictKind::Auto) {
             return;
         }
         let alt_count = self.alternatives().len();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = p;
                 let card_idx = self.card_at(p);
                 let new_alt = card_idx.filter(|&i| i < alt_count);
@@ -657,7 +643,7 @@ impl Widget for ConflictPicker {
                     self.hover_merged = new_merged;
                     self.hover_keep = new_keep;
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -679,19 +665,19 @@ impl Widget for ConflictPicker {
                         } else {
                             self.fire(PickerOutcome::PickedMerged);
                         }
-                        *handled = true;
+                        *ctx.handled = true;
                         return;
                     }
                 }
                 if self.keep_current_rect().contains(self.last_cursor) {
                     self.fire(PickerOutcome::KeepCurrent);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // Click on the scrim (outside the modal rect) cancels.
                 if !self.rect.contains(self.last_cursor) {
                     self.fire(PickerOutcome::Cancel);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -706,7 +692,7 @@ impl Widget for ConflictPicker {
                     && let Key::Named(NamedKey::Escape) = logical_key
                 {
                     self.fire(PickerOutcome::Cancel);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -893,6 +879,7 @@ fn draw_merged_overlay(
 mod tests {
     use super::*;
     use crate::time::{Duration, SystemTime};
+    use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Arc;
@@ -1067,14 +1054,16 @@ mod tests {
         let root = automerge::ROOT;
         p.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 
@@ -1199,25 +1188,29 @@ mod tests {
             let root = automerge::ROOT;
             banner.handle_event(
                 &cursor_moved(banner_chip.center().x, banner_chip.center().y),
-                1.0,
-                &Modifiers::default(),
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &Modifiers::default(),
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             banner.handle_event(
                 &mouse_press(),
-                1.0,
-                &Modifiers::default(),
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &Modifiers::default(),
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             assert!(*review_fired.borrow(), "banner [Review] must fire");
 

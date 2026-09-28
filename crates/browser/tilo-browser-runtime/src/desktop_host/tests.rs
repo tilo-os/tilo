@@ -137,6 +137,8 @@ fn fixture_with_extra_calculators(
         1,
         permissions,
         Arc::new(|| {}),
+        None,
+        None,
     )
     .unwrap();
     assert!(
@@ -159,7 +161,7 @@ fn workspace_activity_actions_are_local_and_select_empty_workspaces() {
         .push(Workspace::new(other, "Work"));
     let actions = root.caller_view_resources(&AutoCommit::new());
     assert!(actions.iter().any(|r| r.id.0 == RESOURCE_ID));
-    let doc = AutoCommit::new();
+    let mut doc = AutoCommit::new();
     for view in [
         ActivityView::CatchUp,
         ActivityView::Explore,
@@ -170,14 +172,18 @@ fn workspace_activity_actions_are_local_and_select_empty_workspaces() {
             view,
         };
         let previous_view = root.activity.as_ref().map(|activity| activity.pane.view());
-        root.invoke_resource_operation_v2(
-            tilo_actions::OperationKind::View,
-            OPERATION_TYPE,
-            &serde_json::to_vec(&request).unwrap(),
-            &doc,
+        root.start_operation(
+            &ui::widget::ResourceOperation::local(
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
+                OPERATION_TYPE,
+                &serde_json::to_vec(&request).unwrap(),
+            ),
+            &mut doc,
             &automerge::ROOT,
         )
         .unwrap()
+        .and_then(ui::widget::ResourceOperationStart::completed)
         .unwrap();
         assert_eq!(
             root.activity.as_ref().map(|activity| activity.pane.view()),
@@ -6164,14 +6170,18 @@ fn group_move_echo_is_not_applied_twice_and_speculation_is_opt_in() {
     };
     let invoke = |root: &mut DesktopRoot, payload: &[u8]| {
         let output = root
-            .invoke_resource_operation_v2(
-                tilo_actions::OperationKind::View,
-                "tilo.desktop.request",
-                payload,
-                &AutoCommit::new(),
+            .start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    "tilo.desktop.request",
+                    payload,
+                ),
+                &mut AutoCommit::new(),
                 &automerge::ROOT,
             )
             .unwrap()
+            .and_then(ui::widget::ResourceOperationStart::completed)
             .unwrap();
         output
             .value
@@ -6273,14 +6283,18 @@ fn invoke_open(root: &mut DesktopRoot, room: &str, app: &str) -> uuid::Uuid {
     })
     .unwrap();
     let output = root
-        .invoke_resource_operation_v2(
-            tilo_actions::OperationKind::View,
-            "tilo.desktop.request",
-            &payload,
-            &AutoCommit::new(),
+        .start_operation(
+            &ui::widget::ResourceOperation::local(
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
+                "tilo.desktop.request",
+                &payload,
+            ),
+            &mut AutoCommit::new(),
             &automerge::ROOT,
         )
         .unwrap()
+        .and_then(ui::widget::ResourceOperationStart::completed)
         .unwrap();
     output.value.unwrap().as_str().unwrap().parse().unwrap()
 }

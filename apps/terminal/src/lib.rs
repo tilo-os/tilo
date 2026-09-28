@@ -88,8 +88,7 @@ pub struct HostedProcessServices {
 #[cfg(unix)]
 impl Default for HostedProcessServices {
     fn default() -> Self {
-        let ush = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(std::path::PathBuf::from)
+        let ush = xdg_paths::xdg::runtime_dir()
             .and_then(|runtime| Self::discover_from_runtime_dir(&runtime).ush);
         Self { ush }
     }

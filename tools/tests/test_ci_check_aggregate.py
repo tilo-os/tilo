@@ -1,4 +1,5 @@
 """Execute the real check workflow's aggregate, including intentional skips."""
+import importlib.util
 import os
 from pathlib import Path
 import re
@@ -53,7 +54,9 @@ class CheckAggregateTests(unittest.TestCase):
                   suites_required="false", suites="skipped",
                   pins_required="false", pins="skipped",
                   android_required="false", android="skipped",
-                  test=None, check=None, clippy=None, check_required=None):
+                  wasm_required="false", wasm="skipped",
+                  test=None, check=None, clippy=None, check_required=None,
+                  partitions_required="false", test_archive="skipped", test_partition="skipped"):
         if check_required is None:
             check_required = "true" if required == "true" else "false"
         with tempfile.TemporaryDirectory() as directory:
@@ -66,11 +69,15 @@ class CheckAggregateTests(unittest.TestCase):
                      "CHECK_RESULT": affected if check is None else check,
                      "CLIPPY_RESULT": affected if clippy is None else clippy,
                      "CHECK_REQUIRED": check_required,
+                     "PARTITIONS_REQUIRED": partitions_required,
+                     "TEST_ARCHIVE_RESULT": test_archive,
+                     "TEST_PARTITION_RESULT": test_partition,
                      "RUST_REQUIRED": required,
                      "SECURITY_REQUIRED": security_required, "EVENT_NAME": event,
                      "SUITES_REQUIRED": suites_required, "SUITES_RESULT": suites,
                      "PINS_REQUIRED": pins_required, "PINS_RESULT": pins,
                      "ANDROID_REQUIRED": android_required, "ANDROID_RESULT": android,
+                     "WASM_REQUIRED": wasm_required, "WASM_RESULT": wasm,
                      "SELECTED_COUNT": count, "GITHUB_STEP_SUMMARY": summary.as_posix()},
                 capture_output=True, text=True,
             )
@@ -110,6 +117,18 @@ class CheckAggregateTests(unittest.TestCase):
                 with self.subTest(android_required=android_required, android=android):
                     self.assertNotEqual(self.aggregate(android_required=android_required,
                                                        android=android)[0], 0)
+        with self.subTest(phase='the wasm lane runs exactly when the selector requires it'):
+            self.doCleanups()
+            self.setUp()
+            self.assertEqual(self.aggregate(wasm_required="true", wasm="success")[0], 0)
+            for wasm_required, wasm in (
+                ("true", "failure"), ("true", "cancelled"), ("true", "skipped"),
+                ("false", "success"), ("false", "failure"),
+                ("", "skipped"), ("", "success"),
+            ):
+                with self.subTest(wasm_required=wasm_required, wasm=wasm):
+                    self.assertNotEqual(self.aggregate(wasm_required=wasm_required,
+                                                       wasm=wasm)[0], 0)
         with self.subTest(phase='successful rust checks pass'):
             self.doCleanups()
             self.setUp()
@@ -169,6 +188,34 @@ class CheckAggregateTests(unittest.TestCase):
                 with self.subTest(results=results, required="false"):
                     self.assertNotEqual(self.aggregate(test=test, check=check, clippy=clippy,
                                                        required="false", count="0")[0], 0)
+        with self.subTest(phase='partition jobs run exactly when the selector partitions a package'):
+            self.doCleanups()
+            self.setUp()
+            partitioned = dict(partitions_required="true", test_archive="success",
+                               test_partition="success")
+            self.assertEqual(self.aggregate(**partitioned)[0], 0)
+            for overrides in (
+                {"test_archive": "failure"}, {"test_archive": "cancelled"},
+                {"test_archive": "skipped", "test_partition": "skipped"},
+                {"test_partition": "failure"}, {"test_partition": "skipped"},
+                {"test_partition": "cancelled"}, {"test_partition": ""},
+                # Partitions never stand in for the whole shards.
+                {"test": "failure"}, {"test": "skipped"},
+            ):
+                with self.subTest(overrides=overrides):
+                    self.assertNotEqual(self.aggregate(**{**partitioned, **overrides})[0], 0)
+            for archive, partition in (("success", "success"), ("success", "skipped"),
+                                       ("failure", "skipped"), ("skipped", "success")):
+                with self.subTest(archive=archive, partition=partition, required="false"):
+                    self.assertNotEqual(self.aggregate(test_archive=archive,
+                                                       test_partition=partition)[0], 0)
+            # Missing selector output never passes.
+            self.assertNotEqual(self.aggregate(partitions_required="")[0], 0)
+            self.assertNotEqual(self.aggregate(**{**partitioned, "partitions_required": ""})[0], 0)
+            # Without Rust checks nothing is partitioned.
+            self.assertEqual(self.aggregate(affected="skipped", required="false", count="0")[0], 0)
+            self.assertNotEqual(self.aggregate(affected="skipped", required="false", count="0",
+                                               **partitioned)[0], 0)
         with self.subTest(phase='clippy stands in for the check only where the selector says so'):
             self.doCleanups()
             self.setUp()
@@ -276,9 +323,44 @@ class CheckAggregateTests(unittest.TestCase):
             checks = section(self.workflow, "checks", 2)
             self.assertIn("if: always()", checks)
             self.assertIn(
-                "needs: [builder, select, security, test, check, clippy, android, suites, pins]", checks)
-            for name in ("test", "check", "clippy", "android"):
-                self.assertIn(f"{name.upper()}_RESULT: ${{{{ needs.{name}.result }}}}", checks)
+                "needs: [builder, select, security, test, test-archive, test-partition, check, clippy,"
+                " android, wasm, suites, pins]",
+                checks)
+            for name in ("test", "test-archive", "test-partition", "check", "clippy", "android", "wasm"):
+                variable = name.upper().replace("-", "_")
+                self.assertIn(f"{variable}_RESULT: ${{{{ needs.{name}.result }}}}", checks)
+            self.assertIn("PARTITIONS_REQUIRED: ${{ needs.select.outputs.partitions_required }}", checks)
+            partitioned = ("needs.select.outputs.rust_required == 'true' && "
+                           "needs.select.outputs.partitions_required == 'true'")
+            for name, matrix, needs in (
+                ("test-archive", "archive_matrix", "[builder, select]"),
+                ("test-partition", "partition_matrix", "[builder, select, test-archive]"),
+            ):
+                with self.subTest(job=name):
+                    job = section(self.workflow, name, 2)
+                    self.assertIn(f"if: {partitioned}\n", job)
+                    self.assertIn(f"needs: {needs}\n", job)
+                    self.assertIn(f"fromJSON({partitioned} && needs.select.outputs.{matrix} ||", job)
+                    self.assertIn("image: ${{ needs.builder.outputs.image }}", job)
+                    self.assertIn(f"{matrix}: ${{{{ steps.plan.outputs.{matrix} }}}}",
+                                  section(self.workflow, "select", 2))
+            archive = section(self.workflow, "test-archive", 2)
+            self.assertIn("cargo nextest archive --locked --profile ci --tests ${{ matrix.test_packages }}",
+                          archive)
+            self.assertIn("name: ${{ matrix.archive }}", archive)
+            partition = section(self.workflow, "test-partition", 2)
+            self.assertIn("name: ${{ matrix.archive }}", partition)
+            self.assertIn("bash tools/test-env.sh cargo nextest run --profile ci\n"
+                          "          --archive-file target/ci/nextest-archive/tests.tar.zst", partition)
+            self.assertIn("--partition ${{ matrix.partition }}", partition)
+            # Same filters, reports and runtime fixtures as a whole shard.
+            test = section(self.workflow, "test", 2)
+            for line in ('-E "not ($GOLDEN_FILTER)', "tools/ci/nextest_report.py",
+                         "name: nextest-junit-${{ matrix.arch }}-${{ matrix.shard }}",
+                         "bash tools/ensure-headless-audio.sh", "TILO_REQUIRE_GPU: \"1\""):
+                self.assertIn(line, test)
+                self.assertIn(line, partition)
+            self.assertNotIn("--partition", test)
             self.assertIn("CHECK_REQUIRED: ${{ needs.select.outputs.check_required }}", checks)
             select_job = section(self.workflow, "select", 2)
             self.assertIn("check_matrix: ${{ steps.plan.outputs.check_matrix }}", select_job)
@@ -295,6 +377,27 @@ class CheckAggregateTests(unittest.TestCase):
                 self.assertIn(target, android)
             self.assertIn("--features android --target \"$target\"", android)
             self.assertIn("-- -D warnings", android)
+            self.assertIn("WASM_REQUIRED: ${{ needs.select.outputs.wasm_required }}", checks)
+            self.assertIn("wasm_packages: ${{ steps.plan.outputs.wasm_packages }}", select_job)
+            wasm = section(self.workflow, "wasm", 2)
+            self.assertIn("if: needs.select.outputs.wasm_required == 'true'\n", wasm)
+            self.assertIn("image: ${{ needs.builder.outputs.image }}", wasm)
+            self.assertIn("rustup target add wasm32-unknown-unknown", wasm)
+            self.assertIn("--target wasm32-unknown-unknown", wasm)
+            self.assertIn("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings", wasm)
+            self.assertIn("run: bash tools/ci/check-wasm.sh", wasm)
+            # The script checks every wasm32 build the workspace-hack policy
+            # resolves, with the features its build script uses.
+            spec = importlib.util.spec_from_file_location(
+                "wasm_hack", ROOT / "tools/policy/check_wasm_workspace_hack.py")
+            hack = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(hack)
+            script = (ROOT / "tools/ci/check-wasm.sh").read_text()
+            for package, _ in hack.ROOTS:
+                self.assertIn(f"-p {package}", script)
+            self.assertIn("--features tilo-browser-runtime/dylink", script)
+            self.assertIn("--features cloud,static-apps", script)
+            self.assertIn('--target "$target"', script)
             self.assertIn("BUILDER_RESULT: ${{ needs.builder.result }}", checks)
             self.assertIn('test "$BUILDER_RESULT" = success', checks)
             security = section(self.workflow, "security", 2)

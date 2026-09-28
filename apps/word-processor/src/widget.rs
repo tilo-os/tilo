@@ -9,6 +9,7 @@ mod resource_file_jobs;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, ReadDoc};
@@ -43,7 +44,7 @@ use crate::WpFormat;
 use crate::compact_swatch_palette::{
     CompactSwatchPalette, PaletteChoice, PaletteKind, PaletteRequest,
 };
-use crate::find_bar::{FindBar, FindEffect, FindEventContext, FindPalette};
+use crate::find_bar::{FindBar, FindEffect, FindPalette};
 use crate::i18n::{arg, t, t_args};
 use crate::num;
 use crate::outline_pane::{OutlinePalette, OutlinePane};
@@ -10102,6 +10103,94 @@ impl WordProcessorWidget {
     }
 }
 
+impl WordProcessorWidget {
+    /// Apply a synchronous command or view operation. Returns `Ok(false)`
+    /// when `type_id` is not this widget's.
+    fn apply_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+    ) -> Result<bool, String> {
+        use crate::actions::WordProcessorOperation;
+
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        // A delivered invocation by a participant (an agent task) moves only
+        // that participant's view: its own `move-caret`/`select-*`/
+        // `find-text`, and `go-to` on its own search hits, cells or comments.
+        if let Some(invoker) = ui::invocation_scope::current_invoker()
+            && invoker.participant.is_some()
+            && (type_id == crate::actions::view_ops::WORD_PROCESSOR_VIEW_OPERATION_TYPE
+                || matches!(
+                    crate::actions::decode_operation(type_id, payload)?,
+                    Some(WordProcessorOperation::NavigateTo { .. })
+                ))
+        {
+            self.invoke_participant_view_operation(&invoker, type_id, payload, doc)?;
+            return Ok(true);
+        }
+        // Without a participant a view operation is this window's own
+        // (Ctrl+K, accessibility).
+        if let Some(operation) = crate::actions::view_ops::decode_view_operation(type_id, payload)?
+        {
+            self.apply_local_view_operation(doc, &operation)?;
+            self.lifecycle.dirty = true;
+            return Ok(true);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            WordProcessorOperation::ResolveFileChoice { .. }
+            | WordProcessorOperation::Open { .. }
+            | WordProcessorOperation::Save { .. }
+            | WordProcessorOperation::SaveAs { .. } => {
+                return Err("file operations require the lifecycle-capable operation host".into());
+            }
+            WordProcessorOperation::Find => self.open_find(doc),
+            WordProcessorOperation::ZoomIn => {
+                self.zoom_by(0.1);
+            }
+            WordProcessorOperation::ZoomOut => {
+                self.zoom_by(-0.1);
+            }
+            WordProcessorOperation::ZoomReset => {
+                self.set_zoom(1.0);
+            }
+            WordProcessorOperation::ToggleSpellcheck => self.toggle_spellcheck(),
+            WordProcessorOperation::ToggleMarkup => self.toggle_markup(),
+            WordProcessorOperation::ToggleStyles => {
+                self.view.styles_panel_visible = !self.view.styles_panel_visible;
+            }
+            WordProcessorOperation::ToggleRuler => {
+                self.view.ruler_visible = !self.view.ruler_visible;
+            }
+            WordProcessorOperation::ToggleOutline => self.outline.toggle(),
+            // Hosted, the framework's History is the only History surface.
+            WordProcessorOperation::ToggleHistory | WordProcessorOperation::ShowRevision { .. }
+                if self.hosted() =>
+            {
+                return Ok(false);
+            }
+            WordProcessorOperation::ToggleHistory => self.history.toggle(),
+            WordProcessorOperation::NavigateTo { block, start, end } => {
+                self.navigate_to_range(doc, &block, start, end)?;
+            }
+            WordProcessorOperation::ShowRevision { index } => {
+                if !self.history.is_open() {
+                    self.history.toggle();
+                }
+                self.pending_history_revision = Some(index);
+            }
+        }
+        self.lifecycle.dirty = true;
+        Ok(true)
+    }
+}
+
 impl Widget for WordProcessorWidget {
     fn action_directory_invocation_domain(
         &self,
@@ -10232,9 +10321,10 @@ impl Widget for WordProcessorWidget {
 
     fn native_input_snapshot(
         &self,
-        state: &AutoCommit,
-        _path: &ObjId,
+        state: &AppModel,
+        path: &ModelPath,
     ) -> Option<serde_json::Value> {
+        let (state, _) = ui::doc::document_ref(state, path);
         let caret = self.inner.caret();
         let region = self.inner.region();
         // Body text reads only the caret block. Running-region text would
@@ -10266,121 +10356,27 @@ impl Widget for WordProcessorWidget {
         ]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        use crate::actions::WordProcessorOperation;
-
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        // A delivered invocation by a participant (an agent task) moves only
-        // that participant's view: its own `move-caret`/`select-*`/
-        // `find-text`, and `go-to` on its own search hits, cells or comments.
-        if let Some(invoker) = ui::invocation_scope::current_invoker()
-            && invoker.participant.is_some()
-            && (type_id == crate::actions::view_ops::WORD_PROCESSOR_VIEW_OPERATION_TYPE
-                || matches!(
-                    crate::actions::decode_operation(type_id, payload)?,
-                    Some(WordProcessorOperation::NavigateTo { .. })
-                ))
-        {
-            self.invoke_participant_view_operation(&invoker, type_id, payload, doc)?;
-            return Ok(true);
-        }
-        // Without a participant a view operation is this window's own
-        // (Ctrl+K, accessibility).
-        if let Some(operation) = crate::actions::view_ops::decode_view_operation(type_id, payload)?
-        {
-            self.apply_local_view_operation(doc, &operation)?;
-            self.lifecycle.dirty = true;
-            return Ok(true);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match operation {
-            WordProcessorOperation::ResolveFileChoice { .. }
-            | WordProcessorOperation::Open { .. }
-            | WordProcessorOperation::Save { .. }
-            | WordProcessorOperation::SaveAs { .. } => {
-                return Err("file operations require the lifecycle-capable operation host".into());
-            }
-            WordProcessorOperation::Find => self.open_find(doc),
-            WordProcessorOperation::ZoomIn => {
-                self.zoom_by(0.1);
-            }
-            WordProcessorOperation::ZoomOut => {
-                self.zoom_by(-0.1);
-            }
-            WordProcessorOperation::ZoomReset => {
-                self.set_zoom(1.0);
-            }
-            WordProcessorOperation::ToggleSpellcheck => self.toggle_spellcheck(),
-            WordProcessorOperation::ToggleMarkup => self.toggle_markup(),
-            WordProcessorOperation::ToggleStyles => {
-                self.view.styles_panel_visible = !self.view.styles_panel_visible;
-            }
-            WordProcessorOperation::ToggleRuler => {
-                self.view.ruler_visible = !self.view.ruler_visible;
-            }
-            WordProcessorOperation::ToggleOutline => self.outline.toggle(),
-            // Hosted, the framework's History is the only History surface.
-            WordProcessorOperation::ToggleHistory | WordProcessorOperation::ShowRevision { .. }
-                if self.hosted() =>
-            {
-                return Ok(false);
-            }
-            WordProcessorOperation::ToggleHistory => self.history.toggle(),
-            WordProcessorOperation::NavigateTo { block, start, end } => {
-                self.navigate_to_range(doc, &block, start, end)?;
-            }
-            WordProcessorOperation::ShowRevision { index } => {
-                if !self.history.is_open() {
-                    self.history.toggle();
-                }
-                self.pending_history_revision = Some(index);
-            }
-        }
-        self.lifecycle.dirty = true;
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        self.start_file_operation(invocation, kind, type_id, payload, doc, path, None)
-    }
-
-    fn start_resource_operation_scoped(
-        &mut self,
-        scope: &ui::invocation_scope::ResourceInvocationScope,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &ui::widget::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        self.start_file_operation(
-            scope.invocation(),
-            kind,
-            type_id,
-            payload,
-            doc,
-            path,
-            Some(scope),
-        )
+        let (request, scope) = op.with_custody();
+        if scope.is_some() {
+            return self.start_file_operation(request, doc, scope);
+        }
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        if let Some(started) = self.start_file_operation(request, doc, None)? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .apply_operation(request.kind, request.type_id, request.payload, doc)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            }))
     }
 
     fn poll_resource_operation(
@@ -10471,7 +10467,8 @@ impl Widget for WordProcessorWidget {
         Ok(())
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.expire_file_jobs();
         if self.canonical {
             self.inner.reconcile(state);
@@ -10821,39 +10818,28 @@ impl Widget for WordProcessorWidget {
         clippy::too_many_lines,
         reason = "the widget's single event entry point routes each window event to overlays, panels and the editor in priority order"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let shift = modifiers.state().shift_key();
-        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let shift = ctx.modifiers.state().shift_key();
+        let ctrl = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
         if let Some(offer) = &mut self.file_choice {
-            offer.event(event, scale_factor);
+            offer.event(event, ctx.scale_factor);
             self.lifecycle.dirty = true;
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if self.unsaved_changes.is_open() {
-            if let Some(choice) = self
-                .unsaved_changes
-                .handle_event(event, scale_factor, *modifiers)
+            if let Some(choice) =
+                self.unsaved_changes
+                    .handle_event(event, ctx.scale_factor, *ctx.modifiers)
             {
-                self.resolve_unsaved_choice(state, choice);
+                self.resolve_unsaved_choice(ctx.state, choice);
             }
             self.lifecycle.dirty = true;
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if self.replace_after_save {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         // An open menu owns input until selection or dismissal. Forward
@@ -10864,7 +10850,8 @@ impl Widget for WordProcessorWidget {
             || self.style_menu.is_open()
         {
             if let WindowEvent::CursorMoved { position, .. } = event {
-                self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.pointer =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             let menu = if self.template_picker.is_open() {
                 self.template_picker.menu_mut()
@@ -10873,25 +10860,15 @@ impl Widget for WordProcessorWidget {
             } else {
                 &mut self.context_menu
             };
-            menu.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            menu.handle_event(event, ctx);
             if let Some(template) = self.template_picker.take_selection() {
-                self.request_template(state, template);
+                self.request_template(ctx.state, template);
             }
             if let Some(action) = self.style_menu.take_selection() {
-                self.dispatch_style_menu(action, state);
+                self.dispatch_style_menu(action, ctx.state);
             }
             if let Some(index) = self.context_menu.take_selection() {
-                self.dispatch_context_action(index, state);
+                self.dispatch_context_action(index, ctx.state);
             }
             if matches!(
                 event,
@@ -10903,18 +10880,32 @@ impl Widget for WordProcessorWidget {
                     | WindowEvent::Ime(_)
             ) {
                 self.lifecycle.dirty = true;
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
-        if self.pump_compact_swatch_palette(event, scale_factor, *modifiers, state, path, handled) {
+        if self.pump_compact_swatch_palette(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.path,
+            ctx.handled,
+        ) {
             return;
         }
         // While the colour-picker popover is open it captures input (modal-ish):
         // route drags to it, apply committed colours, and let an outside-click /
         // Escape dismiss it before any page/panel hit-testing.
         if self.color_picker.is_open()
-            && self.pump_color_picker(event, scale_factor, *modifiers, state, path, handled)
+            && self.pump_color_picker(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.handled,
+            )
         {
             return;
         }
@@ -10924,11 +10915,11 @@ impl Widget for WordProcessorWidget {
         let comment_thread_handled = self.handle_comment_thread_event(
             event,
             &mut EditorEventCtx {
-                scale_factor,
-                modifiers: *modifiers,
-                state,
-                path,
-                handled,
+                scale_factor: ctx.scale_factor,
+                modifiers: *ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
+                handled: ctx.handled,
             },
         );
         if comment_thread_handled {
@@ -10938,8 +10929,8 @@ impl Widget for WordProcessorWidget {
         // keeps capturing mid-drag). A restore flags `needs_commit`, handing the
         // commit to `App::commit_action` so it lands on the undo stack stamped and
         // attributed like a typed edit.
-        if self.handle_history_event(event, scale_factor, *modifiers, state, path) {
-            *handled = true;
+        if self.handle_history_event(event, ctx.scale_factor, *ctx.modifiers, ctx.state, ctx.path) {
+            *ctx.handled = true;
             return;
         }
         // The toolbar may have wrapped to several rows; hit-test against its
@@ -10954,22 +10945,16 @@ impl Widget for WordProcessorWidget {
             let mut find_handled = false;
             let effect = self.find.handle_event(
                 event,
-                &mut FindEventContext {
-                    scale_factor,
-                    modifiers: *modifiers,
-                    state,
-                    path,
+                &mut ui::widget::EventCtx {
                     handled: &mut find_handled,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
                 },
                 &self.blocks,
             );
-            self.apply_find_effect_mut(state, effect);
+            self.apply_find_effect_mut(ctx.state, effect);
             if find_handled {
                 self.lifecycle.dirty = true;
-                *handled = true;
+                *ctx.handled = true;
                 // Cursor movement still feeds the editor below so its shared
                 // pointer coordinate remains current for subsequent clicks.
                 if !matches!(event, WindowEvent::CursorMoved { .. }) {
@@ -10980,14 +10965,16 @@ impl Widget for WordProcessorWidget {
         match event {
             // Drag-and-drop a file onto the window inserts it as an image at the
             // drop point (see `handle_dropped_file`).
-            WindowEvent::DroppedFile(path) => self.handle_dropped_file(state, path, handled),
+            WindowEvent::DroppedFile(path) => {
+                self.handle_dropped_file(ctx.state, path, ctx.handled);
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 // Window groups offer unclaimed events to visible apps in
                 // presentation order. Ctrl+wheel represents a browser
                 // trackpad pinch, so an unfocused Writer must leave it for
                 // the host-selected app rather than zoom in the background.
                 if self.lifecycle.focused || !ctrl {
-                    self.handle_mouse_wheel(delta, scale_factor, ctrl, handled);
+                    self.handle_mouse_wheel(delta, ctx.scale_factor, ctrl, ctx.handled);
                 }
             }
             WindowEvent::PinchGesture { delta, phase, .. } => {
@@ -10995,7 +10982,7 @@ impl Widget for WordProcessorWidget {
                 // browser's Ctrl+wheel form above. Pointer geometry still
                 // determines where a focused Writer zooms.
                 if self.lifecycle.focused && self.zoom_viewport.contains(self.pointer) {
-                    *handled = true;
+                    *ctx.handled = true;
                     if delta.is_finite()
                         && *delta != 0.0
                         && *phase != winit::event::TouchPhase::Cancelled
@@ -11016,7 +11003,13 @@ impl Widget for WordProcessorWidget {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position.x, position.y, scale_factor, tb_h, handled);
+                self.handle_cursor_moved(
+                    position.x,
+                    position.y,
+                    ctx.scale_factor,
+                    tb_h,
+                    ctx.handled,
+                );
             }
             // Right (secondary) press opens the editing / spell-check context
             // menu on the page body. Toolbar / panel / status-bar chrome ignore
@@ -11026,10 +11019,10 @@ impl Widget for WordProcessorWidget {
                 button: MouseButton::Right,
                 ..
             } => {
-                let was_handled = *handled;
-                self.handle_right_press(state, tb_h, handled);
+                let was_handled = *ctx.handled;
+                self.handle_right_press(ctx.state, tb_h, ctx.handled);
                 if !was_handled && self.lifecycle.focused && self.rect.contains(self.pointer) {
-                    *focus_target = Some(node_id);
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
             }
             WindowEvent::MouseInput {
@@ -11037,32 +11030,32 @@ impl Widget for WordProcessorWidget {
                 button: MouseButton::Left,
                 ..
             } => {
-                let was_handled = *handled;
-                self.handle_left_press(state, tb_h, shift, ctrl, handled);
+                let was_handled = *ctx.handled;
+                self.handle_left_press(ctx.state, tb_h, shift, ctrl, ctx.handled);
                 if !was_handled && self.lifecycle.focused && self.rect.contains(self.pointer) {
-                    *focus_target = Some(node_id);
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } => self.handle_left_release(state, handled),
+            } => self.handle_left_release(ctx.state, ctx.handled),
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
                 self.ime_preedit.clear();
                 self.handle_key_press(
-                    state,
+                    ctx.state,
                     &Key::Character(text.as_str().into()),
                     Some(text),
                     false,
                     false,
-                    handled,
+                    ctx.handled,
                 );
             }
             WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) => {
                 self.ime_preedit.clone_from(text);
                 self.lifecycle.dirty = true;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::Ime(winit::event::Ime::Disabled) => {
                 self.ime_preedit.clear();
@@ -11078,16 +11071,16 @@ impl Widget for WordProcessorWidget {
                     },
                 ..
             } => {
-                if self.handle_modified_navigation(state, logical_key, *modifiers) {
-                    *handled = true;
+                if self.handle_modified_navigation(ctx.state, logical_key, *ctx.modifiers) {
+                    *ctx.handled = true;
                 } else {
                     self.handle_key_press(
-                        state,
+                        ctx.state,
                         logical_key,
                         text.as_deref(),
                         shift,
                         ctrl,
-                        handled,
+                        ctx.handled,
                     );
                 }
             }
@@ -11237,9 +11230,10 @@ impl Widget for WordProcessorWidget {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = ui::doc::document(state, path);
         if let Some(offer) = &mut self.file_choice {
             offer.accessible_action(action, key_path);
             self.lifecycle.dirty = true;

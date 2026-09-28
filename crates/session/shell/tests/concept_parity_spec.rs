@@ -1252,19 +1252,19 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
     };
     let mut handled = false;
     let mut focus: Option<NodeId> = None;
-    let mods = Modifiers::default();
     let mut doc = automerge::AutoCommit::new();
-    let doc_root = automerge::ROOT.clone();
     group.handle_event(
         &cursor_event,
-        1.0,
-        &mods,
-        &mut doc,
-        &doc_root,
-        &mut handled,
-        &mut focus,
-        child,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: child,
+            taffy: &taffy,
+        },
     );
 
     let mut scene_below = Scene::new();
@@ -1560,7 +1560,7 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
     // (the presence path must fill it) and don't drop the empty-before half.
     {
         use shell::shell::network::InboundPresence;
-        use shell::shell::peer_presence::fold_inbound;
+        use shell::shell::peer_presence::{AnchoredPointers, fold_inbound, place_pointers};
         use ui::presence::PresenceKey;
 
         let mut tree = WorkspaceTree::bootstrap_default();
@@ -1576,12 +1576,10 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
             "the bar must start empty, or the assertions below prove nothing"
         );
 
-        // Exactly what the network layer buffers: a room-scoped pointer frame per
-        // publishing session.
-        let key = serde_json::to_string(&PresenceKey::Workspace {
-            id: room.to_string(),
-        })
-        .expect("a workspace key serialises");
+        // Exactly what the network layer buffers: a pointer frame per
+        // publishing session, anchored to one of the room's tabs.
+        let key = serde_json::to_string(&PresenceKey::tile_pointer(room.to_string(), 1))
+            .expect("a tile pointer key serialises");
         let frames = vec![
             InboundPresence {
                 peer: 0x11,
@@ -1611,9 +1609,21 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
         let this_room = |_: &str| true;
 
         let mut presence = PresenceCtx::default();
+        let mut anchored = AnchoredPointers::new();
+        let now = std::time::Instant::now();
+        let arrived = fold_inbound(
+            frames,
+            &mut anchored,
+            &mut presence,
+            &room_says,
+            &this_room,
+            now,
+        );
+        assert_eq!(arrived.len(), 2, "two room-scoped frames must land");
+        let tiles = [(1u64, vello::kurbo::Rect::new(0.0, 40.0, 800.0, 700.0))];
         assert!(
-            fold_inbound(frames, &mut presence, &room_says, &this_room),
-            "two room-scoped frames must land"
+            place_pointers(&anchored, &arrived, &mut presence, &tiles, now),
+            "and be placed over this desk's tile for their tab"
         );
         for (peer, name) in [(0x11u64, "bob"), (0x22u64, "dana")] {
             assert!(
@@ -1947,14 +1957,16 @@ mod overview_add_workspace {
                     device_id: unsafe { std::mem::zeroed() },
                     position: PhysicalPosition::new(centre.x, centre.y),
                 },
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                h.root_node,
-                &h.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: h.root_node,
+                    taffy: &h.taffy,
+                },
             );
             h.host.handle_event(
                 &WindowEvent::MouseInput {
@@ -1962,14 +1974,16 @@ mod overview_add_workspace {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                h.root_node,
-                &h.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: h.root_node,
+                    taffy: &h.taffy,
+                },
             );
 
             let st = h.chrome.borrow();

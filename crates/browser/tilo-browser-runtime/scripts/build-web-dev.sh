@@ -24,6 +24,8 @@ done
 cp "$scripts/../web/apps.html" "$out/index.html"
 # open.html: MountOptions.open, two mounts of one record (phone and laptop).
 cp "$scripts/../web/open.html" "$out/open.html"
+# desktop.html: MountOptions.local, a Books record expanding into the desktop.
+cp "$scripts/../web/desktop.html" "$out/desktop.html"
 node "$scripts/web-runtime/smoke.mjs" "$out" >"$out/build/smoke.json"
 # registry.html loads the same core and apps from a local signed registry
 # (tools/web/local-registry.sh OUTPUT writes its registry.json).

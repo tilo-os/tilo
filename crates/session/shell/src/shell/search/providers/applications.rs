@@ -20,19 +20,20 @@ use crate::shell::chrome_state::{Chrome, OpenTarget};
 use crate::shell::i18n::{t, t_args};
 use crate::shell::launcher::{self, InstalledApp};
 use crate::shell::search::action_api::{ActionArgs, ActionError};
+use crate::shell::search::provider_score;
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
 use tilo_desktop::notifications::{Notification, NotificationSeverity};
-use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
+use tilo_search::{Document, Matching, Page, SearchIndex};
 
 /// Chip label / group header for launchable apps; also the provider's `name()`.
 pub const APPLICATIONS_KIND: &str = "Applications";
 
 /// Penalty for an app the machine does not have yet, against one it does —
 /// enough to break a tie without dragging a better match below a worse one
-/// (every band in [`match_score`] is at least five points apart).
+/// (every tier of [`application_fields`] is at least five points apart).
 const NOT_INSTALLED_TIEBREAK: i32 = 1;
 const STORE_PACKAGE_ID: &str = "so.tilo.store";
 
@@ -402,30 +403,43 @@ impl ApplicationsProvider {
             .filter(|snapshot| snapshot.source_generation == generation)
     }
 
-    /// Score `apps` against `needle`. `open_target` only words the row —
-    /// the launch reads the live target again at activation time, since it
-    /// can change between the query that built this row and the Enter that
-    /// fires it.
+    /// Score `apps` against `needle`, as [`Self::installed_rows`].
+    #[cfg(test)]
     pub(crate) fn results_for(
         &self,
         needle: &str,
         apps: Vec<InstalledApp>,
         open_target: OpenTarget,
     ) -> Vec<SearchResult> {
-        let needle_lower = needle.to_lowercase();
+        let scores = test_scores(
+            needle,
+            apps.iter().map(|app| {
+                application_fields(
+                    &app.display_name,
+                    &app.package_id,
+                    app.category.as_deref(),
+                    None,
+                )
+            }),
+        );
+        self.installed_rows(needle, apps, &scores, open_target)
+    }
+
+    /// Launch rows for the `apps` with a score in `scores`. `open_target`
+    /// only words the row — the launch reads the live target again at
+    /// activation time, since it can change between the query that built
+    /// this row and the Enter that fires it.
+    fn installed_rows(
+        &self,
+        needle: &str,
+        apps: Vec<InstalledApp>,
+        scores: &[Option<i32>],
+        open_target: OpenTarget,
+    ) -> Vec<SearchResult> {
         let kind = ResourceKind::Application;
         let mut out = Vec::new();
-        for app in apps {
-            let name_lower = app.display_name.to_lowercase();
-            let id_lower = app.package_id.to_lowercase();
-            let category_lower = app.category.as_deref().map(str::to_lowercase);
-            let Some(score) = match_score(
-                &needle_lower,
-                &name_lower,
-                &id_lower,
-                category_lower.as_deref(),
-                None,
-            ) else {
+        for (app, score) in apps.into_iter().zip(scores) {
+            let Some(score) = *score else {
                 continue;
             };
             let launch_app = app.clone();
@@ -474,23 +488,27 @@ impl ApplicationsProvider {
             .iter()
             .map(|app| app.package_id.to_ascii_lowercase())
             .collect();
-        self.dynamic_results_for_membership(needle, records, &installed_gui, open_target)
+        let scores = test_scores(
+            needle,
+            records
+                .iter()
+                .map(|record| application_fields(&record.name, &record.id, None, None)),
+        );
+        self.dynamic_results_for_membership(records, &scores, &installed_gui, open_target)
     }
 
     fn dynamic_results_for_membership(
         &self,
-        needle: &str,
         records: Vec<DynamicLauncherRecord>,
+        scores: &[Option<i32>],
         installed_gui: &HashSet<String>,
         open_target: OpenTarget,
     ) -> Vec<SearchResult> {
-        let needle_lower = needle.to_lowercase();
         records
             .into_iter()
-            .filter_map(|record| {
-                let name_lower = record.name.to_lowercase();
-                let id_lower = record.id.to_lowercase();
-                let score = match_score(&needle_lower, &name_lower, &id_lower, None, None)?;
+            .zip(scores)
+            .filter_map(|(record, score)| {
+                let score = (*score)?;
                 let valid = match record.launcher_type {
                     1 => {
                         record.target.is_none()
@@ -593,9 +611,21 @@ impl ApplicationsProvider {
             .iter()
             .map(|app| app.desktop_id.to_ascii_lowercase())
             .collect();
+        let scores = test_scores(
+            needle,
+            apps.iter().map(|app| {
+                application_fields(
+                    &app.display_name,
+                    &app.package_id,
+                    app.category.as_deref(),
+                    Some(&app.description),
+                )
+            }),
+        );
         self.catalogue_results_for_membership(
             needle,
             apps,
+            &scores,
             &installed_ids,
             &host_app_ids,
             open_target,
@@ -610,14 +640,14 @@ impl ApplicationsProvider {
         &self,
         needle: &str,
         apps: Vec<CatalogueApp>,
+        scores: &[Option<i32>],
         installed_ids: &HashSet<String>,
         host_app_ids: &HashSet<String>,
         _open_target: OpenTarget,
     ) -> Vec<SearchResult> {
-        let needle_lower = needle.to_lowercase();
         let mut out = Vec::new();
         let mut seen = HashSet::new();
-        for app in apps {
+        for (app, score) in apps.into_iter().zip(scores) {
             let package_id_key = app.package_id.to_ascii_lowercase();
             if installed_ids.contains(&package_id_key)
                 || host_app_ids.contains(&package_id_key)
@@ -625,17 +655,7 @@ impl ApplicationsProvider {
             {
                 continue;
             }
-            let name_lower = app.display_name.to_lowercase();
-            let id_lower = app.package_id.to_lowercase();
-            let category_lower = app.category.as_deref().map(str::to_lowercase);
-            let description_lower = app.description.to_lowercase();
-            let Some(score) = match_score(
-                &needle_lower,
-                &name_lower,
-                &id_lower,
-                category_lower.as_deref(),
-                Some(&description_lower),
-            ) else {
+            let Some(score) = *score else {
                 continue;
             };
             let package_id = app.package_id.clone();
@@ -1074,19 +1094,24 @@ impl SearchProvider for ApplicationsProvider {
                 considered = considered.saturating_add(1);
                 continue;
             };
+            let score = [Some(provider_score(hit.rank.unwrap_or(0)))];
             let mut rows = match entry {
-                ApplicationEntry::Installed(app) => {
-                    self.results_for(ctx.needle, vec![app.clone()], ctx.chrome.open_target)
-                }
-                ApplicationEntry::Dynamic(record) => self.dynamic_results_for_membership(
+                ApplicationEntry::Installed(app) => self.installed_rows(
                     ctx.needle,
+                    vec![app.clone()],
+                    &score,
+                    ctx.chrome.open_target,
+                ),
+                ApplicationEntry::Dynamic(record) => self.dynamic_results_for_membership(
                     vec![record.clone()],
+                    &score,
                     &snapshot.installed_ids,
                     ctx.chrome.open_target,
                 ),
                 ApplicationEntry::Catalogue(app) => self.catalogue_results_for_membership(
                     ctx.needle,
                     vec![app.clone()],
+                    &score,
                     &snapshot.installed_ids,
                     &snapshot.host_app_ids,
                     ctx.chrome.open_target,
@@ -1136,10 +1161,26 @@ impl ApplicationsProvider {
     }
 }
 
-pub(crate) use ui::search::system::{PACKAGE_ID_WEIGHT, application_match_score as match_score};
+pub(crate) use ui::search::system::{PACKAGE_ID_WEIGHT, application_fields};
 
-/// Index the fields [`match_score`] ranks, keyed by position, best match
-/// first. Words of a multi-word query may spread over fields, as there.
+/// Applications match words spread over their fields, and typos in names.
+const APPLICATION_MATCHING: Matching = Matching::LOOSE;
+
+/// Each app's provider score for `needle`, for tests building rows from a
+/// bare list.
+#[cfg(test)]
+fn test_scores<'a>(
+    needle: &str,
+    apps: impl Iterator<Item = [(&'a str, tilo_search::FieldWeight); 5]>,
+) -> Vec<Option<i32>> {
+    ui::search::ListIndex::new(APPLICATION_MATCHING)
+        .ranks(needle, apps)
+        .into_iter()
+        .map(|rank| rank.map(provider_score))
+        .collect()
+}
+
+/// Index each entry's [`application_fields`], keyed by position.
 fn index_entries(entries: &[ApplicationEntry]) -> SearchIndex {
     fn app_fields(
         document: Document,
@@ -1148,18 +1189,13 @@ fn index_entries(entries: &[ApplicationEntry]) -> SearchIndex {
         category: Option<&str>,
         description: Option<&str>,
     ) -> Document {
-        let last_segment = package_id.rsplit('.').next().unwrap_or(package_id);
-        document
-            .field(name, FieldWeight::TITLE)
-            .field(last_segment, FieldWeight::TITLE)
-            .field(package_id, PACKAGE_ID_WEIGHT)
-            .field(category.unwrap_or_default(), FieldWeight::METADATA)
-            .field(description.unwrap_or_default(), FieldWeight::BODY)
+        application_fields(name, package_id, category, description)
+            .into_iter()
+            .fold(document, |document, (text, weight)| {
+                document.field(text, weight)
+            })
     }
-    let mut index = SearchIndex::new(Matching {
-        spanning: true,
-        typos: false,
-    });
+    let mut index = SearchIndex::new(APPLICATION_MATCHING);
     index.replace_all(entries.iter().enumerate().map(|(at, entry)| {
         let document = Document::new(at as u64);
         match entry {
@@ -1473,7 +1509,7 @@ mod tests {
             assert_eq!(out.len(), 1, "only the matching package: {out:?}");
             // A shared id *prefix* names a publisher, not an app, so it
             // stays below a name match.
-            assert_eq!(out[0].score, 87);
+            assert_eq!(out[0].score, 93);
             let by_name = p.results_for(
                 "hello",
                 vec![app("so.tilo.hello", "Hello")],
@@ -1872,7 +1908,7 @@ mod tests {
             // user actually named.
             let vague = p.results_for(
                 "sheets",
-                vec![app("so.tilo.shed", "Shed Helper Editor Extra Tool Set")],
+                vec![app("so.tilo.score", "Sheet Music Helper")],
                 OpenTarget::Beside,
             );
             let named = p.catalogue_results_for(
@@ -2153,7 +2189,11 @@ mod tests {
 
 /// Tiny session-owned catalog of apps the native host can actually construct.
 /// It shares application visibility policy and action dispatch with package apps.
-pub struct NativeApplicationsProvider;
+#[derive(Default)]
+pub struct NativeApplicationsProvider {
+    /// The apps' names and ids, indexed while they stay the same.
+    ranker: ui::search::ListIndex,
+}
 
 impl SearchProvider for NativeApplicationsProvider {
     fn id(&self) -> &'static str {
@@ -2172,19 +2212,16 @@ impl SearchProvider for NativeApplicationsProvider {
         if !ctx.wanted.contains(&ResourceKind::Application) {
             return Vec::new();
         }
-        let needle = ctx.needle.to_lowercase();
-        ctx.chrome
-            .hosted_inputs
-            .native_apps()
-            .iter()
-            .filter_map(|app| {
-                let score = match_score(
-                    &needle,
-                    &app.display_name.to_lowercase(),
-                    &app.package_id.to_lowercase(),
-                    None,
-                    None,
-                )?;
+        let apps = ctx.chrome.hosted_inputs.native_apps();
+        let ranks = self.ranker.ranks(
+            ctx.needle,
+            apps.iter()
+                .map(|app| application_fields(app.display_name, app.package_id, None, None)),
+        );
+        apps.iter()
+            .zip(ranks)
+            .filter_map(|(app, rank)| {
+                let score = provider_score(rank?);
                 let id = app.package_id;
                 Some(SearchResult::nullary_fallible(
                     ResourceKind::Application,
@@ -2247,7 +2284,7 @@ mod native_application_tests {
             chrome.borrow_mut().hosted_inputs =
                 HostedTileInputs::for_host_directory(directory.path()).unwrap();
             let mut doc = automerge::AutoCommit::new();
-            let results = NativeApplicationsProvider.query(SearchContext {
+            let results = NativeApplicationsProvider::default().query(SearchContext {
                 needle: "Files",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome.borrow(),
@@ -2330,7 +2367,7 @@ mod native_application_tests {
             }
 
             let mut doc = automerge::AutoCommit::new();
-            let results = NativeApplicationsProvider.query(SearchContext {
+            let results = NativeApplicationsProvider::default().query(SearchContext {
                 needle: "Files",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome.borrow(),

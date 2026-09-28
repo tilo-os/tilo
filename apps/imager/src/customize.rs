@@ -26,7 +26,7 @@ use automerge::AutoCommit;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::local_state::LocalState;
@@ -932,52 +932,29 @@ impl CustomizePanel {
     /// Route a winit event into the panel. Text edits and toggles dispatch
     /// their [`ImagerAction`] through `host`; the returned [`CzResponse`] tells
     /// the host whether the event was consumed and whether export was asked for.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "widget event dispatch must forward the toolkit event context and the authoritative action host"
-    )]
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
-        scale: f64,
-        modifiers: &Modifiers,
-        doc: &mut AutoCommit,
-        path: &automerge::ObjId,
+        ctx: &mut ui::widget::EventCtx<'_>,
         host: &mut crate::resource::ActionSink,
         profile: &InstallProfile,
         target_removable: bool,
         content: Rect,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
     ) -> CzResponse {
         let g = self.geom(content);
         match event {
-            WindowEvent::CursorMoved { position, .. } => self.handle_cursor_moved(
-                event, position.x, position.y, scale, *modifiers, doc, path, &g, node_id, taffy,
-            ),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.handle_cursor_moved(event, ctx, position.x, position.y, &g)
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.handle_left_click(
-                event,
-                scale,
-                *modifiers,
-                doc,
-                path,
-                host,
-                profile,
-                target_removable,
-                &g,
-                node_id,
-                taffy,
-            ),
+            } => self.handle_left_click(event, ctx, host, profile, target_removable, &g),
             WindowEvent::KeyboardInput { event: key_ev, .. }
                 if key_ev.state == ElementState::Pressed =>
             {
-                self.handle_key_event(
-                    event, key_ev, scale, *modifiers, doc, path, host, &g, node_id, taffy,
-                )
+                self.handle_key_event(event, ctx, key_ev, host, &g)
             }
             _ => CzResponse {
                 handled: false,
@@ -988,24 +965,15 @@ impl CustomizePanel {
 
     /// Track the pointer and forward it to a focused field so drag-selection
     /// tracks along.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "pointer routing keeps toolkit event state and action dispatch explicit"
-    )]
     fn handle_cursor_moved(
         &mut self,
         event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
         px: f64,
         py: f64,
-        scale: f64,
-        modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        path: &automerge::ObjId,
         g: &CzGeom,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
     ) -> CzResponse {
-        self.last_mouse = Point::new(px / scale, py / scale);
+        self.last_mouse = Point::new(px / ctx.scale_factor, py / ctx.scale_factor);
         if let Some(f) = self.focused {
             let inner = Rect::new(
                 g.field(f).x0 + SIBLING,
@@ -1017,13 +985,23 @@ impl CustomizePanel {
             if let Some(choice) = self.choice(f) {
                 choice.apply_layout_external(g.field(f));
                 choice.handle_event(
-                    event, scale, &modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
+                    event,
+                    &mut ui::widget::EventCtx {
+                        handled: &mut h,
+                        focus_target: &mut ft,
+                        ..ctx.reborrow(ctx.path, ctx.node_id)
+                    },
                 );
             } else {
                 let input = self.input(f);
                 input.apply_layout_external(inner);
                 input.handle_event(
-                    event, scale, &modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
+                    event,
+                    &mut ui::widget::EventCtx {
+                        handled: &mut h,
+                        focus_target: &mut ft,
+                        ..ctx.reborrow(ctx.path, ctx.node_id)
+                    },
                 );
             }
         }
@@ -1035,23 +1013,14 @@ impl CustomizePanel {
 
     /// A left click: focus a field and forward the press for caret placement,
     /// dispatch a toggle, request export, or (on empty space) drop focus.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "click routing keeps geometry, toolkit event state, and action dispatch explicit"
-    )]
     fn handle_left_click(
         &mut self,
         event: &WindowEvent,
-        scale: f64,
-        modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        path: &automerge::ObjId,
+        ctx: &mut ui::widget::EventCtx<'_>,
         host: &mut crate::resource::ActionSink,
         profile: &InstallProfile,
         _target_removable: bool,
         g: &CzGeom,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
     ) -> CzResponse {
         let p = self.last_mouse;
         if let Some(field) = self.focused
@@ -1064,14 +1033,11 @@ impl CustomizePanel {
                 choice.apply_layout_external(g.field(field));
                 choice.handle_event(
                     event,
-                    scale,
-                    &modifiers,
-                    doc,
-                    path,
-                    &mut handled,
-                    &mut focus_target,
-                    node_id,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        handled: &mut handled,
+                        focus_target: &mut focus_target,
+                        ..ctx.reborrow(ctx.path, ctx.node_id)
+                    },
                 );
                 choice.selected().to_string()
             } else {
@@ -1080,7 +1046,7 @@ impl CustomizePanel {
             if selected != before
                 && let Some(value) = Self::choice_profile_value(field, &selected)
             {
-                Self::dispatch(doc, host, &Self::field_action(field, value));
+                Self::dispatch(ctx.state, host, &Self::field_action(field, value));
             }
             if handled {
                 return CzResponse {
@@ -1091,17 +1057,7 @@ impl CustomizePanel {
         }
         for f in CzField::ALL {
             if g.field(f).contains(p) {
-                self.focus_field(
-                    f,
-                    g.field(f),
-                    event,
-                    scale,
-                    modifiers,
-                    doc,
-                    path,
-                    node_id,
-                    taffy,
-                );
+                self.focus_field(event, ctx, f, g.field(f));
                 return CzResponse {
                     handled: true,
                     export_requested: false,
@@ -1124,22 +1080,13 @@ impl CustomizePanel {
 
     /// A key press while a field is focused: Enter/Escape blur it, anything
     /// else routes to the input and dispatches its fresh value.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "keyboard routing keeps modifiers, toolkit event state, and action dispatch explicit"
-    )]
     fn handle_key_event(
         &mut self,
         event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
         key_ev: &winit::event::KeyEvent,
-        scale: f64,
-        modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        path: &automerge::ObjId,
         host: &mut crate::resource::ActionSink,
         g: &CzGeom,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
     ) -> CzResponse {
         if self.export_focused {
             return match &key_ev.logical_key {
@@ -1175,14 +1122,11 @@ impl CustomizePanel {
                 choice.apply_layout_external(rect);
                 choice.handle_event(
                     event,
-                    scale,
-                    &modifiers,
-                    doc,
-                    path,
-                    &mut handled,
-                    &mut focus_target,
-                    node_id,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        handled: &mut handled,
+                        focus_target: &mut focus_target,
+                        ..ctx.reborrow(ctx.path, ctx.node_id)
+                    },
                 );
                 (before, choice.selected().to_string())
             } else {
@@ -1191,7 +1135,7 @@ impl CustomizePanel {
             if let Some(value) = Self::choice_profile_value(f, &selected)
                 && selected != before
             {
-                Self::dispatch(doc, host, &Self::field_action(f, value));
+                Self::dispatch(ctx.state, host, &Self::field_action(f, value));
             }
             return CzResponse {
                 handled,
@@ -1219,31 +1163,27 @@ impl CustomizePanel {
         input.apply_layout_external(inner);
         let (mut h, mut ft) = (false, None);
         input.handle_event(
-            event, scale, &modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
+            event,
+            &mut ui::widget::EventCtx {
+                handled: &mut h,
+                focus_target: &mut ft,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
         );
         let value = self.input(f).value().to_string();
-        Self::dispatch(doc, host, &Self::field_action(f, value));
+        Self::dispatch(ctx.state, host, &Self::field_action(f, value));
         CzResponse {
             handled: true,
             export_requested: false,
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "focus transfer synchronizes the chosen field with toolkit state and the authoritative profile action"
-    )]
     fn focus_field(
         &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
         f: CzField,
         field_rect: Rect,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        path: &automerge::ObjId,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
     ) {
         self.blur();
         self.focused = Some(f);
@@ -1253,14 +1193,11 @@ impl CustomizePanel {
             let (mut handled, mut focus_target) = (false, None);
             choice.handle_event(
                 event,
-                scale,
-                &modifiers,
-                doc,
-                path,
-                &mut handled,
-                &mut focus_target,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
             return;
         }
@@ -1275,7 +1212,12 @@ impl CustomizePanel {
         input.apply_layout_external(inner);
         let (mut h, mut ft) = (false, None);
         input.handle_event(
-            event, scale, &modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
+            event,
+            &mut ui::widget::EventCtx {
+                handled: &mut h,
+                focus_target: &mut ft,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
         );
     }
 

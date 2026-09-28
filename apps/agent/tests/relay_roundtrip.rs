@@ -404,6 +404,7 @@ fn the_agent_inserts_a_table_on_its_own_documents_replica_even_among_others() {
             app_id: APP.into(),
             cluster_id: room,
             record: Some(RECORD.into()),
+            record_kind: None,
             handle: Some("quinten".into()),
         };
         send(&mut peer, &hello).unwrap();
@@ -657,6 +658,7 @@ fn connect_files_and_word_processor(
                 app_id: "so.tilo.file-explorer".into(),
                 cluster_id: room,
                 record: None,
+                record_kind: None,
                 handle: Some("files".into()),
             },
         )
@@ -674,6 +676,7 @@ fn connect_files_and_word_processor(
             app_id: APP.into(),
             cluster_id: room,
             record: None,
+            record_kind: None,
             handle: Some("quinten".into()),
         },
     )
@@ -858,6 +861,7 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
             app_id: APP.into(),
             cluster_id: room,
             record: Some(RECORD.into()),
+            record_kind: None,
             handle: Some("quinten".into()),
         };
         // Returns once the broker acknowledged the peer's route.
@@ -994,6 +998,7 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
             app_id: APP.into(),
             cluster_id: room,
             record: Some(RECORD.into()),
+            record_kind: None,
             handle: Some("quinten".into()),
         };
         // Returns once the broker acknowledged the peer's route.

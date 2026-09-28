@@ -653,6 +653,15 @@ impl ArtifactHosts {
     }
 }
 
+/// The URL a version names for the artifact `blake3_hex` this registry hosts:
+/// its loopback `<base_url>/artifacts/` in local development, the official
+/// artifact origin otherwise.
+pub(crate) fn artifact_url(base_url: &str, blake3_hex: &str) -> String {
+    let prefix =
+        local_artifact_prefix(base_url).unwrap_or_else(|| OFFICIAL_ARTIFACT_PREFIX.to_owned());
+    format!("{prefix}{}.tapp", blake3_hex.to_ascii_lowercase())
+}
+
 /// `<base_url>/artifacts/` when `base_url` is a loopback HTTP origin without
 /// credentials, path, query or fragment; `None` for every public deployment.
 fn local_artifact_prefix(base_url: &str) -> Option<String> {
@@ -904,7 +913,9 @@ fn validate_bound_version(
                     "aarch64" | "aarch64-v8.2" | "aarch64-v8.4" | "aarch64-v9"
                 )
         ),
-        registry_types::WEB_PLATFORM => target.validate().is_ok(),
+        registry_types::WEB_PLATFORM
+        | registry_types::WINDOWS_PLATFORM
+        | registry_types::MACOS_PLATFORM => target.validate().is_ok(),
         _ => false,
     };
     let canonical_url = artifacts.allows(&version.tapp_url);
@@ -1115,6 +1126,7 @@ mod tests {
                 pubkey_hex: hex::encode(key.verifying_key().to_bytes()),
                 can_add_new: true,
                 note: String::new(),
+                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
             }],
         }
     }

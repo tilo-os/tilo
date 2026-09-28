@@ -34,7 +34,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use gstreamer as gst;
 
@@ -111,15 +111,7 @@ pub fn needs_rescan(
 
 /// The per-user file recording the stamp the registry cache reflects.
 pub fn default_stamp_path() -> Option<PathBuf> {
-    let cache = std::env::var_os("XDG_CACHE_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .map(|home| PathBuf::from(home).join(".cache"))
-        })?;
+    let cache = xdg_paths::xdg::cache_home()?;
     Some(cache.join("tilo").join("media-extensions.stamp"))
 }
 
@@ -169,16 +161,8 @@ fn write_stamp(path: &Path, stamp: &ExtensionStamp) {
     if std::fs::create_dir_all(parent).is_err() {
         return;
     }
-    // Write-then-rename so a concurrent reader never sees half a stamp.
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.subsec_nanos());
-    let temporary = parent.join(format!(".media-extensions.{}.{nanos}", std::process::id()));
-    if std::fs::write(&temporary, encode_stamp(stamp)).is_ok()
-        && std::fs::rename(&temporary, path).is_err()
-    {
-        let _ = std::fs::remove_file(&temporary);
-    }
+    // A torn stamp only costs a rescan, so nothing is synced.
+    let _ = atomic_file::write_regenerable(path, encode_stamp(stamp).as_bytes());
 }
 
 /// Drop every plugin this process has not loaded and rescan the plugin

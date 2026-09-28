@@ -90,14 +90,16 @@ impl Harness {
         let mut focus = None;
         self.host.handle_event(
             event,
-            1.0,
-            &Modifiers::from(mods),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            self.node,
-            &self.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::from(mods),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: self.node,
+                taffy: &self.taffy,
+            },
         );
         handled
     }
@@ -424,7 +426,19 @@ fn clicking_a_window_in_the_switcher_goes_there() {
     ));
     let focused = h.focused();
     let active = h.host.window_switcher_active();
+    let release_absorbed = h.event(
+        &WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        },
+        ModifiersState::ALT,
+    );
     drop(h);
     assert_eq!(focused, 4);
     assert!(!active);
+    assert!(
+        release_absorbed,
+        "the release of the click that chose a window never reaches that window"
+    );
 }

@@ -16,7 +16,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -275,11 +274,6 @@ impl ConflictBanner {
 }
 
 impl Widget for ConflictBanner {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
-        // The banner is driven exclusively by the host via
-        // `set_conflict_count`. No CRDT path to read.
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -423,24 +417,13 @@ impl Widget for ConflictBanner {
         self.dirty = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if self.conflict_count == 0 {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = p;
                 let new_review = self.review_chip_rect().is_some_and(|r| r.contains(p));
                 let new_dismiss = self.dismiss_chip_rect().is_some_and(|r| r.contains(p));
@@ -448,7 +431,7 @@ impl Widget for ConflictBanner {
                     self.review_hovered = new_review;
                     self.dismiss_hovered = new_dismiss;
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -462,7 +445,7 @@ impl Widget for ConflictBanner {
                     if let Some(cb) = self.on_review.as_mut() {
                         cb();
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if let Some(rect) = self.dismiss_chip_rect()
@@ -471,7 +454,7 @@ impl Widget for ConflictBanner {
                     if let Some(cb) = self.on_dismiss.as_mut() {
                         cb();
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -523,6 +506,7 @@ impl Widget for ConflictBanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use winit::event::Modifiers;
@@ -621,14 +605,16 @@ mod tests {
         let root = automerge::ROOT;
         b.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

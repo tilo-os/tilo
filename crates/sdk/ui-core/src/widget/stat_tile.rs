@@ -15,13 +15,11 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::Color;
-use winit::event::WindowEvent;
 
 use crate::icons::Icon;
 use crate::presence::PresenceCtx;
@@ -266,8 +264,6 @@ impl StatTile {
 }
 
 impl Widget for StatTile {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -337,21 +333,6 @@ impl Widget for StatTile {
             self.icon,
             self.delta.as_ref().map(|(t, tr)| (t.as_str(), *tr)),
         );
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        // Stat tiles are informational — no input handling.
     }
 
     fn name(&self) -> &'static str {

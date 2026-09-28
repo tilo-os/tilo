@@ -210,14 +210,16 @@ impl Harness {
             let mut handled = false;
             self.app.handle_event(
                 ev,
-                1.0,
-                &mods,
-                &mut self.doc,
-                &root(),
-                &mut handled,
-                &mut focus_target,
-                self.app_node,
-                &self.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut self.doc,
+                    path: &root(),
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: self.app_node,
+                    taffy: &self.taffy,
+                },
             );
         }
         if let Some(id) = focus_target {
@@ -235,14 +237,16 @@ impl Harness {
         let mut focus_target = None;
         self.app.handle_event(
             &ev,
-            1.0,
-            &mods,
-            &mut self.doc,
-            &root(),
-            &mut handled,
-            &mut focus_target,
-            self.app_node,
-            &self.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut self.doc,
+                path: &root(),
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: self.app_node,
+                taffy: &self.taffy,
+            },
         );
         if let Some(id) = focus_target {
             self.set_focused(Some(id));

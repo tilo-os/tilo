@@ -33,6 +33,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -3417,7 +3418,8 @@ impl Widget for ApiTesterApp {
         &[crate::actions::API_TESTER_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         if !self.adopted {
             if ApiDoc::is_empty(state, path) {
                 if !self.seeded {
@@ -3676,23 +3678,13 @@ impl Widget for ApiTesterApp {
         clippy::too_many_lines,
         reason = "event routing is ordered by precedence (escape, overlays, sidebar, editors); splitting it would hide that order"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
 
-        let child_nodes = taffy.children(node_id).unwrap_or_default();
+        let child_nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         if matches!(
             event,
             WindowEvent::KeyboardInput {
@@ -3729,9 +3721,9 @@ impl Widget for ApiTesterApp {
                     .iter()
                     .position(|child| child.test_id() == Some(target))
                 {
-                    *focus_target = child_nodes.get(index).copied();
+                    *ctx.focus_target = child_nodes.get(index).copied();
                 }
-                *handled = true;
+                *ctx.handled = true;
                 self.dirty = true;
                 return;
             }
@@ -3751,16 +3743,16 @@ impl Widget for ApiTesterApp {
                     .iter()
                     .position(|child| child.test_id() == Some("api.request-divider"))
                 {
-                    *focus_target = child_nodes.get(index).copied();
+                    *ctx.focus_target = child_nodes.get(index).copied();
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::CursorMoved { .. } if self.request_drag.is_some() => {
                 if let Some((start, height)) = self.request_drag {
                     self.request_height_override =
                         Some((height + self.last_cursor.y - start).max(0.0));
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -3768,7 +3760,7 @@ impl Widget for ApiTesterApp {
                 ..
             } if self.request_drag.is_some() => {
                 self.request_drag = None;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. }
                 if self.layout.nav_viewport.contains(self.last_cursor) =>
@@ -3783,11 +3775,11 @@ impl Widget for ApiTesterApp {
                 } else if dy > 0.0 {
                     self.nav_start = self.nav_start.saturating_sub(1);
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
-        if *handled {
+        if *ctx.handled {
             self.dirty = true;
             return;
         }
@@ -3810,7 +3802,7 @@ impl Widget for ApiTesterApp {
             && !self.layout.sidebar.contains(self.last_cursor)
         {
             self.rail.snap(false);
-            *handled = true;
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
@@ -3822,24 +3814,14 @@ impl Widget for ApiTesterApp {
             });
         // Route the event through the child widgets (pointer-capture aware),
         // exactly like a `Column`.
-        let child_nodes = taffy.children(node_id).unwrap_or_default();
+        let child_nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         {
             let mut kids = self.children_mut_ref();
             if let Some(idx) = kids.iter().position(|k| k.wants_pointer_capture()) {
                 if let Some(&cnode) = child_nodes.get(idx)
                     && let Some(k) = kids.get_mut(idx)
                 {
-                    k.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cnode,
-                        taffy,
-                    );
+                    k.handle_event(event, &mut ctx.reborrow(ctx.path, cnode));
                 }
             } else {
                 let sidebar_start = kids.len().saturating_sub(sidebar_count);
@@ -3850,35 +3832,25 @@ impl Widget for ApiTesterApp {
                         continue;
                     }
                     if cursor_move {
-                        *handled = false;
+                        *ctx.handled = false;
                     }
-                    k.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                    any_handled |= *handled;
-                    if *handled && !cursor_move {
+                    k.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
+                    any_handled |= *ctx.handled;
+                    if *ctx.handled && !cursor_move {
                         break;
                     }
                 }
-                *handled |= any_handled;
+                *ctx.handled |= any_handled;
             }
         }
 
         // Apply any commands the children queued, then reconcile the pickers.
-        let did = self.drain_commands(state, path);
-        self.reconcile_pickers(state, path);
-        if did || *handled {
+        let did = self.drain_commands(ctx.state, ctx.path);
+        self.reconcile_pickers(ctx.state, ctx.path);
+        if did || *ctx.handled {
             self.dirty = true;
         }
-        if *handled {
+        if *ctx.handled {
             return;
         }
 
@@ -3896,7 +3868,7 @@ impl Widget for ApiTesterApp {
                 if self.rail.layout() == SplitLayout::Overlay && self.rail.is_open() {
                     self.rail.close();
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -3910,11 +3882,11 @@ impl Widget for ApiTesterApp {
                     // runaway wheel event cannot hide it indefinitely.
                     self.sidebar_scroll = (self.sidebar_scroll + dy).clamp(0.0, 1200.0);
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if self.layout.body_region.contains(self.last_cursor) {
                     self.body_scroll = (self.body_scroll + dy).max(0.0);
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -3977,7 +3949,104 @@ impl Widget for ApiTesterApp {
         self.actions.take_committed()
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        for child in self.children_mut_ref() {
+            if let Some(update) =
+                child.poll_resource_operation(invocation, cancellation_requested, doc, path)
+            {
+                return Some(update);
+            }
+        }
+        self.poll_worker();
+        if self
+            .resource_send_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            self.resource_send_result.take()
+        } else {
+            None
+        }
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        // Drain child structure-dirty flags per the trait contract, then add
+        // our own child-set changes. A plain loop, not `.any()`: every child
+        // must be drained regardless of an earlier `true`, which `.any()`
+        // would short-circuit past.
+        let mut child_changed = false;
+        for c in self.children_mut_ref() {
+            child_changed |= c.take_structure_dirty();
+        }
+        let sig = self.child_sig();
+        let self_changed = sig != self.last_sig;
+        self.last_sig = sig;
+        let rows_replaced = std::mem::take(&mut self.nav_rows_replaced);
+        child_changed || self_changed || rows_replaced
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+            || self.sending
+            || self.rail.is_animating()
+            || self.children_ref().iter().any(|c| c.needs_redraw())
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.rail.is_animating()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        for c in self.children_mut_ref() {
+            c.mark_drawn();
+        }
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        self.sending || !self.pending_history.is_empty() || !self.adopted
+    }
+}
+
+impl ApiTesterApp {
+    fn answer_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
         type_id: &str,
@@ -4059,7 +4128,7 @@ impl Widget for ApiTesterApp {
         Ok(true)
     }
 
-    fn start_resource_operation(
+    fn admit_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
         kind: tilo_actions::OperationKind,
@@ -4068,15 +4137,6 @@ impl Widget for ApiTesterApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        // This container also owns retained controls with native view/effect
-        // actions. Preserve their canonical dispatch before admitting Send.
-        for child in self.children_mut_ref() {
-            if let Some(started) =
-                child.start_resource_operation(invocation, kind, type_id, payload, doc, path)?
-            {
-                return Ok(Some(started));
-            }
-        }
         if kind != tilo_actions::OperationKind::Effect
             || type_id != crate::actions::API_TESTER_OPERATION_TYPE
         {
@@ -4085,75 +4145,11 @@ impl Widget for ApiTesterApp {
         if self.sending || self.resource_send_invocation.is_some() {
             return Err("another API request is already running".into());
         }
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
             return Ok(None);
         }
         self.resource_send_invocation = Some(invocation);
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        for child in self.children_mut_ref() {
-            if let Some(update) =
-                child.poll_resource_operation(invocation, cancellation_requested, doc, path)
-            {
-                return Some(update);
-            }
-        }
-        self.poll_worker();
-        if self
-            .resource_send_result
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            self.resource_send_result.take()
-        } else {
-            None
-        }
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        // Drain child structure-dirty flags per the trait contract, then add
-        // our own child-set changes. A plain loop, not `.any()`: every child
-        // must be drained regardless of an earlier `true`, which `.any()`
-        // would short-circuit past.
-        let mut child_changed = false;
-        for c in self.children_mut_ref() {
-            child_changed |= c.take_structure_dirty();
-        }
-        let sig = self.child_sig();
-        let self_changed = sig != self.last_sig;
-        self.last_sig = sig;
-        let rows_replaced = std::mem::take(&mut self.nav_rows_replaced);
-        child_changed || self_changed || rows_replaced
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-            || self.sending
-            || self.rail.is_animating()
-            || self.children_ref().iter().any(|c| c.needs_redraw())
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        self.rail.is_animating()
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-        for c in self.children_mut_ref() {
-            c.mark_drawn();
-        }
-    }
-
-    fn needs_idle_sync(&self) -> bool {
-        self.sending || !self.pending_history.is_empty() || !self.adopted
     }
 }
 
@@ -4631,7 +4627,7 @@ mod tests {
     /// Case of `ui_commands_dispatch_canonical_actions_or_stay_device_local`.
     fn visible_context_menus_open_real_request_and_environment_workflows() {
         let mut a = app();
-        let doc = AutoCommit::new();
+        let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
 
         let request = serde_json::to_vec(&crate::actions::ApiTesterOperation::RequestMenu {
@@ -4639,14 +4635,19 @@ mod tests {
         })
         .expect("operation encodes");
         assert_eq!(
-            a.invoke_resource_operation(
-                tilo_actions::OperationKind::View,
-                crate::actions::API_TESTER_OPERATION_TYPE,
-                &request,
-                &doc,
-                &root,
+            a.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    crate::actions::API_TESTER_OPERATION_TYPE,
+                    &request
+                ),
+                &mut doc,
+                &root
             ),
-            Ok(true)
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                ui::tilo_actions::ActionOutput::default()
+            )))
         );
         assert_eq!(a.form, Some(FormMode::RenameRequest));
         assert_eq!(a.request_actions.selected(), "Request actions");
@@ -4658,14 +4659,19 @@ mod tests {
             })
             .expect("operation encodes");
         assert_eq!(
-            a.invoke_resource_operation(
-                tilo_actions::OperationKind::View,
-                crate::actions::API_TESTER_OPERATION_TYPE,
-                &environment,
-                &doc,
-                &root,
+            a.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    crate::actions::API_TESTER_OPERATION_TYPE,
+                    &environment
+                ),
+                &mut doc,
+                &root
             ),
-            Ok(true)
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                ui::tilo_actions::ActionOutput::default()
+            )))
         );
         assert_eq!(a.form, Some(FormMode::NewVariable));
         assert_eq!(a.environment_actions.selected(), "Environment actions");
@@ -4802,12 +4808,14 @@ mod tests {
         let payload =
             serde_json::to_vec(&crate::actions::ApiTesterOperation::SendActiveRequest).unwrap();
         assert!(matches!(
-            app.start_resource_operation(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::API_TESTER_OPERATION_TYPE,
-                &payload,
-                &doc,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::API_TESTER_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
                 &automerge::ROOT
             )
             .unwrap(),

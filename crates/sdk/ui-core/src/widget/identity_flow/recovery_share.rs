@@ -11,7 +11,6 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -186,32 +185,21 @@ impl RecoveryShareScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "recovery-share handling mirrors the host's Widget event signature while returning the screen transition"
-    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) -> ScreenOutcome {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pos = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let pos = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = pos;
                 let copy_h = self.copy_rect.contains(pos);
                 let cont_h = self.continue_rect.contains(pos);
                 if copy_h != self.copy_hovered || cont_h != self.continue_hovered {
                     self.copy_hovered = copy_h;
                     self.continue_hovered = cont_h;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
             }
@@ -221,24 +209,24 @@ impl RecoveryShareScreen {
                 ..
             } => {
                 if !self.mnemonic.is_empty() && self.copy_rect.contains(self.last_cursor) {
-                    *handled = true;
+                    *ctx.handled = true;
                     self.copy_to_clipboard();
                     return ScreenOutcome::Stay;
                 }
                 if self.ack_hit_rect.contains(self.last_cursor) {
-                    *handled = true;
+                    *ctx.handled = true;
                     self.acknowledged = !self.acknowledged;
                     return ScreenOutcome::Stay;
                 }
                 if self.continue_rect.contains(self.last_cursor) && self.is_continue_enabled() {
-                    *handled = true;
+                    *ctx.handled = true;
                     return ScreenOutcome::Advance;
                 }
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.scroll.wheel(delta) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
             }
@@ -252,7 +240,7 @@ impl RecoveryShareScreen {
                 ..
             } => {
                 if self.scroll.key(logical_key, self.body_height) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
             }
@@ -406,8 +394,6 @@ impl RecoveryShareScreen {
 }
 
 impl Widget for RecoveryShareScreen {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -504,20 +490,6 @@ impl Widget for RecoveryShareScreen {
         }
         scene.pop_layer();
         sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

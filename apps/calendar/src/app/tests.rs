@@ -2,6 +2,7 @@ use super::*;
 use automerge::ROOT;
 use serial_test::serial;
 use tilo_actions::Action as _;
+use ui::headless::Framed;
 
 #[test]
 fn task_completion_toggles_by_checkbox_and_label_and_paints_both_states() {
@@ -480,17 +481,21 @@ fn resource_provider_and_search_catalog_stay_bounded_and_refresh_on_revision() {
             id: calendar.id.clone(),
         })
         .expect("operation serializes");
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::View,
-                crate::actions::CALENDAR_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    crate::actions::CALENDAR_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
+                &ROOT
             )
-            .expect("collection operation is accepted")
-        );
+            .expect("collection operation is accepted"),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(app.calendar_filter.as_deref(), Some(calendar.id.as_str()));
 
         let payload = serde_json::to_vec(&crate::actions::CalendarOperation::SetCalendarVisible {
@@ -498,28 +503,36 @@ fn resource_provider_and_search_catalog_stay_bounded_and_refresh_on_revision() {
             visible: false,
         })
         .expect("operation serializes");
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::CALENDAR_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::CALENDAR_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
+                &ROOT
             )
-            .expect("visibility operation is accepted")
-        );
-        assert!(
-            Widget::invoke_resource_operation(
+            .expect("visibility operation is accepted"),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
+        assert!(matches!(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::CALENDAR_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::CALENDAR_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
+                &ROOT
             )
-            .expect("replaying an absolute visibility operation is accepted")
-        );
+            .expect("replaying an absolute visibility operation is accepted"),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert!(
             app.accounts
                 .all_calendars()
@@ -645,8 +658,7 @@ fn layout_reflows_on_resize_instead_of_caching_first_frame_geometry() {
 
             // Resize narrower — still wide enough that the sidebar stays docked,
             // isolating the grid's own reflow from any breakpoint change.
-            hn.w = 1000;
-            hn.relayout();
+            hn.resize(1000, 800);
             assert_eq!(hn.app.sidebar.mode(), SidebarMode::Persistent);
             let narrow = widest_cell(&hn.app, view);
             assert!(
@@ -732,6 +744,10 @@ fn titles_elide_to_fit_and_week_ranges_keep_both_endpoints() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
 fn launch_ics_admits_host_sources_and_rejects_invalid_ones() {
     // Case `launch_ics_uses_host_admission_and_preserves_existing_calendar_and_source`.
     {
@@ -824,11 +840,13 @@ fn launch_ics_admits_host_sources_and_rejects_invalid_ones() {
         let payload =
             serde_json::to_vec(&crate::actions::CalendarOperation::FinalizeLaunchImport).unwrap();
         assert!(
-            app.start_resource_operation_with_document(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                crate::actions::CALENDAR_OPERATION_TYPE,
-                &payload,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::CALENDAR_OPERATION_TYPE,
+                    &payload
+                ),
                 &mut state.doc,
                 &state.root
             )
@@ -1045,14 +1063,16 @@ fn user_edits_and_source_identity_persist_across_restart() {
             let mut focus = None;
             app.handle_event(
                 &ev,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
         }
 
@@ -1095,7 +1115,8 @@ fn user_edits_and_source_identity_persist_across_restart() {
         }
         assert_eq!(h.app.model.event(id).unwrap().title, "Roadmap");
         // Persist runs on the next sync (writes because the heads changed).
-        h.app.sync(&mut h.doc, &automerge::ROOT);
+        let (app, doc) = h.parts();
+        app.sync(doc, &automerge::ROOT);
         assert!(path.exists(), "the document was written to disk");
 
         // Fresh instance + fresh doc must load the named event back.
@@ -1295,13 +1316,15 @@ fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
         );
 
         let invocation = tilo_actions::InvocationId::new();
-        let start = Widget::start_resource_operation(
+        let start = Widget::start_operation(
             &mut app,
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            &first.type_id,
-            &first.payload,
-            &state,
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                &first.type_id,
+                &first.payload,
+            ),
+            &mut state,
             &automerge::ROOT,
         )
         .expect("resource import accepted");
@@ -1497,17 +1520,18 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         );
         // Bind the notes editor to the new event, then confirm the block list
         // carries no seeded body text.
-        h.app.sync(&mut h.doc, &automerge::ROOT);
+        let (app, doc) = h.parts();
+        app.sync(doc, &automerge::ROOT);
         assert_eq!(
             h.app.notes_editor.editor().empty_hint(),
             NOTES_PLACEHOLDER,
             "the notes editor shows a calendar-specific placeholder hint"
         );
         assert!(
-            CalDoc::notes(&h.doc, true, id).is_some(),
+            CalDoc::notes(h.doc(), true, id).is_some(),
             "the new event has notes"
         );
-        let joined = CalDoc::note_text(&h.doc, true, id);
+        let joined = CalDoc::note_text(h.doc(), true, id);
         assert!(
             joined.trim().is_empty(),
             "notes start empty, not seeded: {joined:?}"
@@ -1589,14 +1613,18 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
 
         // Close the editor through the production action, then let a frame settle
         // so the form unbinds (form_event clears) — exactly the live sequence.
-        h.app.apply_action(Action::CloseDetail, &mut h.doc);
-        h.app.sync(&mut h.doc, &automerge::ROOT);
+        let (app, doc) = h.parts();
+        app.apply_action(Action::CloseDetail, doc);
+        let (app, doc) = h.parts();
+        app.sync(doc, &automerge::ROOT);
         assert!(!h.app.detail_open, "editor closed");
 
         // Reopen the same event (the OpenEvent action's production entry point)
         // and run a sync so the form rebinds from the model.
-        h.app.apply_action(Action::OpenEvent(id), &mut h.doc);
-        h.app.sync(&mut h.doc, &automerge::ROOT);
+        let (app, doc) = h.parts();
+        app.apply_action(Action::OpenEvent(id), doc);
+        let (app, doc) = h.parts();
+        app.sync(doc, &automerge::ROOT);
         h.relayout();
         assert_eq!(
             h.app.model.event(id).unwrap().title,
@@ -1965,7 +1993,7 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
     // Case `invitation_handoff_is_the_exact_mail_resource_action_and_never_claims_send`.
     {
         let mut app = CalendarApp::new_demo();
-        let doc = AutoCommit::new();
+        let mut doc = AutoCommit::new();
         let event = app
             .selection
             .and_then(|selection| match selection {
@@ -1984,16 +2012,21 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
             },
         )
         .unwrap();
-        let output = Widget::invoke_resource_operation_v2(
+        let ui::widget::ResourceOperationStart::Completed(output) = Widget::start_operation(
             &mut app,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::CALENDAR_OPERATION_TYPE,
-            &payload,
-            &doc,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
+                crate::actions::CALENDAR_OPERATION_TYPE,
+                &payload,
+            ),
+            &mut doc,
             &automerge::ROOT,
         )
         .unwrap()
-        .expect("Calendar handles its invitation effect");
+        .expect("Calendar handles its invitation effect") else {
+            panic!("the invitation handoff completes synchronously");
+        };
         let value = output.value.expect("typed handoff result");
         assert_eq!(value["delivery"], "not_sent");
         assert_eq!(value["target"]["resource"], "mail.mailbox");
@@ -2644,7 +2677,7 @@ fn calendar_and_project_selectors_file_events_and_reach_every_option() {
             "the event is filed on the chosen CalDAV calendar"
         );
         assert!(
-            CalDoc::outbox(&h.doc).contains(&id),
+            CalDoc::outbox(h.doc()).contains(&id),
             "creating on a CalDAV calendar queues the event for upload"
         );
         assert_eq!(
@@ -2658,13 +2691,14 @@ fn calendar_and_project_selectors_file_events_and_reach_every_option() {
         let mut h = Harness::new(1280, 800);
         let id = selected_event_id(&h.app);
         // File it remote first (queued), then move it back to the device.
-        h.app
-            .set_event_calendar(&CalTarget::Remote("work/default".into()), &mut h.doc);
-        assert!(CalDoc::outbox(&h.doc).contains(&id));
-        h.app.set_event_calendar(&CalTarget::Local, &mut h.doc);
+        let (app, doc) = h.parts();
+        app.set_event_calendar(&CalTarget::Remote("work/default".into()), doc);
+        assert!(CalDoc::outbox(h.doc()).contains(&id));
+        let (app, doc) = h.parts();
+        app.set_event_calendar(&CalTarget::Local, doc);
         assert!(h.app.model.event(id).unwrap().calendar_id.is_none());
         assert!(
-            !CalDoc::outbox(&h.doc).contains(&id),
+            !CalDoc::outbox(h.doc()).contains(&id),
             "filing back on the local calendar drops it from the queue"
         );
     }
@@ -2834,17 +2868,21 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
         // Replaying this absolute payload must converge on the requested value
         // rather than invert it as a toggle would.
         for _ in 0..2 {
-            assert!(
-                Widget::invoke_resource_operation(
+            assert!(matches!(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::Effect,
-                    &semantic_payload.type_id,
-                    &semantic_payload.payload,
-                    &state,
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        &semantic_payload.type_id,
+                        &semantic_payload.payload
+                    ),
+                    &mut state,
+                    &automerge::ROOT
                 )
-                .expect("published visibility action is accepted")
-            );
+                .expect("published visibility action is accepted"),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
         }
         assert_eq!(
             app.accounts
@@ -2969,7 +3007,8 @@ fn keyboard_focus_and_shortcuts_route_between_editor_and_calendar() {
 
         let mut h = Harness::new(1280, 800);
         // Close the demo's detail so the notes editor doesn't own keystrokes.
-        h.app.apply_action(Action::CloseDetail, &mut h.doc);
+        let (app, doc) = h.parts();
+        app.apply_action(Action::CloseDetail, doc);
         h.relayout();
 
         h.type_char("w");
@@ -2982,7 +3021,8 @@ fn keyboard_focus_and_shortcuts_route_between_editor_and_calendar() {
         assert_eq!(h.app.view, View::Month, "'m' → Month");
 
         // 't' snaps the anchor back to today; step away first to prove it moves.
-        h.app.apply_action(Action::Next, &mut h.doc);
+        let (app, doc) = h.parts();
+        app.apply_action(Action::Next, doc);
         assert_ne!(h.app.anchor, h.app.today);
         h.type_char("t");
         assert_eq!(h.app.anchor, h.app.today, "'t' → today");
@@ -3007,7 +3047,8 @@ fn keyboard_focus_and_shortcuts_route_between_editor_and_calendar() {
         // Creating an event lands the caret in its title, so the calendar no
         // longer owns the keyboard; close the editor to make the next shortcut a
         // global key again rather than a keystroke into the title.
-        h.app.apply_action(Action::CloseDetail, &mut h.doc);
+        let (app, doc) = h.parts();
+        app.apply_action(Action::CloseDetail, doc);
         h.relayout();
 
         // 'e' exports through the keyboard: a real .ics lands in the transfer dir.
@@ -3048,7 +3089,8 @@ fn keyboard_focus_and_shortcuts_route_between_editor_and_calendar() {
             h.app.modal_capture().is_some(),
             "an open editor captures the keyboard so the App yields Tab to the form"
         );
-        h.app.apply_action(Action::CloseDetail, &mut h.doc);
+        let (app, doc) = h.parts();
+        app.apply_action(Action::CloseDetail, doc);
         h.relayout();
         assert!(
             h.app.modal_capture().is_none(),
@@ -3063,7 +3105,8 @@ fn keyboard_focus_and_shortcuts_route_between_editor_and_calendar() {
         let mut h = Harness::new(1280, 800);
         h.app.focus_field(FormField::Title);
         assert!(h.app.title_input.is_focused());
-        h.app.apply_action(Action::CloseDetail, &mut h.doc);
+        let (app, doc) = h.parts();
+        app.apply_action(Action::CloseDetail, doc);
         assert!(
             !h.app.title_input.is_focused(),
             "closing the editor blurs the title"
@@ -3410,17 +3453,21 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
         })
         .expect("operation serializes");
 
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::View,
-                crate::actions::CALENDAR_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &automerge::ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    crate::actions::CALENDAR_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
-            .expect("hidden collection still opens")
-        );
+            .expect("hidden collection still opens"),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(app.calendar_filter.as_deref(), Some("icloud/holidays"));
         assert!(
             app.status
@@ -3445,17 +3492,21 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
         );
         let payload = serde_json::to_vec(&crate::actions::CalendarOperation::ShowAllCalendars)
             .expect("operation serializes");
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::View,
-                crate::actions::CALENDAR_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &automerge::ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    crate::actions::CALENDAR_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
-            .expect("show-all operation is accepted")
-        );
+            .expect("show-all operation is accepted"),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert!(app.calendar_filter.is_none());
         assert_eq!(app.status.as_deref(), Some("Showing all calendars"));
     }
@@ -3527,122 +3578,57 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
 
 // --- end-to-end click routing through the real handle_event -----------
 
-/// Owns a laid-out app + taffy tree so a test can pump synthesized winit
-/// events through the production `Widget::handle_event`, exactly as the
-/// live event loop does.
+/// Mounts the app in the production frame host so a test can pump
+/// synthesized winit events through the production `Widget::handle_event`,
+/// exactly as the live event loop does.
 struct Harness {
-    app: CalendarApp,
-    doc: AutoCommit,
-    taffy: TaffyTree<()>,
-    node: NodeId,
-    w: u32,
-    h: u32,
+    app: Framed<CalendarApp>,
 }
 
 impl Harness {
     fn new(w: u32, h: u32) -> Self {
-        let mut app = CalendarApp::new_demo();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        let mut hn = Harness {
-            app,
-            doc,
-            taffy: TaffyTree::new(),
-            node: NodeId::new(0),
-            w,
-            h,
-        };
-        hn.relayout();
-        hn
+        Self::mount(CalendarApp::new_demo(), w, h)
     }
 
     /// A live (persisted, no sample content) app driven through the same
     /// production event path — used to prove edits reach disk.
     fn live(w: u32, h: u32, path: PathBuf) -> Self {
-        let mut app = CalendarApp::new_with_data_path(path);
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        let mut hn = Harness {
-            app,
-            doc,
-            taffy: TaffyTree::new(),
-            node: NodeId::new(0),
-            w,
-            h,
-        };
-        hn.relayout();
-        hn
+        Self::mount(CalendarApp::new_with_data_path(path), w, h)
     }
 
+    fn mount(app: CalendarApp, w: u32, h: u32) -> Self {
+        Harness {
+            app: Framed::new(ui::State::new(), app, (w, h), Theme::dark()),
+        }
+    }
+
+    /// Rebuild, lay out and draw a whole frame; the draw populates the click
+    /// hit-map, like the live renderer.
     fn relayout(&mut self) {
-        use taffy::prelude::*;
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        self.taffy = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = self
-            .app
-            .build_layout(&mut self.taffy, &theme, &mut node_map);
-        self.node = child;
-        let root = self
-            .taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(self.w as f32),
-                        height: Dimension::length(self.h as f32),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        let measure_map = node_map.clone();
-        let trr = &mut tr;
-        self.taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(self.w as f32),
-                    height: AvailableSpace::Definite(self.h as f32),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, trr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .unwrap();
-        self.app.apply_layout(&self.taffy, child, Point::ORIGIN);
-        // Draw once to populate the click hit-map, like the live renderer.
-        let mut scene = Scene::new();
-        self.app.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::empty(),
-        );
+        Framed::harness_mut(&mut self.app)
+            .recompose()
+            .expect("calendar frame lays out");
+    }
+
+    /// Rebuild and run the next frame at a new window size.
+    fn resize(&mut self, w: u32, h: u32) {
+        Framed::harness_mut(&mut self.app)
+            .relayout_themed((w, h), Theme::dark())
+            .expect("calendar frame lays out");
+    }
+
+    fn doc(&self) -> &AutoCommit {
+        &Framed::harness(&self.app).state().doc
+    }
+
+    fn parts(&mut self) -> (&mut CalendarApp, &mut AutoCommit) {
+        let (app, state) = Framed::split(&mut self.app);
+        (app, &mut state.doc)
     }
 
     fn dispatch(&mut self, event: &winit::event::WindowEvent) -> bool {
-        let mods = winit::event::Modifiers::default();
-        let mut handled = false;
-        let mut focus = None;
-        self.app.handle_event(
-            event,
-            1.0,
-            &mods,
-            &mut self.doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            self.node,
-            &self.taffy,
-        );
-        handled
+        Framed::harness_mut(&mut self.app)
+            .dispatch_to_root_with(event, &winit::event::Modifiers::default())
     }
 
     fn click(&mut self, p: Point) {

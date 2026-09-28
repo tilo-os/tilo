@@ -88,11 +88,13 @@ hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17", default-
 hashbrown-986da7b5efc2b80e = { package = "hashbrown", version = "0.16" }
 hayro-syntax = { version = "0.7", features = ["unsafe"] }
 hex = { version = "0.4" }
+hickory-proto = { version = "0.26", default-features = false, features = ["access-control"] }
 hmac = { version = "0.12", default-features = false, features = ["reset"] }
 hpke-rs = { version = "0.7", default-features = false, features = ["experimental", "hazmat", "rustcrypto", "serialization"] }
 hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["experimental", "std"] }
 hybrid-array = { version = "0.4", default-features = false, features = ["alloc", "ctutils", "extra-sizes", "subtle", "zeroize"] }
 hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 hypher = { version = "0.1" }
 icu_collections = { version = "2", default-features = false, features = ["serde"] }
 icu_locale_core = { version = "2", default-features = false, features = ["alloc", "serde", "zerovec"] }
@@ -104,6 +106,7 @@ idna = { version = "1" }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 indexmap = { version = "2", features = ["rayon", "serde"] }
 inout = { version = "0.2", default-features = false, features = ["block-padding"] }
+ipnet = { version = "2", features = ["serde"] }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
 kurbo = { version = "0.13" }
 libc = { version = "0.2", features = ["extra_traits"] }
@@ -215,9 +218,6 @@ zerofrom = { version = "0.1", default-features = false, features = ["alloc", "de
 zeroize = { version = "1", features = ["derive"] }
 zerotrie = { version = "0.2", default-features = false, features = ["serde", "yoke", "zerofrom", "zerovec"] }
 zerovec = { version = "0.11", default-features = false, features = ["alloc", "derive", "serde", "yoke"] }
-zstd = { version = "0.13", features = ["experimental"] }
-zstd-safe = { version = "7", default-features = false, features = ["arrays", "experimental", "legacy", "std", "zdict_builder"] }
-zstd-sys = { version = "2", default-features = false, features = ["experimental", "legacy", "std", "zdict_builder"] }
 
 [build-dependencies]
 adblock = { version = "0.12", default-features = false, features = ["content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
@@ -296,11 +296,13 @@ hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17", default-
 hashbrown-986da7b5efc2b80e = { package = "hashbrown", version = "0.16" }
 hayro-syntax = { version = "0.7", features = ["unsafe"] }
 hex = { version = "0.4" }
+hickory-proto = { version = "0.26", default-features = false, features = ["access-control"] }
 hmac = { version = "0.12", default-features = false, features = ["reset"] }
 hpke-rs = { version = "0.7", default-features = false, features = ["experimental", "hazmat", "rustcrypto", "serialization"] }
 hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["experimental", "std"] }
 hybrid-array = { version = "0.4", default-features = false, features = ["alloc", "ctutils", "extra-sizes", "subtle", "zeroize"] }
 hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 hypher = { version = "0.1" }
 icu_collections = { version = "2", default-features = false, features = ["serde"] }
 icu_locale_core = { version = "2", default-features = false, features = ["alloc", "serde", "zerovec"] }
@@ -312,6 +314,7 @@ idna = { version = "1" }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 indexmap = { version = "2", features = ["rayon", "serde"] }
 inout = { version = "0.2", default-features = false, features = ["block-padding"] }
+ipnet = { version = "2", features = ["serde"] }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
 kurbo = { version = "0.13" }
 libc = { version = "0.2", features = ["extra_traits"] }
@@ -425,18 +428,16 @@ zerofrom = { version = "0.1", default-features = false, features = ["alloc", "de
 zeroize = { version = "1", features = ["derive"] }
 zerotrie = { version = "0.2", default-features = false, features = ["serde", "yoke", "zerofrom", "zerovec"] }
 zerovec = { version = "0.11", default-features = false, features = ["alloc", "derive", "serde", "yoke"] }
-zstd = { version = "0.13", features = ["experimental"] }
-zstd-safe = { version = "7", default-features = false, features = ["arrays", "experimental", "legacy", "std", "zdict_builder"] }
-zstd-sys = { version = "2", default-features = false, features = ["experimental", "legacy", "std", "zdict_builder"] }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "server-auto"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
-linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+linux-raw-sys-9fbad63c4bcf4a8f = { package = "linux-raw-sys", version = "0.4", default-features = false, features = ["elf", "errno", "general", "ioctl", "no_std", "prctl", "system"] }
 log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
@@ -469,9 +470,10 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "server-auto"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
-linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+linux-raw-sys-9fbad63c4bcf4a8f = { package = "linux-raw-sys", version = "0.4", default-features = false, features = ["elf", "errno", "general", "ioctl", "no_std", "prctl", "system"] }
 log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
@@ -504,9 +506,10 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "server-auto"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
-linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+linux-raw-sys-9fbad63c4bcf4a8f = { package = "linux-raw-sys", version = "0.4", default-features = false, features = ["elf", "errno", "general", "ioctl", "no_std", "prctl", "system"] }
 log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
@@ -539,9 +542,10 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "server-auto"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
-linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+linux-raw-sys-9fbad63c4bcf4a8f = { package = "linux-raw-sys", version = "0.4", default-features = false, features = ["elf", "errno", "general", "ioctl", "no_std", "prctl", "system"] }
 log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }

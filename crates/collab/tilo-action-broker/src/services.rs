@@ -115,6 +115,18 @@ pub trait DesktopCommands: Send + Sync {
     }
 }
 
+/// The room's owner for documents proposed into the room
+/// ([`tilo_peer_state::document_import`]). The broker constructs each
+/// request from an authenticated durable invocation; the owner decides it
+/// in its serialized turn.
+pub trait DocumentImports: Send + Sync {
+    fn room(&self) -> &str;
+    fn execute(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> DesktopCommandFuture;
+}
+
 /// The enrolled agent task an open-application command runs for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DesktopOpener {
@@ -143,6 +155,10 @@ pub struct LaunchScope {
 pub struct LaunchContent<'a> {
     pub hash: &'a str,
     pub caller: Option<&'a LaunchScope>,
+    /// The person who opened the app, when they may change the workspace:
+    /// the host records them granting it authorship, so it launches as an
+    /// author of the space rather than a viewer. `None` launches a viewer.
+    pub author: Option<&'a str>,
 }
 
 pub trait LauncherServices: Send + Sync {
@@ -522,6 +538,9 @@ pub struct HostServices {
     /// Durable parent-step path for enrolled task actions with a step identity.
     pub enrolled_steps: Option<Arc<dyn crate::enrolled_dispatch::EnrolledStepService>>,
     pub desktop_commands: Option<Arc<dyn DesktopCommands>>,
+    /// Documents proposed into the room and the owner's answers. Without it
+    /// nothing can be proposed.
+    pub document_imports: Option<Arc<dyn DocumentImports>>,
     pub native_certificates: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
     pub legacy_workspace: Option<Arc<dyn LegacyWorkspaceProjection>>,
     pub launcher: Option<Arc<dyn LauncherServices>>,

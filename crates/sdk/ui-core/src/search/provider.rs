@@ -895,7 +895,7 @@ impl SearchProvider for OpenResourceSearch {
 ///
 /// A provider **filters** to plausible matches; the
 /// [`SearchRegistry`](crate::search::SearchRegistry) **ranks** across
-/// providers via [`fuzzy_score`]. Return everything you consider a match (a
+/// providers by relevance. Return everything you consider a match (a
 /// contact whose phone number matches even though the title is a name, say) —
 /// the registry floats the strongest title matches without discarding
 /// your field-aware hits.
@@ -1098,7 +1098,6 @@ impl CatalogSearchProvider for SearchCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::rank::fuzzy_score;
     use crate::search::{FieldWeight, SearchBody, SearchBodySource};
 
     fn catalog_rows(count: usize) -> SearchCatalog {
@@ -1279,54 +1278,6 @@ mod tests {
             assert!(page.inspected <= 3);
             assert!(page.results.len() <= 2);
             assert!(page.next.is_some());
-        }
-    }
-
-    #[test]
-    fn fuzzy_matching_ranks_prefix_word_boundary_and_contiguous_hits() {
-        // phase: empty_query_matches_everything
-        {
-            assert_eq!(fuzzy_score("", "anything"), Some(0));
-        }
-        // phase: non_subsequence_does_not_match
-        {
-            assert_eq!(fuzzy_score("xyz", "alphabet"), None);
-            assert_eq!(fuzzy_score("abz", "abc"), None);
-        }
-        // phase: prefix_beats_midword_beats_scattered
-        {
-            // "cal" as a prefix of "Calculator" must outrank the same letters
-            // scattered through "Critical Analysis Log".
-            let prefix = fuzzy_score("cal", "Calculator").unwrap();
-            let scattered = fuzzy_score("cal", "Critical Analysis Log").unwrap();
-            assert!(
-                prefix > scattered,
-                "prefix {prefix} should beat scattered {scattered}"
-            );
-        }
-        // phase: word_boundary_match_scores_well
-        {
-            // Matching the start of the second word ("Ng") should score positively
-            // — a common case for "last name" queries over "First Last".
-            let boundary = fuzzy_score("ng", "Alice Ng").unwrap();
-            assert!(
-                boundary > 0,
-                "word-boundary match should be positive, got {boundary}"
-            );
-        }
-        // phase: contiguous_beats_gappy
-        {
-            let contiguous = fuzzy_score("abc", "abcdef").unwrap();
-            let gappy = fuzzy_score("abc", "a_b_c_def").unwrap();
-            assert!(
-                contiguous > gappy,
-                "contiguous {contiguous} should beat gappy {gappy}"
-            );
-        }
-        // phase: is_case_insensitive
-        {
-            assert!(fuzzy_score("ALICE", "alice").is_some());
-            assert_eq!(fuzzy_score("Alice", "alice"), fuzzy_score("alice", "ALICE"));
         }
     }
 

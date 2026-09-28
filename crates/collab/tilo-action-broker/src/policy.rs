@@ -31,6 +31,9 @@ pub trait WorkspacePolicy {
     fn role_of_at(&self, user: &UserId, now: u64) -> Option<CapRole>;
     fn actor_for_person(&self, user: &UserId) -> Actor;
     fn actor_for_person_at(&self, user: &UserId, now: u64) -> Actor;
+    /// [`Self::actor_for_person_at`], held to the foreign-device cap when
+    /// `capped`.
+    fn actor_for_person_on_device_at(&self, user: &UserId, capped: bool, now: u64) -> Actor;
     fn actor_for_app(&self, app_id: &str) -> Actor;
     fn actor_for_agent(&self, agent_id: &str) -> Actor;
     fn roster(&self) -> Vec<(UserId, CapRole)>;
@@ -104,6 +107,14 @@ impl WorkspacePolicy for Workspace {
     }
     fn actor_for_person_at(&self, user: &UserId, now: u64) -> Actor {
         Actor::person(self.role_of_at(user, now), user.clone()).in_room(self.room.to_string())
+    }
+    fn actor_for_person_on_device_at(&self, user: &UserId, capped: bool, now: u64) -> Actor {
+        let actor = WorkspacePolicy::actor_for_person_at(self, user, now);
+        if capped {
+            collab_types::foreign_device::on_foreign_device(actor, &self.capabilities, now)
+        } else {
+            actor
+        }
     }
     fn actor_for_app(&self, app_id: &str) -> Actor {
         Actor::app(app_id).in_room(self.room.to_string())

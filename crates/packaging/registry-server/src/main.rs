@@ -36,7 +36,7 @@ use tracing_subscriber::EnvFilter;
 use registry_server::{
     AppState, InspectionPolicy, ModerationService, PromotionJournal, PublisherAllowlist,
     PublisherRow, ServerIdentity, StagedArtifact, StagedPromotion, Storage, default_data_dir,
-    fetch_version_bytes, inspect_bytes, inspect_entry, run_server,
+    inspect_bytes, run_server,
 };
 use registry_types::EntryAction;
 use registry_types::{
@@ -129,6 +129,11 @@ enum Cmd {
         /// Free-form note visible to the operator only.
         #[arg(long, default_value = "")]
         note: String,
+        /// Reverse-DNS namespace the publisher's package ids must lie in
+        /// (`com.example`, `io.github.<account>`); repeatable. Defaults to
+        /// `so.tilo`, Tilo's own.
+        #[arg(long = "namespace")]
+        namespaces: Vec<String>,
     },
     /// Remove an unreferenced publisher from the allowlist. Public entries,
     /// the current snapshot, and pending requests must be drained first.
@@ -219,6 +224,34 @@ enum Cmd {
     Review {
         #[command(subcommand)]
         command: ReviewCommand,
+    },
+    /// Decide on keys asking to publish under namespaces they proved.
+    Applications {
+        #[command(subcommand)]
+        command: ApplicationsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ApplicationsCommand {
+    /// List applications waiting for a decision.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check the proofs again and allowlist the key for their namespaces.
+    Approve {
+        pubkey: String,
+        #[arg(long)]
+        reviewer: String,
+    },
+    /// Turn an application down; the key's allowlist row is untouched.
+    Reject {
+        pubkey: String,
+        #[arg(long)]
+        reviewer: String,
+        #[arg(long)]
+        reason: String,
     },
 }
 
@@ -314,7 +347,8 @@ async fn serve_cli() -> anyhow::Result<()> {
             pubkey,
             can_add_new,
             note,
-        } => cmd_add_publisher(&storage, &pubkey, can_add_new, note),
+            namespaces,
+        } => cmd_add_publisher(&storage, &pubkey, can_add_new, note, namespaces),
         Cmd::RemovePublisher { pubkey } => cmd_remove_publisher(&storage, &pubkey),
         Cmd::ListPublishers => cmd_list_publishers(&storage),
         Cmd::AuthorizeChannel {
@@ -374,6 +408,7 @@ async fn serve_cli() -> anyhow::Result<()> {
         } => cmd_rollback_snapshot(&storage, to_sequence, &owner_key_file, valid_for_seconds),
         // Review fetches packages with a blocking HTTP client, which must not
         // run (or be dropped) on an async worker.
+        Cmd::Applications { command } => cmd_applications(&storage, command),
         Cmd::Review { command } => tilo_rt::io::run(move || Ok(cmd_review(&storage, command)))
             .await
             .map_err(|error| anyhow::anyhow!("review: {error}"))?,
@@ -552,7 +587,8 @@ fn collect_submission_artifacts(
     }
     let mut artifacts = Vec::with_capacity(pending.change.entry.versions.len());
     for version in &pending.change.entry.versions {
-        let (inspection, bytes) = fetch_version_bytes(&pending.change.entry, version, policy)?;
+        let (inspection, bytes) =
+            registry_server::review_version_bytes(storage, &pending.change.entry, version, policy)?;
         let digest = blake3::hash(&bytes).to_hex().to_string();
         persist_distinct_artifact(storage, persisted_digests, &digest, &bytes)?;
         artifacts.push(StagedArtifact {
@@ -1238,7 +1274,10 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             allow_insecure_local,
         } => {
             let pending = require_pending(&moderation, &package_id)?;
-            let inspection = inspect_for_decision(&pending, allow_insecure_local)?;
+            let inspection: Vec<_> = fetch_for_decision(storage, &pending, allow_insecure_local)?
+                .into_iter()
+                .map(|(inspection, _bytes)| inspection)
+                .collect();
             if json {
                 println!(
                     "{}",
@@ -1273,13 +1312,18 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             allow_insecure_local,
         } => {
             let pending = require_pending(&moderation, &package_id)?;
-            let reviewed = fetch_for_decision(&pending, allow_insecure_local)?;
+            let reviewed = fetch_for_decision(storage, &pending, allow_insecure_local)?;
             let allowlist = storage.load_allowlist()?;
             let record = moderation.approve(&pending, reviewer, reason, unix_now(), &allowlist)?;
             // Serve the reviewed bytes as blobs and thin packages, so clients
             // fetch only what they lack.
+            // An approved upload becomes the artifact its version's URL names.
             for (_inspection, bytes) in &reviewed {
                 storage.save_payload_blobs(bytes)?;
+                let digest = blake3::hash(bytes).to_hex().to_string();
+                if storage.load_upload(&digest)?.is_some() {
+                    storage.import_artifact(bytes)?;
+                }
             }
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
@@ -1327,21 +1371,8 @@ fn require_pending(
         .ok_or_else(|| anyhow::anyhow!("no pending submission for {package_id}"))
 }
 
-fn inspect_for_decision(
-    pending: &registry_server::PendingSubmission,
-    allow_insecure_local: bool,
-) -> anyhow::Result<Vec<registry_server::InspectedVersion>> {
-    if pending.change.action == EntryAction::Delete {
-        return Ok(Vec::new());
-    }
-    let policy = InspectionPolicy {
-        allow_insecure_local,
-        ..InspectionPolicy::default()
-    };
-    inspect_entry(&pending.change.entry, policy).map_err(Into::into)
-}
-
 fn fetch_for_decision(
+    storage: &Storage,
     pending: &registry_server::PendingSubmission,
     allow_insecure_local: bool,
 ) -> anyhow::Result<Vec<(registry_server::InspectedVersion, Vec<u8>)>> {
@@ -1352,7 +1383,7 @@ fn fetch_for_decision(
         allow_insecure_local,
         ..InspectionPolicy::default()
     };
-    registry_server::fetch_entry_bytes(&pending.change.entry, policy).map_err(Into::into)
+    registry_server::review_entry_bytes(storage, &pending.change.entry, policy).map_err(Into::into)
 }
 
 fn cmd_import_artifact(storage: &Storage, file: &std::path::Path) -> anyhow::Result<()> {
@@ -1470,7 +1501,17 @@ fn cmd_add_publisher(
     pubkey: &str,
     can_add_new: bool,
     note: String,
+    mut namespaces: Vec<String>,
 ) -> anyhow::Result<()> {
+    if namespaces.is_empty() {
+        namespaces.push(registry_types::namespace::TILO_NAMESPACE.to_owned());
+    }
+    if let Some(bad) = namespaces
+        .iter()
+        .find(|namespace| !registry_types::namespace::valid_namespace(namespace))
+    {
+        anyhow::bail!("{bad:?} is not a reverse-DNS namespace such as com.example");
+    }
     let transaction = storage.lock_snapshot()?;
     refuse_active_promotion(storage)?;
     let mut allow: PublisherAllowlist = storage
@@ -1480,6 +1521,7 @@ fn cmd_add_publisher(
         pubkey_hex: pubkey.to_string(),
         can_add_new,
         note,
+        namespaces,
     };
     let bytes = row.pubkey_bytes()?;
     if bytes == [0; 32] || ed25519_dalek::VerifyingKey::from_bytes(&bytes).is_err() {
@@ -1552,6 +1594,61 @@ fn cmd_remove_publisher(storage: &Storage, pubkey: &str) -> anyhow::Result<()> {
 }
 
 /// `Cmd::ListPublishers` — print `publishers.toml` to stdout.
+fn cmd_applications(storage: &Storage, command: ApplicationsCommand) -> anyhow::Result<()> {
+    use registry_server::applications::{self, ApplicationStatus, NetworkProofs};
+    match command {
+        ApplicationsCommand::List { json } => {
+            let mut waiting: Vec<_> = storage
+                .load_publisher_applications()?
+                .into_iter()
+                .filter(|stored| stored.status == ApplicationStatus::Pending)
+                .collect();
+            waiting.sort_by_key(|stored| stored.received_at_unix);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&waiting)?);
+                return Ok(());
+            }
+            for stored in &waiting {
+                println!(
+                    "{}  {}  {}",
+                    stored.application.pubkey_hex,
+                    stored.namespaces().join(","),
+                    stored.application.contact
+                );
+                for claim in &stored.verified {
+                    println!("    {} via {}", claim.namespace, claim.location);
+                }
+                if !stored.application.note.is_empty() {
+                    println!("    note: {}", stored.application.note);
+                }
+            }
+        }
+        ApplicationsCommand::Approve { pubkey, reviewer } => {
+            let (_, row) = applications::approve(
+                storage,
+                &pubkey,
+                &reviewer,
+                unix_now(),
+                &NetworkProofs::default(),
+            )?;
+            info!(
+                "allowlisted {} for {}",
+                row.pubkey_hex,
+                row.namespaces.join(", ")
+            );
+        }
+        ApplicationsCommand::Reject {
+            pubkey,
+            reviewer,
+            reason,
+        } => {
+            applications::reject(storage, &pubkey, &reviewer, &reason, unix_now())?;
+            info!("rejected the application from {pubkey}");
+        }
+    }
+    Ok(())
+}
+
 fn cmd_list_publishers(storage: &Storage) -> anyhow::Result<()> {
     let allow: PublisherAllowlist = storage
         .load_allowlist()
@@ -1769,6 +1866,7 @@ mod tests {
                         pubkey_hex: publisher_hex.clone(),
                         can_add_new: true,
                         note: "first party".into(),
+                        namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
                     }],
                 })
                 .unwrap();
@@ -1950,7 +2048,7 @@ mod tests {
             base_url: "http://127.0.0.1".into(),
         };
         storage.save_identity(&identity).unwrap();
-        cmd_add_publisher(&storage, &publisher_hex, true, String::new()).unwrap();
+        cmd_add_publisher(&storage, &publisher_hex, true, String::new(), Vec::new()).unwrap();
         let entry = publisher_entry(&publisher);
         storage.save_entry(&entry).unwrap();
 

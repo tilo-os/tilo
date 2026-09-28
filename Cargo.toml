@@ -87,6 +87,7 @@ members = [
     "apps/pdf-viewer",
     "apps/photos",
     "apps/print-centre",
+    "apps/publisher",
     "apps/remote",
     "apps/scratchpad",
     "apps/speed-test",
@@ -133,6 +134,7 @@ members = [
     "crates/collab/reference",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
+    "crates/collab/tilo-joined-room",
     "crates/collab/tilo-user-identity",
 
     # Dev
@@ -189,6 +191,7 @@ members = [
     "crates/packaging/package-store",
     "crates/packaging/tilo-app-package",
     "crates/packaging/tilo-app-package-cli",
+    "crates/packaging/registry-client",
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
     "crates/packaging/registry-web",
@@ -217,6 +220,7 @@ members = [
     # Session
     "crates/session/console-control",
     "crates/session/desktop-model",
+    "crates/session/greetd-client",
     "crates/session/greeter",
     "crates/session/installer",
     "crates/session/tilo-connected-protocol",
@@ -542,6 +546,7 @@ chrono = { version = "0.4", default-features = false }
 qcms = "0.3.0"
 walkdir = "2.5.0"
 # The one in-memory cache: fs, thumbnail and the app mount share it.
+lru = { version = "0.18.3", default-features = false }
 moka = { version = "0.12.15", features = ["sync"] }
 regex = "1"
 semver = "1"

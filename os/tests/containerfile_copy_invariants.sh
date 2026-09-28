@@ -52,13 +52,17 @@ containerfile="$repo/os/Containerfile"
 # restored after bootc transient cleanup, before split/ukify seal the rootfs.
 # The build-only DNF/RPM clock shim and transaction-state cleaner add their
 # explicit rootfs COPY rows; the shim and wrappers are removed before sealing.
+# joycond's binary, unit and modules-load snippet (through desktop-binaries)
+# and its Joy-Con-scoped udev rule are deliberate additions. So is
+# /usr/lib/tilo/web-engine-entitled.conf, the image-owned list of packages
+# the launcher lets build a web engine's own renderer sandbox.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=6e1f013f4542db852c7155ba9d9b71c9c0dee887a0ed15c1090a3465eb5d7aad
+expected_contract=611c169dee65937945d96c8f1959b9753fc81e5ef823575ae40918b9738f208a
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

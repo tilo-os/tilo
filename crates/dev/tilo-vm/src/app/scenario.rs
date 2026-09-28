@@ -691,9 +691,7 @@ impl App {
         // Exactly the runtime directory vm.sh derives for a named cycle;
         // init-cycle refuses to clear any other.
         #[cfg(not(windows))]
-        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-            .filter(|path| !path.is_empty())
-            .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
+        let runtime = xdg_paths::xdg::runtime_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
         #[cfg(windows)]
         let runtime = out.clone();
         let plan = Plan {

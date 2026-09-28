@@ -54,16 +54,20 @@ fn resource_operations_are_window_local_brokered_and_unique() {
             .id
             .clone();
         let payload = serde_json::to_vec(&id).unwrap();
-        assert!(
-            app.invoke_resource_operation(
-                OperationKind::View,
-                "maps.open-place",
-                &payload,
-                &state.doc,
-                &state.root,
+        assert!(matches!(
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    OperationKind::View,
+                    "maps.open-place",
+                    &payload
+                ),
+                &mut state.doc,
+                &state.root
             )
-            .unwrap()
-        );
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(app.model.selected.as_deref(), Some(id.as_str()));
         assert!(
             MapsDoc::load(&state.doc).is_some_and(|model| model.selected.is_none()),
@@ -78,16 +82,20 @@ fn resource_operations_are_window_local_brokered_and_unique() {
         app.sync(&mut state.doc, &state.root);
         let recents_before = MapsDoc::load(&state.doc).unwrap().recents;
         let payload = serde_json::to_vec("Marienplatz").unwrap();
-        assert!(
-            app.invoke_resource_operation(
-                OperationKind::View,
-                "maps.search",
-                &payload,
-                &state.doc,
-                &state.root,
+        assert!(matches!(
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    OperationKind::View,
+                    "maps.search",
+                    &payload
+                ),
+                &mut state.doc,
+                &state.root
             )
-            .unwrap()
-        );
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(app.model.query, "Marienplatz");
         assert!(!app.model.results.is_empty());
         assert_eq!(MapsDoc::load(&state.doc).unwrap().recents, recents_before);
@@ -984,14 +992,16 @@ fn search_field_overlay_keys_and_history_dispatch() {
                 event: ev,
                 is_synthetic: false,
             },
-            1.0,
-            &ctrl,
-            &mut state,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &ctrl,
+                state: &mut state,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
 
         assert_eq!(
@@ -2504,14 +2514,16 @@ fn feed(a: &mut MapsApp, ev: &WindowEvent) -> bool {
     let node = taffy.new_leaf(Style::default()).unwrap();
     a.handle_event(
         ev,
-        1.0,
-        &modifiers,
-        &mut state,
-        &root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: &mut state,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     handled
 }

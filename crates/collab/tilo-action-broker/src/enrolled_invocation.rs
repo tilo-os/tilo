@@ -25,7 +25,7 @@ impl CapnpBrokerState {
             self.enrolled_task_scopes(&connection, connection.active_task_id()?.as_deref())?;
         let json = self.action_catalogue_json_for(
             &connection.facts().binding.room,
-            &BrokerActor::person(principal_id_for_root(connection.caller().user_public_key)),
+            &self.certified_person(&connection.facts().binding.room, connection.caller()),
             None,
         )?;
         // Scope-aware filter (v1 tuples stay exact degenerate scopes).
@@ -77,6 +77,7 @@ impl CapnpBrokerState {
                 agent: &connection.facts().binding.agent,
                 delegator: &delegator,
             },
+            self.capped_in(&surface.route.cluster_id, connection.caller()),
             Some(&scopes),
             surface,
             action,
@@ -337,7 +338,7 @@ impl CapnpBrokerState {
             resource,
             action,
             argument,
-            &BrokerActor::person(principal_id_for_root(connection.caller().user_public_key)),
+            &self.certified_person(&connection.facts().binding.room, connection.caller()),
             None,
             Some(context),
             Some(owner),
@@ -635,7 +636,7 @@ impl CapnpBrokerState {
         )?;
         let context: tilo_actions::ActionContext =
             serde_json::from_value(task.action_context.clone()).map_err(|e| e.to_string())?;
-        let actor = BrokerActor::person(principal_id_for_root(connection.caller().user_public_key));
+        let actor = self.certified_person(&connection.facts().binding.room, connection.caller());
         let _admission = self
             .admission_lock
             .lock()
@@ -1141,7 +1142,8 @@ mod tests {
                 .iter()
                 .flat_map(|s| s.actions.iter().map(move |a| (s, a)))
                 .filter(|(s, a)| {
-                    authorize_published(&workspace, 10, agent, Some(&scopes), s, a, None).is_ok()
+                    authorize_published(&workspace, 10, agent, false, Some(&scopes), s, a, None)
+                        .is_ok()
                 })
                 .map(|(s, a)| {
                     (

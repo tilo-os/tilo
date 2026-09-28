@@ -16,7 +16,6 @@
 use crate::time::SystemTime;
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -1231,8 +1230,6 @@ impl HistoryScrubber {
 }
 
 impl Widget for HistoryScrubber {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1301,19 +1298,8 @@ impl Widget for HistoryScrubber {
         self.dirty = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if self.handle_naming_event(event, *modifiers, handled) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.handle_naming_event(event, *ctx.modifiers, ctx.handled) {
             return;
         }
 
@@ -1324,7 +1310,7 @@ impl Widget for HistoryScrubber {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position, scale_factor, handled);
+                self.handle_cursor_moved(position, ctx.scale_factor, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: element_state,
@@ -1332,11 +1318,11 @@ impl Widget for HistoryScrubber {
                 ..
             } => {
                 if *element_state == ElementState::Pressed {
-                    self.handle_mouse_press(focus_target, node_id, handled);
+                    self.handle_mouse_press(ctx.focus_target, ctx.node_id, ctx.handled);
                 } else if *element_state == ElementState::Released && self.is_dragging {
                     self.is_dragging = false;
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -1585,6 +1571,7 @@ mod tests {
     use super::*;
     use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
+    use automerge::AutoCommit;
     use collab_types::{ArtifactKind, OpClass};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1788,14 +1775,16 @@ mod tests {
         let root = automerge::ROOT;
         s.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 }
@@ -1809,6 +1798,7 @@ mod version_tests {
     use super::*;
     use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
+    use automerge::AutoCommit;
     use collab_types::{ArtifactKind, OpClass};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -2177,14 +2167,16 @@ mod version_tests {
         let root = automerge::ROOT;
         s.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

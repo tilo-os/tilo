@@ -40,13 +40,21 @@ fn run<S: RuntimeServices>() -> io::Result<()> {
         .with_writer(std::io::stderr)
         .try_init();
     match args.mode {
-        daemon::Mode::Daemon => daemon::serve::<S>(&args.profile),
+        daemon::Mode::Daemon => daemon::serve::<S>(&args.profile, args.dev),
         daemon::Mode::Connect => daemon::connect(&args.profile),
+        daemon::Mode::Join { invitation } => daemon::join(&args.profile, &invitation),
         daemon::Mode::RunApp {
             app_id,
+            room,
             executable,
             args: app_args,
-        } => daemon::run_app(&args.profile, &app_id, &executable, &app_args),
+        } => daemon::run_app(
+            &args.profile,
+            &app_id,
+            room.as_deref(),
+            &executable,
+            &app_args,
+        ),
     }
 }
 

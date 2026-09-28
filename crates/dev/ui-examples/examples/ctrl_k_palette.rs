@@ -19,7 +19,7 @@ use tilo_ui::ActionPalette;
 use tilo_ui::icons::Icon;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
-use tilo_ui::search::{SearchProvider, SearchResult, fuzzy_score};
+use tilo_ui::search::{FieldWeight, ListIndex, SearchProvider, SearchResult};
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::tilo_actions::{ActionSpec, EncodedAction, ExecutionLocus, Resource};
@@ -58,7 +58,8 @@ fn open_resource() -> Resource {
 }
 
 /// A folded-in searchable corpus — stands in for the contacts provider.
-struct Contacts;
+#[derive(Default)]
+struct Contacts(ListIndex);
 impl SearchProvider for Contacts {
     #[allow(
         clippy::unnecessary_literal_bound,
@@ -73,11 +74,16 @@ impl SearchProvider for Contacts {
             ("Grace Hopper", "grace.hopper@navy.mil"),
             ("Alan Turing", "alan@bletchley.uk"),
         ];
+        let ranks = self.0.ranks(
+            query,
+            PEOPLE.iter().map(|(name, email)| {
+                [(*name, FieldWeight::TITLE), (*email, FieldWeight::SUBTITLE)]
+            }),
+        );
         PEOPLE
             .iter()
-            .filter(|(name, email)| {
-                fuzzy_score(query, name).is_some() || fuzzy_score(query, email).is_some()
-            })
+            .zip(ranks)
+            .filter_map(|(person, rank)| rank.map(|_| person))
             .map(|(name, email)| {
                 SearchResult::new("Contacts", *name, format!("contact:{name}"))
                     .with_subtitle(*email)
@@ -90,7 +96,7 @@ impl SearchProvider for Contacts {
 fn palette(query: &str, cursor: usize) -> ActionPalette {
     let mut p = ActionPalette::new();
     p.load_open_resources(&[open_resource()]);
-    p.set_providers(vec![Box::new(Contacts)]);
+    p.set_providers(vec![Box::new(Contacts::default())]);
     p.open();
     if !query.is_empty() {
         p.set_query(query);

@@ -107,6 +107,9 @@ tagline = "Your memories, in view"
 [apps.print-centre]
 description = "Set up printers and keep print jobs moving."
 tagline = "Printing, made straightforward"
+[apps.publisher]
+description = "Create the key that signs your Tilo apps and prove the namespaces they publish under."
+tagline = "Ship your apps under your own name"
 [apps.remote]
 description = "Connect to another desktop when you need to be there."
 tagline = "Close the distance"

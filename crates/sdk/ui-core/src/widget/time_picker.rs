@@ -10,7 +10,7 @@
 //! [`TimePicker::from_state`], or be observed with `on_change` for an
 //! app-owned durable mutation.
 
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
@@ -460,7 +460,7 @@ impl TimePicker {
 }
 
 impl Widget for TimePicker {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         if let Some(value) = self
             .local_state
             .as_mut()
@@ -599,34 +599,24 @@ impl Widget for TimePicker {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_mouse_press(handled, focus_target, node_id);
+                self.handle_mouse_press(ctx.handled, ctx.focus_target, ctx.node_id);
             }
             WindowEvent::KeyboardInput { .. } => {
-                self.handle_keyboard_input(event, *modifiers, handled);
+                self.handle_keyboard_input(event, *ctx.modifiers, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_mouse_wheel(*delta, handled);
+                self.handle_mouse_wheel(*delta, ctx.handled);
             }
             _ => {}
         }
@@ -693,8 +683,8 @@ impl Widget for TimePicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
+        _state: &mut AppModel,
+        _root: &ModelPath,
     ) -> bool {
         let crate::a11y::Action::SetValue(value) = action else {
             return false;
@@ -933,6 +923,7 @@ impl TimePicker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
@@ -959,14 +950,16 @@ mod tests {
         let root = automerge::ROOT;
         tp.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

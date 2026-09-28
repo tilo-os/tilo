@@ -8,6 +8,7 @@ use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::ActionEmitter;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -1090,6 +1091,32 @@ impl Button {
     }
 }
 
+impl Button {
+    /// Run the native handler for a `tilo.ui.control.invoke` addressed to
+    /// this button. `Ok(false)` when the operation is not this button's.
+    fn invoke_native_control(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document
+            || type_id != "tilo.ui.control.invoke"
+            || self.native_handler.is_none()
+        {
+            return Ok(false);
+        }
+        let control: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        if control != self.id {
+            return Ok(false);
+        }
+        if let Some(handler) = &mut self.native_handler {
+            handler();
+        }
+        Ok(true)
+    }
+}
+
 impl Widget for Button {
     fn set_interaction_environment(
         &mut self,
@@ -1105,7 +1132,7 @@ impl Widget for Button {
         }
     }
 
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.observe_i18n_revision();
     }
 
@@ -1466,25 +1493,15 @@ impl Widget for Button {
         self.i18n_revision != crate::i18n::I18nManager::revision()
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Reject all input without setting `handled`.
         if !self.effectively_enabled() {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let logical_pos =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let hover = self.rect.contains(logical_pos);
                 // A hover change is a repaint (`needs_redraw` compares the
                 // state), not consumed input: a parent that stops at the
@@ -1503,19 +1520,19 @@ impl Widget for Button {
                     let pressed = *element_state == ElementState::Pressed;
                     if pressed != self.is_pressed {
                         self.is_pressed = pressed;
-                        *handled = true;
+                        *ctx.handled = true;
 
                         if self.is_pressed {
-                            *focus_target = Some(node_id);
+                            *ctx.focus_target = Some(ctx.node_id);
                         }
 
                         if !self.is_pressed {
-                            self.activate(state, root);
+                            self.activate(ctx.state, ctx.path);
                         }
                     }
                 } else if self.is_pressed {
                     self.is_pressed = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -1562,7 +1579,27 @@ impl Widget for Button {
     }
 
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.native_resource.iter().cloned().collect()
+        let Some(mut resource) = self.native_resource.clone() else {
+            return Vec::new();
+        };
+        // The action directory refuses unnamed resources and actions, and
+        // an icon-only button learns its accessible name or tooltip after
+        // `on_effect` built the resource; publish the name it is announced by.
+        if resource.label.trim().is_empty()
+            && let Some(name) = self
+                .accessible_name
+                .as_ref()
+                .or(self.tooltip.as_ref())
+                .filter(|name| !name.trim().is_empty())
+        {
+            resource.label.clone_from(name);
+            for action in &mut resource.actions {
+                if action.label.trim().is_empty() {
+                    action.label.clone_from(name);
+                }
+            }
+        }
+        vec![resource]
     }
 
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
@@ -1572,6 +1609,24 @@ impl Widget for Button {
             .unwrap_or_default()
     }
 
+    fn start_operation(
+        &mut self,
+        op: &super::ResourceOperation<'_>,
+        _doc: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<super::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .invoke_native_control(request.kind, request.type_id, request.payload)?
+            .then(|| {
+                super::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            }))
+    }
+
+    /// Legacy adapter: apps not yet on [`Widget::start_operation`] still reach
+    /// a shared button through their read-only routing.
     fn invoke_resource_operation_v2(
         &mut self,
         kind: tilo_actions::OperationKind,
@@ -1580,20 +1635,9 @@ impl Widget for Button {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        if kind == tilo_actions::OperationKind::Document
-            || type_id != "tilo.ui.control.invoke"
-            || self.native_handler.is_none()
-        {
-            return Ok(None);
-        }
-        let control: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        if control != self.id {
-            return Ok(None);
-        }
-        if let Some(handler) = &mut self.native_handler {
-            handler();
-        }
-        Ok(Some(tilo_actions::ActionOutput::default()))
+        Ok(self
+            .invoke_native_control(kind, type_id, payload)?
+            .then(tilo_actions::ActionOutput::default))
     }
 
     fn refresh_control_action_availability(
@@ -1652,10 +1696,11 @@ impl Widget for Button {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, root) = crate::doc::document(state, root);
         if !self.effectively_enabled() {
             return false;
         }
@@ -1790,6 +1835,63 @@ mod tests {
     use crate::widget::Widget;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn a_shared_button_answers_both_the_single_entry_and_legacy_routing() {
+        let clicks = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&clicks);
+        let mut column = crate::widget::Column::new().push(Box::new(
+            Button::new("files.retry", "Retry", None).on_view(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }),
+        ));
+        let mut doc = AutoCommit::new();
+        let kind = tilo_actions::OperationKind::View;
+        let payload = br#""files.retry""#;
+
+        let started = crate::widget::ResourceOperation::local(
+            tilo_actions::InvocationId::new(),
+            kind,
+            "tilo.ui.control.invoke",
+            payload,
+        )
+        .start(&mut column, &mut doc, &automerge::ROOT)
+        .unwrap();
+        assert!(
+            started
+                .and_then(super::super::ResourceOperationStart::completed)
+                .is_some()
+        );
+
+        // An app still routing through the read-only hooks reaches the button
+        // through an ordinary container, as it did before the single entry.
+        let legacy = column
+            .start_resource_operation(
+                tilo_actions::InvocationId::new(),
+                kind,
+                "tilo.ui.control.invoke",
+                payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap();
+        assert!(legacy.is_some(), "legacy start reaches the shared button");
+        let child = &mut column.children_mut()[0];
+        assert!(
+            child
+                .invoke_resource_operation_v2(
+                    kind,
+                    "tilo.ui.control.invoke",
+                    payload,
+                    &doc,
+                    &automerge::ROOT
+                )
+                .unwrap()
+                .is_some(),
+            "a direct legacy call on the button is answered"
+        );
+        assert_eq!(clicks.load(Ordering::SeqCst), 3);
+    }
 
     fn layout_fit_host(
         host: &mut dyn Widget,
@@ -2873,14 +2975,16 @@ mod tests {
             ] {
                 b.handle_event(
                     &ev,
-                    1.0,
-                    &mods,
-                    &mut doc,
-                    &root,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &tree,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &mods,
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &tree,
+                    },
                 );
             }
 
@@ -3248,14 +3352,16 @@ mod tests {
                 let mut focus = None;
                 b.handle_event(
                     &ev,
-                    1.0,
-                    &mods,
-                    &mut doc,
-                    &root,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &tree,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &mods,
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &tree,
+                    },
                 );
             };
 
@@ -3428,9 +3534,33 @@ mod tests {
             assert_eq!(node.name.as_deref(), Some("View options"));
         }
 
+        fn icon_only_effect_publishes_its_spoken_name() {
+            let doc = AutoCommit::new();
+            let named = Button::new("private", "", None)
+                .with_icon(crate::icons::Icon::Shield)
+                .with_accessible_name("New Private Window")
+                .on_effect(|| {});
+            let tooltip_after = Button::new("search", "", None)
+                .with_icon(crate::icons::Icon::Search)
+                .on_effect(|| {})
+                .tooltip("Search");
+            for (button, name) in [(named, "New Private Window"), (tooltip_after, "Search")] {
+                let resources = Widget::resources(&button, &doc);
+                assert_eq!(resources.len(), 1);
+                assert_eq!(resources[0].label, name);
+                assert!(
+                    resources[0]
+                        .actions
+                        .iter()
+                        .all(|action| action.label == name)
+                );
+            }
+        }
+
         tooltip_is_exposed_to_the_host();
         compact_toolbar_presentation_round_trips_authored_semantics();
         icon_only_tooltip_doubles_as_accessible_name();
         explicit_accessible_name_wins_over_tooltip();
+        icon_only_effect_publishes_its_spoken_name();
     }
 }

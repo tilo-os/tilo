@@ -640,8 +640,6 @@ impl StubContent {
 }
 
 impl Widget for StubContent {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -677,20 +675,6 @@ impl Widget for StubContent {
         _text_renderer: &mut TextRenderer,
         _theme: &Theme,
         _presence: &PresenceCtx,
-    ) {
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
     ) {
     }
 
@@ -820,14 +804,16 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
             let mut handled = false;
             h.host.handle_event(
                 &event,
-                1.0,
-                &Modifiers::default(),
-                &mut document,
-                &automerge::ROOT,
-                &mut handled,
-                &mut focus,
-                h.root_node,
-                &h.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &Modifiers::default(),
+                    state: &mut document,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: h.root_node,
+                    taffy: &h.taffy,
+                },
             );
             assert!(handled, "the visible tour must own {event:?}");
         }
@@ -926,8 +912,8 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
 
     fn power_menu_accessibility_paths_focus_and_activate_exact_rows() {
         let mut h = build_harness();
-        h.host.power_menu.open();
-        h.host.power_menu.force_settled_for_visual_test();
+        h.host.layers.power_menu.open();
+        h.host.layers.power_menu.force_settled_for_visual_test();
 
         let semantics = h.host.accessibility().expect("shell semantics");
         assert_eq!(
@@ -947,17 +933,17 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
         );
         assert!(h.host.focus_synthetic_accessibility(&[0, 0]));
         assert_eq!(
-            h.host.power_menu.key(
+            h.host.layers.power_menu.key(
                 &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
                 false
             ),
             PowerMenuClick::Lock
         );
 
-        h.host.power_menu.open();
+        h.host.layers.power_menu.open();
         assert!(h.host.focus_synthetic_accessibility(&[0, 5]));
         assert_eq!(
-            h.host.power_menu.key(
+            h.host.layers.power_menu.key(
                 &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
                 false
             ),
@@ -1161,6 +1147,38 @@ fn super_chords_open_their_surfaces_once_and_escape_dismisses_the_wheel_first() 
         assert!(!h.chrome.borrow_mut().take_session_lock_request());
     }
 
+    fn typed_session_actions_run_through_the_power_flyouts_executor() {
+        let mut h = build_harness();
+        let mut doc = AutoCommit::new();
+        h.chrome
+            .borrow_mut()
+            .request_session_action(os_actions::SessionAction::Lock);
+        h.host.update(&mut doc, &automerge::ROOT);
+        assert!(
+            h.chrome.borrow_mut().take_session_lock_request(),
+            "a typed lock reaches the compositor lock edge the flyout's Lock row does"
+        );
+
+        h.chrome
+            .borrow_mut()
+            .request_session_action(os_actions::SessionAction::Suspend);
+        h.host.update(&mut doc, &automerge::ROOT);
+        assert!(
+            h.chrome
+                .borrow()
+                .notifications()
+                .iter()
+                .any(|notification| notification.body.contains("suspend")),
+            "without the power service a typed suspend fails visibly, like the row"
+        );
+        assert!(
+            h.chrome
+                .borrow_mut()
+                .take_session_action_requests()
+                .is_empty()
+        );
+    }
+
     fn super_h_opens_and_refocuses_the_recap_without_taking_ctrl_h() {
         let mut h = build_harness();
         let sup = Modifiers::from(ModifiersState::SUPER);
@@ -1285,6 +1303,7 @@ fn super_chords_open_their_surfaces_once_and_escape_dismisses_the_wheel_first() 
     super_s_summons_the_wheel_to_the_pointer_and_toggles_back();
     super_p_opens_the_display_sheet_and_escape_closes_it();
     super_l_requests_the_compositor_lock_once();
+    typed_session_actions_run_through_the_power_flyouts_executor();
     super_h_opens_and_refocuses_the_recap_without_taking_ctrl_h();
     super_shift_h_opens_the_full_history_explorer_directly();
     super_shift_r_opens_recording_setup_then_saves_an_armed_replay();
@@ -1765,14 +1784,16 @@ fn pump(h: &mut Harness, event: &WindowEvent, modifiers: Modifiers) -> bool {
     let mut handled = false;
     h.host.handle_event(
         event,
-        1.0,
-        &modifiers,
-        &mut doc,
-        &root,
-        &mut handled,
-        &mut focus,
-        h.root_node,
-        &h.taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: &mut doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: h.root_node,
+            taffy: &h.taffy,
+        },
     );
     handled
 }

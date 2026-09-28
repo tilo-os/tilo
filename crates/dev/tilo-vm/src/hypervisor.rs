@@ -463,7 +463,7 @@ pub fn domain_xml_with_uuid(
     <input type='tablet' bus='usb'/>
     <input type='keyboard' bus='usb'/>
     <graphics type='spice' autoport='yes'/>
-    <video><model type='virtio'/></video>
+    <video>{video}</video>
     <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
   </devices>
 </domain>
@@ -476,6 +476,7 @@ pub fn domain_xml_with_uuid(
         credential = e(&sshkey::smbios_credential(root_key)),
         disk = e(vm.disk()?),
         port = vm.ssh_port(),
+        video = video_model(vm.entry),
         disk_boot = if vm.entry.boot_esp.is_some() {
             "\n      <boot order='2'/>"
         } else {
@@ -496,6 +497,22 @@ pub fn domain_xml_with_uuid(
                 e(&d.cmdline)
             )),
     ))
+}
+
+/// libvirt's virtio-gpu: `heads` outputs, the first preferring `resolution`.
+fn video_model(entry: &VmEntry) -> String {
+    let heads = entry
+        .heads
+        .filter(|&n| n > 1)
+        .map_or_else(String::new, |n| format!(" heads='{n}'"));
+    match entry.resolution.as_deref().and_then(|r| r.split_once('x')) {
+        Some((x, y)) => format!(
+            "<model type='virtio'{heads}><resolution x='{}' y='{}'/></model>",
+            quick_xml::escape::escape(x),
+            quick_xml::escape::escape(y)
+        ),
+        None => format!("<model type='virtio'{heads}/>"),
+    }
 }
 
 impl CommandLine {
@@ -808,6 +825,13 @@ fn win_arg(text: &str) -> String {
 }
 
 impl Whpx {
+    fn public_key(vm: &Vm<'_>) -> Option<String> {
+        let key = vm.entry.key.as_deref()?;
+        std::fs::read_to_string(format!("{key}.pub"))
+            .ok()
+            .map(|public| public.trim().to_owned())
+    }
+
     fn pid(vm: &Vm<'_>) -> String {
         whpx_file(vm.entry.disk.as_deref().unwrap_or_default(), "pid")
     }
@@ -839,6 +863,10 @@ impl Whpx {
         ];
         if let Some(direct) = &vm.entry.direct_kernel {
             let mut cmdline = direct.cmdline.clone();
+            if let Some(public) = Self::public_key(vm) {
+                cmdline.push(' ');
+                cmdline.push_str(&sshkey::kernel_credential(&public));
+            }
             if let Some(partuuid) = &direct.loader_partuuid {
                 cmdline.push_str(" systemd.setenv=TILO_ROOT_LOADER_PARTUUID=");
                 cmdline.push_str(partuuid);
@@ -963,12 +991,12 @@ impl Hypervisor for Whpx {
             .as_deref()
             .unwrap_or("qemu-system-aarch64");
         let mut args = Self::qemu_args(vm);
-        if let Some(key) = &vm.entry.key
-            && let Ok(public) = std::fs::read_to_string(format!("{key}.pub"))
+        if vm.entry.direct_kernel.is_none()
+            && let Some(public) = Self::public_key(vm)
         {
             args.extend([
                 "-smbios".into(),
-                format!("type=11,value={}", sshkey::smbios_credential(public.trim())),
+                format!("type=11,value={}", sshkey::smbios_credential(&public)),
             ]);
         }
         let args = args
@@ -1025,7 +1053,7 @@ impl Hypervisor for Whpx {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             serial: true,
-            credentials: Some("QEMU SMBIOS type 11"),
+            credentials: Some("kernel command line (direct boot) or QEMU SMBIOS type 11"),
             direct_kernel: true,
             boot_esp: true,
             ..Capabilities::default()
@@ -1316,6 +1344,29 @@ mod tests {
             );
             assert!(!args.iter().any(|a| a.contains("vnc=")));
             assert!(Whpx.capabilities().direct_kernel);
+
+            let temp = tempfile::tempdir().unwrap();
+            let key = temp.path().join("direct_key");
+            std::fs::write(format!("{}.pub", key.display()), format!("{KEY}\n")).unwrap();
+            let keyed = VmEntry {
+                key: Some(key.display().to_string()),
+                ..entry
+            };
+            let keyed_vm = Vm {
+                name: "dev",
+                entry: &keyed,
+            };
+            let keyed_args = Whpx::qemu_args(&keyed_vm);
+            let cmdline = keyed_args
+                .windows(2)
+                .find(|pair| pair[0] == "-append")
+                .map(|pair| pair[1].as_str())
+                .unwrap();
+            assert!(
+                cmdline.contains(&sshkey::kernel_credential(KEY)),
+                "{cmdline}"
+            );
+            assert!(!Whpx.start(&keyed_vm)[0].display().contains("-smbios"));
         }
     }
 
@@ -1902,5 +1953,40 @@ mod tests {
 
     fn entry_without_template() -> VmEntry {
         entry()
+    }
+
+    #[test]
+    fn libvirt_video_has_the_requested_heads_and_first_mode() {
+        let plain = domain_xml(
+            &Vm {
+                name: "dev",
+                entry: &entry(),
+            },
+            KEY,
+        )
+        .unwrap();
+        assert!(
+            plain.contains("<video><model type='virtio'/></video>"),
+            "{plain}"
+        );
+        let dual = VmEntry {
+            heads: Some(2),
+            resolution: Some("5120x2880".into()),
+            ..entry()
+        };
+        let xml = domain_xml(
+            &Vm {
+                name: "dev",
+                entry: &dual,
+            },
+            KEY,
+        )
+        .unwrap();
+        assert!(
+            xml.contains(
+                "<video><model type='virtio' heads='2'><resolution x='5120' y='2880'/></model></video>"
+            ),
+            "{xml}"
+        );
     }
 }

@@ -22,10 +22,10 @@ const PROCESS_TEST: &str =
 const PROCESS_ROOT: &str = "TILO_STANDALONE_TEST_ROOT";
 const PUBLICATION_HELPER: &str = "TILO_STANDALONE_PUBLICATION_HELPER";
 
-/// In the parent, runs this test again in a child process whose profile
-/// environment is private, and returns `None`; in that child, returns the
-/// profile to serve.
-fn isolated_root() -> Option<PathBuf> {
+/// In the parent, runs the test at path `test` again in a child process
+/// whose profile environment is private, and returns `None`; in that child,
+/// returns the profile to serve.
+pub(super) fn isolated_root(test: &str) -> Option<PathBuf> {
     if let Some(root) = std::env::var_os(PROCESS_ROOT) {
         return Some(PathBuf::from(root));
     }
@@ -36,7 +36,7 @@ fn isolated_root() -> Option<PathBuf> {
     let environment = root.join("environment");
     let log = root.join("child.stdout");
     let status = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", PROCESS_TEST, "--nocapture"])
+        .args(["--exact", test, "--nocapture"])
         .env(PROCESS_ROOT, root.join("profile"))
         .env("HOME", environment.join("home"))
         .env("XDG_CONFIG_HOME", environment.join("config"))
@@ -89,7 +89,7 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
-    let Some(root) = isolated_root() else {
+    let Some(root) = isolated_root(PROCESS_TEST) else {
         return;
     };
     let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
@@ -494,4 +494,18 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
         1,
         "only the owner's membership"
     );
+}
+
+#[test]
+fn the_runtime_governs_only_its_own_room_from_its_own_device() {
+    use tilo_action_broker::peer_actions::CertificateAuthority as _;
+    let room = uuid::Uuid::from_u128(7);
+    let certificates = Certificates {
+        room: room.to_string(),
+        device: [2; 32],
+    };
+    assert!(certificates.governs(room, Some(&[2; 32])));
+    assert!(certificates.governs(room, None));
+    assert!(!certificates.governs(room, Some(&[3; 32])));
+    assert!(!certificates.governs(uuid::Uuid::from_u128(8), None));
 }

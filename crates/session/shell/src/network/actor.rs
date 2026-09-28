@@ -3,8 +3,8 @@
 //! Direct paths, NAT traversal and stateless relay fallback are selected by
 //! iroh. Tilo only names authenticated endpoint ids and workspace topics.
 
+pub(crate) mod governor_lane;
 pub(crate) mod native_ingress;
-mod native_publication;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -118,6 +118,7 @@ struct PersonalFabricWireFrame {
 
 pub type WorkspaceId = u64;
 pub type PeerId = EndpointId;
+pub use tilo_identity_host::custody::HostIdentity;
 
 /// Enrollment-bound identity expected behind a distinct relay service key.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,153 +127,15 @@ pub struct HomePeerExpectation {
     pub device_public_key: [u8; 32],
 }
 
-/// Device certificate chain used to authenticate to a Tilo workspace host.
-#[derive(Clone)]
-pub struct HostIdentity {
-    pub device_cert: DeviceCert,
-    pub device_signing_key: ed25519_dalek::SigningKey,
-    /// Workspace-specific user certificates for this same device key.
-    /// Missing entries deliberately fall back to `device_cert` for legacy and
-    /// unbound workspaces.
-    pub workspace_device_certs: HashMap<WorkspaceId, DeviceCert>,
-    /// Root-signed revocations advertised beside each workspace certificate.
-    pub workspace_revocations: HashMap<WorkspaceId, Vec<tilo_user_identity::RevocationEntry>>,
-    /// System device-key/certificate paths. Production actors use these to
-    /// refresh workspace identity material on every heartbeat; tests may use
-    /// the in-memory maps alone.
-    pub identity_paths: Option<tilo_user_identity::IdentityPaths>,
-}
-
-impl HostIdentity {
-    /// Read current selected custody for enrolled operations. Configured disk failures
-    /// never fall back to an old in-memory certificate or revocation snapshot.
-    pub(crate) fn current_native_material(
-        &self,
-        ws: WorkspaceId,
-    ) -> Result<(DeviceCert, Vec<tilo_user_identity::RevocationEntry>), String> {
-        let (cert, revocations) = if let Some(paths) = &self.identity_paths {
-            let stored_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
-                .map_err(|e| e.to_string())?;
-            if stored_key.verifying_key() != self.device_signing_key.verifying_key() {
-                return Err("native device custody changed".into());
-            }
-            let store = crate::identity_registry::IdentityRegistryStore::from_env()
-                .map_err(|e| e.to_string())?;
-            let registry = store.migrate_legacy_primary().map_err(|e| e.to_string())?;
-            let mut selected = registry
-                .workspace_identities
-                .iter()
-                .filter_map(|(room, id)| {
-                    let room = crate::shell::state::RoomId::parse(room)?;
-                    (crate::shell::network::room_topic_id(room) == ws).then_some(id)
-                });
-            let selected_id = selected
-                .next()
-                .or(registry.default_identity.as_ref())
-                .ok_or("native identity selection missing")?;
-            if selected.next().is_some() {
-                return Err("ambiguous native identity topic".into());
-            }
-            let profile = registry
-                .identities
-                .get(selected_id)
-                .ok_or("selected native identity is absent")?;
-            let cert = tilo_user_identity::persist::read_device_cert(
-                &paths.device_cert_for_user(&profile.user_public_key),
-            )
-            .map_err(|e| e.to_string())?;
-            if cert.user_public_key != profile.user_public_key {
-                return Err("native certificate root differs from selection".into());
-            }
-            let fleet =
-                crate::device_fleet::DeviceFleetStore::at(store.identity_dir(), paths.clone())
-                    .load(selected_id)
-                    .map_err(|e| e.to_string())?;
-            (cert, fleet.revocations)
-        } else {
-            (
-                self.workspace_device_certs
-                    .get(&ws)
-                    .unwrap_or(&self.device_cert)
-                    .clone(),
-                self.workspace_revocations
-                    .get(&ws)
-                    .cloned()
-                    .unwrap_or_default(),
-            )
-        };
-        tilo_user_identity::verify_device_cert(&cert).map_err(|e| e.to_string())?;
-        if cert.device_public_key != self.device_signing_key.verifying_key().to_bytes() {
-            return Err("native certificate does not match retained device custody".into());
-        }
-        let mut checked = RevocationList::new();
-        for entry in &revocations {
-            checked.insert(entry.clone()).map_err(|e| e.to_string())?;
-        }
-        if checked.is_revoked(&cert.device_public_key) {
-            return Err("native selected device is revoked".into());
-        }
-        Ok((cert, revocations))
-    }
-
-    pub(crate) fn material_for(
-        &self,
-        ws: WorkspaceId,
-    ) -> (DeviceCert, Vec<tilo_user_identity::RevocationEntry>) {
-        let fallback_cert = self
-            .workspace_device_certs
-            .get(&ws)
-            .cloned()
-            .unwrap_or_else(|| self.device_cert.clone());
-        let fallback_revocations = self
-            .workspace_revocations
-            .get(&ws)
-            .cloned()
-            .unwrap_or_default();
-        let Some(paths) = self.identity_paths.as_ref() else {
-            return (fallback_cert, fallback_revocations);
-        };
-        let Ok(registry_store) = crate::identity_registry::IdentityRegistryStore::from_env() else {
-            return (fallback_cert, fallback_revocations);
-        };
-        let Ok(registry) = registry_store.migrate_legacy_primary() else {
-            return (fallback_cert, fallback_revocations);
-        };
-        let selected = registry.workspace_identities.iter().find_map(|(room, id)| {
-            let room = crate::shell::state::RoomId::parse(room)?;
-            (crate::shell::network::room_topic_id(room) == ws).then_some(id)
-        });
-        let identity_id = selected
-            .cloned()
-            .or_else(|| registry.default_identity.clone());
-        let Some(identity_id) = identity_id else {
-            return (fallback_cert, fallback_revocations);
-        };
-        let Some(profile) = registry.identities.get(&identity_id) else {
-            return (fallback_cert, fallback_revocations);
-        };
-        let Ok(cert) = tilo_user_identity::persist::read_device_cert(
-            &paths.device_cert_for_user(&profile.user_public_key),
-        ) else {
-            return (fallback_cert, fallback_revocations);
-        };
-        if tilo_user_identity::verify_device_cert(&cert).is_err()
-            || cert.user_public_key != profile.user_public_key
-            || cert.device_public_key != self.device_signing_key.verifying_key().to_bytes()
-        {
-            return (fallback_cert, fallback_revocations);
-        }
-        let revocations =
-            crate::device_fleet::DeviceFleetStore::at(registry_store.identity_dir(), paths.clone())
-                .load(&identity_id)
-                .map_or_else(|_| fallback_revocations, |fleet| fleet.revocations);
-        (cert, revocations)
-    }
-}
-
 #[derive(Debug)]
 pub enum NetCmd {
     NativeConnect(native_ingress::Connect),
+    /// Ask a governed room's governor, on its room's native relay session.
+    GovernorAction {
+        ws: u64,
+        room: uuid::Uuid,
+        request: Box<governor_lane::Request>,
+    },
     NativePublish {
         ws: u64,
     },
@@ -567,6 +430,8 @@ struct TopicRuntime {
 
 struct HostRuntime {
     native_scope: Option<Arc<native_ingress::Scope>>,
+    /// The private lane to a governed room's governor, opened on first use.
+    governor: Option<governor_lane::Lane>,
     actions: Option<tokio::task::JoinHandle<()>>,
     session: Arc<RelayCoeditSession>,
     pump: tokio::task::JoinHandle<()>,
@@ -974,6 +839,9 @@ impl ActorState {
                 .native_media
                 .handle(command, self.host_identity.as_ref()),
             Some(NetCmd::NativeConnect(connect)) => self.native_connect(connect),
+            Some(NetCmd::GovernorAction { ws, room, request }) => {
+                self.governor_action(ws, room, request);
+            }
             Some(NetCmd::NativePublish { ws }) => self.drive_native_publication(ws),
             Some(NetCmd::NativeEnrollment(command)) => self.native_enrollment.handle(
                 command,
@@ -2300,6 +2168,7 @@ impl ActorState {
                     (ws, peer),
                     HostRuntime {
                         native_scope: None,
+                        governor: None,
                         actions: self
                             .action_broker
                             .as_ref()
@@ -5005,7 +4874,7 @@ mod tests {
     fn channel_service(
         key: &ed25519_dalek::SigningKey,
         dir: &std::path::Path,
-        directory: crate::shell::channel_encryption::tests::Directory,
+        directory: crate::shell::channel_encryption::testing::Directory,
     ) -> crate::shell::channel_encryption::ChannelEncryption {
         crate::shell::channel_encryption::ChannelEncryption::open(
             crate::shell::channel_encryption::ChannelEncryptionConfig {
@@ -5054,7 +4923,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn channel_encryption_runs_end_to_end_through_the_workspace_host() {
         use crate::shell::channel_encryption::ChannelAccess;
-        use crate::shell::channel_encryption::tests::{Directory, Policy};
+        use crate::shell::channel_encryption::testing::{Directory, Policy};
         use std::time::Instant;
 
         const SECRET: &[u8] = b"quarterly figures nobody outside may read";

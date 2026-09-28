@@ -20,10 +20,6 @@ pub struct OwnerCommitRequest {
     pub operation: CommitOperation,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "public wire enum: boxing a variant would change every constructor and match"
-)]
 pub enum CommitOperation {
     Document {
         app: String,
@@ -45,6 +41,14 @@ pub enum CommitOperation {
     },
     /// Private agent runtime fact; only the typed live-evidence owner can authorize it.
     AgentRuntime { change: Box<AgentRuntimeChange> },
+    /// A proposal to bring a whole document into the room, or the owner's
+    /// answer to one. The broker supplies the caller from its authenticated
+    /// durable admission, never from arguments.
+    DocumentImport {
+        invocation: uuid::Uuid,
+        caller: tilo_user_identity::DeviceCert,
+        action: crate::document_import::ImportAction,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CommitTarget {
@@ -52,6 +56,7 @@ pub enum CommitTarget {
     EffectReceipt { invocation: uuid::Uuid },
     DesktopCommand { invocation: uuid::Uuid },
     AgentRuntime { mutation: String },
+    DocumentImport { invocation: uuid::Uuid },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitBinding {
@@ -118,6 +123,11 @@ impl OwnerCommitRequest {
                         .map_err(|e| e.to_string())?,
                 )
             }
+            CommitOperation::DocumentImport {
+                invocation,
+                caller,
+                action,
+            } => import_binding(*invocation, caller, action)?,
             CommitOperation::Document {
                 app,
                 record,
@@ -169,6 +179,20 @@ impl OwnerCommitRequest {
         })
     }
 }
+/// The target and committed basis of a document import request.
+fn import_binding(
+    invocation: uuid::Uuid,
+    caller: &tilo_user_identity::DeviceCert,
+    action: &crate::document_import::ImportAction,
+) -> Result<(CommitTarget, Vec<u8>), String> {
+    if invocation.is_nil() || caller.capabilities.can_act_as_host {
+        return Err("invalid document import binding".into());
+    }
+    Ok((
+        CommitTarget::DocumentImport { invocation },
+        postcard::to_allocvec(&(invocation, caller, action)).map_err(|e| e.to_string())?,
+    ))
+}
 impl OwnerCommitReceipt {
     /// Check that this receipt answers `request` exactly.
     ///
@@ -196,6 +220,18 @@ pub trait OwnerCommitService: Send + Sync {
         true
     }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture;
+    /// [`Self::commit`] for a document write, with the resource kind of its
+    /// record as the writing app named it when joining the record. Only an
+    /// owner that creates a missing record on the app's first write reads
+    /// the kind; the request and its receipt binding never include it.
+    fn commit_with_record_kind(
+        &self,
+        request: OwnerCommitRequest,
+        record_kind: Option<String>,
+    ) -> CommitFuture {
+        let _ = record_kind;
+        self.commit(request)
+    }
     /// Whether the owner can currently accept commits.
     ///
     /// # Errors

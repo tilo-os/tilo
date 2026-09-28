@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::ops::{Deref, DerefMut};
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use serde::{Deserialize, Serialize};
@@ -212,8 +213,6 @@ impl DerefMut for QueryEditorChild {
 }
 
 impl Widget for QueryEditorChild {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -260,29 +259,8 @@ impl Widget for QueryEditorChild {
     ) {
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.editor.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.editor.handle_event(event, ctx);
     }
 
     fn name(&self) -> &'static str {
@@ -320,8 +298,8 @@ impl Widget for QueryEditorChild {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.editor.perform_action(action, state, path)
     }
@@ -418,8 +396,6 @@ impl QueryDivider {
 }
 
 impl Widget for QueryDivider {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -480,18 +456,7 @@ impl Widget for QueryDivider {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -503,7 +468,7 @@ impl Widget for QueryDivider {
         } = event
             && self.handle_key(logical_key)
         {
-            *handled = true;
+            *ctx.handled = true;
         }
     }
 
@@ -560,8 +525,8 @@ impl Widget for QueryDivider {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         self.pending = match action {
             ui::a11y::Action::Increment => Some(QueryResizeCommand::Adjust(24.0)),
@@ -611,8 +576,6 @@ impl QueryResizeMenu {
 }
 
 impl Widget for QueryResizeMenu {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -638,29 +601,8 @@ impl Widget for QueryResizeMenu {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.menu.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.menu.handle_event(event, ctx);
     }
 
     fn name(&self) -> &'static str {
@@ -696,8 +638,8 @@ impl Widget for QueryResizeMenu {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if matches!(action, ui::a11y::Action::Activate)
             && let Some(index) = key_path.first().and_then(|key| usize::try_from(*key).ok())
@@ -713,8 +655,8 @@ impl Widget for QueryResizeMenu {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
@@ -2042,68 +1984,35 @@ impl Widget for DbClientApp {
             .or_else(|| self.search_index.resource(id))
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if !matches!(kind, OperationKind::Effect | OperationKind::View)
-            || type_id != DB_OPERATION_TYPE
-        {
-            return Ok(false);
-        }
-        let operation: DbClientOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        self.execute_operation(operation)?;
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if !matches!(kind, OperationKind::Effect | OperationKind::View)
-            || type_id != DB_OPERATION_TYPE
-        {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if kind == OperationKind::View {
-            return self
-                .invoke_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                });
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        if self.resource_operation.is_some() || self.session.busy() {
-            return Err("another database operation is already running".into());
-        }
-        let operation: DbClientOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        // Reconnecting and browsing are idempotent reads/handle opens. An
-        // arbitrary SQL statement is deliberately *not* retryable: repeating
-        // an INSERT/UPDATE after an uncertain network outcome could duplicate
-        // a real side effect.
-        let retryable = matches!(
-            operation,
-            DbClientOperation::Connect { .. } | DbClientOperation::BrowseTable { .. }
-        );
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        self.resource_operation = Some((invocation, retryable));
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -2160,7 +2069,8 @@ impl Widget for DbClientApp {
         })
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         self.drain_query_resize_actions();
         // Accessibility activation is delivered directly to the focused child;
         // drain its semantic action here and enter the same modal flow as a
@@ -2422,38 +2332,18 @@ impl Widget for DbClientApp {
         clippy::too_many_lines,
         reason = "one window-event dispatcher; each arm is a short hand-off to the owning pane"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Modal swallows events while open.
         if self.modal.is_open() {
             let mut act = None;
-            self.modal.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                node_id,
-                taffy,
-                handled,
-                &mut act,
-            );
+            self.modal.handle_event(event, ctx, &mut act);
             if let Some(profile) = act {
-                self.save_connection(profile, state);
+                self.save_connection(profile, ctx.state);
                 self.dirty = true;
             }
             return;
         }
+        let state = &mut *ctx.state;
 
         // The first-run action is a real child widget. Give it first refusal
         // while it is visible, then translate its drained semantic action into
@@ -2463,14 +2353,16 @@ impl Widget for DbClientApp {
         {
             self.empty_state.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                empty_state_node,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state,
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: empty_state_node,
+                    taffy: ctx.taffy,
+                },
             );
             if self.empty_state.take_action() {
                 self.modal.open_new();
@@ -2489,59 +2381,64 @@ impl Widget for DbClientApp {
                     },
                 ..
             } = event
-            && self.handle_reserved_shortcut(logical_key, *modifiers)
+            && self.handle_reserved_shortcut(logical_key, *ctx.modifiers)
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
         if self.query_resize_menu.is_open() {
             self.query_resize_menu.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                self.query_resize_menu_node.unwrap_or(node_id),
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state,
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: self.query_resize_menu_node.unwrap_or(ctx.node_id),
+                    taffy: ctx.taffy,
+                },
             );
             self.drain_query_resize_actions();
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
 
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.on_cursor_moved(position.x, position.y, scale_factor);
+            self.on_cursor_moved(position.x, position.y, ctx.scale_factor);
         }
         if self.route_to_schema_tree(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state,
+                path: ctx.path,
+                handled: &mut *ctx.handled,
+                focus_target: &mut *ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
         ) {
             return;
         }
-        if self.handle_query_divider_pointer(event, handled, focus_target) {
+        if self.handle_query_divider_pointer(event, ctx.handled, ctx.focus_target) {
             return;
         }
 
         match event {
             WindowEvent::MouseWheel { delta, .. } => {
-                self.on_mouse_wheel(delta, *modifiers, handled);
+                self.on_mouse_wheel(delta, *ctx.modifiers, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_click(state, handled);
+                self.on_click(state, ctx.handled);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -2552,7 +2449,7 @@ impl Widget for DbClientApp {
                     },
                 ..
             } => {
-                self.on_key_pressed(logical_key, *modifiers, handled);
+                self.on_key_pressed(logical_key, *ctx.modifiers, ctx.handled);
             }
             _ => {}
         }
@@ -2561,17 +2458,22 @@ impl Widget for DbClientApp {
         // Skip anything the app already consumed — e.g. a sidebar / scrim /
         // toggle click, or an Esc that dismissed the overlay flap — so an open
         // sidebar doesn't leak clicks into the editor behind it.
-        if !self.session.connections.is_empty() && self.session.tab == MainTab::Query && !*handled {
+        if !self.session.connections.is_empty()
+            && self.session.tab == MainTab::Query
+            && !*ctx.handled
+        {
             self.editor.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                self.editor_node.unwrap_or(node_id),
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state,
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: self.editor_node.unwrap_or(ctx.node_id),
+                    taffy: ctx.taffy,
+                },
             );
             if self.editor.take_dirty().is_some() {
                 self.dirty = true;
@@ -2639,7 +2541,7 @@ impl Widget for DbClientApp {
 
     /// The schema browser eases wheel scrolling and row transitions on its
     /// own clock; it is the one child whose per-frame update this root runs.
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.schema_in_tree() && self.tree.update(state, path)
     }
 
@@ -2706,10 +2608,11 @@ impl Widget for DbClientApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let (state, _path) = ui::doc::document(state, path);
 
         if self.modal.is_open() {
             if !target.starts_with("db.modal.") {
@@ -2762,9 +2665,10 @@ impl Widget for DbClientApp {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = ui::doc::document(state, path);
         let _ = (action, state, path);
         false
     }
@@ -2840,6 +2744,72 @@ impl Widget for DbClientApp {
         (self.session.tab == MainTab::Query)
             .then(|| self.editor.text_review())
             .flatten()
+    }
+}
+
+impl DbClientApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if !matches!(kind, OperationKind::Effect | OperationKind::View)
+            || type_id != DB_OPERATION_TYPE
+        {
+            return Ok(false);
+        }
+        let operation: DbClientOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        self.execute_operation(operation)?;
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if !matches!(kind, OperationKind::Effect | OperationKind::View)
+            || type_id != DB_OPERATION_TYPE
+        {
+            return Ok(None);
+        }
+        if kind == OperationKind::View {
+            return self
+                .answer_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            tilo_actions::ActionOutput::default(),
+                        )
+                    })
+                });
+        }
+        if self.resource_operation.is_some() || self.session.busy() {
+            return Err("another database operation is already running".into());
+        }
+        let operation: DbClientOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        // Reconnecting and browsing are idempotent reads/handle opens. An
+        // arbitrary SQL statement is deliberately *not* retryable: repeating
+        // an INSERT/UPDATE after an uncertain network outcome could duplicate
+        // a real side effect.
+        let retryable = matches!(
+            operation,
+            DbClientOperation::Connect { .. } | DbClientOperation::BrowseTable { .. }
+        );
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        self.resource_operation = Some((invocation, retryable));
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -3002,20 +2972,10 @@ impl DbClientApp {
     /// while the sidebar is interactive (so a closed overlay flap lets taps
     /// through); keys reach it only while it holds focus. Returns whether it
     /// consumed the event, after applying any rows it activated.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards one WindowEvent's decoded fields to the child's Widget::handle_event, whose signature this crate does not own"
-    )]
     fn route_to_schema_tree(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let Some(node) = self.tree_node else {
             return false;
@@ -3027,26 +2987,17 @@ impl DbClientApp {
         if pointer && !self.sidebar_interactive() && !self.tree.wants_pointer_capture() {
             return false;
         }
-        self.tree.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node,
-            taffy,
-        );
-        if *focus_target == Some(node) {
+        self.tree
+            .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        if *ctx.focus_target == Some(node) {
             self.editor.set_focused(false);
             self.query_divider.set_focus(false);
         }
         self.drain_schema_activations();
-        if *handled {
+        if *ctx.handled {
             self.dirty = true;
         }
-        *handled
+        *ctx.handled
     }
 
     /// Apply the rows the browser activated: open a table (a column opens its
@@ -4615,14 +4566,16 @@ mod behavior_tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &mods,
-            doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            NodeId::new(0),
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -5502,13 +5455,15 @@ mod behavior_tests {
             ] {
                 let invocation = tilo_actions::InvocationId::new();
                 assert_eq!(
-                    app.start_resource_operation(
-                        invocation,
-                        OperationKind::Effect,
-                        DB_OPERATION_TYPE,
-                        &serde_json::to_vec(&operation).unwrap(),
-                        &doc,
-                        &ROOT,
+                    app.start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            invocation,
+                            OperationKind::Effect,
+                            DB_OPERATION_TYPE,
+                            &serde_json::to_vec(&operation).unwrap()
+                        ),
+                        &mut doc,
+                        &ROOT
                     )
                     .unwrap(),
                     Some(ui::widget::ResourceOperationStart::Accepted)
@@ -5538,7 +5493,7 @@ mod behavior_tests {
     fn resource_tree_and_queries_are_schema_qualified_and_secret_free() {
         // --- phase: resource_query_is_pending_until_the_database_worker_finishes ---
         {
-            let (mut app, doc) = synced();
+            let (mut app, mut doc) = synced();
             let invocation = tilo_actions::InvocationId::new();
             let payload = serde_json::to_vec(&DbClientOperation::RunQuery {
                 connection_id: app.session.active_connection_id().unwrap().to_string(),
@@ -5546,13 +5501,15 @@ mod behavior_tests {
             })
             .unwrap();
             assert_eq!(
-                app.start_resource_operation(
-                    invocation,
-                    OperationKind::Effect,
-                    DB_OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        OperationKind::Effect,
+                        DB_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)

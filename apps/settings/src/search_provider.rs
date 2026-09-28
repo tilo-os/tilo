@@ -183,7 +183,7 @@ mod tests {
             !providers.is_empty(),
             "settings publishes a search provider"
         );
-        let doc = AutoCommit::new();
+        let mut doc = AutoCommit::new();
         let resources = app.resources(&doc);
         let hits = providers[0].search("");
         assert_eq!(hits.len(), Category::ALL.len());
@@ -198,16 +198,20 @@ mod tests {
             let kind = spec.kind;
             let encoded = tilo_actions::door::encode(&resources, &address, None)
                 .expect("the exported operation encodes");
-            assert!(
-                app.invoke_resource_operation(
-                    kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
-                    &ROOT,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
-                .expect("the brokered operation succeeds")
-            );
+                .expect("the brokered operation succeeds"),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(
                 app.selected(),
                 category,

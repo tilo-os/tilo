@@ -749,14 +749,16 @@ mod tests {
         let mut focus = None;
         sidebar.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut AutoCommit::new(),
-            &ObjId::Root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut AutoCommit::new(),
+                path: &ObjId::Root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

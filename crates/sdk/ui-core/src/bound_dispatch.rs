@@ -1723,26 +1723,22 @@ pub(crate) fn execute_resource_operation_scoped(
         }
         crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
     } else {
-        let result = if let Some(scope) = scope {
-            widget.start_resource_operation_scoped(
+        let op = match scope {
+            Some(scope) => crate::widget::ResourceOperation::scoped(
                 scope,
                 spec.kind,
                 &encoded.type_id,
                 &encoded.payload,
-                doc,
-                path,
-            )
-        } else {
-            widget.start_resource_operation_with_document(
+            ),
+            None => crate::widget::ResourceOperation::local(
                 invocation,
                 spec.kind,
                 &encoded.type_id,
                 &encoded.payload,
-                doc,
-                path,
-            )
+            ),
         };
-        result
+        widget
+            .start_operation(&op, doc, path)
             .map_err(tilo_actions::DoorError::Failed)?
             .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?
     };
@@ -2693,6 +2689,15 @@ impl CallbackBinding {
             return None;
         }
         self.records.route(&self.checkout).ok()
+    }
+    /// [`Self::broker_route`], or a live New reservation's route before its
+    /// factory writes the record. Only native component admission uses it.
+    pub(crate) fn admission_route(&self) -> Option<crate::collaboration::RouteSpec> {
+        let (_, app, _) = self.records.canonical_namespace()?;
+        if app != self.app_id {
+            return None;
+        }
+        self.records.admission_route(&self.checkout).ok()
     }
     pub(crate) fn matches_broker_route(
         &self,

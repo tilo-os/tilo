@@ -93,27 +93,24 @@ pub fn rsync_modules(
     endpoint: &SshEndpoint,
     key: Option<&str>,
     staging: &str,
-) -> CommandLine {
-    let ssh = remote::ssh_command(endpoint, key, &[], false);
-    let mut words = vec![vmbuild::sh_quote(&ssh.program)];
-    let options = ssh.args.len().saturating_sub(1);
-    words.extend(ssh.args.iter().take(options).map(|a| vmbuild::sh_quote(a)));
+) -> Result<CommandLine, CliError> {
+    let rsh = vmbuild::rsync_rsh(endpoint, key)?;
     let dest = format!("{staging}/usr/lib/modules");
     let source = built
         .modules
         .parent()
         .map(|p| format!("{}/", p.display()))
         .unwrap_or_default();
-    CommandLine::new(
+    Ok(CommandLine::new(
         &crate::host::rsync_program().unwrap_or_else(|| "rsync".into()),
         &["--archive", "--delete", "--checksum", "--compress"],
     )
     .arg("--rsh")
-    .arg(words.join(" "))
+    .arg(rsh)
     .arg("--rsync-path")
     .arg(format!("mkdir -p {dest} && rsync"))
     .arg(source)
-    .arg(format!("{}@{}:{dest}/", endpoint.user, endpoint.host))
+    .arg(format!("{}@{}:{dest}/", endpoint.user, endpoint.host)))
 }
 
 /// Pack the staged module tree as a layer: `usr/lib/modules/<kver>/`.
@@ -298,7 +295,7 @@ impl App {
             let endpoint = Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
             let id = vmbuild::worktree_id(worktree, crate::context::hostname().as_deref());
             let staging = vm_staging_dir(&id);
-            let rsync = rsync_modules(built, &endpoint, vm.entry.key.as_deref(), &staging);
+            let rsync = rsync_modules(built, &endpoint, vm.entry.key.as_deref(), &staging)?;
             eprintln!(
                 "tilo-vm: syncing {} to {}:{staging}",
                 built.modules.display(),
@@ -839,7 +836,8 @@ mod tests {
                 &endpoint,
                 Some("/k/id"),
                 &vm_staging_dir("wt-1a2b"),
-            );
+            )
+            .unwrap();
             let text = command.display();
             assert_eq!(
                 command.program,

@@ -356,18 +356,7 @@ impl AccountStore {
 /// The per-user account config root: `$XDG_CONFIG_HOME/tilo` or `~/.config/tilo`.
 /// Like Settings, ignore empty or relative XDG paths.
 pub fn config_root() -> Option<PathBuf> {
-    config_root_from(std::env::var_os("XDG_CONFIG_HOME"), xdg_paths::home())
-}
-
-fn config_root_from(
-    xdg_config_home: Option<std::ffi::OsString>,
-    home: Option<PathBuf>,
-) -> Option<PathBuf> {
-    let base = xdg_config_home
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty() && p.is_absolute())
-        .or_else(|| home.map(|h| h.join(".config")))?;
-    Some(base.join("tilo"))
+    Some(xdg_paths::xdg::config_home()?.join("tilo"))
 }
 
 /// The accounts directory under a config root (`root/accounts`).
@@ -413,18 +402,6 @@ mod tests {
 
     fn temp_root() -> PathBuf {
         std::env::temp_dir().join(format!("tilo-accounts-store-{}", uuid::Uuid::new_v4()))
-    }
-
-    #[test]
-    fn config_root_ignores_unusable_xdg_values() {
-        let home = temp_root();
-        for xdg in [None, Some("".into()), Some("relative-config".into())] {
-            assert_eq!(
-                config_root_from(xdg, Some(home.clone())),
-                Some(home.join(".config/tilo")),
-            );
-        }
-        assert_eq!(config_root_from(Some("relative-config".into()), None), None);
     }
 
     #[test]

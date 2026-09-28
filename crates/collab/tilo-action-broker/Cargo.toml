@@ -7,9 +7,11 @@ publish.workspace = true
 [features]
 test-support = []
 [dependencies]
+xdg-paths = { path = "../../system/xdg-paths" }
 advisory-lock = { path = "../../system/advisory-lock" }
 # Saves the launchable action catalogue across restarts.
 atomic-file = { path = "../../system/atomic-file", features = ["json"] }
+wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
 launcher = { path = "../../packaging/launcher" }
 tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 parking_lot.workspace = true
@@ -29,6 +31,11 @@ tilo-desktop-model = { path = "../../session/desktop-model" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 collab-types = { path = "../collab-types" }
 channel-crypto = { path = "../channel-crypto" }
+# The channel service's governance messages and wall clock.
+neighbour-wire = { path = "../neighbour-wire" }
+tilo-clock = { path = "../../system/tilo-clock" }
+# The identity service hands apps their route keys from the channel service.
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 tilo-actions = { path = "../actions" }
 # Shortcuts: checking, running and describing them at the action door.
 tilo-automation = { path = "../automation" }

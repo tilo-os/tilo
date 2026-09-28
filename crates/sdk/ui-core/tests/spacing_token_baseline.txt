@@ -274,6 +274,7 @@ crates/session/shell/src/shell/color_pipeline.rs pixel_const 1
 crates/session/shell/src/shell/editor_app.rs pixel_const 3
 crates/session/shell/src/shell/file_picker_overlay.rs pixel_const 4
 crates/session/shell/src/shell/frame.rs pixel_const 1
+crates/session/shell/src/shell/hdr_surface.rs pixel_const 1
 crates/session/shell/src/shell/input_policy.rs pixel_const 1
 crates/session/shell/src/shell/notes_app.rs pixel_const 3
 crates/session/shell/src/shell/osd.rs pixel_const 2

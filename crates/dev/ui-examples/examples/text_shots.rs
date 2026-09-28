@@ -65,14 +65,16 @@ fn dispatch(w: &mut dyn Widget, doc: &mut AutoCommit, ev: &WindowEvent) {
     let mut focus_target = None;
     w.handle_event(
         ev,
-        1.0,
-        &Modifiers::default(),
-        doc,
-        &ROOT,
-        &mut handled,
-        &mut focus_target,
-        node,
-        &taffy,
+        &mut tilo_ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: doc,
+            path: &ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 

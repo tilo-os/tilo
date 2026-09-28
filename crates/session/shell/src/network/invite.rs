@@ -5,9 +5,11 @@
 //! Ed25519 verification key, so no transport-specific PeerId/public-key pair is
 //! duplicated in the token.
 
-mod certified;
 pub(crate) mod enrollment_driver;
-pub(crate) use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
+#[cfg(test)]
+#[path = "invite/native_exchange_tests.rs"]
+mod exchange_tests;
+pub(crate) use tilo_joined_room::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;

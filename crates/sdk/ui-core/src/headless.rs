@@ -47,7 +47,7 @@ use crate::state::State;
 use crate::synthetic_input::key_event;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{TaffyTreeExt, Widget};
+use crate::widget::{EventCtx, TaffyTreeExt, Widget};
 
 /// Viewport the driver lays out at unless a spec overrides it. Matches the
 /// default `--shots` viewport so a driven frame and a screenshot agree.
@@ -588,6 +588,20 @@ pub struct FrameHarness {
     /// Re-entrancy guard for the geometry check, whose forced rebuild runs
     /// through `try_relayout` itself.
     verifying_geometry: bool,
+    /// Concrete type of `root` when it was mounted through
+    /// [`FrameHarness::for_root`]; gates [`FrameHarness::root`].
+    root_type: Option<std::any::TypeId>,
+    /// How the node the root is laid out in is sized and styled.
+    host: HostLayout,
+}
+
+/// The node a [`FrameHarness`] lays its root out in.
+#[derive(Clone, Default)]
+struct HostLayout {
+    /// Its width is always the viewport's.
+    style: Style,
+    /// Its height is the root's content height rather than the viewport's.
+    content_height: bool,
 }
 
 /// What one completed [`FrameHarness::relayout`] did with its layout tree.
@@ -616,6 +630,109 @@ fn full_relayout_forced() -> bool {
 
 /// Backwards-compatible name for the input-driving use of [`FrameHarness`].
 pub type Driver = FrameHarness;
+
+/// What the root reported for one [`FrameHarness::dispatch_to_root_outcome`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RootDispatch {
+    pub handled: bool,
+    pub focus_target: Option<NodeId>,
+}
+
+/// Construction options for [`FrameHarness::for_root_with`].
+#[derive(Default)]
+pub struct FrameOptions {
+    /// Defaults to [`Theme::dark`].
+    pub theme: Option<Theme>,
+    /// Defaults to [`TextRenderer::new`]; its text scale follows the theme.
+    pub text: Option<TextRenderer>,
+    /// Style of the viewport-sized node the root is laid out in, for a root
+    /// that must not be stretched by the default row. Its size is replaced
+    /// by the viewport.
+    pub host_style: Option<Style>,
+    /// Lay the root out at its content height, measured against unbounded
+    /// height, the way a scrolling host lays out the document inside it. The
+    /// viewport still bounds culling and rasterisation.
+    pub content_height: bool,
+}
+
+/// A logical `(width, height)` as a harness viewport.
+///
+/// Fractions truncate and negative or NaN sizes become zero, so a size
+/// written as a float names the same viewport it would as an integer.
+#[must_use]
+pub fn viewport<T: Into<f64>>((w, h): (T, T)) -> (u32, u32) {
+    let (w, h) = (w.into(), h.into());
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "`as` saturates and maps NaN to zero, which is the documented contract"
+    )]
+    (w as u32, h as u32)
+}
+
+/// A [`FrameHarness`] over one concrete root that reads as that root.
+///
+/// Dereferencing yields the widget; a mutable dereference makes the next
+/// frame recompose from scratch (see [`FrameHarness::root_mut`]). Harness
+/// operations are associated functions so they never shadow the root's own
+/// methods.
+pub struct Framed<W: Widget + 'static> {
+    harness: FrameHarness,
+    root: std::marker::PhantomData<fn() -> W>,
+}
+
+impl<W: Widget + 'static> Framed<W> {
+    /// Mount `root` over `state` and run its first frame at `viewport`.
+    pub fn new(state: State, root: W, viewport: (u32, u32), theme: Theme) -> Self {
+        Self::from_harness(FrameHarness::for_root(state, root, viewport, theme))
+    }
+
+    /// [`Self::new`] with every construction option spelled out.
+    pub fn with_options(
+        state: State,
+        root: W,
+        viewport: (u32, u32),
+        options: FrameOptions,
+    ) -> Self {
+        Self::from_harness(FrameHarness::for_root_with(state, root, viewport, options))
+    }
+
+    fn from_harness(harness: FrameHarness) -> Self {
+        let _: &W = harness.root();
+        Self {
+            harness,
+            root: std::marker::PhantomData,
+        }
+    }
+
+    pub fn harness(this: &Self) -> &FrameHarness {
+        &this.harness
+    }
+
+    pub fn harness_mut(this: &mut Self) -> &mut FrameHarness {
+        &mut this.harness
+    }
+
+    /// The root and the live document at once; see
+    /// [`FrameHarness::root_and_state_mut`].
+    pub fn split(this: &mut Self) -> (&mut W, &mut State) {
+        this.harness.root_and_state_mut()
+    }
+}
+
+impl<W: Widget + 'static> std::ops::Deref for Framed<W> {
+    type Target = W;
+
+    fn deref(&self) -> &W {
+        self.harness.root()
+    }
+}
+
+impl<W: Widget + 'static> std::ops::DerefMut for Framed<W> {
+    fn deref_mut(&mut self) -> &mut W {
+        self.harness.root_mut()
+    }
+}
 
 impl FrameHarness {
     /// Mount a prepared component without a native window, GPU, or service discovery.
@@ -775,6 +892,7 @@ impl FrameHarness {
         self.discard_layout_tree();
         self.focused = None;
         self.focus_before_trap = None;
+        self.root_type = None;
         self.root = root;
     }
 
@@ -1094,7 +1212,52 @@ impl FrameHarness {
         Self::with_inputs(state, root, viewport, theme, text, || author, None)
     }
 
+    fn with_inputs_styled(
+        state: State,
+        root: Box<dyn Widget>,
+        viewport: (u32, u32),
+        theme: Theme,
+        text: TextRenderer,
+        host: HostLayout,
+    ) -> Self {
+        Self::with_inputs_and_host(
+            state,
+            root,
+            viewport,
+            theme,
+            text,
+            crate::collaboration::local_user_id,
+            None,
+            host,
+        )
+    }
+
     fn with_inputs(
+        state: State,
+        root: Box<dyn Widget>,
+        viewport: (u32, u32),
+        theme: Theme,
+        text: TextRenderer,
+        author: impl FnOnce() -> crate::permissions::UserId,
+        component_wake: Option<ComponentRunnerWakeState>,
+    ) -> Self {
+        Self::with_inputs_and_host(
+            state,
+            root,
+            viewport,
+            theme,
+            text,
+            author,
+            component_wake,
+            HostLayout::default(),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "private constructor behind the public entry points"
+    )]
+    fn with_inputs_and_host(
         state: State,
         root: Box<dyn Widget>,
         viewport: (u32, u32),
@@ -1102,6 +1265,7 @@ impl FrameHarness {
         mut text: TextRenderer,
         author: impl FnOnce() -> crate::permissions::UserId,
         component_wake: Option<ComponentRunnerWakeState>,
+        host: HostLayout,
     ) -> Self {
         if component_wake.is_some() {
             let ui_scale = theme.ui_scale;
@@ -1180,6 +1344,8 @@ impl FrameHarness {
             retained_frames: 0,
             retained_geometry_check_every: 0,
             verifying_geometry: false,
+            root_type: None,
+            host,
         };
         // Match `App::rebuild_theme`: reduced motion is both a paint-time
         // theme property and a lifecycle policy retained widgets use to settle
@@ -1188,6 +1354,207 @@ impl FrameHarness {
         d.root.set_motion_reduced(d.theme.reduce_motion);
         d.relayout();
         d
+    }
+
+    /// Mount one concrete widget as the root so a test can read and adjust
+    /// it through [`Self::root`] and [`Self::root_mut`] between frames.
+    pub fn for_root<W: Widget + 'static>(
+        state: State,
+        root: W,
+        viewport: (u32, u32),
+        theme: Theme,
+    ) -> Self {
+        Self::for_root_with(
+            state,
+            root,
+            viewport,
+            FrameOptions {
+                theme: Some(theme),
+                ..FrameOptions::default()
+            },
+        )
+    }
+
+    /// [`Self::for_root`] with every construction option spelled out.
+    pub fn for_root_with<W: Widget + 'static>(
+        state: State,
+        root: W,
+        viewport: (u32, u32),
+        options: FrameOptions,
+    ) -> Self {
+        let FrameOptions {
+            theme,
+            text,
+            host_style,
+            content_height,
+        } = options;
+        let mut harness = Self::with_inputs_styled(
+            state,
+            Box::new(root),
+            viewport,
+            theme.unwrap_or_else(Theme::dark),
+            text.unwrap_or_default(),
+            HostLayout {
+                style: host_style.unwrap_or_default(),
+                content_height,
+            },
+        );
+        harness.root_type = Some(std::any::TypeId::of::<W>());
+        harness
+    }
+
+    /// The root mounted by [`Self::for_root`].
+    ///
+    /// # Panics
+    /// When the root was not mounted through [`Self::for_root`] as a `W`.
+    #[must_use]
+    pub fn root<W: Widget + 'static>(&self) -> &W {
+        assert_eq!(
+            self.root_type,
+            Some(std::any::TypeId::of::<W>()),
+            "FrameHarness::root: the root was not mounted as this type"
+        );
+        // SAFETY: `root_type` records the concrete type `root` was boxed from
+        // and is cleared whenever `root` is replaced.
+        unsafe { &*std::ptr::from_ref::<dyn Widget>(self.root.as_ref()).cast::<W>() }
+    }
+
+    /// Mutable access to the root mounted by [`Self::for_root`]. Anything
+    /// may change through it, so the next frame recomposes from scratch.
+    ///
+    /// # Panics
+    /// When the root was not mounted through [`Self::for_root`] as a `W`.
+    pub fn root_mut<W: Widget + 'static>(&mut self) -> &mut W {
+        assert_eq!(
+            self.root_type,
+            Some(std::any::TypeId::of::<W>()),
+            "FrameHarness::root_mut: the root was not mounted as this type"
+        );
+        self.discard_layout_tree();
+        // SAFETY: as in `root`; the raw layout maps that pointed into this
+        // tree were discarded above.
+        unsafe { &mut *std::ptr::from_mut::<dyn Widget>(self.root.as_mut()).cast::<W>() }
+    }
+
+    /// The root mounted by [`Self::for_root`] together with the live
+    /// document, for calls that take both. Invalidates as [`Self::root_mut`].
+    ///
+    /// # Panics
+    /// When the root was not mounted through [`Self::for_root`] as a `W`.
+    pub fn root_and_state_mut<W: Widget + 'static>(&mut self) -> (&mut W, &mut State) {
+        assert_eq!(
+            self.root_type,
+            Some(std::any::TypeId::of::<W>()),
+            "FrameHarness::root_and_state_mut: the root was not mounted as this type"
+        );
+        self.discard_layout_tree();
+        // SAFETY: as in `root_mut`.
+        let root =
+            unsafe { &mut *std::ptr::from_mut::<dyn Widget>(self.root.as_mut()).cast::<W>() };
+        (root, &mut self.state)
+    }
+
+    /// Run one frame at `viewport`, even when neither the size nor the
+    /// composition changed since the last one.
+    ///
+    /// # Errors
+    /// As [`Self::resize`].
+    pub fn relayout_at(
+        &mut self,
+        viewport: (u32, u32),
+    ) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.viewport = viewport;
+        self.try_relayout()
+    }
+
+    /// Run one frame that rebuilds the whole layout tree, as a structural
+    /// change does, even when no widget reported one.
+    ///
+    /// # Errors
+    /// As [`Self::resize`].
+    pub fn recompose(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.invalidate_layout_tree();
+        self.try_relayout()
+    }
+
+    /// [`Self::relayout_at`] under `theme`, which later frames keep.
+    ///
+    /// # Errors
+    /// As [`Self::resize`].
+    pub fn relayout_themed(
+        &mut self,
+        viewport: (u32, u32),
+        theme: Theme,
+    ) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.theme = theme;
+        self.text.set_text_scale(self.theme.text_scale);
+        self.invalidate_layout_tree();
+        self.relayout_at(viewport)
+    }
+
+    /// Hand `event` straight to the root's `handle_event` against the last
+    /// frame's layout, bypassing host focus routing, and report whether the
+    /// root marked it handled. Nothing is laid out until the next frame,
+    /// which rebuilds only if the root reports a structural change.
+    pub fn dispatch_to_root(&mut self, event: &WindowEvent) -> bool {
+        let modifiers = self.modifiers;
+        self.dispatch_to_root_with(event, &modifiers)
+    }
+
+    /// [`Self::dispatch_to_root`] with an explicit modifier state for this
+    /// one event.
+    pub fn dispatch_to_root_with(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: &winit::event::Modifiers,
+    ) -> bool {
+        self.dispatch_to_root_outcome(event, modifiers).handled
+    }
+
+    /// [`Self::dispatch_to_root_with`], also reporting the node the root
+    /// asked to focus.
+    pub fn dispatch_to_root_outcome(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: &winit::event::Modifiers,
+    ) -> RootDispatch {
+        let mut handled = false;
+        let mut focus_target = None;
+        self.root.handle_event(
+            event,
+            &mut EventCtx {
+                scale_factor: self.input_scale,
+                modifiers,
+                state: &mut self.state.doc,
+                path: &self.state.root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: self.child_node,
+                taffy: &self.taffy,
+            },
+        );
+        RootDispatch {
+            handled,
+            focus_target,
+        }
+    }
+
+    /// The root widget, whatever it was mounted as.
+    #[must_use]
+    pub fn root_widget(&self) -> &dyn Widget {
+        self.root.as_ref()
+    }
+
+    /// The live document, read-only.
+    #[must_use]
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+
+    /// Theme the next frame is drawn with.
+    #[must_use]
+    pub fn theme(&self) -> &Theme {
+        &self.theme
     }
 
     /// Resize in logical pixels and settle geometry-dependent composition
@@ -2129,9 +2496,13 @@ impl FrameHarness {
                     Style {
                         size: Size {
                             width: Dimension::length(w as f32),
-                            height: Dimension::length(h as f32),
+                            height: if self.host.content_height {
+                                Dimension::auto()
+                            } else {
+                                Dimension::length(h as f32)
+                            },
                         },
-                        ..Default::default()
+                        ..self.host.style.clone()
                     },
                     &[presentation_node],
                 );
@@ -2156,7 +2527,11 @@ impl FrameHarness {
                         self.root_node,
                         Size {
                             width: AvailableSpace::Definite(w as f32),
-                            height: AvailableSpace::Definite(h as f32),
+                            height: if self.host.content_height {
+                                AvailableSpace::MaxContent
+                            } else {
+                                AvailableSpace::Definite(h as f32)
+                            },
                         },
                         &self.node_map,
                         &self.bindings,
@@ -2858,14 +3233,16 @@ impl FrameHarness {
                 |widget, doc, path| {
                     widget.handle_event(
                         event,
-                        self.input_scale,
-                        &self.modifiers,
-                        doc,
-                        path,
-                        &mut handled,
-                        &mut focus,
-                        target,
-                        &self.taffy,
+                        &mut EventCtx {
+                            scale_factor: self.input_scale,
+                            modifiers: &self.modifiers,
+                            state: doc,
+                            path,
+                            handled: &mut handled,
+                            focus_target: &mut focus,
+                            node_id: target,
+                            taffy: &self.taffy,
+                        },
                     )
                 },
             )
@@ -4204,14 +4581,16 @@ impl FrameHarness {
             if let Some(palette) = self.action_palette.as_deref_mut() {
                 palette.handle_event(
                     event,
-                    self.input_scale,
-                    &self.modifiers,
-                    &mut self.state.doc,
-                    &self.state.root,
-                    &mut false,
-                    &mut None,
-                    NodeId::from(0usize),
-                    &self.taffy,
+                    &mut EventCtx {
+                        scale_factor: self.input_scale,
+                        modifiers: &self.modifiers,
+                        state: &mut self.state.doc,
+                        path: &self.state.root,
+                        handled: &mut false,
+                        focus_target: &mut None,
+                        node_id: NodeId::from(0usize),
+                        taffy: &self.taffy,
+                    },
                 );
             }
             self.finish_action_palette_input();
@@ -4312,14 +4691,16 @@ impl FrameHarness {
         } else if !history_handled && self.history_layout.is_none_or(|layout| layout.app_visible) {
             self.root.handle_event(
                 event,
-                self.input_scale,
-                &self.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                &mut handled,
-                &mut focus_target,
-                self.child_node,
-                &self.taffy,
+                &mut EventCtx {
+                    scale_factor: self.input_scale,
+                    modifiers: &self.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: self.child_node,
+                    taffy: &self.taffy,
+                },
             );
         }
         if let Some(p) = self.profiler.as_mut() {
@@ -4534,6 +4915,19 @@ impl FrameHarness {
         &self,
         id: Option<&str>,
     ) -> Result<Vec<tilo_actions::Resource>, tilo_actions::DoorError> {
+        self.bound_resources_of(None, id)
+    }
+
+    /// [`Self::bound_resources`] of one hosted component instance, such as
+    /// one window of a desktop; `None` for every hosted component.
+    ///
+    /// # Errors
+    /// Refuses a closed or unavailable component.
+    pub fn bound_resources_of(
+        &self,
+        instance: Option<crate::application::InstanceId>,
+        id: Option<&str>,
+    ) -> Result<Vec<tilo_actions::Resource>, tilo_actions::DoorError> {
         self.drain_component_wakes();
         let lazy = id.map(|id| tilo_actions::ActionAddress::new(id, ""));
         let resources = crate::bound_dispatch::discover_bound_resources(
@@ -4543,6 +4937,7 @@ impl FrameHarness {
         )
         .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_door())?
         .into_iter()
+        .filter(|snapshot| instance.is_none_or(|instance| snapshot.binding.instance_id == instance))
         .flat_map(|snapshot| snapshot.resources)
         .collect::<Vec<_>>();
         Ok(match id {
@@ -7983,7 +8378,7 @@ mod tests {
             "StructureReplacingEditor"
         }
 
-        fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+        fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
             if std::mem::take(&mut self.replace_during_sync) {
                 let value = self.current.accessibility().unwrap().value.unwrap();
                 let current = std::mem::replace(&mut self.current, Self::editor(&value));
@@ -7993,18 +8388,7 @@ mod tests {
             self.current.sync(state, path);
         }
 
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            scale: f64,
-            modifiers: &winit::event::Modifiers,
-            state: &mut automerge::AutoCommit,
-            path: &automerge::ObjId,
-            handled: &mut bool,
-            focus: &mut Option<NodeId>,
-            node: NodeId,
-            tree: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             let replace = matches!(
                 event,
                 WindowEvent::KeyboardInput {
@@ -8016,12 +8400,10 @@ mod tests {
                     ..
                 }
             );
-            self.current.handle_event(
-                event, scale, modifiers, state, path, handled, focus, node, tree,
-            );
+            self.current.handle_event(event, ctx);
             if replace {
                 self.replace_before_relayout();
-                *handled = true;
+                *ctx.handled = true;
             }
         }
 
@@ -8103,8 +8485,6 @@ mod tests {
             true
         }
 
-        fn sync(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) {}
-
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -8144,18 +8524,7 @@ mod tests {
         ) {
         }
 
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &winit::event::Modifiers,
-            _state: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
-            handled: &mut bool,
-            _focus_target: &mut Option<NodeId>,
-            _node_id: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if self.focused
                 && matches!(
                     event,
@@ -8171,15 +8540,15 @@ mod tests {
             {
                 self.activations
                     .set(self.activations.get().saturating_add(1));
-                *handled = true;
+                *ctx.handled = true;
             }
         }
 
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
-            _state: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
+            _state: &mut crate::widget::AppModel,
+            _path: &crate::widget::ModelPath,
         ) -> bool {
             if matches!(action, crate::a11y::Action::Activate) {
                 self.activations
@@ -9263,7 +9632,12 @@ mod tests {
         ready: bool,
     }
     impl Widget for LateRecordProbe {
-        fn update(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) -> bool {
+        fn update(
+            &mut self,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
+        ) -> bool {
+            let (doc, _) = crate::doc::document(doc, path);
             self.frames = self.frames.saturating_add(1);
             if self.frames == 2 {
                 doc.put(automerge::ROOT, "loaded", "initial content")
@@ -9274,7 +9648,8 @@ mod tests {
         fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
             (self.frames >= 2).then(|| self.checkout.clone())
         }
-        fn sync(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+        fn sync(&mut self, doc: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+            let (doc, _) = crate::doc::document(doc, path);
             self.ready =
                 crate::record::identity(doc).is_some_and(|record| record.id == self.checkout.id);
         }
@@ -9301,23 +9676,6 @@ mod tests {
             _: &PresenceCtx,
         ) {
         }
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "the probe implements the fixed Widget event signature"
-        )]
-        fn handle_event(
-            &mut self,
-            _: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "LateRecordProbe"
         }
@@ -9327,10 +9685,11 @@ mod tests {
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
-            doc: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
         ) -> bool {
             use automerge::ReadDoc;
+            let (doc, _) = crate::doc::document(doc, path);
 
             if self.ready && matches!(action, crate::a11y::Action::Activate) {
                 doc.put(automerge::ROOT, "payload", "late record content")
@@ -9355,7 +9714,6 @@ mod tests {
     }
     impl Widget for RecordRootProbe {
         crate::testing::inert_widget_methods!(
-            sync,
             leaf_layout,
             apply_layout,
             draw,
@@ -10031,7 +10389,6 @@ mod a11y_driver_tests {
     }
 
     impl Widget for Strip {
-        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -10050,12 +10407,6 @@ mod a11y_driver_tests {
             _tx: &mut crate::text_render::TextRenderer,
             _th: &crate::theme::Theme,
             _pr: &PresenceCtx,
-        ) {
-        }
-        fn handle_event_ctx(
-            &mut self,
-            _event: &WindowEvent,
-            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -10105,8 +10456,8 @@ mod a11y_driver_tests {
             &mut self,
             action: &Action,
             key_path: &[u64],
-            _s: &mut automerge::AutoCommit,
-            _p: &automerge::ObjId,
+            _s: &mut crate::widget::AppModel,
+            _p: &crate::widget::ModelPath,
         ) -> bool {
             let Some(&key) = key_path.first() else {
                 return false;
@@ -10329,8 +10680,6 @@ mod undo_driver_tests {
     }
 
     impl crate::widget::Widget for Typer {
-        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
-
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -10372,11 +10721,10 @@ mod undo_driver_tests {
         ) {
         }
 
-        fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             use automerge::{ReadDoc, transaction::Transactable};
 
             let doc = &mut *ctx.state;
-            let handled = &mut *ctx.handled;
             let WindowEvent::KeyboardInput { event: ke, .. } = event else {
                 return;
             };
@@ -10395,7 +10743,7 @@ mod undo_driver_tests {
             let len = doc.length(&obj);
             doc.splice_text(&obj, len, 0, c.as_str()).unwrap();
             self.pending = true;
-            *handled = true;
+            *ctx.handled = true;
         }
 
         fn name(&self) -> &'static str {
@@ -10613,8 +10961,6 @@ mod dispatched_action_driver_tests {
     }
 
     impl crate::widget::Widget for ActionEditor {
-        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
-
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -10656,7 +11002,7 @@ mod dispatched_action_driver_tests {
         ) {
         }
 
-        fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             let doc = &mut *ctx.state;
             let handled = &mut *ctx.handled;
             let text = match event {
@@ -10699,9 +11045,10 @@ mod dispatched_action_driver_tests {
             &mut self,
             action: &crate::a11y::Action,
             _key_path: &[u64],
-            doc: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
         ) -> bool {
+            let (doc, _) = crate::doc::document(doc, path);
             if !matches!(action, crate::a11y::Action::Activate) {
                 return false;
             }
@@ -11054,7 +11401,7 @@ mod prepared_driver_tests {
                 local.writer().set("initial callback".into());
             }
         }
-        fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+        fn sync(&mut self, _: &mut crate::widget::AppModel, _: &crate::widget::ModelPath) {
             self.observed
                 .syncs
                 .set(self.observed.syncs.get().saturating_add(1));
@@ -11098,24 +11445,14 @@ mod prepared_driver_tests {
             _: &PresenceCtx,
         ) {
         }
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            doc: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-            handled: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if let WindowEvent::KeyboardInput { event, .. } = event
                 && self.focused
                 && event.state == ElementState::Pressed
                 && let Some(text) = event.text.as_deref()
             {
-                let before = doc
+                let before = ctx
+                    .state
                     .get(ROOT, "body")
                     .unwrap()
                     .unwrap()
@@ -11123,8 +11460,10 @@ mod prepared_driver_tests {
                     .as_str()
                     .unwrap()
                     .to_owned();
-                doc.put(ROOT, "body", format!("{before}{text}")).unwrap();
-                *handled = true;
+                ctx.state
+                    .put(ROOT, "body", format!("{before}{text}"))
+                    .unwrap();
+                *ctx.handled = true;
             }
         }
         fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
@@ -11495,19 +11834,19 @@ pub(crate) mod legacy_control_feedback_tests {
         fn has_pending_control_invocation(&self) -> bool {
             !self.observed.pending.borrow().is_empty()
         }
-        fn start_resource_operation_with_document(
+        fn start_operation(
             &mut self,
-            invocation: tilo_actions::InvocationId,
-            _: tilo_actions::OperationKind,
-            type_id: &str,
-            _: &[u8],
+            op: &crate::widget::ResourceOperation<'_>,
             _: &mut automerge::AutoCommit,
             _: &automerge::ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-            if type_id != "feedback.begin" {
+            let Some(request) = op
+                .unscoped()
+                .filter(|request| request.type_id == "feedback.begin")
+            else {
                 return Ok(None);
-            }
-            self.observed.original.set(Some(invocation));
+            };
+            self.observed.original.set(Some(request.invocation));
             self.observed
                 .pending
                 .borrow_mut()
@@ -11692,3 +12031,254 @@ pub(crate) mod legacy_control_feedback_tests {
 
 #[cfg(test)]
 mod portable_host_tests;
+
+#[cfg(test)]
+mod framed_tests {
+    use super::*;
+
+    struct Probe {
+        width: f32,
+        rect: Rect,
+        syncs: usize,
+        presses: usize,
+    }
+
+    impl Probe {
+        fn new(width: f32) -> Self {
+            Self {
+                width,
+                rect: Rect::ZERO,
+                syncs: 0,
+                presses: 0,
+            }
+        }
+    }
+
+    impl Widget for Probe {
+        fn sync(&mut self, _state: &mut crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+            self.syncs = self.syncs.saturating_add(1);
+        }
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy
+                .new_leaf(Style {
+                    size: Size {
+                        width: Dimension::length(self.width),
+                        height: Dimension::length(40.0),
+                    },
+                    ..Default::default()
+                })
+                .unwrap();
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let layout = taffy.layout(node).unwrap();
+            self.rect = Rect::new(
+                origin.x + f64::from(layout.location.x),
+                origin.y + f64::from(layout.location.y),
+                origin.x + f64::from(layout.location.x + layout.size.width),
+                origin.y + f64::from(layout.location.y + layout.size.height),
+            );
+        }
+
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                }
+            ) {
+                self.presses = self.presses.saturating_add(1);
+                *ctx.handled = true;
+            }
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+
+        fn name(&self) -> &'static str {
+            "Probe"
+        }
+    }
+
+    fn press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+
+    #[test]
+    fn framed_root_runs_a_frame_on_mount_and_recomposes_after_mutable_access() {
+        let mut probe = Framed::new(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
+        assert!(probe.syncs > 0, "mount runs the production sync pass");
+        assert!((probe.rect.width() - 120.0).abs() < f64::EPSILON);
+
+        Framed::harness_mut(&mut probe).relayout();
+        assert!(
+            !Framed::harness(&probe).last_relayout().rebuilt,
+            "an untouched root keeps its retained tree"
+        );
+
+        probe.width = 200.0;
+        Framed::harness_mut(&mut probe).relayout();
+        assert!(Framed::harness(&probe).last_relayout().rebuilt);
+        assert!((probe.rect.width() - 200.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn recompose_rebuilds_an_unchanged_tree() {
+        let mut probe = Framed::new(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
+        Framed::harness_mut(&mut probe).recompose().unwrap();
+        assert!(Framed::harness(&probe).last_relayout().rebuilt);
+        assert!((probe.rect.width() - 120.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn dispatch_to_root_reaches_the_root_and_keeps_the_retained_tree() {
+        let mut probe = Framed::new(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
+        let outcome = Framed::harness_mut(&mut probe)
+            .dispatch_to_root_outcome(&press(), &winit::event::Modifiers::default());
+        assert!(outcome.handled);
+        assert_eq!(outcome.focus_target, None);
+        assert_eq!(probe.presses, 1);
+
+        Framed::harness_mut(&mut probe).relayout();
+        assert!(!Framed::harness(&probe).last_relayout().rebuilt);
+    }
+
+    #[test]
+    fn host_style_positions_the_root_inside_the_viewport() {
+        let probe = Framed::with_options(
+            State::new(),
+            Probe::new(120.0),
+            (400, 200),
+            FrameOptions {
+                host_style: Some(Style {
+                    justify_content: Some(JustifyContent::Center),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        assert!((probe.rect.x0 - 140.0).abs() < f64::EPSILON);
+    }
+
+    /// A leaf 300 px tall that records the heights it was offered.
+    struct Tall {
+        rect: Rect,
+        offered: Vec<AvailableSpace>,
+    }
+
+    impl Widget for Tall {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+
+        fn measure(
+            &mut self,
+            _known: Size<Option<f32>>,
+            available: Size<AvailableSpace>,
+            _text_renderer: &mut TextRenderer,
+        ) -> Size<f32> {
+            self.offered.push(available.height);
+            Size {
+                width: 100.0,
+                height: 300.0,
+            }
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let layout = taffy.layout(node).unwrap();
+            self.rect = Rect::from_origin_size(
+                (
+                    origin.x + f64::from(layout.location.x),
+                    origin.y + f64::from(layout.location.y),
+                ),
+                (f64::from(layout.size.width), f64::from(layout.size.height)),
+            );
+        }
+
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+
+        fn name(&self) -> &'static str {
+            "Tall"
+        }
+    }
+
+    #[test]
+    fn content_height_lays_the_root_out_past_the_viewport() {
+        let tall = || Tall {
+            rect: Rect::ZERO,
+            offered: Vec::new(),
+        };
+        let bounded = Framed::new(State::new(), tall(), (400, 200), Theme::dark());
+        assert!((bounded.rect.height() - 200.0).abs() < f64::EPSILON);
+        assert!(!bounded.offered.contains(&AvailableSpace::MaxContent));
+
+        let unbounded = Framed::with_options(
+            State::new(),
+            tall(),
+            (400, 200),
+            FrameOptions {
+                content_height: true,
+                ..Default::default()
+            },
+        );
+        assert!((unbounded.rect.height() - 300.0).abs() < f64::EPSILON);
+        assert!(unbounded.offered.contains(&AvailableSpace::MaxContent));
+    }
+
+    #[test]
+    #[should_panic(expected = "the root was not mounted as this type")]
+    fn typed_root_access_rejects_another_type() {
+        let harness =
+            FrameHarness::for_root(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
+        let _ = harness.root::<crate::widget::Text>();
+    }
+
+    #[test]
+    fn viewport_truncates_and_clamps_float_sizes() {
+        assert_eq!(viewport((1200.9_f32, 760.0)), (1200, 760));
+        assert_eq!(viewport((-3.0_f64, f64::NAN)), (0, 0));
+    }
+}

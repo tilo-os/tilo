@@ -992,6 +992,7 @@ fn display_capabilities(
     cards: &BTreeMap<u64, CardHandle>,
     profiles: &BTreeMap<String, String>,
     signal_status: &BTreeMap<String, OutputSignalStatus>,
+    scale_override: Option<f64>,
 ) -> Vec<settings_store::hardware::DisplayOutputSnapshot> {
     let (snapshots, _) = configured_connectors(cards);
     let mut outputs: Vec<_> = cards
@@ -1001,11 +1002,28 @@ fn display_capabilities(
                 snapshots.get(&device_id).map_or(&[], Vec::as_slice),
                 profiles,
                 signal_status,
+                scale_override,
             )
         })
         .collect();
     outputs.sort_by(|a, b| a.descriptor.connector.cmp(&b.descriptor.connector));
     outputs
+}
+
+/// Put each live output's actual scale over the one its capability entry
+/// was given for running unconfigured, keyed by configuration key.
+fn apply_live_scales<'a>(
+    outputs: &mut [settings_store::hardware::DisplayOutputSnapshot],
+    live: impl IntoIterator<Item = (&'a str, f64)>,
+) {
+    for (key, scale) in live {
+        if let Some(output) = outputs
+            .iter_mut()
+            .find(|output| output.descriptor.connector == key)
+        {
+            output.scale = scale;
+        }
+    }
 }
 
 /// Rebind already-modeset entries to the collision-resolved key from the
@@ -1139,7 +1157,8 @@ impl DrmDispatchState {
     /// hot-plug takes, so a display present at boot and one plugged in
     /// later end up configured identically. Each is interned by `(device,
     /// connector)` so its `OutputId` is stable, and the first gets
-    /// `OutputId(0)`, preserving the "primary == `OutputId(0)`" contract.
+    /// `OutputId(0)`: the last tie-break for the primary when Settings names
+    /// none and no built-in panel is attached (see `relayout_with`).
     /// Also seeds the pointer at the center of the combined space and
     /// publishes the initial display snapshot. Extracted from
     /// [`DrmRuntime::new`] to keep that constructor a readable top-level
@@ -1203,7 +1222,18 @@ impl DrmDispatchState {
     /// test/headless sessions (usually no `XDG_RUNTIME_DIR`) and never changes
     /// the output plan itself.
     fn publish_display_snapshot(&mut self) {
-        let outputs = display_capabilities(&self.cards, &self.color_profiles, &self.signal_status);
+        let mut outputs = display_capabilities(
+            &self.cards,
+            &self.color_profiles,
+            &self.signal_status,
+            self.scale_override,
+        );
+        apply_live_scales(
+            &mut outputs,
+            self.live
+                .iter()
+                .map(|entry| (entry.config_key.as_str(), entry.scale)),
+        );
         let layout = self
             .live
             .iter()
@@ -1859,10 +1889,14 @@ impl DrmDispatchState {
     }
 
     /// The public output table, in `OutputId` order.
-    fn output_table(&self) -> Vec<Output> {
-        let mut outs: Vec<Output> = self.output_meta.values().cloned().collect();
-        outs.sort_by_key(|o| o.id.0);
-        outs
+    /// The published outputs in the order [`Self::relayout_with`] keeps the
+    /// live set: the primary chosen in Settings first, else the built-in
+    /// panel, then by id. Everything downstream takes the first as primary.
+    pub(super) fn output_table(&self) -> Vec<Output> {
+        self.live
+            .iter()
+            .filter_map(|l| self.output_meta.get(&l.id).cloned())
+            .collect()
     }
 
     /// Perform one step of the pause/resume sequence the session state machine asked for.
@@ -3981,6 +4015,7 @@ impl DrmRuntime {
                     &self.dispatch.cards,
                     &self.dispatch.color_profiles,
                     &self.dispatch.signal_status,
+                    self.dispatch.scale_override,
                 )
                 .into_iter()
                 .map(|output| output.descriptor)
@@ -6514,6 +6549,83 @@ mod tests {
         assert_eq!(external.logical_position, (1280, 0));
         assert_eq!(panel.scale, 1.5);
         assert_eq!(external.scale, 1.0);
+    }
+
+    #[test]
+    fn the_published_snapshot_carries_each_live_outputs_own_scale() {
+        use settings_store::hardware::{DisplayConfig, DisplayOutputSnapshot, OutputDescriptor};
+
+        let (mut state, _rx) = dispatch_with_channel();
+        state.live = vec![
+            named(entry(0, 10, (2560, 1440), Some((597, 336))), "DP-1"),
+            named(entry(1, 11, (1920, 1080), Some((294, 165))), "eDP-1"),
+        ];
+        // Nothing saved: the compositor picks each scale itself.
+        state.relayout_with(&DisplayConfig::default());
+        let capability = |connector: &str| DisplayOutputSnapshot {
+            descriptor: OutputDescriptor {
+                connector: connector.into(),
+                connector_label: connector.into(),
+                modes: Vec::new(),
+                hdr: false,
+                vrr: false,
+                color_profiles: Vec::new(),
+                monitor: None,
+            },
+            current_mode: settings_store::hardware::OutputMode {
+                width: 1920,
+                height: 1080,
+                refresh_mhz: 60_000,
+            },
+            scale: 1.0,
+            builtin: false,
+            sink_hdr: false,
+            hdr_unavailable_reason: None,
+            sink_vrr: false,
+            vrr_unavailable_reason: None,
+            color_profile_labels: BTreeMap::new(),
+        };
+        let mut outputs = vec![
+            capability("DP-1"),
+            capability("eDP-1"),
+            capability("HDMI-A-1"),
+        ];
+        apply_live_scales(
+            &mut outputs,
+            state
+                .live
+                .iter()
+                .map(|entry| (entry.config_key.as_str(), entry.scale)),
+        );
+        assert_eq!(outputs[1].scale, 1.5, "the panel's own 1.5x");
+        assert_eq!(outputs[0].scale, 1.0);
+        assert_eq!(outputs[2].scale, 1.0, "an output that is off keeps its own");
+    }
+
+    #[test]
+    fn the_output_table_lists_the_primary_chosen_in_settings_first() {
+        use settings_store::hardware::{DisplayConfig, OutputConfig};
+
+        let (mut state, _rx) = dispatch_with_channel();
+        state.live = vec![
+            entry(0, 10, (1920, 1080), Some((527, 296))),
+            entry(1, 11, (2560, 1440), Some((597, 336))),
+        ];
+        let mut config = DisplayConfig::default();
+        config.outputs.insert(
+            "TEST-11".into(),
+            OutputConfig {
+                primary: true,
+                ..OutputConfig::default()
+            },
+        );
+        state.relayout_with(&config);
+        let table = state.output_table();
+        assert_eq!(
+            table.iter().map(|output| output.id).collect::<Vec<_>>(),
+            [OutputId(1), OutputId(0)],
+            "the shell, the lock screen and pointer clamping take the first output as primary"
+        );
     }
 
     #[test]

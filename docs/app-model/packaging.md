@@ -211,6 +211,22 @@ is the toolkit core it links against, and its release must equal the authored
 `package.runtime`; for `kind = "runtime"` (the toolkit core itself) it is the
 core the package provides.
 
+`tilo-app-package pack-desktop --platform windows|macos --arch x86_64|aarch64`
+writes the same block for a Windows or macOS build. Those systems ship no
+toolkit, so the package is one self-contained executable at `bin/<name>`;
+`module` names it (and so does `[entrypoint]`), `isa` is the feature level it
+was compiled for, and `runtime` is the linked toolkit release, equal to
+`package.runtime`:
+
+```toml
+[target]
+platform = "macos"
+architecture = "aarch64"
+isa = "aarch64"
+runtime = "tilo-runtime/2026.07"
+module = "bin/books"
+```
+
 ### Validation
 
 `tilo-app-package pack` calls
@@ -236,6 +252,10 @@ core the package provides.
   the payload, the package declares no native `[package.isa]`, only
   `kind = "app"` or `"runtime"` has one, and an app's entrypoint is the
   module.
+- a Windows or macOS `[target]` belongs to a `kind = "app"` with no
+  `[package.isa]`; its `module` is the entrypoint, a file in the payload, and
+  its `runtime` equals the non-empty `package.runtime`. Such a package may be
+  up to 64 MiB rather than the Tilo OS app limit.
 
 ### On-disk layout
 

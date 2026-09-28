@@ -17,11 +17,11 @@
 //! every path mutation against them so the user can't `..` out of the
 //! sandbox boundary.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -1060,8 +1060,6 @@ impl FilePicker {
 }
 
 impl Widget for FilePicker {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1129,35 +1127,24 @@ impl Widget for FilePicker {
         self.draw_footer(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.on_cursor_moved(p, handled);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.on_cursor_moved(p, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.on_mouse_wheel(delta, handled);
+                self.on_mouse_wheel(delta, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_left_click(*modifiers, handled);
+                self.on_left_click(*ctx.modifiers, ctx.handled);
             }
             WindowEvent::KeyboardInput { event: ke, .. } if ke.state == ElementState::Pressed => {
-                self.on_key_pressed(ke, *modifiers, handled);
+                self.on_key_pressed(ke, *ctx.modifiers, ctx.handled);
             }
             _ => {}
         }
@@ -1351,8 +1338,8 @@ impl Widget for FilePicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         matches!(action, crate::a11y::Action::Activate) && self.activate_focus()
     }
@@ -1361,8 +1348,8 @@ impl Widget for FilePicker {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         use crate::a11y::{Action, hash_key};
         let Some((&control_key, rest)) = key_path.split_first() else {
@@ -2019,6 +2006,7 @@ fn draw_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::fs;
     use winit::event::{DeviceId, ElementState, MouseButton};
 
@@ -2051,14 +2039,16 @@ mod tests {
         let root = automerge::ROOT;
         picker.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 
@@ -2722,14 +2712,16 @@ mod tests {
         let root = automerge::ROOT;
         picker.handle_event(
             event,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

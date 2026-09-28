@@ -30,18 +30,15 @@
 //! The two editors share one document, because collaborators do: the second
 //! adopts a save of the first, which is what a late joiner receives.
 
-use std::collections::HashMap;
-
 use automerge::AutoCommit;
-use taffy::prelude::*;
+use taffy::{NodeId, TaffyTree};
+use ui::headless::{Framed, viewport};
 use ui::offscreen::OffscreenRenderer;
-use ui::permissions::{PermissionContext, UserId};
+use ui::permissions::UserId;
 use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::Scene;
-use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 use video_editor::app::ShotScenario;
 use video_editor::doc::VideoDoc;
@@ -56,90 +53,56 @@ const H: u32 = 800;
 const W_F32: f32 = 1280.0;
 const H_F32: f32 = 800.0;
 
-/// One editor and the document it holds.
+/// One editor and the document it holds, mounted in the production frame host.
 struct Participant {
-    app: VideoEditorApp,
-    doc: AutoCommit,
+    app: Framed<VideoEditorApp>,
 }
 
 impl Participant {
     /// The participant who opens the project.
     fn opening() -> Self {
         ui::host::install_default(ui::host::HostServices::recording().0);
-        let mut p = Participant {
-            app: VideoEditorApp::new_for_shot(ShotScenario::Live),
-            doc: AutoCommit::new(),
-        };
-        p.frame(&PresenceCtx::empty());
-        p
+        Self::mount(
+            VideoEditorApp::new_for_shot(ShotScenario::Live),
+            AutoCommit::new(),
+        )
     }
 
     /// A participant who joins and is handed the project, the way a late
     /// joiner is answered with the document.
     fn joining(from: &Participant) -> Self {
         ui::host::install_default(ui::host::HostServices::recording().0);
-        let mut p = Participant {
-            app: VideoEditorApp::new(),
-            doc: AutoCommit::load(&from.doc.clone().save()).expect("the handed-over document"),
-        };
-        p.frame(&PresenceCtx::empty());
-        p
+        Self::mount(
+            VideoEditorApp::new(),
+            AutoCommit::load(&from.doc().clone().save()).expect("the handed-over document"),
+        )
+    }
+
+    /// Mounting runs the first frame, drawn with nobody else in the room.
+    fn mount(app: VideoEditorApp, doc: AutoCommit) -> Self {
+        let mut state = ui::State::new();
+        state.adopt_doc(doc);
+        Participant {
+            app: Framed::new(state, app, viewport((W_F32, H_F32)), Theme::dark()),
+        }
+    }
+
+    fn doc(&self) -> &AutoCommit {
+        &Framed::harness(&self.app).state().doc
     }
 
     /// Sync, lay out and draw one frame — everything the host does per frame,
     /// so the editor has a real rect and real geometry behind it.
     fn frame(&mut self, presence: &PresenceCtx) -> Scene {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-        self.app.sync(&mut self.doc, &automerge::ROOT);
-        let child = self.app.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(W_F32),
-                        height: Dimension::length(H_F32),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .expect("a root node");
-        {
-            let measure_map = node_map.clone();
-            let tr = &mut tr;
-            taffy
-                .compute_layout_with_measure(
-                    root,
-                    taffy::Size {
-                        width: AvailableSpace::Definite(W_F32),
-                        height: AvailableSpace::Definite(H_F32),
-                    },
-                    |known, available, node_id, _, _| {
-                        if let Some(&ptr) = measure_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, available, tr) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .expect("layout");
-        }
-        self.app.apply_layout(&taffy, child, Point::ORIGIN);
-
-        let mut scene = Scene::new();
-        self.app.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            presence,
-            &PermissionContext::permissive(),
-        );
-        scene
+        let harness = Framed::harness_mut(&mut self.app);
+        harness.update_presence(|room| {
+            *room = presence.clone();
+            true
+        });
+        harness
+            .relayout_themed(viewport((W_F32, H_F32)), Theme::dark())
+            .expect("layout");
+        harness.scene().clone()
     }
 
     /// Press a key, the way the host delivers one.
@@ -160,16 +123,19 @@ impl Participant {
         let mut handled = false;
         let mut focus = None;
         let taffy = TaffyTree::<()>::new();
-        self.app.handle_event(
+        let (app, state) = Framed::split(&mut self.app);
+        app.handle_event(
             &event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut self.doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            NodeId::new(0),
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut state.doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+            },
         );
     }
 
@@ -203,7 +169,7 @@ impl Participant {
 /// the document rather than from the editor, because that is the thing the
 /// two of them actually share.
 fn clip_ids(p: &Participant) -> Vec<ClipId> {
-    let mut ids: Vec<ClipId> = VideoDoc::load_project(&p.doc)
+    let mut ids: Vec<ClipId> = VideoDoc::load_project(p.doc())
         .clips
         .iter()
         .map(|c| c.id)
@@ -214,7 +180,7 @@ fn clip_ids(p: &Participant) -> Vec<ClipId> {
 
 /// How long the shared project runs.
 fn duration(p: &Participant) -> f64 {
-    VideoDoc::load_project(&p.doc).duration()
+    VideoDoc::load_project(p.doc()).duration()
 }
 
 /// Rasterise, and count how many pixels carry a colour.
@@ -372,7 +338,7 @@ fn participants_locate_and_track_each_other() {
 
         // The title she just made, as the *document* holds it — which is what a
         // second participant would receive.
-        let title = VideoDoc::load_project(&ada.doc)
+        let title = VideoDoc::load_project(ada.doc())
             .media
             .iter()
             .find(|m| m.kind == MediaKind::Text)
@@ -396,7 +362,7 @@ fn participants_locate_and_track_each_other() {
         // A joiner receives the very object that key names, so it resolves.
         let bo = Participant::joining(&ada);
         assert!(
-            VideoDoc::load_project(&bo.doc)
+            VideoDoc::load_project(bo.doc())
                 .media
                 .iter()
                 .any(|m| m.id == title),
@@ -490,7 +456,7 @@ fn participants_presence_reaches_the_other_screen() {
 
         // A clip near the start of the timeline, so it is on screen at the
         // default zoom -- an outline on a clip nobody can see proves nothing.
-        let project = VideoDoc::load_project(&bo.doc);
+        let project = VideoDoc::load_project(bo.doc());
         let clip = project
             .clips
             .iter()

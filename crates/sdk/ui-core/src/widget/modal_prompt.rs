@@ -17,9 +17,9 @@
 //! // …on submit: dialog.content().value()
 //! ```
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
@@ -146,7 +146,7 @@ fn px(v: f64) -> f32 {
 }
 
 impl Widget for PromptBody {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.input.sync(state, path);
     }
 
@@ -214,29 +214,8 @@ impl Widget for PromptBody {
         self.input.draw(scene, transform, tr, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.input.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.input.handle_event(event, ctx);
     }
 
     fn is_focusable(&self) -> bool {
@@ -272,6 +251,7 @@ impl Widget for PromptBody {
 mod tests {
     use super::*;
     use crate::widget::ModalDialog;
+    use automerge::AutoCommit;
     use vello::kurbo::Point;
     use winit::event::{DeviceId, ElementState, KeyEvent, MouseButton};
     use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
@@ -341,14 +321,16 @@ mod tests {
         let root = automerge::ROOT;
         d.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 

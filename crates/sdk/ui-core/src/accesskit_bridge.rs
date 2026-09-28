@@ -1289,7 +1289,7 @@ mod tests {
     }
 
     impl Widget for TestWidget {
-        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
+        fn sync(&mut self, _s: &mut crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -1323,12 +1323,6 @@ mod tests {
             _presence: &crate::presence::PresenceCtx,
         ) {
         }
-        fn handle_event_ctx(
-            &mut self,
-            _event: &winit::event::WindowEvent,
-            _ctx: &mut crate::widget::EventCtx<'_>,
-        ) {
-        }
         fn children(&self) -> Vec<&dyn Widget> {
             self.kids.iter().map(std::convert::AsRef::as_ref).collect()
         }
@@ -1355,7 +1349,7 @@ mod tests {
     }
 
     impl Widget for AliasWrapper {
-        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
+        fn sync(&mut self, _s: &mut crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
         fn build_layout(
             &mut self,
             tree: &mut TaffyTree<()>,
@@ -1378,19 +1372,6 @@ mod tests {
             _text: &mut crate::text_render::TextRenderer,
             _theme: &Theme,
             _presence: &crate::presence::PresenceCtx,
-        ) {
-        }
-        fn handle_event(
-            &mut self,
-            _event: &winit::event::WindowEvent,
-            _scale: f64,
-            _modifiers: &winit::event::Modifiers,
-            _state: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
-            _handled: &mut bool,
-            _focus: &mut Option<TaffyNodeId>,
-            _node: TaffyNodeId,
-            _tree: &TaffyTree<()>,
         ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
@@ -1648,7 +1629,7 @@ mod tests {
     }
 
     impl Widget for FirstFieldHost {
-        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
+        fn sync(&mut self, _s: &mut crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -1676,19 +1657,6 @@ mod tests {
             _text_renderer: &mut crate::text_render::TextRenderer,
             _theme: &Theme,
             _presence: &crate::presence::PresenceCtx,
-        ) {
-        }
-        fn handle_event(
-            &mut self,
-            _event: &winit::event::WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &winit::event::Modifiers,
-            _state: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
-            _handled: &mut bool,
-            _focus_target: &mut Option<taffy::NodeId>,
-            _node_id: taffy::NodeId,
-            _taffy: &TaffyTree<()>,
         ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {

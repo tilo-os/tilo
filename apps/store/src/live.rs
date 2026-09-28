@@ -6,10 +6,9 @@
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
-use ui::tilo_actions::{
-    ControlInvocation, InvocationId, InvocationUpdate, OperationKind, Resource,
-};
-use ui::widget::{ResourceOperationStart, Widget};
+use ui::tilo_actions::{ControlInvocation, InvocationId, InvocationUpdate, Resource};
+use ui::widget::{AppModel, ModelPath};
+use ui::widget::{ResourceOperation, ResourceOperationStart, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -65,29 +64,13 @@ impl Widget for LiveStore {
         self.inner.resources(doc)
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<bool, String> {
-        self.inner
-            .invoke_resource_operation(kind, type_id, payload, doc, path)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        self.inner
-            .start_resource_operation(invocation, kind, type_id, payload, doc, path)
+        self.inner.start_operation(op, doc, path)
     }
 
     fn poll_resource_operation(
@@ -105,7 +88,8 @@ impl Widget for LiveStore {
         clippy::too_many_lines,
         reason = "this is the single host sync point that drains worker snapshots and forwards every typed Store intent without optimistic state"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         while let Some(snap) = self.worker.try_snapshot() {
             if let Some(invocation) = snap.invocation {
                 self.inner
@@ -283,26 +267,9 @@ impl Widget for LiveStore {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        self.inner.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+        self.inner.handle_event(event, ctx);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

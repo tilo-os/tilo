@@ -10,6 +10,7 @@
 //! * A [`MarkSpan`] list (inline bold/italic/code/link) with rendering and
 //!   Ctrl-B/I/E toggling built on the inner `TextInput`'s selection range.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
@@ -20,7 +21,7 @@ use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
@@ -914,7 +915,8 @@ impl Widget for RichTextLine {
         self.dirty.styled_layout || self.inner.is_layout_dirty()
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document(state, path);
         // Realigning the mark-diff snapshot here keeps a remotely-synced edit
         // from being misread as a local splice on the next keystroke.
         self.inner.sync(state, path);
@@ -1095,18 +1097,7 @@ impl Widget for RichTextLine {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Intercepted before the inner TextInput sees them — otherwise Enter
         // would be filtered as a control char, and Backspace at byte 0 would
         // silently no-op (TextInput already guards `cursor_pos > 0`).
@@ -1123,11 +1114,11 @@ impl Widget for RichTextLine {
         {
             // Intercepted so the character doesn't get inserted via the
             // text branch (TextInput's own Ctrl-handler skips b/i/e/u).
-            if (modifiers.state().control_key() || modifiers.state().super_key())
+            if (ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key())
                 && let Key::Character(c) = logical_key
                 && self.handle_mark_shortcut(c)
             {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
 
@@ -1136,33 +1127,35 @@ impl Widget for RichTextLine {
                 // TextInput splice Shift+Enter so marks, undo, and peers see
                 // the same line break, without creating another list item.
                 Key::Named(NamedKey::Enter)
-                    if self.wrap && self.inline_formatting && modifiers.state().shift_key() => {}
+                    if self.wrap && self.inline_formatting && ctx.modifiers.state().shift_key() => {
+                }
                 Key::Named(NamedKey::Enter) => {
                     // Shift+Enter is a soft-break; plain Enter splits.
                     let split_at = self.inner.cursor_pos();
-                    self.signal = if modifiers.state().shift_key() {
+                    self.signal = if ctx.modifiers.state().shift_key() {
                         Some(LineSignal::SoftNewline { split_at })
                     } else {
                         Some(LineSignal::Enter { split_at })
                     };
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::Backspace) => {
                     // Otherwise the inner input handles the delete.
                     if self.inner.cursor_pos() == 0 && self.selection_range().is_none() {
                         self.signal = Some(LineSignal::BackspaceAtStart);
-                        *handled = true;
+                        *ctx.handled = true;
                         return;
                     }
                 }
                 Key::Named(NamedKey::ArrowUp)
                     if !self.wrap
                         || !self.inner.has_visual_row(false)
-                        || ((modifiers.state().control_key() || modifiers.state().super_key())
-                            && modifiers.state().shift_key()) =>
+                        || ((ctx.modifiers.state().control_key()
+                            || ctx.modifiers.state().super_key())
+                            && ctx.modifiers.state().shift_key()) =>
                 {
-                    let m = modifiers.state();
+                    let m = ctx.modifiers.state();
                     self.signal = if m.shift_key() {
                         Some(LineSignal::SelectBlockUp {
                             caret: self.inner.cursor_pos(),
@@ -1170,16 +1163,17 @@ impl Widget for RichTextLine {
                     } else {
                         Some(LineSignal::ArrowUp)
                     };
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::ArrowDown)
                     if !self.wrap
                         || !self.inner.has_visual_row(true)
-                        || ((modifiers.state().control_key() || modifiers.state().super_key())
-                            && modifiers.state().shift_key()) =>
+                        || ((ctx.modifiers.state().control_key()
+                            || ctx.modifiers.state().super_key())
+                            && ctx.modifiers.state().shift_key()) =>
                 {
-                    let m = modifiers.state();
+                    let m = ctx.modifiers.state();
                     self.signal = if m.shift_key() {
                         Some(LineSignal::SelectBlockDown {
                             caret: self.inner.cursor_pos(),
@@ -1187,24 +1181,14 @@ impl Widget for RichTextLine {
                     } else {
                         Some(LineSignal::ArrowDown)
                     };
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 _ => {}
             }
         }
 
-        self.inner.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+        self.inner.handle_event(event, ctx);
 
         // Reconcile marks against any text edit using byte-deltas from the previous snapshot.
         let new_text = self.inner.value().to_string();
@@ -1256,9 +1240,10 @@ impl Widget for RichTextLine {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = crate::doc::document(state, path);
         let handled = Widget::perform_action(&mut self.inner, action, state, path);
         if handled && matches!(action, crate::a11y::Action::SetValue(_)) {
             self.marks.clear();
@@ -1555,7 +1540,7 @@ pub fn link_at_byte(marks_list: &[MarkSpan], byte: usize) -> Option<PageId> {
 mod tests {
     use super::*;
     use crate::widget::marks::Mark;
-    use winit::event::KeyEvent;
+    use winit::event::{KeyEvent, Modifiers};
     use winit::keyboard::{
         Key, KeyLocation, ModifiersKeyState, ModifiersState, NamedKey, PhysicalKey, SmolStr,
     };
@@ -1605,14 +1590,16 @@ mod tests {
         let fake_node = NodeId::new(0);
         line.handle_event(
             event,
-            1.0,
-            &modifiers,
-            &mut state,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            fake_node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut state,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: fake_node,
+                taffy: &taffy,
+            },
         );
     }
 
@@ -1837,14 +1824,16 @@ mod tests {
                 let mut focus_target = None;
                 line.handle_event(
                     &ev,
-                    1.0,
-                    &Modifiers::default(),
-                    &mut doc,
-                    &ROOT,
-                    &mut handled,
-                    &mut focus_target,
-                    NodeId::new(0),
-                    &taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &Modifiers::default(),
+                        state: &mut doc,
+                        path: &ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut focus_target,
+                        node_id: NodeId::new(0),
+                        taffy: &taffy,
+                    },
                 );
             }
 
@@ -1874,14 +1863,16 @@ mod tests {
                 let mut focus_target = None;
                 line.handle_event(
                     &ev,
-                    1.0,
-                    &Modifiers::default(),
-                    &mut doc,
-                    &ROOT,
-                    &mut handled,
-                    &mut focus_target,
-                    NodeId::new(0),
-                    &taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &Modifiers::default(),
+                        state: &mut doc,
+                        path: &ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut focus_target,
+                        node_id: NodeId::new(0),
+                        taffy: &taffy,
+                    },
                 );
             }
             assert_eq!(doc.text(&tid).unwrap(), "hi");
