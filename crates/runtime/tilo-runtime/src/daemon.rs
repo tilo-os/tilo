@@ -40,6 +40,9 @@ pub enum Mode {
 pub struct Args {
     pub profile: PathBuf,
     pub mode: Mode,
+    /// `--dev`, for `--daemon` only: serve builds under development, which
+    /// are not installed.
+    pub dev: bool,
 }
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
@@ -83,8 +86,10 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
     let mut arguments = arguments.into_iter();
     let mut profile = None;
     let mut mode = None;
+    let mut dev = false;
     while let Some(argument) = arguments.next() {
         match argument.to_str() {
+            Some("--dev") if !dev => dev = true,
             Some("--profile") if profile.is_none() => {
                 profile = Some(PathBuf::from(
                     arguments
@@ -130,7 +135,11 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
     if !profile.is_absolute() {
         return Err(invalid("runtime profile must be absolute"));
     }
-    Ok(Args { profile, mode: mode.ok_or_else(|| invalid("choose --daemon, --connect, --run-app APP_ID -- EXECUTABLE, or --profile PATH --apps MANIFEST"))? })
+    let mode = mode.ok_or_else(|| invalid("choose --daemon, --connect, --run-app APP_ID -- EXECUTABLE, or --profile PATH --apps MANIFEST"))?;
+    if dev && mode != Mode::Daemon {
+        return Err(invalid("--dev starts a daemon: use it with --daemon"));
+    }
+    Ok(Args { profile, mode, dev })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -623,10 +632,15 @@ fn ensure_running(profile: &Path) -> io::Result<Status> {
     clippy::significant_drop_tightening,
     reason = "the broker is resolved before the endpoint is touched so a missing broker fails first"
 )]
-pub fn serve<S: RuntimeServices>(profile: &Path) -> io::Result<()> {
+pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
     validate_profile(profile)?;
     let mut stages = StartupStages::open(profile)?;
-    let session = S::start_reporting(profile, &mut |stage| stages.enter(stage))?;
+    let mut stage = |stage: &str| stages.enter(stage);
+    let session = if dev {
+        S::start_in_dev_mode(profile, &mut stage)?
+    } else {
+        S::start_reporting(profile, &mut stage)?
+    };
     let host = session.action_host()?;
     let computer = crate::computer::Computer::from_env(profile)?.map(Arc::new);
     let path = profile.join("native.sock");
