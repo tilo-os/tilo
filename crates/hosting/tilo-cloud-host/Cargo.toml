@@ -50,7 +50,7 @@ tilo-relay = { path = "../tilo-relay" }
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 tilo-atomic-file = {path="../../system/atomic-file"}
 private-fs = { path = "../../system/private-fs" }
-secret-vault = { path = "../../system/secret-vault" }
+tilo-secret-vault = { path = "../../system/secret-vault" }
 tilo-seal = { path = "../../system/tilo-seal" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 word-processor = {path="../../../apps/word-processor"}
