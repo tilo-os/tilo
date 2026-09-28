@@ -24,7 +24,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::platform::web::{EventLoopExtWebSys as _, WindowAttributesExtWebSys as _};
 use winit::window::{Window, WindowId};
 
-use crate::viewport::{Viewport, ViewportState};
+use crate::viewport::{SurfaceCaps, Viewport, ViewportState};
 
 thread_local! {
     static LOOP: RefCell<Option<EventLoopProxy<u64>>> = const { RefCell::new(None) };
@@ -69,6 +69,10 @@ struct Config {
     /// changing without a focus or structure change.
     #[serde(default)]
     semantics_window_ms: Option<u64>,
+    /// Render within WebKit's GPU memory: a smaller canvas backing store and
+    /// scratch budget (`SurfaceCaps::CONSERVATIVE`).
+    #[serde(default)]
+    conservative_gpu: bool,
 }
 
 impl Config {
@@ -121,6 +125,7 @@ struct Mount {
     gpu: Option<Gpu>,
     pending: bool,
     viewport: ViewportState,
+    caps: SurfaceCaps,
     hidden: bool,
     generation: u64,
     frames: u64,
@@ -175,6 +180,8 @@ const MAX_SCENE_BYTES: usize = 128 << 20;
 /// included. Safari kills its GPU process past 600 MB; with every buffer
 /// allowed a full 128 MiB binding, the renderer alone could reach 900 MB.
 const MAX_BUMP_BUDGET_BYTES: u64 = 128 << 20;
+/// The scratch budget under `conservative_gpu`.
+const CONSERVATIVE_BUMP_BUDGET_BYTES: u64 = 64 << 20;
 
 fn scene_within_limits(scene: &vello::Scene) -> Result<(), String> {
     let encoding = scene.encoding();
@@ -715,7 +722,12 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         height: size.height,
         dpr: window.scale_factor(),
     };
-    let viewport = observed.bounded();
+    let caps = if config.conservative_gpu {
+        SurfaceCaps::CONSERVATIVE
+    } else {
+        SurfaceCaps::STANDARD
+    };
+    let viewport = observed.bounded_by(caps);
     let dpr = viewport.dpr;
     let text_renderer = ui::TextRenderer::with_browser_font_system(system);
     let mut frame = match root {
@@ -798,7 +810,8 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         desktop,
         gpu: None,
         pending: true,
-        viewport: ViewportState::new(observed),
+        viewport: ViewportState::with_caps(observed, caps),
+        caps,
         hidden: false,
         generation: 1,
         frames: 0,
@@ -812,11 +825,11 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     };
     MOUNTS.with_borrow_mut(|m| m.insert(id, mount));
     emit(&status, &serde_json::json!({"phase":"gpu-pending","id":id}));
-    initialize_gpu(id, 1, window);
+    initialize_gpu(id, 1, window, caps);
     Ok(())
 }
 
-fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
+fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>, caps: SurfaceCaps) {
     wasm_bindgen_futures::spawn_local(async move {
         let result = async {
             let size = window.inner_size();
@@ -825,7 +838,7 @@ fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
                 height: size.height,
                 dpr: window.scale_factor(),
             }
-            .bounded();
+            .bounded_by(caps);
             let mut cx = ui::gpu::RenderContext::new();
             let surface = cx
                 .create_surface(
@@ -848,7 +861,11 @@ fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
                 },
             )
             .map_err(|e| e.to_string())?;
-            renderer.set_bump_budget_limit(MAX_BUMP_BUDGET_BYTES);
+            renderer.set_bump_budget_limit(if caps == SurfaceCaps::CONSERVATIVE {
+                CONSERVATIVE_BUMP_BUDGET_BYTES
+            } else {
+                MAX_BUMP_BUDGET_BYTES
+            });
             let p = proxy().map_err(|e| format!("{e:?}"))?;
             let failure = Arc::new(Mutex::new(None));
             let lost = Arc::clone(&failure);
@@ -1519,7 +1536,7 @@ pub fn recover(id: u64) -> Result<(), JsValue> {
         m.gpu = None;
         m.generation = m.generation.saturating_add(1);
         m.error = None;
-        initialize_gpu(id, m.generation, Arc::clone(&m.window));
+        initialize_gpu(id, m.generation, Arc::clone(&m.window), m.caps);
         Ok(())
     })
 }
