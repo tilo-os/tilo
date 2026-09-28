@@ -22,9 +22,7 @@
 //!
 //! Variants carry everything [`Action::apply`] needs (the item id, the scanned
 //! payload, and a timestamp minted at authoring time); `apply` never touches
-//! the RNG or the wall-clock. Legacy favorite/removal variants remain decodable
-//! for replicated history, but Camera no longer publishes them as media-library
-//! affordances. A malformed payload or an oversized legacy list is an explicit
+//! the RNG or the wall-clock. A malformed payload is an explicit
 //! [`ActionError::Refused`], so the invoker never mistakes a rejected durable
 //! mutation for success.
 
@@ -113,11 +111,6 @@ pub enum CameraAction {
         label: String,
         facing: Facing,
     },
-    /// Legacy history payload retained only so old documents fail honestly;
-    /// media removal belongs to Photos or Video Player.
-    RemoveCapture {
-        id: String,
-    },
     SetMode {
         mode: CaptureMode,
     },
@@ -153,12 +146,6 @@ pub enum CameraAction {
     },
     SetDefaultFacing {
         facing: Facing,
-    },
-    /// Legacy payload retained for old action history. New Camera surfaces do
-    /// not publish or apply media-library favorite management.
-    SetFavorite {
-        id: String,
-        on: bool,
     },
     /// Record a decoded code into the shared scan history. The QR/barcode
     /// decode is device I/O (external); this metadata row-insert is the
@@ -200,11 +187,6 @@ impl Action for CameraAction {
                 },
             )
             .map_err(ActionError::Refused)?,
-            CameraAction::RemoveCapture { .. } => {
-                return Err(ActionError::Refused(
-                    "Camera no longer removes media; use Photos or Video Player".into(),
-                ));
-            }
             CameraAction::SetMode { mode } => doc::write_mode(doc, &ROOT, *mode),
             CameraAction::SetFacing { facing } => doc::write_facing(doc, &ROOT, *facing),
             CameraAction::SetResolution { resolution } => {
@@ -221,11 +203,6 @@ impl Action for CameraAction {
             CameraAction::SetHdr { on } => doc::set_hdr(doc, &ROOT, *on),
             CameraAction::SetDefaultFacing { facing } => {
                 doc::set_default_facing(doc, &ROOT, *facing);
-            }
-            CameraAction::SetFavorite { .. } => {
-                return Err(ActionError::Refused(
-                    "Camera no longer manages favorites; use Photos".into(),
-                ));
             }
             CameraAction::RecordScan { raw, ts } => {
                 doc::record_scan(doc, &ROOT, raw, *ts).map_err(ActionError::Refused)?;
@@ -1044,25 +1021,6 @@ mod tests {
                 .find(|action| action.id == "open")
                 .expect("capture has a canonical open action");
             assert_eq!(open.kind, OperationKind::Effect);
-        }
-        // Phase `legacy_media_management_actions_are_decodable_but_refused`.
-        {
-            let mut doc = AutoCommit::new();
-            let action = CameraAction::RemoveCapture {
-                id: "IMG_refuse.jpg".into(),
-            };
-            assert!(matches!(
-                action.apply(&mut doc),
-                Err(ActionError::Refused(message)) if message.contains("Photos or Video Player")
-            ));
-            let favorite = CameraAction::SetFavorite {
-                id: "IMG_refuse.jpg".into(),
-                on: true,
-            };
-            assert!(matches!(
-                favorite.apply(&mut doc),
-                Err(ActionError::Refused(message)) if message.contains("Photos")
-            ));
         }
     }
 

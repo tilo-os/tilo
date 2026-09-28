@@ -1675,12 +1675,9 @@ impl SheetsApp {
                 self.grid.select_only((0, 0));
             }
         } else {
-            // Restored workbook: clamp the persisted active index and land on A1.
-            // Older local workbooks carried the active tab in the shared CRDT.
-            // Read it once as a migration hint, but do not write it back: a
-            // tab is local presentation, not collaborative workbook content.
-            let active = SheetsDoc::active_index(doc);
-            self.active_sheet = active;
+            // Restored workbook: land on the first sheet at A1. The active tab
+            // is local presentation, not collaborative workbook content.
+            self.active_sheet = 0;
             self.grid.select_only((0, 0));
         }
         let current_heads = doc.get_heads();
@@ -8653,9 +8650,11 @@ mod tests {
             app.grid.insert_text_public("draft");
             app.switch_sheet(&mut doc, 1); // click the "Sales" tab
             assert_eq!(app.active_sheet, 1);
-            assert_eq!(
-                SheetsDoc::active_index(&mut doc),
-                0,
+            let wb = SheetsDoc::wb_map(&mut doc);
+            assert!(
+                automerge::ReadDoc::get(&doc, &wb, "active")
+                    .unwrap()
+                    .is_none(),
                 "switching tabs is local presentation and must not write the shared workbook"
             );
             // The pending edit landed on sheet 0, not sheet 1.
