@@ -3122,7 +3122,7 @@ mod tests {
             {
                 break;
             }
-            assert!(Instant::now() < deadline, "copy invocation did not settle");
+            assert!(ui::time::now() < deadline, "copy invocation did not settle");
             std::thread::yield_now();
         }
     }

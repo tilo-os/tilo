@@ -9281,7 +9281,7 @@ mod tests {
                 break 'phase;
             }
             // The page at 100 % arrives first; it is what shows under the tiles.
-            set_zoom_and_frame(&mut app, &mut st, 1.0, None);
+            let mut app = framed_at_zoom(app, st, 1.0, None);
             while app.raster_images.is_empty() && ui::time::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
                 full_frame(&mut app, 1280.0, 800.0, None);
