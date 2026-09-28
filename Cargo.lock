@@ -15162,6 +15162,7 @@ dependencies = [
  "collab-types",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
+ "iroh",
  "iroh-base",
  "parking_lot",
  "postcard",
@@ -15177,6 +15178,8 @@ dependencies = [
  "tilo-relay",
  "tilo-relay-protocol",
  "tilo-user-identity",
+ "tokio",
+ "tracing",
  "uuid",
  "workspace-hack",
 ]

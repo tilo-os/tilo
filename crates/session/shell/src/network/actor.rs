@@ -5,7 +5,6 @@
 
 pub(crate) mod governor_lane;
 pub(crate) mod native_ingress;
-mod native_publication;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};

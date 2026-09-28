@@ -17,6 +17,8 @@ automerge.workspace = true
 blake3.workspace = true
 collab-types = { path = "../collab-types" }
 ed25519-dalek.workspace = true
+# The endpoint a relay session dials its pinned host from.
+iroh.workspace = true
 # The random id of each enrollment challenge request.
 getrandom.workspace = true
 parking_lot.workspace = true
@@ -33,6 +35,8 @@ tilo-peer-state = { path = "../tilo-peer-state" }
 tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { path = "../tilo-user-identity" }
+tokio = { workspace = true, features = ["time"] }
+tracing.workspace = true
 iroh-base = { workspace = true, features = ["key"], optional = true }
 uuid = { workspace = true, optional = true }
 workspace-hack = { version = "0.1" }
