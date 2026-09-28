@@ -289,8 +289,8 @@ test ! -e %{buildroot}%{_userunitdir}/tilo-portal.service
 test -s %{buildroot}%{_datadir}/tilo-apps/registry.toml
 grep -q '^id = "so.tilo.settings"$' %{buildroot}%{_datadir}/tilo-apps/registry.toml
 grep -q '^payload_root = "/usr/lib/tilo-apps/' %{buildroot}%{_datadir}/tilo-apps/registry.toml
-test -d %{buildroot}%{_prefix}/lib/tilo-apps/payloads
-test ! -e %{buildroot}%{_datadir}/tilo-apps/payloads
+test -d %{buildroot}%{_prefix}/lib/tilo-apps/pkgs
+test ! -e %{buildroot}%{_datadir}/tilo-apps/pkgs
 test -f %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml
 test "$(stat -c %%a %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml)" = 644
 grep -q '/usr/lib/tilo-apps/bin' %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.sh
