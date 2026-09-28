@@ -400,7 +400,7 @@ mod open_with_tests {
         let (route, _clear) = pdf_route();
         let mut w = pdf_widget();
         let mut doc = automerge::AutoCommit::new();
-        let resources = Widget::resources(&w, &doc);
+        let resources = ui::resources::resources(&w, &doc);
         let entry_id = crate::search_provider::entry_resource_id(Path::new("/docs/slides.pdf"));
         let spec = ui::tilo_actions::door::resolve(
             &resources,
@@ -491,7 +491,7 @@ mod open_with_tests {
         // Picking a row resolves through the published resource, exactly as
         // the application host dispatches a palette selection.
         let mut doc = automerge::AutoCommit::new();
-        let resources = Widget::resources(&w, &doc);
+        let resources = ui::resources::resources(&w, &doc);
         let entry_id = crate::search_provider::entry_resource_id(Path::new("/docs/slides.pdf"));
         let spec = ui::tilo_actions::door::resolve(
             &resources,
@@ -529,8 +529,8 @@ mod open_with_tests {
         let (route, _clear) = pdf_route();
         let w = pdf_widget();
         let doc = automerge::AutoCommit::new();
-        let _ = Widget::resources(&w, &doc);
-        let _ = Widget::resources(&w, &doc);
+        let _ = ui::resources::resources(&w, &doc);
+        let _ = ui::resources::resources(&w, &doc);
         let asked = route
             .calls
             .borrow()
@@ -882,7 +882,7 @@ mod command_path_tests {
         w.navigate(folder.clone());
         let initial_zoom = w.zoom_level();
         let mut doc = automerge::AutoCommit::new();
-        let resources = Widget::resources(&w, &doc);
+        let resources = ui::resources::resources(&w, &doc);
         let folder_resource = &resources[0];
         for action in [
             "grid",
@@ -955,7 +955,7 @@ mod command_path_tests {
         // Trash; runtime revalidation is covered by the command itself.
         w.last_trash_undo = Some(vec![PathBuf::from("/not-a-real-trash-entry")]);
         let mut doc = automerge::AutoCommit::new();
-        let folder = Widget::resources(&w, &doc)
+        let folder = ui::resources::resources(&w, &doc)
             .into_iter()
             .next()
             .expect("current folder resource");
@@ -1107,7 +1107,7 @@ mod command_path_tests {
         w.current_path = d.path().to_path_buf();
         w.entries = vec![entry];
         let mut doc = automerge::AutoCommit::new();
-        let resources = Widget::resources(&w, &doc);
+        let resources = ui::resources::resources(&w, &doc);
         let resource = resources[0]
             .children
             .iter()
@@ -1474,7 +1474,7 @@ mod command_path_tests {
         std::fs::write(&file, b"x").unwrap();
         let mut w = FileExplorerWidget::new();
         w.navigate(d.path().to_path_buf());
-        let resources = Widget::resources(&w, &automerge::AutoCommit::new());
+        let resources = ui::resources::resources(&w, &automerge::AutoCommit::new());
         let entry = resources[0]
             .children
             .iter()
@@ -1507,7 +1507,7 @@ mod command_path_tests {
             })
             .collect();
         let doc = automerge::AutoCommit::new();
-        let catalogue = Widget::resources(&w, &doc);
+        let catalogue = ui::resources::resources(&w, &doc);
         let eager_entries = catalogue[0]
             .children
             .iter()
@@ -1517,7 +1517,7 @@ mod command_path_tests {
 
         let last = w.entries.last().expect("fixture has a final entry");
         let id = FileExplorerWidget::entry_resource_id(last);
-        let resolved = Widget::resource(&w, &doc, &id)
+        let resolved = ui::resources::resource(&w, &doc, &id)
             .expect("an exact current-folder entry resolves on demand");
         assert_eq!(resolved.id.as_str(), id);
         assert!(resolved.actions.iter().any(|action| action.id == "open"));
@@ -1529,18 +1529,18 @@ mod command_path_tests {
         let mut w = FileExplorerWidget::new();
         w.navigate(d.path().to_path_buf());
         let doc = automerge::AutoCommit::new();
-        let eager = Widget::resources(&w, &doc)
+        let eager = ui::resources::resources(&w, &doc)
             .into_iter()
             .next()
             .expect("folder root is exported");
-        let page = Widget::action_directory_resource_page(&w, &doc, &[], 1)
+        let page = ui::resources::action_directory_resource_page(&w, &doc, &[], 1)
             .expect("Files supports bounded action-directory pages");
         let paged = page
             .resources
             .into_iter()
             .next()
             .expect("the first page contains the folder root");
-        let resolved = Widget::resource(&w, &doc, eager.id.as_str())
+        let resolved = ui::resources::resource(&w, &doc, eager.id.as_str())
             .expect("the canonical folder id resolves on demand");
         let ids = |resource: &Resource| {
             resource
@@ -1613,7 +1613,7 @@ mod command_path_tests {
         files.navigate(directory.path().into());
         let mut doc = automerge::AutoCommit::new();
         let mut invoke_rename = |source: &Path, name: &str| {
-            let resources = Widget::resources(&files, &doc);
+            let resources = ui::resources::resources(&files, &doc);
             let address =
                 ActionAddress::new(crate::search_provider::entry_resource_id(source), "rename");
             let arguments = serde_json::Map::from_iter([(
@@ -1693,7 +1693,7 @@ mod command_path_tests {
         entry.record_id = Some(*record_id.as_bytes());
         w.entries = vec![entry];
         let mut doc = automerge::AutoCommit::new();
-        let resources = Widget::resources(&w, &doc);
+        let resources = ui::resources::resources(&w, &doc);
         let entry = resources[0]
             .children
             .iter()
@@ -1741,7 +1741,7 @@ mod command_path_tests {
         w.entries[0].path = renamed;
         w.entries[0].name = "new.txt".into();
         w.entries[0].record_id = Some(*record_id.as_bytes());
-        let refreshed = Widget::resources(&w, &doc);
+        let refreshed = ui::resources::resources(&w, &doc);
         assert!(
             door::resolve(&refreshed, &address).is_some(),
             "the record action address survives a path rename and resolves its fresh path"
@@ -1753,7 +1753,7 @@ mod command_path_tests {
         std::fs::write(d.path().join("shared.txt"), b"x").unwrap();
         let mut w = FileExplorerWidget::new();
         w.navigate(d.path().to_path_buf());
-        let resources = Widget::resources(&w, &automerge::AutoCommit::new());
+        let resources = ui::resources::resources(&w, &automerge::AutoCommit::new());
         for action in resources.iter().flat_map(|resource| {
             resource.actions.iter().chain(
                 resource
@@ -1866,7 +1866,7 @@ mod command_path_tests {
     ) -> Result<bool, String> {
         use ui::tilo_actions::{ActionAddress, door};
         let mut doc = automerge::AutoCommit::new();
-        let resources = Widget::resources(files, &doc);
+        let resources = ui::resources::resources(files, &doc);
         let resource = source.map_or_else(
             || resources.first().unwrap().id.as_str().to_owned(),
             crate::search_provider::entry_resource_id,
@@ -3236,9 +3236,9 @@ mod command_path_tests {
             .expect("collaborative record is searchable");
         let mut doc = automerge::AutoCommit::new();
         let address = hit.action_address().expect("canonical reveal action");
-        let mut resources = Widget::resources(&widget, &doc);
+        let mut resources = ui::resources::resources(&widget, &doc);
         resources.push(
-            Widget::resource(&widget, &doc, &address.resource)
+            ui::resources::resource(&widget, &doc, &address.resource)
                 .expect("late record materializes exactly for this address"),
         );
         let spec = ui::tilo_actions::door::resolve(&resources, &address)
@@ -4910,7 +4910,7 @@ mod injected_startup_tests {
         let mut widget =
             FileExplorerWidget::with_startup_inputs_and_services(inputs, absent_services());
         let mut document = automerge::AutoCommit::new();
-        let resources = Widget::resources(&widget, &document);
+        let resources = ui::resources::resources(&widget, &document);
         let account = resources
             .iter()
             .flat_map(|r| r.children.iter())

@@ -79,9 +79,8 @@ use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 
 use super::{
-    ActionDirectoryInvocationDomain, ActionDirectoryResourcePage, EventCtx, LayoutInfo,
-    ManualPolicy, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult,
-    ResourceOperationStart, Widget, WindowCloseAdmission,
+    EventCtx, LayoutInfo, ManualPolicy, PrimaryScrollAction, PrimaryScrollRegion,
+    PrimaryScrollResult, ResourceOperationStart, Widget, WindowCloseAdmission,
 };
 use crate::dnd::DragPayload;
 use crate::permissions::PermissionScope;
@@ -542,36 +541,6 @@ pub trait Decorator {
         self.inner().permission_scope()
     }
 
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.inner().resources(doc)
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ActionDirectoryResourcePage> {
-        self.inner()
-            .action_directory_resource_page(doc, cursor, max_results)
-    }
-
-    fn action_directory_revision(&self, doc: &AutoCommit) -> Option<String> {
-        self.inner().action_directory_revision(doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        self.inner().resource(doc, id)
-    }
-
-    fn action_directory_visibility(
-        &self,
-        doc: &AutoCommit,
-        resource_id: &str,
-    ) -> Option<tilo_actions::ActionAddress> {
-        self.inner().action_directory_visibility(doc, resource_id)
-    }
-
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         self.inner().search_providers()
     }
@@ -696,22 +665,11 @@ pub trait Decorator {
             .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
 
-    fn action_directory_invocation_domain(
-        &self,
-        doc: &AutoCommit,
-    ) -> ActionDirectoryInvocationDomain {
-        self.inner().action_directory_invocation_domain(doc)
-    }
-
     fn apply_primary_vertical_scroll(
         &mut self,
         action: PrimaryScrollAction,
     ) -> PrimaryScrollResult {
         self.inner_mut().apply_primary_vertical_scroll(action)
-    }
-
-    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.inner().caller_view_resources(doc)
     }
 
     fn focus_requested(&mut self, target: Option<NodeId>, tree: &TaffyTree<()>) {
@@ -740,34 +698,6 @@ pub trait Decorator {
 
     fn release_record_scope(&mut self) -> Result<(), String> {
         self.inner_mut().release_record_scope()
-    }
-
-    /// [`Self::resource`] in `participant`'s tree. The local view (`None`)
-    /// is this decorator's own [`Self::resource`], so an override there is
-    /// honoured; a participant's tree is the inner widget's. A decorator that
-    /// adds resources of its own overrides this too.
-    fn resource_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-        id: &str,
-    ) -> Option<tilo_actions::Resource> {
-        match participant {
-            None => Decorator::resource(self, doc, id),
-            Some(_) => self.inner().resource_for(participant, doc, id),
-        }
-    }
-
-    /// [`Self::resources`] in `participant`'s tree, as [`Self::resource_for`].
-    fn resources_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-    ) -> Vec<tilo_actions::Resource> {
-        match participant {
-            None => Decorator::resources(self, doc),
-            Some(_) => self.inner().resources_for(participant, doc),
-        }
     }
 
     fn semantic_readers(
@@ -1231,35 +1161,6 @@ impl<T: Decorator> Widget for T {
         Decorator::permission_scope(self)
     }
 
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Decorator::resources(self, doc)
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ActionDirectoryResourcePage> {
-        Decorator::action_directory_resource_page(self, doc, cursor, max_results)
-    }
-
-    fn action_directory_revision(&self, doc: &AutoCommit) -> Option<String> {
-        Decorator::action_directory_revision(self, doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        Decorator::resource(self, doc, id)
-    }
-
-    fn action_directory_visibility(
-        &self,
-        doc: &AutoCommit,
-        resource_id: &str,
-    ) -> Option<tilo_actions::ActionAddress> {
-        Decorator::action_directory_visibility(self, doc, resource_id)
-    }
-
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         Decorator::search_providers(self)
     }
@@ -1382,22 +1283,11 @@ impl<T: Decorator> Widget for T {
         Decorator::draw_overlay(self, scene, transform, text_renderer, theme, presence);
     }
 
-    fn action_directory_invocation_domain(
-        &self,
-        doc: &AutoCommit,
-    ) -> ActionDirectoryInvocationDomain {
-        Decorator::action_directory_invocation_domain(self, doc)
-    }
-
     fn apply_primary_vertical_scroll(
         &mut self,
         action: PrimaryScrollAction,
     ) -> PrimaryScrollResult {
         Decorator::apply_primary_vertical_scroll(self, action)
-    }
-
-    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Decorator::caller_view_resources(self, doc)
     }
 
     fn focus_requested(&mut self, target: Option<NodeId>, tree: &TaffyTree<()>) {
@@ -1426,23 +1316,6 @@ impl<T: Decorator> Widget for T {
 
     fn release_record_scope(&mut self) -> Result<(), String> {
         Decorator::release_record_scope(self)
-    }
-
-    fn resource_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-        id: &str,
-    ) -> Option<tilo_actions::Resource> {
-        Decorator::resource_for(self, participant, doc, id)
-    }
-
-    fn resources_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-    ) -> Vec<tilo_actions::Resource> {
-        Decorator::resources_for(self, participant, doc)
     }
 
     fn semantic_readers(

@@ -58,12 +58,13 @@ fn owned_resources<W: Widget + ?Sized>(
     // A delivered invocation resolves against its invoker's own view,
     // rebuilt now; outside one this is the widget's own view.
     let participant = crate::invocation_scope::current_participant();
-    let local = root.resources_for(participant.as_ref(), doc);
+    let local = crate::resources::resources_for(root, participant.as_ref(), doc);
     let eager_claim = address.is_some_and(|address| claims(&local, address) != 0);
     resources.extend(local);
     if let Some(address) = address
         && !eager_claim
-        && let Some(resource) = root.resource_for(participant.as_ref(), doc, &address.resource)
+        && let Some(resource) =
+            crate::resources::resource_for(root, participant.as_ref(), doc, &address.resource)
     {
         resources.push(resource);
     }

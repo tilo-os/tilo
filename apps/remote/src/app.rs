@@ -2356,37 +2356,12 @@ impl Collaborative for RemoteApp {
 impl Widget for RemoteApp {
     ui::provides!(
         dyn ui::widget::Collaborative,
-        dyn ui::undo::CommittedActions
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::REMOTE_OPERATION_TYPE]
-    }
-
-    /// Publish each saved connection as a Ctrl+K resource (rename / favourite /
-    /// delete) so the shell's one action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
-        if let Some(id) = self.session_for
-            && let Some(connection) = self.workspace.get(id)
-        {
-            let can_send_text = matches!(
-                &self.live,
-                Some(LiveSession::Ssh(session))
-                    if session.status() == SessionStatus::Connected
-            );
-            if let Some(workspace) = resources.first_mut() {
-                let host_key_issue = self.ssh_host_key_issue(id);
-                workspace.children.push(crate::actions::session_resource(
-                    connection,
-                    can_send_text,
-                    host_key_issue.as_ref(),
-                ));
-            }
-        }
-        resources
     }
 
     fn start_operation(
@@ -3581,6 +3556,34 @@ impl Widget for RemoteApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::resources::PublishesResources for RemoteApp {
+    /// Publish each saved connection as a Ctrl+K resource (rename / favourite /
+    /// delete) so the shell's one action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        if let Some(id) = self.session_for
+            && let Some(connection) = self.workspace.get(id)
+        {
+            let can_send_text = matches!(
+                &self.live,
+                Some(LiveSession::Ssh(session))
+                    if session.status() == SessionStatus::Connected
+            );
+            if let Some(workspace) = resources.first_mut() {
+                let host_key_issue = self.ssh_host_key_issue(id);
+                workspace.children.push(crate::actions::session_resource(
+                    connection,
+                    can_send_text,
+                    host_key_issue.as_ref(),
+                ));
+            }
+        }
+        resources
     }
 }
 

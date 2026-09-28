@@ -19,7 +19,10 @@ struct LocalEffectProbe {
 }
 
 impl Widget for LocalEffectProbe {
-    crate::provides!(dyn crate::widget::Continuable);
+    crate::provides!(
+        dyn crate::widget::Continuable,
+        dyn crate::resources::PublishesResources
+    );
 
     fn build_layout(
         &mut self,
@@ -53,6 +56,33 @@ impl Widget for LocalEffectProbe {
         KurboRect::ZERO
     }
 
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[EFFECT_TYPE]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        _: &mut automerge::AutoCommit,
+        _: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(crate::widget::OperationRequest { kind, type_id, .. }) = op.unscoped() else {
+            return Ok(None);
+        };
+        assert!(matches!(
+            kind,
+            tilo_actions::OperationKind::Effect | tilo_actions::OperationKind::View
+        ));
+        assert_eq!(type_id, EFFECT_TYPE);
+        self.operations.set(self.operations.get().saturating_add(1));
+        self.captured.borrow().as_ref().unwrap().wake();
+        Ok(Some(crate::widget::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        )))
+    }
+}
+
+impl crate::resources::PublishesResources for LocalEffectProbe {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
         vec![
             tilo_actions::Resource::new("private-tab", "test.tab", "Private tab")
@@ -78,31 +108,6 @@ impl Widget for LocalEffectProbe {
                     .with_contract(tilo_actions::ActionContract::view()),
                 ),
         ]
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[EFFECT_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::widget::OperationRequest { kind, type_id, .. }) = op.unscoped() else {
-            return Ok(None);
-        };
-        assert!(matches!(
-            kind,
-            tilo_actions::OperationKind::Effect | tilo_actions::OperationKind::View
-        ));
-        assert_eq!(type_id, EFFECT_TYPE);
-        self.operations.set(self.operations.get().saturating_add(1));
-        self.captured.borrow().as_ref().unwrap().wake();
-        Ok(Some(crate::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
     }
 }
 

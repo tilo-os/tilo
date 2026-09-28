@@ -2551,27 +2551,12 @@ fn sample_recent_capture() -> Capture {
 impl Widget for CameraApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::CAMERA_OPERATION_TYPE]
-    }
-
-    /// Publish capture resources so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        // Photos and Video Player are destinations, not Camera resources.
-        // Their typed launch operation is attached only to the one current
-        // capture resource, so search and agents cannot mistake Camera for a
-        // second media library.
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
@@ -3413,6 +3398,23 @@ impl Widget for CameraApp {
         _permissions: &ui::permissions::PermissionContext,
     ) {
         self.draw(scene, t, tr, theme, presence);
+    }
+}
+
+impl ui::resources::PublishesResources for CameraApp {
+    /// Publish capture resources so the host's Ctrl+K action palette
+    /// scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        // Photos and Video Player are destinations, not Camera resources.
+        // Their typed launch operation is attached only to the one current
+        // capture resource, so search and agents cannot mistake Camera for a
+        // second media library.
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 }
 
@@ -8205,7 +8207,7 @@ mod tests {
             assert_eq!(hits.len(), 1);
             let address = hits[0].action_address().expect("search action");
             assert_eq!(address.action.as_str(), "import-image");
-            let resource = Widget::resource(&app, &doc, address.resource.as_str())
+            let resource = ui::resources::resource(&app, &doc, address.resource.as_str())
                 .expect("widget resolves search result");
             assert_eq!(resource.id.as_str(), address.resource);
             assert!(

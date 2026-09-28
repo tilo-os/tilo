@@ -3825,6 +3825,8 @@ impl PaletteHistoryOwner {
 }
 
 impl crate::widget::Widget for PaletteHistoryOwner {
+    crate::provides!(dyn crate::resources::PublishesResources);
+
     fn name(&self) -> &str {
         "Palette history owner"
     }
@@ -3872,22 +3874,6 @@ impl crate::widget::Widget for PaletteHistoryOwner {
     ) {
         self.text.handle_event(event, ctx);
     }
-    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self
-            .state
-            .authority
-            .load(std::sync::atomic::Ordering::SeqCst)
-            == 1
-        {
-            return vec![];
-        }
-        vec![
-            tilo_actions::Resource::new("palette-owner", "fixture.palette", "Palette owner")
-                .with_action(self.action("text", PALETTE_TEXT_OPERATION, false))
-                .with_action(self.action("json", PALETTE_JSON_OPERATION, true))
-                .with_action(self.action("named", PALETTE_TEXT_OPERATION, false)),
-        ]
-    }
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         [PALETTE_TEXT_OPERATION.into(), PALETTE_JSON_OPERATION.into()]
             .into_iter()
@@ -3916,6 +3902,25 @@ impl crate::widget::Widget for PaletteHistoryOwner {
         Ok(Some(crate::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
+    }
+}
+
+impl crate::resources::PublishesResources for PaletteHistoryOwner {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self
+            .state
+            .authority
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == 1
+        {
+            return vec![];
+        }
+        vec![
+            tilo_actions::Resource::new("palette-owner", "fixture.palette", "Palette owner")
+                .with_action(self.action("text", PALETTE_TEXT_OPERATION, false))
+                .with_action(self.action("json", PALETTE_JSON_OPERATION, true))
+                .with_action(self.action("named", PALETTE_TEXT_OPERATION, false)),
+        ]
     }
 }
 
@@ -4409,7 +4414,10 @@ impl crate::widget::AppWidget for ComponentControlOwner {
 }
 
 impl crate::widget::Widget for ComponentControlOwner {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources
+    );
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.text.accessibility()
@@ -4457,21 +4465,6 @@ impl crate::widget::Widget for ComponentControlOwner {
         ctx: &mut crate::widget::EventCtx<'_>,
     ) {
         self.text.handle_event(event, ctx);
-    }
-    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = vec![self.resource()];
-        let empty = tilo_actions::Resource::new(&self.id, "fixture.component", "Empty duplicate");
-        match self.duplicate_depth.get() {
-            1 => resources.push(empty),
-            2 => resources.push(
-                tilo_actions::Resource::new("parent", "fixture.parent", "Parent").with_child(empty),
-            ),
-            _ => {}
-        }
-        resources
-    }
-    fn resource(&self, _: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        (id == self.id).then(|| self.resource())
     }
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         [self.operation.clone()].into_iter().collect()
@@ -4523,6 +4516,24 @@ impl crate::widget::Widget for ComponentControlOwner {
             invocation,
             output: tilo_actions::ActionOutput::default(),
         })
+    }
+}
+
+impl crate::resources::PublishesResources for ComponentControlOwner {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = vec![self.resource()];
+        let empty = tilo_actions::Resource::new(&self.id, "fixture.component", "Empty duplicate");
+        match self.duplicate_depth.get() {
+            1 => resources.push(empty),
+            2 => resources.push(
+                tilo_actions::Resource::new("parent", "fixture.parent", "Parent").with_child(empty),
+            ),
+            _ => {}
+        }
+        resources
+    }
+    fn resource(&self, _: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        (id == self.id).then(|| self.resource())
     }
 }
 
@@ -6116,7 +6127,10 @@ struct CustodyControlsRoot {
 }
 
 impl crate::widget::Widget for CustodyControlsRoot {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources
+    );
 
     fn take_structure_dirty(&mut self) -> bool {
         self.child.take_structure_dirty()
@@ -6203,9 +6217,6 @@ impl crate::widget::Widget for CustodyControlsRoot {
     fn children_mut(&mut self) -> Vec<&mut (dyn crate::widget::Widget + '_)> {
         vec![self.child.as_mut()]
     }
-    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.resources.clone()
-    }
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         let mut handlers = self.child.resource_operation_handlers();
         handlers.insert("fixture.control".into());
@@ -6229,6 +6240,12 @@ impl crate::widget::Widget for CustodyControlsRoot {
         Ok(Some(crate::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
+    }
+}
+
+impl crate::resources::PublishesResources for CustodyControlsRoot {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        self.resources.clone()
     }
 }
 

@@ -990,7 +990,7 @@ mod tests {
         // unsubscribe). Drives the real resource hook.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let handlers: std::collections::HashSet<String> = app
                 .local_resource_operation_handlers()
                 .iter()
@@ -1149,7 +1149,7 @@ mod tests {
         // --- phase: reader_level_add_subscription_uses_the_replayable_action_contract ---
         {
             let (app, mut doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let add = resources[0]
                 .actions
                 .iter()
@@ -1175,7 +1175,7 @@ mod tests {
         // --- phase: blank_canonical_subscription_prompt_is_a_safe_no_op ---
         {
             let (app, mut doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let add = resources[0]
                 .actions
                 .iter()

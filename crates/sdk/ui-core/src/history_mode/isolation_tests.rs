@@ -214,7 +214,8 @@ impl Widget for LiveOwner {
         dyn crate::undo::CommittedActions,
         dyn crate::undo::UndoControl,
         dyn crate::undo::LocalUndo,
-        dyn crate::widget::controls::ActionControls
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources
     );
 
     fn name(&self) -> &str {
@@ -259,18 +260,6 @@ impl Widget for LiveOwner {
     fn handle_event(&mut self, _: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
         self.local_events.set(self.local_events.get() + 1);
     }
-    fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if let Some(identity) = &self.mutable_identity {
-            return mutable_identity_resources(self.resource_id, self.type_id, identity);
-        }
-        vec![if self.prompted {
-            prompted_resource_for(self.resource_id, self.type_id, self.confirmation.clone())
-        } else {
-            let mut resource = resource_for(self.resource_id, self.type_id);
-            resource.actions[0].contract.confirmation = self.confirmation.clone();
-            resource
-        }]
-    }
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         [self.type_id.to_owned()].into_iter().collect()
     }
@@ -311,6 +300,21 @@ impl Widget for LiveOwner {
             invocation,
             output: tilo_actions::ActionOutput::default(),
         })
+    }
+}
+
+impl crate::resources::PublishesResources for LiveOwner {
+    fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if let Some(identity) = &self.mutable_identity {
+            return mutable_identity_resources(self.resource_id, self.type_id, identity);
+        }
+        vec![if self.prompted {
+            prompted_resource_for(self.resource_id, self.type_id, self.confirmation.clone())
+        } else {
+            let mut resource = resource_for(self.resource_id, self.type_id);
+            resource.actions[0].contract.confirmation = self.confirmation.clone();
+            resource
+        }]
     }
 }
 

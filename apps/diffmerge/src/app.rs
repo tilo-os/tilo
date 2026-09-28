@@ -995,7 +995,8 @@ impl Default for DiffMergeApp {
 impl Widget for DiffMergeApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
-        dyn ui::history_mode::capability::DocumentHistory
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::resources::PublishesResources
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -1441,14 +1442,6 @@ impl Widget for DiffMergeApp {
             .map(|hit| Self::toolbar_action_name(hit.action))
     }
 
-    /// Publish the open merge + its hunks so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -1490,6 +1483,16 @@ impl Widget for DiffMergeApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::resources::PublishesResources for DiffMergeApp {
+    /// Publish the open merge + its hunks so the host's Ctrl+K action palette
+    /// scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 }
 
@@ -1899,7 +1902,7 @@ mod tests {
             .unwrap();
 
         // Palette path: the take-theirs immediate spec on the conflict resource.
-        let resources = Widget::resources(&app, &state.doc);
+        let resources = ui::resources::resources(&app, &state.doc);
         let conflict = resources[0]
             .children
             .iter()
@@ -2698,7 +2701,7 @@ mod history_input_tests {
         );
         let heads = doc.get_heads();
         assert!(
-            Widget::resources(&app, &doc)
+            ui::resources::resources(&app, &doc)
                 .iter()
                 .flat_map(|r| &r.children)
                 .all(|r| r.kind != "diffmerge.conflict")

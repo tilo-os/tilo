@@ -113,7 +113,8 @@ impl Widget for Probe {
     crate::provides!(
         dyn crate::undo::CommittedActions,
         dyn crate::history_mode::capability::DocumentHistory,
-        dyn crate::widget::controls::ActionControls
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources
     );
 
     crate::testing::inert_widget_methods!(
@@ -142,12 +143,6 @@ impl Widget for Probe {
             request.visit(child.as_mut())?;
         }
         Ok(())
-    }
-    fn resource(&self, _: &AutoCommit, id: &str) -> Option<Resource> {
-        (id == "controlled.value" && !self.eager.get() && self.declarations.get() > 0).then(|| {
-            Resource::new("controlled.value", "controlled", "Owned value")
-                .with_action(self.spec.borrow().clone())
-        })
     }
     fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
         let (u, s) = self.model_passes.get();
@@ -221,6 +216,9 @@ impl Widget for Probe {
             output: tilo_actions::ActionOutput::default(),
         })
     }
+}
+
+impl crate::resources::PublishesResources for Probe {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         self.value.set(
             doc.get(ROOT, "value")
@@ -237,6 +235,12 @@ impl Widget for Probe {
                     .with_action(self.spec.borrow().clone())
             })
             .collect()
+    }
+    fn resource(&self, _: &AutoCommit, id: &str) -> Option<Resource> {
+        (id == "controlled.value" && !self.eager.get() && self.declarations.get() > 0).then(|| {
+            Resource::new("controlled.value", "controlled", "Owned value")
+                .with_action(self.spec.borrow().clone())
+        })
     }
 }
 

@@ -14288,7 +14288,8 @@ impl Widget for PhotosApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
         dyn ui::history_mode::capability::DocumentHistory,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
     );
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -16023,6 +16024,19 @@ impl Widget for PhotosApp {
         }
     }
 
+    /// Keep the palette projection derived from the same fresh document
+    /// resource tree as agents and assistive technology. The provider's
+    /// catalog gives Ctrl+K Unicode-safe, cursor-paged bounded queries.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+impl ui::resources::PublishesResources for PhotosApp {
     /// The open photograph and the edits it supports, published to whatever is
     /// hosting this widget.
     ///
@@ -16044,7 +16058,6 @@ impl Widget for PhotosApp {
         }
         resources
     }
-
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         use tilo_actions::ResourceProvider;
         if id == "photos.search-status" {
@@ -16062,17 +16075,6 @@ impl Widget for PhotosApp {
                     .find(|resource| resource.id.as_str() == id)
             })
             .or_else(|| crate::actions::PhotosResources.resource(doc, id))
-    }
-
-    /// Keep the palette projection derived from the same fresh document
-    /// resource tree as agents and assistive technology. The provider's
-    /// catalog gives Ctrl+K Unicode-safe, cursor-paged bounded queries.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

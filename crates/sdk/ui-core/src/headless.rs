@@ -9707,6 +9707,8 @@ mod tests {
         checkout: crate::record::RecordCheckout,
     }
     impl Widget for RecordRootProbe {
+        crate::provides!(dyn crate::resources::PublishesResources);
+
         crate::testing::inert_widget_methods!(
             leaf_layout,
             apply_layout,
@@ -9717,6 +9719,9 @@ mod tests {
         fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
             Some(self.checkout.clone())
         }
+    }
+
+    impl crate::resources::PublishesResources for RecordRootProbe {
         fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
             vec![tilo_actions::Resource::new(
                 "probe.document:1",
@@ -11777,7 +11782,10 @@ pub(crate) mod legacy_control_feedback_tests {
         descendants: Column,
     }
     impl Widget for ImportProbe {
-        crate::provides!(dyn crate::widget::controls::ActionControls);
+        crate::provides!(
+            dyn crate::widget::controls::ActionControls,
+            dyn crate::resources::PublishesResources
+        );
 
         crate::testing::delegate_widget_methods!(
             descendants: sync,
@@ -11794,41 +11802,6 @@ pub(crate) mod legacy_control_feedback_tests {
         }
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
             vec![&mut self.descendants]
-        }
-        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-            let contract = tilo_actions::ActionContract {
-                execution: tilo_actions::ExecutionMode::Background { cancellable: false },
-                result: tilo_actions::ResultSpec::Job,
-                ..tilo_actions::ActionContract::default()
-            };
-            let begin = tilo_actions::ActionSpec::operation(
-                "begin",
-                "Begin",
-                tilo_actions::OperationKind::Effect,
-                "feedback.begin",
-                &(),
-            )
-            .unwrap()
-            .with_contract(contract);
-            let finalize = tilo_actions::ActionSpec::immediate_encoded(
-                "finalize",
-                "Finalize",
-                tilo_actions::ExecutionLocus::ClientLocal,
-                tilo_actions::EncodedAction::encode(
-                    "controlled.legacy",
-                    &crate::bound_dispatch::legacy_document_tests::SetValue {
-                        value: 2,
-                        fail: self.fail,
-                        remote: false,
-                    },
-                )
-                .unwrap(),
-            );
-            vec![
-                tilo_actions::Resource::new("feedback:import", "import", "Import")
-                    .with_action(begin)
-                    .with_action(finalize),
-            ]
         }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &["feedback.begin"]
@@ -11884,6 +11857,44 @@ pub(crate) mod legacy_control_feedback_tests {
                     },
                 }
             })
+        }
+    }
+
+    impl crate::resources::PublishesResources for ImportProbe {
+        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+            let contract = tilo_actions::ActionContract {
+                execution: tilo_actions::ExecutionMode::Background { cancellable: false },
+                result: tilo_actions::ResultSpec::Job,
+                ..tilo_actions::ActionContract::default()
+            };
+            let begin = tilo_actions::ActionSpec::operation(
+                "begin",
+                "Begin",
+                tilo_actions::OperationKind::Effect,
+                "feedback.begin",
+                &(),
+            )
+            .unwrap()
+            .with_contract(contract);
+            let finalize = tilo_actions::ActionSpec::immediate_encoded(
+                "finalize",
+                "Finalize",
+                tilo_actions::ExecutionLocus::ClientLocal,
+                tilo_actions::EncodedAction::encode(
+                    "controlled.legacy",
+                    &crate::bound_dispatch::legacy_document_tests::SetValue {
+                        value: 2,
+                        fail: self.fail,
+                        remote: false,
+                    },
+                )
+                .unwrap(),
+            );
+            vec![
+                tilo_actions::Resource::new("feedback:import", "import", "Import")
+                    .with_action(begin)
+                    .with_action(finalize),
+            ]
         }
     }
 

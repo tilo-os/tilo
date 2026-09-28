@@ -4489,7 +4489,11 @@ fn chrono_date(published: i64, now: i64) -> String {
 // ---------------------------------------------------------------------
 
 impl Widget for FeedsApp {
-    ui::provides!(dyn ui::undo::CommittedActions, dyn ui::undo::LocalUndo);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::undo::LocalUndo,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::FEEDS_OPERATION_TYPE]
@@ -4556,17 +4560,6 @@ impl Widget for FeedsApp {
                 self.store_heads = heads;
             }
         }
-    }
-
-    /// Publish the reader + its folders and subscriptions so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the `ResourceProvider`
-    /// (`tilo_actions::ResourceProvider`) impl in [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     fn start_operation(
@@ -5393,6 +5386,18 @@ impl Widget for FeedsApp {
                 .toast
                 .as_ref()
                 .is_some_and(|(_, since)| since.elapsed().as_secs_f32() < 4.0)
+    }
+}
+
+impl ui::resources::PublishesResources for FeedsApp {
+    /// Publish the reader + its folders and subscriptions so the host's Ctrl+K
+    /// action palette scopes to them. Delegates to the `ResourceProvider`
+    /// (`tilo_actions::ResourceProvider`) impl in [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 }
 

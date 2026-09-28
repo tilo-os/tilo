@@ -2432,7 +2432,8 @@ impl TerminalWidget {
 impl Widget for TerminalWidget {
     ui::provides!(
         dyn ui::history_mode::capability::DocumentHistory,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
     );
 
     fn test_id(&self) -> Option<&str> {
@@ -2447,58 +2448,6 @@ impl Widget for TerminalWidget {
             "terminal.control",
             "terminal.open-link",
         ]
-    }
-
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        vec![self.session_resource()]
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        _doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let resources = (cursor.is_empty() && max_results > 0)
-            .then(|| self.session_resource())
-            .into_iter()
-            .collect();
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
-        use std::hash::{Hash, Hasher};
-
-        let mut revision = std::collections::hash_map::DefaultHasher::new();
-        self.pane_id.hash(&mut revision);
-        self.title.hash(&mut revision);
-        self.grid.len().hash(&mut revision);
-        self.current_visible_rows().hash(&mut revision);
-        self.scroll_offset.hash(&mut revision);
-        self.is_disconnected().hash(&mut revision);
-        for link_id in self.visible_link_ids() {
-            link_id.hash(&mut revision);
-            self.links.get(&link_id).hash(&mut revision);
-        }
-        Some(format!("{:016x}", revision.finish()))
-    }
-
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if id == self.terminal_resource_id() {
-            return Some(self.session_resource());
-        }
-        if id == self.terminal_transcript_target() {
-            return Some(self.transcript_resource());
-        }
-        let prefix = format!("terminal.link:{}:", self.pane_id);
-        let link_id = id.strip_prefix(&prefix)?.parse::<u16>().ok()?;
-        self.links
-            .get(&link_id)
-            .map(|url| self.link_resource(link_id, url))
     }
 
     fn start_operation(
@@ -3257,6 +3206,57 @@ impl Widget for TerminalWidget {
                 }
             }
         }
+    }
+}
+
+impl ui::resources::PublishesResources for TerminalWidget {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        vec![self.session_resource()]
+    }
+    fn action_directory_resource_page(
+        &self,
+        _doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        let resources = (cursor.is_empty() && max_results > 0)
+            .then(|| self.session_resource())
+            .into_iter()
+            .collect();
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+    fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
+        use std::hash::{Hash, Hasher};
+
+        let mut revision = std::collections::hash_map::DefaultHasher::new();
+        self.pane_id.hash(&mut revision);
+        self.title.hash(&mut revision);
+        self.grid.len().hash(&mut revision);
+        self.current_visible_rows().hash(&mut revision);
+        self.scroll_offset.hash(&mut revision);
+        self.is_disconnected().hash(&mut revision);
+        for link_id in self.visible_link_ids() {
+            link_id.hash(&mut revision);
+            self.links.get(&link_id).hash(&mut revision);
+        }
+        Some(format!("{:016x}", revision.finish()))
+    }
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if id == self.terminal_resource_id() {
+            return Some(self.session_resource());
+        }
+        if id == self.terminal_transcript_target() {
+            return Some(self.transcript_resource());
+        }
+        let prefix = format!("terminal.link:{}:", self.pane_id);
+        let link_id = id.strip_prefix(&prefix)?.parse::<u16>().ok()?;
+        self.links
+            .get(&link_id)
+            .map(|url| self.link_resource(link_id, url))
     }
 }
 

@@ -762,7 +762,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         wp.refresh_blocks(&mut state.doc);
 
         // What the palette would dispatch, resolved before the button fires.
-        let resources = Widget::resources(&wp, &state.doc);
+        let resources = ui::resources::resources(&wp, &state.doc);
         let from_palette = spec_encoded(&resources[0], "insert-table");
 
         // The toolbar button drives the same operation.
@@ -821,7 +821,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         );
 
         // It is the same EncodedAction the palette's align-center spec builds.
-        let resources = Widget::resources(&wp, &state.doc);
+        let resources = ui::resources::resources(&wp, &state.doc);
         let from_palette = spec_encoded(&resources[0], "align-center");
         assert_eq!(
             dispatched.payload, from_palette.payload,

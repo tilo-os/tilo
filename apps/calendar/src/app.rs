@@ -6614,7 +6614,8 @@ impl Default for CalendarApp {
 impl Widget for CalendarApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
     );
 
     fn start_operation(
@@ -6649,35 +6650,6 @@ impl Widget for CalendarApp {
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::CALENDAR_OPERATION_TYPE]
-    }
-
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
-        resources.extend(self.pending_launch_resource());
-        resources
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        _doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources: (cursor.is_empty() && max_results > 0)
-                .then(|| crate::actions::calendar_root(&self.calendar_directory_root_ctx()))
-                .into_iter()
-                .collect(),
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if id == "calendar.pending-import" {
-            return self.pending_launch_resource();
-        }
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     fn poll_resource_operation(
@@ -7378,6 +7350,35 @@ impl Widget for CalendarApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::resources::PublishesResources for CalendarApp {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        resources.extend(self.pending_launch_resource());
+        resources
+    }
+    fn action_directory_resource_page(
+        &self,
+        _doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources: (cursor.is_empty() && max_results > 0)
+                .then(|| crate::actions::calendar_root(&self.calendar_directory_root_ctx()))
+                .into_iter()
+                .collect(),
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if id == "calendar.pending-import" {
+            return self.pending_launch_resource();
+        }
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 }
 

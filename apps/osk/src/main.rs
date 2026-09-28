@@ -579,7 +579,7 @@ mod launch_tests {
                 let probe =
                     OskWidget::new_with_swipe_model(Box::new(osk::GeometricSwipeModel::english()));
                 let encoded = ui::tilo_actions::door::encode(
-                    &probe.resources(&automerge::AutoCommit::new()),
+                    &ui::resources::resources(&probe, &automerge::AutoCommit::new()),
                     &ui::tilo_actions::ActionAddress::new("osk.keyboard.suggestions", "disable"),
                     None,
                 )
@@ -639,12 +639,10 @@ mod launch_tests {
     impl Widget for NativeObservedRoot {
         ui::provides!(
             dyn ui::history_mode::capability::DocumentHistory,
-            dyn ui::widget::controls::ActionControls
+            dyn ui::widget::controls::ActionControls,
+            dyn ui::resources::PublishesResources
         );
 
-        fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ui::tilo_actions::Resource> {
-            self.root.resources(doc)
-        }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             self.root.local_resource_operation_handlers()
         }
@@ -703,6 +701,12 @@ mod launch_tests {
         }
         fn take_structure_dirty(&mut self) -> bool {
             self.root.take_structure_dirty()
+        }
+    }
+
+    impl ui::resources::PublishesResources for NativeObservedRoot {
+        fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ui::tilo_actions::Resource> {
+            ui::resources::resources(self.root.as_ref(), doc)
         }
     }
 
