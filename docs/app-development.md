@@ -701,6 +701,31 @@ quietly stop applying. The budget is a build-time check, not package metadata.
 A package over budget fails with the amount it is over, and the previous output
 is left in place. `--json` carries the same breakdown under `size`.
 
+### Other platforms and architectures
+
+`--arch x86_64|aarch64` picks the CPU (the host's by default) and
+`--platform` the system:
+
+```bash
+tilo-app package --arch aarch64                      # Tilo OS, thin
+tilo-app package --platform macos --arch aarch64     # dist/<pkg>-macos-aarch64.tapp
+tilo-app package --platform windows --arch x86_64    # dist/<pkg>-windows-x86_64.tapp
+```
+
+Windows and macOS ship no Tilo toolkit, so a build for them is one static
+executable (`release` profile, `<arch>-pc-windows-msvc` or
+`<arch>-apple-darwin`) with the toolkit linked in, packed as `bin/<name>` (or
+`bin/<name>.exe`). Its signed `[target]` names the platform, the architecture
+and the toolkit release it links, which is `[package].runtime`, so the
+manifest must declare one (`tilo-app new` does). Only the GUI entrypoint ships.
+There, collaboration comes from the per-user `tilo-runtime` service when it is
+running, as for Tilo's own apps on those systems. `[budget]` applies to the
+thin Tilo OS build only; a desktop build answers to the registry's 64 MiB
+desktop limit instead. A static build of a starter app is about 40 MB.
+
+Build on the system you target, or with a cross toolchain Cargo can drive;
+`--target` overrides the triple (for example `x86_64-pc-windows-gnu`).
+
 ## The app shape
 
 Keep the binary boring:
