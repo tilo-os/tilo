@@ -2547,6 +2547,9 @@ RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/ru
 # crypt, systemd-cryptsetup, tpm2-tss and clevis modules.
 ARG TILO_HARDWARE_PROFILE=generic
 ARG TILO_TARGET_IMGREF=
+# The Lenovo profile needs the Adreno SQE firmware from Fedora's qcom-firmware
+# RPM. Keep it in the frozen ARM package set, but install it only in that image.
+# tilo-rpm-snapshot-package[aarch64]: qcom-firmware
 RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     --mount=type=bind,from=kernel-rpms,source=/repo,target=/qkernel-repo \
     --mount=type=bind,source=os/hardware/firmware,target=/run/tilo-hardware-firmware \
@@ -2559,6 +2562,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
         > /etc/tilo-swap.d/frozen.repo; \
     printf '[tilo-kernel]\nname=tilo-kernel\nbaseurl=file:///qkernel-repo\ngpgcheck=0\nenabled=1\n' \
         > /etc/tilo-swap.d/tilo-kernel.repo; \
+    if [ "$TILO_HARDWARE_PROFILE" = lenovo-83ed ]; then \
+        dnf install -y --setopt=reposdir=/etc/tilo-swap.d qcom-firmware; \
+    fi; \
     # --allowerasing lets the swap drop the base's `kernel` meta-package
     # (it hard-requires kernel-core-uname-r = <exact-fedora-version>,
     # which our tilo-kernel-core doesn't satisfy since it carries a
