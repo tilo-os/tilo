@@ -869,49 +869,49 @@ mod tests {
             }
         }
 
-        fn desktop_launchpad_clears_the_workspace_rail() {
-            let rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-            let (cards, _) = CollaborationLaunchpad::card_geometry(rect, test_rail);
-            let rail_clearance = test_rail(rect.height());
-            assert!(
-                cards.iter().all(|card| card.x0 >= rail_clearance),
-                "desktop launchpad cards must not start beneath the persistent workspace rail: {cards:?}"
-            );
-        }
-
-        fn a_canvas_across_two_displays_centres_on_the_presenting_one() {
-            let mut pad = CollaborationLaunchpad::new(test_rail);
-            pad.rect = Rect::new(0.0, 48.0, 2048.0, 768.0);
-            let right = Rect::new(1024.0, 0.0, 2048.0, 768.0);
-            pad.set_presentation_area(Some(right), false);
-            let cards = pad.cards();
-            let x0 = cards.iter().map(|c| c.x0).fold(f64::INFINITY, f64::min);
-            let x1 = cards.iter().map(|c| c.x1).fold(f64::NEG_INFINITY, f64::max);
-            assert!(
-                x0 >= right.x0 && x1 <= right.x1,
-                "no card may straddle the seam: {cards:?}"
-            );
-            assert!(
-                (f64::midpoint(x0, x1) - right.center().x).abs() < 1.0,
-                "the grid centres on its display: {x0}..{x1}"
-            );
-            let left = Rect::new(0.0, 0.0, 1024.0, 768.0);
-            pad.set_presentation_area(Some(left), true);
-            assert!(
-                pad.cards()
-                    .iter()
-                    .all(|c| c.x0 >= test_rail(720.0) && c.x1 <= left.x1),
-                "the rail's display keeps its clearance: {:?}",
-                pad.cards()
-            );
-        }
-
         launchpad_cards_keep_an_edge_on_every_palette();
-        a_canvas_across_two_displays_centres_on_the_presenting_one();
         compact_large_text_heading_stays_below_top_chrome();
         desktop_app_button_has_visible_bounds_in_compact_layouts();
         wide_and_narrow_layouts_keep_all_cards_actionable();
-        desktop_launchpad_clears_the_workspace_rail();
+    }
+
+    #[test]
+    fn desktop_launchpad_clears_the_workspace_rail() {
+        let rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+        let (cards, _) = CollaborationLaunchpad::card_geometry(rect, test_rail);
+        let rail_clearance = test_rail(rect.height());
+        assert!(
+            cards.iter().all(|card| card.x0 >= rail_clearance),
+            "desktop launchpad cards must not start beneath the persistent workspace rail: {cards:?}"
+        );
+    }
+
+    #[test]
+    fn a_canvas_across_two_displays_centres_on_the_presenting_one() {
+        let mut pad = CollaborationLaunchpad::new(test_rail);
+        pad.rect = Rect::new(0.0, 48.0, 2048.0, 768.0);
+        let right = Rect::new(1024.0, 0.0, 2048.0, 768.0);
+        pad.set_presentation_area(Some(right), false);
+        let cards = pad.cards();
+        let x0 = cards.iter().map(|c| c.x0).fold(f64::INFINITY, f64::min);
+        let x1 = cards.iter().map(|c| c.x1).fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            x0 >= right.x0 && x1 <= right.x1,
+            "no card may straddle the seam: {cards:?}"
+        );
+        assert!(
+            (f64::midpoint(x0, x1) - right.center().x).abs() < 1.0,
+            "the grid centres on its display: {x0}..{x1}"
+        );
+        let left = Rect::new(0.0, 0.0, 1024.0, 768.0);
+        pad.set_presentation_area(Some(left), true);
+        assert!(
+            pad.cards()
+                .iter()
+                .all(|c| c.x0 >= test_rail(720.0) && c.x1 <= left.x1),
+            "the rail's display keeps its clearance: {:?}",
+            pad.cards()
+        );
     }
 
     #[test]
