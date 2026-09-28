@@ -820,22 +820,16 @@ impl EditorApp {
 }
 
 impl Widget for EditorApp {
-    ui::provides!(dyn ui::presence::capability::PublishesPresence);
+    ui::provides!(
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::record::capability::RecordScoped
+    );
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         self.body.sync(state, root);
         self.reconcile_disk(state, root);
         self.clamp_cursor();
-    }
-
-    fn record_intent(&self) -> Option<ui::record::RecordCheckout> {
-        self.source.as_ref().map(|source| {
-            ui::record::RecordCheckout::new(
-                ui::record::RecordId::for_file(&source.path),
-                ui::record::RecordKind::new("text-document"),
-            )
-        })
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -990,12 +984,6 @@ impl Widget for EditorApp {
         "EditorApp"
     }
 
-    /// Folded into the body's presence key so a peer's caret for one tab
-    /// isn't drawn in another tab of the same app.
-    fn set_record_scope(&mut self, record: &ui::record::RecordId) {
-        self.body.set_record(record);
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -1029,6 +1017,22 @@ impl Widget for EditorApp {
             self.edit.set_caret(pos);
             self.clamp_cursor();
         }
+    }
+}
+
+impl ui::record::capability::RecordScoped for EditorApp {
+    fn record_intent(&self) -> Option<ui::record::RecordCheckout> {
+        self.source.as_ref().map(|source| {
+            ui::record::RecordCheckout::new(
+                ui::record::RecordId::for_file(&source.path),
+                ui::record::RecordKind::new("text-document"),
+            )
+        })
+    }
+    /// Folded into the body's presence key so a peer's caret for one tab
+    /// isn't drawn in another tab of the same app.
+    fn set_record_scope(&mut self, record: &ui::record::RecordId) {
+        self.body.set_record(record);
     }
 }
 
@@ -1551,7 +1555,7 @@ mod tests {
             // tabs would share a key and a peer's caret would draw in whichever
             // tab painted last.
             let record = ui::record::RecordId::for_tab(0x2b);
-            app.set_record_scope(&record);
+            ui::record::capability::set_record_scope(&mut app, &record);
             match ui::presence::capability::presence_key(&app).expect("still publishes") {
                 PresenceKey::Widget { path } => {
                     assert_eq!(

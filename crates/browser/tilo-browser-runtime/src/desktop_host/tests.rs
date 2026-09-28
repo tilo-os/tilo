@@ -4337,7 +4337,7 @@ fn admitted_same_workspace_refresh_keeps_pending_selection_and_checked_owner() {
         _ => panic!("checked owner"),
     };
     assert_eq!(before, after);
-    assert!(root.surface.take_component_close_reports().is_empty());
+    assert!(ui::component_lifecycle::take_component_close_reports(&mut root.surface).is_empty());
 }
 #[test]
 fn pending_tab_choice_does_not_undo_a_newer_workspace_switch() {
