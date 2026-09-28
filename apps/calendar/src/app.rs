@@ -6835,7 +6835,6 @@ impl Widget for CalendarApp {
             {
                 let _ = state.merge_incoming(&mut loaded);
             }
-            CalDoc::migrate_notes(state);
             // Seed sample content ONLY in the demo build, and only when the
             // document is still empty.
             if self.demo && CalDoc::is_empty(state) {
@@ -6878,10 +6877,6 @@ impl Widget for CalendarApp {
         // from what the model was last derived from, and events/tasks re-read to
         // the same values a handler would have set. (Notes live in the document
         // and are read by the editor directly, so this never disturbs them.)
-        if state.get_heads() != self.model_heads {
-            // A peer still writing notes in their first format.
-            CalDoc::migrate_notes(state);
-        }
         let heads = state.get_heads();
         if heads != self.model_heads {
             self.model = CalDoc::read_model(state);
