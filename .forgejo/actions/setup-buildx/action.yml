@@ -21,11 +21,20 @@ inputs:
     description: >-
       Keep this builder's BuildKit state (layers and RUN cache mounts) in the
       runner slot's Docker store for the slot's next job of the same trust
-      class and configuration. Only a push to main is trusted, so a pull
-      request never writes state a main build reads. Publications build from
-      a fresh builder: leave this false for them.
+      class and configuration. Only a push to main (directly, or through a
+      workflow it calls) is trusted, so a pull request never writes state a
+      main build reads. Publications build from a fresh builder: leave this
+      false for them.
     required: false
     default: "false"
+  max-parallelism:
+    description: BuildKit's [worker.oci] max-parallelism; empty leaves its default.
+    required: false
+    default: ""
+  max-used-space:
+    description: How much state a persistent builder keeps between jobs.
+    required: false
+    default: "30GB"
 
 outputs:
   name:
@@ -41,7 +50,9 @@ runs:
         EXTRA_CONFIG: ${{ inputs.buildkitd-config-inline }}
         DRIVER_OPTS: ${{ inputs.driver-opts }}
         PERSISTENT: ${{ inputs.persistent }}
-        TRUST: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}
+        MAX_PARALLELISM: ${{ inputs.max-parallelism }}
+        MAX_USED_SPACE: ${{ inputs.max-used-space }}
+        TRUST: ${{ (github.event_name == 'push' || github.event_name == 'workflow_call') && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}
       run: |
         set -euo pipefail
         config="$(mktemp "${RUNNER_TEMP:-/tmp}/buildkitd.XXXXXX.toml")"
@@ -51,14 +62,21 @@ runs:
           : > "$config"
         fi
         printf '\n%s\n' "$EXTRA_CONFIG" >> "$config"
+        if grep -q '^\[worker\.oci\]' "$config"; then
+          echo "::error::set [worker.oci] through the max-parallelism and max-used-space inputs"; exit 1
+        fi
+        [[ -z $MAX_PARALLELISM || $MAX_PARALLELISM =~ ^[1-9][0-9]*$ ]] || { echo "::error::invalid max-parallelism"; exit 1; }
+        [[ $MAX_USED_SPACE =~ ^[1-9][0-9]*GB$ ]] || { echo "::error::invalid max-used-space"; exit 1; }
+        worker=""
+        [[ -z $MAX_PARALLELISM ]] || worker+="  max-parallelism = $MAX_PARALLELISM"$'\n'
         name=
         if [[ $PERSISTENT == true ]]; then
-          if grep -q '^\[worker\.oci\]' "$config"; then
-            echo "::error::a persistent builder sets its own [worker.oci] garbage collection"; exit 1
-          fi
           # Bound the state kept between jobs; the slot's store also holds
           # images and a Rust target tree.
-          printf '\n[worker.oci]\n  gc = true\n  reservedSpace = "2GB"\n  maxUsedSpace = "30GB"\n  minFreeSpace = "30GB"\n' >> "$config"
+          worker+="  gc = true"$'\n'"  reservedSpace = \"2GB\""$'\n'"  maxUsedSpace = \"$MAX_USED_SPACE\""$'\n'"  minFreeSpace = \"30GB\""$'\n'
+        fi
+        [[ -z $worker ]] || printf '\n[worker.oci]\n%s' "$worker" >> "$config"
+        if [[ $PERSISTENT == true ]]; then
           # A builder's configuration is fixed when its container starts, so
           # the name covers it; the slot's DinD maintenance keeps tilo-* state.
           digest=$( { cat "$config"; printf '%s' "$DRIVER_OPTS"; } | sha256sum | cut -c1-12)
