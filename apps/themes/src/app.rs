@@ -615,9 +615,9 @@ impl ThemesApp {
     /// theme (so a capture shows real editing); the live install focuses the
     /// first preset.
     fn seed_document_if_needed(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        // Persisted libraries are read-only at startup, including legacy Text
-        // and a restored version with no catalog roots. Explicit edits create
-        // only their addressed native override inside the canonical action.
+        // Persisted libraries are read-only at startup, including a restored
+        // version with no catalog roots. Explicit edits touch only their
+        // addressed record inside the canonical action.
         if !self.selected.is_empty() {
             return;
         }
