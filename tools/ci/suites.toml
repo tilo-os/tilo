@@ -169,7 +169,7 @@ name = "pipewire-echo-cancel"
 # name the session uses for it, and the image COPY that installs it.
 inputs = [
   "os/usr/share/pipewire/", "os/Containerfile",
-  "crates/media/core/src/audio.rs", "crates/media/core/src/audio_runtime.rs",
+  "crates/platform/tilo-media/src/audio.rs", "crates/platform/tilo-media/src/audio_runtime.rs",
 ]
 suites = ["os/tests/test_pipewire_echo_cancel.py"]
 
@@ -561,7 +561,7 @@ readers = ["crates/sdk/font-catalog/src/lib.rs"]
 [[cargo]]
 package = "pdf-viewer"
 # The reader's tests open the engine's typeset fixtures.
-inputs = ["crates/doc/pdf/tests/fixtures/"]
+inputs = ["crates/platform/tilo-pdf/tests/fixtures/"]
 readers = [
   "apps/pdf-viewer/src/app.rs", "apps/pdf-viewer/src/app/adopt_tests.rs",
   "apps/pdf-viewer/src/app/links_tests.rs", "apps/pdf-viewer/src/app/records_tests.rs",

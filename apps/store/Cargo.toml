@@ -55,7 +55,7 @@ thiserror.workspace = true
 hex.workspace = true
 ed25519-dalek.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json"] }
-tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

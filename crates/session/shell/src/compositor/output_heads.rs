@@ -371,6 +371,29 @@ fn resolve_mode(head: &OutputHead, request: ModeRequest) -> Result<OutputMode, A
         .ok_or_else(|| ArrangementError::UnsupportedMode(head.name().to_owned()))
 }
 
+/// The `wl_output` name: the connector key (`DP-2`), as other compositors
+/// advertise it, so clients and users can refer to a monitor by port. It
+/// is the same name the output-management head for this output carries,
+/// so a tool can match a `wl_output` to its head. An output without a
+/// connector gets the virtual head name its head is advertised under. It
+/// must be unique, so a repeated connector gets its id appended.
+pub(crate) fn advertised_name(
+    out: &super::backend::Output,
+    desired: &[super::backend::Output],
+) -> String {
+    let connector = &out.identity.connector;
+    let repeated = desired
+        .iter()
+        .any(|other| other.id != out.id && other.identity.connector == *connector);
+    if connector.is_empty() {
+        virtual_head_name(out.id)
+    } else if repeated {
+        format!("{connector}-{}", out.id.0)
+    } else {
+        connector.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

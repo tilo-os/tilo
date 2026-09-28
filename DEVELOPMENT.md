@@ -419,20 +419,23 @@ application build command.
 From PowerShell at the workspace root:
 
 ```powershell
-cargo check --locked -p ui --tests --features portal
+capnp --version
+cargo check --locked -p ui --tests
 cargo run --locked -p calculator
 cargo run --locked -p notes
 ```
 
 Windows rendering defaults to Direct3D 12. `WGPU_BACKEND` remains an explicit
-developer override. Apps use the shared `portal` feature for native Open, Save,
-multiple-file and folder dialogs, with results delivered on the existing picker
-channel. To exercise the host picker without opening or modifying a document:
+developer override. `ui::portal` opens the native Open, Save, multiple-file and
+folder dialogs (`tilo-dialogs` selects the Common Item Dialogs on Windows, the
+panels on macOS and the XDG portal on Linux; apps enable no feature), with
+results delivered on the existing picker channel. To exercise the host picker
+without opening or modifying a document:
 
 ```powershell
-cargo run --locked -p ui-examples --example native-file-picker --features portal -- open
-# Also accepts: multiple, directory, save
-cargo test --locked -p ui --lib --features portal portal::
+cargo run --locked -p tilo-dialogs --example pick -- open
+# Also accepts: multiple, directory, save, uri URL
+cargo test --locked -p tilo-dialogs
 ```
 
 The example reports the selected path; even its Save mode does not write a file.
