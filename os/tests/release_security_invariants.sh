@@ -15,8 +15,7 @@ bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 # Generic publication triggers share the generation-series lock. A protected
 # Lenovo dispatch uses its own source-specific group because it never allocates
 # a generic genN; validation builds remain per-ref.
-grep -Fq "group: \${{ (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}" "$workflow" \
-  && ! grep -Eq 'CONTINUOUS_RELEASE: "1"' "$workflow" \
+grep -Fq "group: \${{ (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}" "$workflow" \
   && ok 'generic generation publication is serialized separately from Lenovo' \
   || bad 'release jobs can race and reuse one generation'
 
@@ -32,9 +31,10 @@ else
 fi
 
 publication_guards="$(grep -Fc "if: steps.release-mode.outputs.publish == 'true'" "$workflow")"
-if grep -Fq 'REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}' "$workflow" \
+if grep -Fq 'REQUESTED_RELEASE: ${{ github.event.inputs.release }}' "$workflow" \
    && grep -Fq '$GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main' "$workflow" \
-   && grep -Fq '${REQUESTED_PUBLISH:-false} == true' "$workflow" \
+   && grep -Fq '${REQUESTED_RELEASE:-false} == true' "$workflow" \
+   && ! grep -Fq 'github.event.inputs.publish' "$workflow" \
    && grep -Fq "if [[ '\${{ steps.release-mode.outputs.publish }}' == true ]]; then" "$workflow" \
    && [ "$publication_guards" -ge 6 ] \
    && ! grep -Eq "if:.*github.event_name == 'workflow_dispatch'[[:space:]]*}}" "$workflow"; then
