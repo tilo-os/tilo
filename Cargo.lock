@@ -14566,6 +14566,7 @@ dependencies = [
  "notify",
  "proc-macro2",
  "quote",
+ "registry-types",
  "serde_json",
  "syn 2.0.117",
  "tempfile",
