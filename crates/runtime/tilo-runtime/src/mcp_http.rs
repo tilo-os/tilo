@@ -36,6 +36,7 @@ const MAX_BODY_BYTES: usize = crate::mcp_process::MAX_REQUEST_BYTES;
 const MAX_SESSIONS: usize = 256;
 const SESSION_IDLE: Duration = Duration::from_secs(6 * 60 * 60);
 const MAX_LABEL_CHARS: usize = 80;
+const VIEWER_PREFIX: &str = "/viewer/invitations";
 
 /// Where to listen and which bearer token, if any, callers must present.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,6 +106,7 @@ pub struct Endpoint<H> {
     actor: String,
     token: Option<String>,
     computer: Option<Arc<crate::computer::Computer>>,
+    viewer: Option<Arc<crate::viewer::Viewer>>,
     sessions: Mutex<HashMap<String, Session<H>>>,
 }
 
@@ -117,12 +119,26 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
         token: Option<String>,
         computer: Option<Arc<crate::computer::Computer>>,
     ) -> Arc<Self> {
+        Self::with_viewer(host, room, actor, token, computer, None)
+    }
+
+    /// Also answer `/viewer/invitations` for a partner-hosted viewer.
+    #[must_use]
+    pub fn with_viewer(
+        host: H,
+        room: String,
+        actor: String,
+        token: Option<String>,
+        computer: Option<Arc<crate::computer::Computer>>,
+        viewer: Option<Arc<crate::viewer::Viewer>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             host,
             room,
             actor,
             token,
             computer,
+            viewer,
             sessions: Mutex::new(HashMap::new()),
         })
     }
@@ -164,7 +180,63 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
                 None => plain(StatusCode::BAD_REQUEST, "missing Mcp-Session-Id"),
             },
             (_, "/mcp") => plain(StatusCode::METHOD_NOT_ALLOWED, "POST or DELETE"),
+            (_, path) if path.starts_with(VIEWER_PREFIX) => {
+                self.viewer_route(method, path, headers, body).await
+            }
             _ => plain(StatusCode::NOT_FOUND, "not found"),
+        }
+    }
+
+    /// `POST /viewer/invitations`, `DELETE /viewer/invitations/<id>`,
+    /// `POST /viewer/invitations/<id>/role` and `…/<id>/renew`.
+    async fn viewer_route(
+        &self,
+        method: &Method,
+        path: &str,
+        headers: &hyper::HeaderMap,
+        body: &[u8],
+    ) -> Response<Full<Bytes>> {
+        let Some(viewer) = self.viewer.clone() else {
+            return plain(StatusCode::NOT_FOUND, "not found");
+        };
+        if !self.authorized(headers) {
+            return plain(StatusCode::UNAUTHORIZED, "missing or wrong bearer token");
+        }
+        let rest = path.trim_start_matches(VIEWER_PREFIX);
+        let segments: Vec<&str> = rest.split('/').filter(|part| !part.is_empty()).collect();
+        let valid_id = |id: &str| id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit());
+        enum Call {
+            Issue,
+            Revoke(String),
+            Role(String),
+            Renew(String),
+        }
+        let call = match (method, segments.as_slice()) {
+            (&Method::POST, []) => Call::Issue,
+            (&Method::DELETE, [id]) if valid_id(id) => Call::Revoke((*id).to_owned()),
+            (&Method::POST, [id, "role"]) if valid_id(id) => Call::Role((*id).to_owned()),
+            (&Method::POST, [id, "renew"]) if valid_id(id) => Call::Renew((*id).to_owned()),
+            (_, [] | [_] | [_, "role" | "renew"]) => {
+                return plain(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
+            }
+            _ => return plain(StatusCode::NOT_FOUND, "not found"),
+        };
+        let body = body.to_vec();
+        let result = tokio::task::spawn_blocking(move || match call {
+            Call::Issue => viewer.issue(&body),
+            Call::Revoke(id) => viewer.revoke(&id),
+            Call::Role(id) => viewer.set_role(&id, &body),
+            Call::Renew(id) => viewer.renew(&id, &body, crate::viewer::now_ms()),
+        })
+        .await;
+        match result {
+            Ok(Ok(value)) => json_response(StatusCode::OK, &value, None),
+            Ok(Err(error)) => json_response(
+                StatusCode::from_u16(error.status).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
+                &json!({"error": error.message}),
+                None,
+            ),
+            Err(_) => plain(StatusCode::SERVICE_UNAVAILABLE, "viewer request failed"),
         }
     }
 

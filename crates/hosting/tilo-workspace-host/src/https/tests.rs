@@ -540,6 +540,51 @@ async fn slow_body_and_unanswered_control_expire_and_release_admission() {
     assert_eq!(receiver.available_bytes(), receiver.initial_bytes);
 }
 
+#[test]
+fn public_dns_origin_keeps_exact_host_and_origin_checks() {
+    let origin = Origin::parse("https://c1.viewer.example").unwrap();
+    assert!(!origin.loopback);
+    assert_eq!(origin.port, 443);
+    let request = |host: &str, from: &str| {
+        Request::builder()
+            .method("GET")
+            .uri("/peer/v3/descriptor")
+            .header("host", host)
+            .header("origin", from)
+            .header("sec-fetch-site", "same-origin")
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0
+    };
+    let same = request("c1.viewer.example", "https://c1.viewer.example");
+    check_origin(&same, &origin).unwrap();
+    for (host, from) in [
+        ("c2.viewer.example", "https://c1.viewer.example"),
+        ("c1.viewer.example", "https://c2.viewer.example"),
+        ("c1.viewer.example:7392", "https://c1.viewer.example"),
+        ("localhost:9443", "https://c1.viewer.example"),
+    ] {
+        assert_eq!(
+            check_origin(&request(host, from), &origin)
+                .unwrap_err()
+                .status,
+            StatusCode::FORBIDDEN,
+            "{host} {from}"
+        );
+    }
+    for bad in [
+        "https://C1.viewer.example",
+        "https://203.0.113.9",
+        "https://c1.viewer.example:0",
+        "https://user@c1.viewer.example",
+        "http://c1.viewer.example",
+    ] {
+        assert!(Origin::parse(bad).is_err(), "{bad}");
+    }
+    assert!(Origin::parse("https://[::1]:9443").unwrap().loopback);
+}
+
 // Removing exact origin, proof, target or body validation must change these outcomes.
 #[test]
 fn rejects_ambient_credentials_and_noncanonical_delivery_requests() {

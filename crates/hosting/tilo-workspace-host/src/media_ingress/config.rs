@@ -11,6 +11,11 @@ pub(crate) struct OperatorConfig {
     #[serde(default)]
     local_owner_enrollment: bool,
     origin: String,
+    /// TCP and UDP bind address. Absent, the host binds the loopback address
+    /// the origin names. Required for a public origin, which an edge forwards
+    /// here (TLS passthrough on TCP, datagrams on UDP).
+    #[serde(default)]
+    listen: Option<std::net::SocketAddr>,
     certificate_der: PathBuf,
     key_der: PathBuf,
     assets: PathBuf,
@@ -22,13 +27,27 @@ impl OperatorConfig {
         ensure!(config.delivery_version == 3, "delivery_version 3 required");
         let uri: hyper::Uri = config.origin.parse()?;
         let authority = uri.authority().context("origin authority missing")?;
+        let loopback = matches!(authority.host(), "localhost" | "127.0.0.1" | "[::1]");
         ensure!(
             !authority.as_str().contains('@')
                 && uri.scheme_str() == Some("https")
                 && config.origin == format!("https://{authority}")
-                && matches!(authority.host(), "localhost" | "127.0.0.1" | "[::1]")
+                && (loopback || crate::https::is_dns_name(authority.host()))
                 && authority.port_u16().unwrap_or(443) != 0,
-            "exact local HTTPS origin required"
+            "exact HTTPS origin with a loopback or DNS host required"
+        );
+        ensure!(
+            loopback || config.listen.is_some(),
+            "a public origin requires an explicit listen address"
+        );
+        ensure!(
+            !config.local_owner_enrollment
+                || (loopback && config.listen.is_none_or(|listen| listen.ip().is_loopback())),
+            "local owner enrollment requires a loopback origin and listener"
+        );
+        ensure!(
+            config.listen.is_none_or(|listen| listen.port() != 0),
+            "listen address requires a fixed port"
         );
         ensure!(
             config.certificate_der.is_absolute()
@@ -37,6 +56,23 @@ impl OperatorConfig {
             "absolute deployment paths required"
         );
         Ok(config)
+    }
+
+    /// The configured listener, else the loopback address the origin names.
+    async fn bind_address(&self) -> Result<std::net::SocketAddr> {
+        if let Some(listen) = self.listen {
+            return Ok(listen);
+        }
+        let uri: hyper::Uri = self.origin.parse()?;
+        let authority = uri.authority().context("origin authority missing")?;
+        let host = authority
+            .host()
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+        tokio::net::lookup_host((host, authority.port_u16().unwrap_or(443)))
+            .await?
+            .find(|v| v.ip().is_loopback())
+            .context("loopback address missing")
     }
 }
 pub(crate) struct PreparedIngress {
@@ -85,16 +121,7 @@ impl PreparedIngress {
             .map_err(anyhow::Error::msg)?;
         let assets_path = config.assets.canonicalize()?;
         let assets = AssetRoot::open(&assets_path)?;
-        let uri: hyper::Uri = config.origin.parse()?;
-        let authority = uri.authority().context("origin authority missing")?;
-        let host = authority
-            .host()
-            .trim_start_matches('[')
-            .trim_end_matches(']');
-        let address = tokio::net::lookup_host((host, authority.port_u16().unwrap_or(443)))
-            .await?
-            .find(|v| v.ip().is_loopback())
-            .context("loopback address missing")?;
+        let address = config.bind_address().await?;
         let listener = TcpListener::bind(address).await?;
         let endpoint = super::endpoint(
             listener.local_addr()?,
@@ -138,16 +165,7 @@ impl PreparedIngress {
             .map_err(anyhow::Error::msg)?;
         let assets_path = config.assets.canonicalize()?;
         let assets = AssetRoot::open(&assets_path)?;
-        let uri: hyper::Uri = config.origin.parse()?;
-        let authority = uri.authority().context("origin authority missing")?;
-        let host = authority
-            .host()
-            .trim_start_matches('[')
-            .trim_end_matches(']');
-        let address = tokio::net::lookup_host((host, authority.port_u16().unwrap_or(443)))
-            .await?
-            .find(|v| v.ip().is_loopback())
-            .context("loopback address missing")?;
+        let address = config.bind_address().await?;
         let tcp_addr = tcp.local_addr()?;
         let udp_addr = udp.local_addr()?;
         ensure!(
@@ -293,6 +311,68 @@ mod tests {
             assert!(OperatorConfig::decode(bad.as_bytes()).is_err())
         }
         assert!(OperatorConfig::decode(&vec![b' '; 16385]).is_err());
+    }
+    #[test]
+    fn public_origin_requires_an_explicit_listener_and_no_local_owner_gateway() {
+        let config = |fields: serde_json::Value| {
+            let mut value = serde_json::json!({"delivery_version":3,"certificate_der":"/c.der","key_der":"/k.der","assets":"/assets"});
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            OperatorConfig::decode(&serde_json::to_vec(&value).unwrap())
+        };
+        let public = config(
+            serde_json::json!({"origin":"https://c1.viewer.example","listen":"0.0.0.0:7392"}),
+        )
+        .unwrap();
+        assert_eq!(public.listen, Some("0.0.0.0:7392".parse().unwrap()));
+        assert!(
+            config(
+                serde_json::json!({"origin":"https://c1.viewer.example:8443","listen":"[::]:7392"})
+            )
+            .is_ok()
+        );
+        assert!(
+            config(serde_json::json!({"origin":"https://localhost:7392","listen":"0.0.0.0:7392"}))
+                .is_ok()
+        );
+        for bad in [
+            serde_json::json!({"origin":"https://c1.viewer.example"}),
+            serde_json::json!({"origin":"https://c1.viewer.example","listen":"0.0.0.0:0"}),
+            serde_json::json!({"origin":"https://C1.viewer.example","listen":"0.0.0.0:7392"}),
+            serde_json::json!({"origin":"https://203.0.113.9","listen":"0.0.0.0:7392"}),
+            serde_json::json!({"origin":"https://-bad.example","listen":"0.0.0.0:7392"}),
+            serde_json::json!({"origin":"https://c1.viewer.example/app","listen":"0.0.0.0:7392"}),
+            serde_json::json!({"origin":"https://c1.viewer.example","listen":"0.0.0.0:7392","local_owner_enrollment":true}),
+            serde_json::json!({"origin":"https://localhost:7392","listen":"0.0.0.0:7392","local_owner_enrollment":true}),
+        ] {
+            assert!(config(bad.clone()).is_err(), "{bad}");
+        }
+    }
+    #[tokio::test]
+    async fn public_origin_binds_tcp_and_udp_on_the_listen_address() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let cert = rcgen::generate_simple_self_signed(vec!["c1.viewer.example".into()]).unwrap();
+        let cert_path = dir.path().join("cert.der");
+        let key_path = dir.path().join("key.der");
+        let assets = dir.path().join("assets");
+        std::fs::create_dir(&assets).unwrap();
+        std::fs::write(&cert_path, cert.cert.der()).unwrap();
+        std::fs::write(&key_path, cert.signing_key.serialize_der()).unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let temporary = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let listen = temporary.local_addr().unwrap();
+        drop(temporary);
+        let config = dir.path().join("operator.json");
+        std::fs::write(&config, serde_json::to_vec(&serde_json::json!({"delivery_version":3,"origin":"https://c1.viewer.example","listen":listen,"certificate_der":cert_path,"key_der":key_path,"assets":assets})).unwrap()).unwrap();
+        let prepared = PreparedIngress::load(&config).await.unwrap();
+        assert_eq!(prepared.listener.local_addr().unwrap(), listen);
+        assert_eq!(prepared.endpoint.local_addr().unwrap(), listen);
+        assert_eq!(prepared.config.origin, "https://c1.viewer.example");
     }
     #[tokio::test]
     async fn trusted_config_requires_explicit_upgrade_and_rejects_public_key_custody() {

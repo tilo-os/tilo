@@ -138,6 +138,9 @@ struct Origin {
     exact: String,
     authority: String,
     port: u16,
+    /// `localhost`, `127.0.0.1` or `[::1]`; otherwise a public DNS origin that
+    /// an edge forwards to an explicitly configured listener.
+    loopback: bool,
     /// `Alt-Svc` advertised on HTTP/1.1 and HTTP/2 responses once the same
     /// port also serves these routes over HTTP/3 (UDP). Clients that cannot
     /// reach UDP keep using HTTP/2.
@@ -151,19 +154,42 @@ impl Origin {
         let authority = uri
             .authority()
             .ok_or_else(|| io::Error::other("missing HTTPS authority"))?;
+        let loopback = matches!(authority.host(), "localhost" | "127.0.0.1" | "[::1]");
         if uri.scheme_str() != Some("https")
             || value != format!("https://{authority}")
-            || !matches!(authority.host(), "localhost" | "127.0.0.1" | "[::1]")
+            || authority.as_str().contains('@')
+            || authority.port_u16() == Some(0)
+            || !(loopback || is_dns_name(authority.host()))
         {
-            return Err(io::Error::other("local HTTPS origin required"));
+            return Err(io::Error::other(
+                "exact HTTPS origin with a loopback or DNS host required",
+            ));
         }
         Ok(Self {
             exact: value.into(),
             authority: authority.to_string(),
             port: authority.port_u16().unwrap_or(443),
+            loopback,
             alt_svc: None,
         })
     }
+}
+
+/// A lowercase DNS name of LDH labels. IP literals are not public origins:
+/// their certificates and `Host` spellings are not canonical.
+pub(crate) fn is_dns_name(host: &str) -> bool {
+    host.len() <= 253
+        && !host
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+        && host.split('.').all(|label| {
+            (1..=63).contains(&label.len())
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
 }
 
 #[derive(Debug)]
@@ -767,13 +793,14 @@ impl HttpsAdapter {
     ) -> io::Result<Self> {
         let origin = Origin::parse(origin)?;
         let address = listener.local_addr()?;
-        if !address.ip().is_loopback()
-            || address.port() != origin.port
+        // A loopback origin is reached directly, so it names the listener's
+        // port. A public origin is reached through an edge that may map ports.
+        if (origin.loopback && address.port() != origin.port)
             || certificates.is_empty()
             || certificates.iter().map(|cert| cert.len()).sum::<usize>() > 64 * 1024
             || key.secret_der().len() > 64 * 1024
         {
-            return Err(io::Error::other("invalid local TLS listener configuration"));
+            return Err(io::Error::other("invalid TLS listener configuration"));
         }
         let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),
@@ -804,6 +831,7 @@ impl HttpsAdapter {
                 exact: self.origin.exact.clone(),
                 authority: self.origin.authority.clone(),
                 port: self.origin.port,
+                loopback: self.origin.loopback,
                 alt_svc: Some(value),
             });
         }

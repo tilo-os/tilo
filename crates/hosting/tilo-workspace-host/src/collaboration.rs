@@ -615,24 +615,29 @@ impl CollaborationService {
             .invitations
             .iter()
             .map(|record| {
-                let redeemed = owner
+                let redeemed_by = owner
                     .collaboration_state()
                     .join_completions
                     .iter()
-                    .any(|completion| completion.bootstrap.invite_id == record.issued.invite_id);
-                let status = if redeemed {
+                    .find(|completion| completion.bootstrap.invite_id == record.issued.invite_id)
+                    .map(|completion| completion.bootstrap.device_cert.user_public_key);
+                let status = if redeemed_by.is_some() {
                     "redeemed"
                 } else if record.cancellation.is_some() || record.grant.expires_at_ns <= now_ns {
                     "revoked"
                 } else {
                     "pending"
                 };
-                serde_json::json!({
+                let mut entry = serde_json::json!({
                     "id": hex::encode(record.issued.invite_id),
                     "role": role_name(record.grant.role),
                     "expires_at_ms": record.grant.expires_at_ns / 1_000_000,
                     "status": status,
-                })
+                });
+                if let Some(participant) = redeemed_by {
+                    entry["participant_id"] = serde_json::json!(hex::encode(participant));
+                }
+                entry
             })
             .collect::<Vec<_>>();
         Ok(serde_json::json!({
