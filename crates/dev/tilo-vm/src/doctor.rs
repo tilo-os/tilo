@@ -69,7 +69,7 @@ pub fn install_fix(facts: &HostFacts, tool: &str) -> String {
         HostKind::Zypper => format!("sudo zypper install {package}"),
         HostKind::Macos => format!("brew install {package}"),
         HostKind::Windows if tool == "rsync" => {
-            "install MSYS2 rsync in %USERPROFILE%\\msys64\\usr\\bin (pacman -S rsync), or put a native rsync on PATH".into()
+            "install MSYS2 rsync and openssh in %USERPROFILE%\\msys64\\usr\\bin (pacman -S rsync openssh)".into()
         }
         HostKind::Windows => format!("install {package} (winget) and put it on PATH"),
         HostKind::Dnf => format!("sudo dnf install {package}"),
@@ -95,6 +95,19 @@ pub fn host_checks(facts: &HostFacts) -> Vec<Check> {
                 tool,
                 format!("not on PATH (needed to {purpose})"),
                 install_fix(facts, tool),
+            ),
+        });
+    }
+    if facts.os == "windows" {
+        checks.push(match crate::host::rsync_ssh_program() {
+            Some(path) => Check::ok(
+                "rsync SSH",
+                format!("{} (MSYS2 transport for rsync)", path.display()),
+            ),
+            None => Check::fail(
+                "rsync SSH",
+                "MSYS2 ssh.exe is missing beside rsync.exe; native Windows OpenSSH closes the rsync pipe",
+                "install MSYS2 openssh with pacman -S openssh",
             ),
         });
     }
