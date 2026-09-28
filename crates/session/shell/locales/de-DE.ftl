@@ -42,11 +42,14 @@ display-confirm-keep = Behalten
 display-confirm-revert = Zurücksetzen
 display-rejected = Diese Anordnung konnte nicht angewendet werden: { $reason }
 
-# Eine Änderung eines Anzeigewerkzeugs (kanshi, wlr-randr) behalten oder zurücksetzen
-display-confirm-tool-title = Die von { $tool } angewendeten Anzeigeeinstellungen behalten?
-display-confirm-tool-unknown-title = Die von einem Werkzeug angewendeten Anzeigeeinstellungen behalten?
-display-confirm-always = Änderungen von { $tool } immer behalten
-display-confirm-a11y-description = Ein Anzeigewerkzeug hat deine Bildschirme geändert. Eingabe behält die Änderung, Escape stellt die vorherige Anordnung wieder her.
+# Eine riskante Änderung eines Anzeigewerkzeugs (kanshi, wlr-randr) behalten oder
+# zurücksetzen: eine, die einen Bildschirm schwarz lassen oder den benutzten ausschalten kann
+display-confirm-tool-title = Die Anzeigeänderung von { $tool } behalten?
+display-confirm-tool-unknown-title = Diese Anzeigeänderung behalten?
+display-confirm-always = Behalten und bei { $tool } nicht mehr fragen
+display-confirm-a11y-description = Ein Anzeigewerkzeug hat einen Bildschirm geändert, den du gerade benutzt, oder einen Modus gewählt, den er noch nie gezeigt hat – dabei kann er schwarz bleiben. Eingabe behält die Änderung; Escape oder Abwarten stellt die vorherige Anordnung wieder her.
+display-tool-reapply-refused = { $tool } wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
+display-tool-reapply-refused-unknown = Ein Anzeigewerkzeug wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
 
 # Drahtlose Empfänger, der untere Bereich desselben Blatts
 wireless-heading = Drahtlose Bildschirme
@@ -864,6 +867,11 @@ qs-devices-speakers-playing = { $count ->
         [one] { $count } Lautsprecher spielt · auswählen zum Beenden
        *[other] { $count } Lautsprecher spielen · auswählen zum Beenden
     }
+qs-devices-speaker-syncing = { $playing } spielen, { $syncing } gleichen die Uhr ab… · auswählen zum Beenden
+qs-devices-speaker-clock-failed = { $count ->
+        [one] { $count } Lautsprecher kann nicht synchron spielen: { $reason } · auswählen zum Beenden
+       *[other] { $count } Lautsprecher können nicht synchron spielen: { $reason } · auswählen zum Beenden
+    }
 qs-devices-speaker-setup-note = Stereopaar oder Raumlautsprecher · öffnet Einstellungen → Lautsprecher
 qs-devices-speaker-membership-note = eingerichtet auf { $leader } · auswählen zum Austreten
 qs-devices-another-certified = Ein anderes zertifiziertes Gerät
@@ -874,6 +882,8 @@ qs-devices-certified-device = zertifiziertes Gerät
 qs-devices-audio-awaiting = wartet auf Freigabe mit { $peer } · auswählen zum Beenden
 qs-devices-audio-streaming = streamt mit { $peer } · auswählen zum Beenden
 qs-devices-audio-interrupted = unterbrochen mit { $peer } · auswählen zum Verwerfen
+qs-devices-audio-syncing = gleicht die Uhr mit { $peer } ab… · auswählen zum Beenden
+qs-devices-audio-clock-failed = kann mit { $peer } nicht synchron spielen: { $reason } · auswählen zum Beenden
 qs-devices-capture-share = { $input } dieses Geräts teilen
 qs-devices-capture-requested = { $source } hat das für { $app } angefragt · einmal erlauben oder ablehnen
 qs-devices-capture-use-remote = Entfernte Eingabe verwenden: { $input }
@@ -2085,6 +2095,13 @@ speaker-calibration-reason-microphone-gone = dieses Mikrofon ist nicht mehr verb
 speaker-calibration-reason-output-gone = der Ausgang dieses Lautsprechers ist nicht mehr verbunden
 speaker-calibration-reason-play-failed = das Messsignal konnte nicht abgespielt werden: { $error }
 speaker-calibration-reason-listen-failed = die Aufnahme konnte nicht gestartet werden: { $error }
+speaker-calibration-reason-clock = die Uhr dieses Lautsprechers konnte nicht abgeglichen werden: { $reason }
+clock-sync-failure-media-disabled = die Medien-Übergabe ist auf diesem Gerät ausgeschaltet
+clock-sync-failure-no-reply = das andere Gerät hat auf den Uhrabgleich nicht geantwortet
+now-playing-speakers-playing = Spielt auf { $group }
+now-playing-speakers-connecting = { $group }: verbindet…
+now-playing-speakers-syncing = { $group }: Uhren werden abgeglichen…
+now-playing-speakers-clock-failed = { $group }: kann nicht synchron spielen – { $reason }
 speaker-calibration-failed = { $speaker } konnte nicht gemessen werden: { $reason }
 speaker-calibration-cancelled = Die Kalibrierung wurde abgebrochen
 

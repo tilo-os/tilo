@@ -240,6 +240,32 @@ RUN PYTHONPATH=/src/src python3 -m unittest discover -s /src/tests -p 'test_wfd.
     && PYTHONPATH=/src/src python3 /fluxcast-rtsp-receiver.py
 
 
+# ---- Joy-Con pairing daemon -------------------------------------------------
+# joycond (GPL-3.0-only) folds a left and a right Joy-Con into one uinput
+# controller, or releases a single half to be held sideways. Fedora carries it
+# only in COPR, which the frozen snapshot's signature policy cannot admit
+# (os/dev/verify-rpm-snapshot-signatures.sh), so build the pinned upstream
+# commit from snapshot build dependencies. Its udev rules are replaced by
+# os/usr/lib/udev/rules.d/72-joycond.rules, which scopes it to Joy-Cons, and
+# its modules-load snippet moves from /etc to the immutable /usr/lib.
+# tilo-rpm-snapshot-package: libevdev-devel
+FROM ${BASE_REF} AS joycond-builder
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    dnf install -y --setopt=reposdir=/repo \
+      cmake gcc-c++ make pkgconf-pkg-config libevdev-devel systemd-devel \
+    && dnf clean all
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    mkdir -p /src \
+    && tar -xzf /tilo-assets/joycond-0df025a.tar.gz --strip-components=1 -C /src \
+    && cmake -S /src -B /build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build /build --parallel \
+    && DESTDIR=/out cmake --install /build \
+    && install -D -m 0644 /out/etc/modules-load.d/joycond.conf \
+      /out/usr/lib/modules-load.d/joycond.conf \
+    && test -x /out/usr/bin/joycond \
+    && test -f /out/usr/lib/systemd/system/joycond.service
+
+
 # ---- Stage 1a: WPE WebKit (browser engine) ----------------------------------
 # Compilation lives only in os/Containerfile.wpe. Image entrypoints
 # (os/dev/build-image.sh, the WPE producer, and adoption/import) supply the
@@ -955,6 +981,9 @@ COPY --from=component-files /image/desktop-binaries/ /
 COPY --from=doubletake-builder /out/doubletake /usr/libexec/tilo-doubletake
 COPY --from=doubletake-builder /out/doubletake-test-receiver /usr/libexec/tilo-doubletake-test-receiver
 COPY --from=fluxcast-builder /src/src /usr/libexec/tilo-fluxcast-src
+COPY --from=joycond-builder /out/usr/bin/joycond /usr/bin/joycond
+COPY --from=joycond-builder /out/usr/lib/systemd/system/joycond.service /usr/lib/systemd/system/joycond.service
+COPY --from=joycond-builder /out/usr/lib/modules-load.d/joycond.conf /usr/lib/modules-load.d/joycond.conf
 
 FROM scratch AS remote-capture-files
 COPY os/etc/tilo/desktop.toml /etc/tilo/desktop.toml
@@ -1343,7 +1372,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
 # boot; advertising languages backed by only glibc-langpack-en would silently
 # apply an unusable LANG value and fall back to English. Keep this curated set
 # in lock-step with os/usr/share/tilo/installer-locales.txt rather than pulling
-# the much larger all-locales archive into every download.
+# the much larger all-locales archive into every download. libevdev is the
+# runtime library of joycond (see joycond-builder).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     chrony \
     zram-generator \
@@ -1369,6 +1399,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     glibc-langpack-zh \
     firewalld \
     bluez \
+    libevdev \
     power-profiles-daemon \
     && dnf clean all && ${FINALIZE_RPMDB}
 
@@ -1825,7 +1856,17 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     install -D -m 0644 /tilo-assets/doubletake-ae06722-LICENSE \
       /usr/share/licenses/tilo-doubletake/LICENSE \
     && install -D -m 0644 /tilo-assets/fluxcast-a74f39f-LICENSE \
-      /usr/share/licenses/tilo-fluxcast/LICENSE
+      /usr/share/licenses/tilo-fluxcast/LICENSE \
+    && install -D -m 0644 /tilo-assets/joycond-0df025a-LICENSE \
+      /usr/share/licenses/joycond/LICENSE \
+    && printf '%s\n' \
+      'joycond - Nintendo Switch Joy-Con pairing daemon' \
+      'Copyright (C) Daniel J. Ogorchock and joycond contributors' \
+      'License: GPL-3.0-only (see LICENSE)' \
+      'Source: https://github.com/DanielOgorchock/joycond/tree/0df025ac5dc284b1f31172b6b252321ba788c4de' \
+      'Unmodified; built from the source above. /usr/lib/udev/rules.d/72-joycond.rules' \
+      'is adapted from its udev/72-joycond.rules.' \
+      > /usr/share/licenses/joycond/NOTICE
 # PDF rendering and text extraction. Sandboxed apps read /usr/lib64 through
 # the launcher's system read profile, so the viewer finds it without a grant.
 RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
@@ -2028,7 +2069,11 @@ COPY \
 # session so external monitors' brightness can be set over DDC/CI; the
 # tilo-ddc.conf modules-load snippet (copied with the remote-camera one)
 # makes i2c-dev expose them as /dev/i2c-N.
-COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-tilo-io-scheduler.rules os/usr/lib/udev/rules.d/70-tilo-console.rules os/usr/lib/udev/rules.d/70-tilo-ddc.rules /usr/lib/udev/rules.d/
+#
+# 72-joycond.rules hands raw Joy-Con halves to joycond (installed with the
+# desktop binaries), which presents a pair as one combined controller;
+# Pro/SNES/N64 controllers stay with hid-nintendo and Steam.
+COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-tilo-io-scheduler.rules os/usr/lib/udev/rules.d/70-tilo-console.rules os/usr/lib/udev/rules.d/70-tilo-ddc.rules os/usr/lib/udev/rules.d/72-joycond.rules /usr/lib/udev/rules.d/
 
 # Grow the block-backed filesystem at /sysroot. The stock systemd-growfs-root.service
 # targets `/`, which is a composefs overlay here and cannot be grown; the
@@ -2323,7 +2368,9 @@ RUN chmod 0755 /usr/libexec/tilo-windows-vm-network /usr/libexec/tilo-windows-pr
 # pipewire + pipewire-pulse, plus the wireplumber session manager). Printing is
 # socket-activated rather than always-on. Time sync, firewall, Bluetooth,
 # modem, power, homed, hardening, boot assessment, automatic bootc updates and
-# NetworkManager are system services/timers.
+# NetworkManager are system services/timers. joycond is not enabled here:
+# 72-joycond.rules pulls it in when a Joy-Con appears, so it stays off the
+# boot path and off machines that never see one.
 RUN systemctl enable greetd.service && \
     restorecon -v /usr/lib/systemd/user/tilo-graphical-session.target && \
     systemctl disable NetworkManager.service firewalld.service chronyd.service && \

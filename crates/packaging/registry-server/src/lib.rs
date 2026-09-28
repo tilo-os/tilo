@@ -39,6 +39,7 @@ use tokio::net::TcpListener;
 use tracing::{error, info};
 
 pub mod allowlist;
+pub mod applications;
 pub mod bundle_review;
 pub mod moderation;
 pub mod moderation_api;
@@ -48,7 +49,7 @@ pub mod storage;
 pub use allowlist::{AllowlistError, PublisherAllowlist, PublisherRow};
 pub use bundle_review::{
     BundleReviewError, InspectedVersion, InspectionPolicy, fetch_entry_bytes, fetch_version_bytes,
-    inspect_bytes, inspect_entry,
+    inspect_bytes, inspect_entry, review_entry_bytes, review_version_bytes,
 };
 pub use moderation::{ModerationError, ModerationService};
 pub use moderation_api::{ModerationApiError, ModerationApiService};

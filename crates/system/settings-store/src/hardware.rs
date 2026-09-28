@@ -12,7 +12,9 @@ use tilo_clock::unix_now_ms;
 
 mod profiles;
 
-pub use profiles::{AttachedOutput, DisplayProfile, DisplayProfiles, DisplaySet};
+pub use profiles::{
+    AttachedOutput, DisplayProfile, DisplayProfiles, DisplaySet, MonitorHistory, same_scale,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

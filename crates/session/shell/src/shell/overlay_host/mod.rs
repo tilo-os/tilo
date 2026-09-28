@@ -276,6 +276,34 @@ enum ShortcutGuideFocus {
     Done,
 }
 
+/// The keyboard guide's navigation rows: a label and the previous/next pair
+/// it edits. The guide paints these and Tab walks these, so a binding is
+/// focusable exactly when it is drawn.
+const SHORTCUT_GUIDE_ROWS: [(
+    &str,
+    settings_store::hardware::ShortcutAction,
+    settings_store::hardware::ShortcutAction,
+); 7] = {
+    use settings_store::hardware::ShortcutAction as A;
+    [
+        (
+            "guide-row-windows",
+            A::FocusPreviousWindow,
+            A::FocusNextWindow,
+        ),
+        ("guide-row-tabs", A::PreviousTab, A::NextTab),
+        ("guide-row-move-tab", A::AttachTabLeft, A::AttachTabRight),
+        ("guide-row-strips", A::PreviousStrip, A::NextStrip),
+        (
+            "guide-row-workspaces",
+            A::PreviousWorkspace,
+            A::NextWorkspace,
+        ),
+        ("guide-row-move-group", A::MoveGroupLeft, A::MoveGroupRight),
+        ("guide-row-resize", A::ResizeNarrower, A::ResizeWider),
+    ]
+};
+
 /// The result of asking whether the global Print Screen shortcut may change
 /// the desktop's modal stack. Capture is a temporary input owner: it may sit
 /// above an OOBE, portal, consent, or file-selection dialog, but it must not
@@ -3475,6 +3503,26 @@ impl ShellOverlayHost {
         self.display_confirm.show(transaction, tool, Instant::now());
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().bump();
+        }
+    }
+
+    /// Tell the person `tool` applied a display layout again right after
+    /// they reverted it, and was refused instead of asking them again.
+    pub fn report_refused_display_reapply(
+        &mut self,
+        tool: Option<&settings_store::display_tools::DisplayTool>,
+    ) {
+        let title = tool.map_or_else(
+            || t("display-tool-reapply-refused-unknown"),
+            |tool| {
+                t_args(
+                    "display-tool-reapply-refused",
+                    &[("tool", ui::i18n::ArgValue::from(tool.name().to_owned()))],
+                )
+            },
+        );
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().push_notification(title, String::new());
         }
     }
 
@@ -10592,21 +10640,10 @@ impl ShellOverlayHost {
         reason = "kept as a host helper alongside the focus state it describes"
     )]
     fn shortcut_guide_controls(&self) -> Vec<ShortcutGuideFocus> {
-        use settings_store::hardware::ShortcutAction as A;
         let config = &self.shortcut_config;
         let defaults = settings_store::hardware::ShortcutConfig::default();
-        let rows = [
-            (A::FocusPreviousWindow, A::FocusNextWindow),
-            (A::PreviousTab, A::NextTab),
-            (A::AttachTabLeft, A::AttachTabRight),
-            (A::PreviousStrip, A::NextStrip),
-            (A::PreviousWorkspace, A::NextWorkspace),
-            (A::MoveGroupLeft, A::MoveGroupRight),
-            (A::MoveGroupToPreviousDisplay, A::MoveGroupToNextDisplay),
-            (A::ResizeNarrower, A::ResizeWider),
-        ];
         let mut controls = Vec::with_capacity(22);
-        for (first, second) in rows {
+        for (_, first, second) in SHORTCUT_GUIDE_ROWS {
             controls.push(ShortcutGuideFocus::Binding(first));
             controls.push(ShortcutGuideFocus::Binding(second));
             if [first, second]
@@ -11067,9 +11104,9 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        // Keep the conventional GNOME workspace aliases in addition to the
-        // editable spatial bindings. They are deliberately clamped by the
-        // same workspace primitive as Super+Up/Down.
+        // Super+Page Up/Down switch workspace whatever the editable
+        // workspace bindings say: they are fixed chords, clamped by the
+        // same workspace primitive as those bindings.
         if super_down
             && !mstate.control_key()
             && !mstate.alt_key()
@@ -19755,7 +19792,6 @@ impl ShellOverlayHost {
                 }
             }
             ui::InputModality::Keyboard | ui::InputModality::Pointer => {
-                use settings_store::hardware::ShortcutAction;
                 let shortcuts = &self.shortcut_config;
                 let defaults = settings_store::hardware::ShortcutConfig::default();
                 let binding = |action| {
@@ -19776,43 +19812,7 @@ impl ShellOverlayHost {
                     );
                     KeyboardBinding::new(modifiers, key)
                 };
-                let rows = [
-                    (
-                        "guide-row-windows",
-                        ShortcutAction::FocusPreviousWindow,
-                        ShortcutAction::FocusNextWindow,
-                    ),
-                    (
-                        "guide-row-tabs",
-                        ShortcutAction::PreviousTab,
-                        ShortcutAction::NextTab,
-                    ),
-                    (
-                        "guide-row-move-tab",
-                        ShortcutAction::AttachTabLeft,
-                        ShortcutAction::AttachTabRight,
-                    ),
-                    (
-                        "guide-row-strips",
-                        ShortcutAction::PreviousStrip,
-                        ShortcutAction::NextStrip,
-                    ),
-                    (
-                        "guide-row-workspaces",
-                        ShortcutAction::PreviousWorkspace,
-                        ShortcutAction::NextWorkspace,
-                    ),
-                    (
-                        "guide-row-move-group",
-                        ShortcutAction::MoveGroupLeft,
-                        ShortcutAction::MoveGroupRight,
-                    ),
-                    (
-                        "guide-row-resize",
-                        ShortcutAction::ResizeNarrower,
-                        ShortcutAction::ResizeWider,
-                    ),
-                ];
+                let rows = SHORTCUT_GUIDE_ROWS;
                 let compact = body.height() < 450.0;
                 let navigation_step = if compact { 41.0 } else { 44.0 };
                 let navigation_height = if compact { 154.0 } else { 168.0 };
@@ -22753,8 +22753,26 @@ impl ShellOverlayHost {
                         "a11y-speaker-playing-on",
                         &[("group", session.name.as_str().into())],
                     ),
-                    if session.inbound {
-                        t_args(
+                    match session.status() {
+                        crate::shell::speaker_group_runtime::SpeakerSessionStatus::ClockFailed(
+                            reason,
+                        ) => t_args(
+                            "qs-devices-speaker-clock-failed",
+                            &[
+                                ("count", session.failed_members.into()),
+                                ("reason", t(reason.message_key()).into()),
+                            ],
+                        ),
+                        crate::shell::speaker_group_runtime::SpeakerSessionStatus::SyncingClocks => {
+                            t_args(
+                                "qs-devices-speaker-syncing",
+                                &[
+                                    ("playing", session.playing_members.into()),
+                                    ("syncing", session.syncing_members.into()),
+                                ],
+                            )
+                        }
+                        _ if session.inbound => t_args(
                             "qs-devices-speaker-for",
                             &[(
                                 "peer",
@@ -22764,20 +22782,22 @@ impl ShellOverlayHost {
                                     .unwrap_or_else(|| t("qs-devices-another-device"))
                                     .into(),
                             )],
-                        )
-                    } else if session.waiting_members > 0 {
-                        t_args(
-                            "qs-devices-speaker-connecting",
-                            &[
-                                ("playing", session.playing_members.into()),
-                                ("waiting", session.waiting_members.into()),
-                            ],
-                        )
-                    } else {
-                        t_args(
-                            "qs-devices-speakers-playing",
-                            &[("count", session.playing_members.into())],
-                        )
+                        ),
+                        crate::shell::speaker_group_runtime::SpeakerSessionStatus::Connecting => {
+                            t_args(
+                                "qs-devices-speaker-connecting",
+                                &[
+                                    ("playing", session.playing_members.into()),
+                                    ("waiting", session.waiting_members.into()),
+                                ],
+                            )
+                        }
+                        crate::shell::speaker_group_runtime::SpeakerSessionStatus::Playing => {
+                            t_args(
+                                "qs-devices-speakers-playing",
+                                &[("count", session.playing_members.into())],
+                            )
+                        }
                     },
                     ui::icons::Icon::Volume2,
                     true,
@@ -22856,6 +22876,16 @@ impl ShellOverlayHost {
                         crate::shell::remote_audio::RemoteAudioPhase::AwaitingConsent => {
                             t_args("qs-devices-audio-awaiting", &[("peer", peer.into())])
                         }
+                        crate::shell::remote_audio::RemoteAudioPhase::SyncingClock => {
+                            t_args("qs-devices-audio-syncing", &[("peer", peer.into())])
+                        }
+                        crate::shell::remote_audio::RemoteAudioPhase::ClockFailed(reason) => t_args(
+                            "qs-devices-audio-clock-failed",
+                            &[
+                                ("peer", peer.into()),
+                                ("reason", t(reason.message_key()).into()),
+                            ],
+                        ),
                         crate::shell::remote_audio::RemoteAudioPhase::Streaming => {
                             t_args("qs-devices-audio-streaming", &[("peer", peer.into())])
                         }

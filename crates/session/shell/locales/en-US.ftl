@@ -39,11 +39,14 @@ display-confirm-keep = Keep
 display-confirm-revert = Revert
 display-rejected = Couldn't apply this layout: { $reason }
 
-# Keep or revert a change a display tool (kanshi, wlr-randr) made
-display-confirm-tool-title = Keep the display settings { $tool } applied?
-display-confirm-tool-unknown-title = Keep the display settings a tool applied?
-display-confirm-always = Always keep changes from { $tool }
-display-confirm-a11y-description = A display tool changed your screens. Enter keeps the change, Escape restores the previous layout.
+# Keep or revert a risky change a display tool (kanshi, wlr-randr) made:
+# one that could leave a screen blank or turn off the one in use
+display-confirm-tool-title = Keep the display change from { $tool }?
+display-confirm-tool-unknown-title = Keep this display change?
+display-confirm-always = Keep, and don't ask again for { $tool }
+display-confirm-a11y-description = A display tool changed a screen you're using, or picked a mode it hasn't shown before, which can leave it blank. Enter keeps the change; Escape, or waiting, restores the previous layout.
+display-tool-reapply-refused = { $tool } tried to reapply a display layout you reverted
+display-tool-reapply-refused-unknown = A display tool tried to reapply a display layout you reverted
 
 # Wireless receivers, the lower section of the same sheet
 wireless-heading = Wireless displays
@@ -861,6 +864,11 @@ qs-devices-speakers-playing = { $count ->
         [one] { $count } speaker playing · select to stop
        *[other] { $count } speakers playing · select to stop
     }
+qs-devices-speaker-syncing = { $playing } playing, { $syncing } syncing clocks… · select to stop
+qs-devices-speaker-clock-failed = { $count ->
+        [one] { $count } speaker can't play in time: { $reason } · select to stop
+       *[other] { $count } speakers can't play in time: { $reason } · select to stop
+    }
 qs-devices-speaker-setup-note = Stereo pair or room speakers · opens Settings → Speakers
 qs-devices-speaker-membership-note = set up on { $leader } · select to leave
 qs-devices-another-certified = Another certified device
@@ -871,6 +879,8 @@ qs-devices-certified-device = certified device
 qs-devices-audio-awaiting = waiting for approval with { $peer } · select to stop
 qs-devices-audio-streaming = streaming with { $peer } · select to stop
 qs-devices-audio-interrupted = interrupted with { $peer } · select to dismiss
+qs-devices-audio-syncing = syncing clocks with { $peer }… · select to stop
+qs-devices-audio-clock-failed = can't play in time with { $peer }: { $reason } · select to stop
 qs-devices-capture-share = Share this device's { $input }
 qs-devices-capture-requested = { $source } requested this for { $app } · allow once or decline
 qs-devices-capture-use-remote = Use remote { $input }
@@ -2082,6 +2092,13 @@ speaker-calibration-reason-microphone-gone = that microphone is no longer connec
 speaker-calibration-reason-output-gone = that speaker's output is no longer connected
 speaker-calibration-reason-play-failed = could not play the sweep: { $error }
 speaker-calibration-reason-listen-failed = could not start listening: { $error }
+speaker-calibration-reason-clock = could not sync clocks with that speaker: { $reason }
+clock-sync-failure-media-disabled = media continuity is off on this device
+clock-sync-failure-no-reply = the other device did not answer clock sync
+now-playing-speakers-playing = Playing on { $group }
+now-playing-speakers-connecting = { $group }: connecting…
+now-playing-speakers-syncing = { $group }: syncing clocks…
+now-playing-speakers-clock-failed = { $group }: can't play in time — { $reason }
 speaker-calibration-failed = Could not measure { $speaker }: { $reason }
 speaker-calibration-cancelled = Calibration was cancelled
 

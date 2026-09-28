@@ -1341,6 +1341,15 @@ impl CapnpBrokerState {
             if caller.room().is_none() {
                 return Err(ActionHostError::UnknownAction);
             }
+            let author = match caller.principal() {
+                CallerPrincipal::Person(person)
+                    if workspace.decide_at(&policy, &ResourceRef::Workspace, Verb::Write, now)
+                        == CapDecision::Allow =>
+                {
+                    Some(person.as_str())
+                }
+                _ => None,
+            };
             return self
                 .launch_application(
                     &workspace,
@@ -1351,6 +1360,7 @@ impl CapnpBrokerState {
                     crate::services::LaunchContent {
                         hash: launch_content_hash(argument),
                         caller: launch,
+                        author,
                     },
                 )
                 .map_err(refusal);

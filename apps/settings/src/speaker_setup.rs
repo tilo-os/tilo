@@ -890,6 +890,7 @@ mod tests {
                 status,
                 trim: SpeakerTrimInfo::default(),
             }],
+            playback: None,
         }
     }
 
