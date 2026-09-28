@@ -35,10 +35,7 @@ exempt-dirs = ["tests", "benches", "examples"]
 # apps count them against the shrink-only baseline.
 [strict]
 platforms = ["linux", "macos", "web"]
-# Enforcing rules = ["R1", "R2", "R3", "R4", "W1", "W2", "W3"] waits until
-# the apps main changed since the migration hold none again; until then their
-# findings count against the baseline.
-rules = []
+rules = ["R1", "R2", "R3", "R4", "W1", "W2", "W3"]
 
 # The only places where code may select a target. Everything else compiles
 # unchanged for every target.
