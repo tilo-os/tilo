@@ -13,6 +13,6 @@
 #[cfg(target_os = "android")]
 pub mod android;
 pub mod capture;
-mod env_vars;
+pub(crate) mod env_vars;
 pub mod mpris;
 pub mod services;
