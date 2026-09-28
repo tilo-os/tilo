@@ -5,7 +5,7 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use ed25519_dalek::SigningKey;
 use getrandom::SysRng;
 use getrandom::rand_core::UnwrapErr;
@@ -68,18 +68,32 @@ pub fn resolve(path: Option<&Path>) -> Result<SigningKey> {
     if let Some(path) = path {
         return load(path);
     }
+    discover()?.ok_or_else(|| {
+        anyhow!(
+            "no publisher key: pass --key, set ${KEY_ENV}, or create one with `tilo-app keys new`"
+        )
+    })
+}
+
+/// The key in [`KEY_ENV`], else the one at [`default_path`], or `None` when
+/// neither is there. An empty [`KEY_ENV`] counts as unset, which is what a
+/// CI secret missing from a pull request expands to.
+///
+/// # Errors
+///
+/// When a key is there but cannot be read.
+pub fn discover() -> Result<Option<SigningKey>> {
     if let Ok(text) = std::env::var(KEY_ENV)
         && !text.trim().is_empty()
     {
-        return parse(&text).with_context(|| format!("${KEY_ENV}"));
+        return parse(&text)
+            .with_context(|| format!("${KEY_ENV}"))
+            .map(Some);
     }
-    let path = default_path().ok_or_else(|| anyhow!("no configuration directory"))?;
-    if !path.exists() {
-        bail!(
-            "no publisher key: pass --key, set ${KEY_ENV}, or create one with `tilo-app keys new`"
-        );
+    match default_path() {
+        Some(path) if path.exists() => load(&path).map(Some),
+        _ => Ok(None),
     }
-    load(&path)
 }
 
 /// Write a new key to `path`, readable only by its owner. Never replaces a
