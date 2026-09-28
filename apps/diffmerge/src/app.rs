@@ -1563,6 +1563,7 @@ impl Widget for DiffMergeApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::headless::Framed;
 
     fn app_with_state() -> (DiffMergeApp, ui::State) {
         let mut app = DiffMergeApp::new();
@@ -1880,60 +1881,38 @@ mod tests {
         );
     }
 
-    /// Run the real five-pass frame so the merge panel lays out and draws,
-    /// which is what populates the resolution-chip hit rects.
-    fn draw_merge_frame(app: &mut DiffMergeApp, viewport: (f32, f32)) {
-        draw_frame_scaled(app, viewport, 1.0);
+    /// Mount `app` over the case's `state` in the production frame host and run
+    /// one frame, which lays out and draws the merge panel (populating the
+    /// resolution-chip hit rects).
+    fn merge_frame(
+        app: DiffMergeApp,
+        state: ui::State,
+        viewport: (f32, f32),
+    ) -> Framed<DiffMergeApp> {
+        frame_scaled(app, state, viewport, 1.0)
     }
 
-    /// Lay out and paint one frame at `text_scale`, the way the launcher's
-    /// `--text-scale` does: the theme's type tokens and the renderer's scale
-    /// move together.
-    fn draw_frame_scaled(app: &mut DiffMergeApp, viewport: (f32, f32), text_scale: f32) {
-        use std::collections::HashMap;
-        let (w, h) = viewport;
-        let theme = Theme::dark().with_text_scale(text_scale);
-        let presence = PresenceCtx::empty();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(text_scale);
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(w),
-                        height: Dimension::length(h),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        {
-            let measure_map = node_map.clone();
-            let trr = &mut tr;
-            taffy
-                .compute_layout_with_measure(
-                    root,
-                    taffy::Size {
-                        width: AvailableSpace::Definite(w),
-                        height: AvailableSpace::Definite(h),
-                    },
-                    |known, available, node_id, _, _| {
-                        if let Some(&ptr) = measure_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, available, trr) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
-        }
-        app.apply_layout(&taffy, child, Point::ORIGIN);
-        let mut scene = Scene::new();
-        app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    /// [`merge_frame`] at `text_scale`, the way the launcher's `--text-scale`
+    /// does: the theme's type tokens and the renderer's scale move together.
+    fn frame_scaled(
+        app: DiffMergeApp,
+        state: ui::State,
+        viewport: (f32, f32),
+        text_scale: f32,
+    ) -> Framed<DiffMergeApp> {
+        Framed::new(
+            state,
+            app,
+            ui::headless::viewport(viewport),
+            Theme::dark().with_text_scale(text_scale),
+        )
+    }
+
+    /// Rebuild and run the next frame of a mounted app at a new size.
+    fn rerender_merge_frame(app: &mut Framed<DiffMergeApp>, viewport: (f32, f32)) {
+        Framed::harness_mut(app)
+            .relayout_themed(ui::headless::viewport(viewport), Theme::dark())
+            .expect("diffmerge frame lays out");
     }
 
     fn keyboard_event(key: Key) -> WindowEvent {
@@ -1986,7 +1965,7 @@ mod tests {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        draw_merge_frame(&mut app, (390.0, 760.0));
+        let mut app = merge_frame(app, state, (390.0, 760.0));
 
         let hits = app.merge.compact_source_hits();
         assert_eq!(hits.len(), 3, "phone has Base/Ours/Theirs source controls");
@@ -2023,7 +2002,7 @@ mod tests {
 
         // At tablet width the selector disappears because all three panes are
         // deliberately visible side by side.
-        draw_merge_frame(&mut app, (800.0, 760.0));
+        rerender_merge_frame(&mut app, (800.0, 760.0));
         assert!(app.merge.compact_source_hits().is_empty());
         assert!(
             Widget::accessibility(&app.merge)
@@ -2046,7 +2025,7 @@ mod tests {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        draw_merge_frame(&mut app, (390.0, 760.0));
+        let app = merge_frame(app, state, (390.0, 760.0));
 
         assert_eq!(app.tool_hits.len(), 6, "two modes and four actions");
         let mut rects: Vec<_> = app.tool_hits.iter().map(|hit| hit.rect).collect();
@@ -2078,7 +2057,7 @@ mod tests {
             let mut app = DiffMergeApp::new_demo();
             let mut state = ui::State::new();
             app.sync(&mut state.doc, &state.root);
-            draw_frame_scaled(&mut app, (800.0, 700.0), scale);
+            let app = frame_scaled(app, state, (800.0, 700.0), scale);
 
             assert_eq!(
                 app.tool_hits.len(),
@@ -2144,7 +2123,7 @@ mod tests {
             let mut app = DiffMergeApp::new_demo();
             let mut state = ui::State::new();
             app.sync(&mut state.doc, &state.root);
-            draw_frame_scaled(&mut app, (w, h), scale);
+            let app = frame_scaled(app, state, (w, h), scale);
             let pane = app.merge.get_rect();
             let hits = app.merge.chip_hits();
             assert!(
@@ -2178,14 +2157,14 @@ mod tests {
         let mut one = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
         one.sync(&mut state.doc, &state.root);
-        draw_frame_scaled(&mut one, (1200.0, 800.0), 1.0);
+        let one = frame_scaled(one, state, (1200.0, 800.0), 1.0);
         let (row_1, header_1, chip_1) = one.merge.metrics_for_test();
         let content_1 = one.merge.content_height_for_test();
 
         let mut two = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
         two.sync(&mut state.doc, &state.root);
-        draw_frame_scaled(&mut two, (1200.0, 800.0), 2.0);
+        let two = frame_scaled(two, state, (1200.0, 800.0), 2.0);
         let (row_2, header_2, chip_2) = two.merge.metrics_for_test();
         let content_2 = two.merge.content_height_for_test();
 
@@ -2207,14 +2186,14 @@ mod tests {
         one.act(Action::ModeDiff);
         let mut state = ui::State::new();
         one.sync(&mut state.doc, &state.root);
-        draw_frame_scaled(&mut one, (1200.0, 800.0), 1.0);
+        let one = frame_scaled(one, state, (1200.0, 800.0), 1.0);
         let (row_1, header_1, gutter_1) = one.diff.metrics_for_test();
 
         let mut two = DiffMergeApp::new_demo();
         two.act(Action::ModeDiff);
         let mut state = ui::State::new();
         two.sync(&mut state.doc, &state.root);
-        draw_frame_scaled(&mut two, (1200.0, 800.0), 2.0);
+        let two = frame_scaled(two, state, (1200.0, 800.0), 2.0);
         let (row_2, header_2, gutter_2) = two.diff.metrics_for_test();
 
         let mut tr = TextRenderer::new();
@@ -2250,7 +2229,8 @@ mod tests {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        draw_merge_frame(&mut app, (390.0, 760.0));
+        let mut app = merge_frame(app, state, (390.0, 760.0));
+        let (app, state) = Framed::split(&mut app);
         let theirs = app
             .merge
             .compact_source_hits()
@@ -2298,7 +2278,7 @@ mod tests {
             },
         );
         assert!(handled);
-        assert_eq!(selected_compact_source(&app), "Show Theirs source");
+        assert_eq!(selected_compact_source(app), "Show Theirs source");
 
         handled = false;
         app.handle_event(
@@ -2315,7 +2295,7 @@ mod tests {
             },
         );
         assert!(handled);
-        assert_eq!(selected_compact_source(&app), "Show Ours source");
+        assert_eq!(selected_compact_source(app), "Show Ours source");
 
         let theirs_key = ui::a11y::hash_key(&"diffmerge.source.theirs");
         assert!(Widget::perform_action_at(
@@ -2325,16 +2305,17 @@ mod tests {
             &mut state.doc,
             &state.root,
         ));
-        assert_eq!(selected_compact_source(&app), "Show Theirs source");
+        assert_eq!(selected_compact_source(app), "Show Theirs source");
     }
 
     fn toolbar_controls_have_semantic_names_focus_geometry_and_activation() {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        draw_merge_frame(&mut app, (980.0, 720.0));
+        let mut app = merge_frame(app, state, (980.0, 720.0));
+        let (app, state) = Framed::split(&mut app);
 
-        let semantics = Widget::accessibility(&app).expect("toolbar semantics");
+        let semantics = Widget::accessibility(&*app).expect("toolbar semantics");
         let toolbar = semantics.children.first().expect("toolbar group");
         assert_eq!(toolbar.children.len(), 6, "both modes and four actions");
         assert!(toolbar.children.iter().all(|node| {
@@ -2346,12 +2327,12 @@ mod tests {
             .position(|node| node.name.as_deref() == Some("Load sample comparison"))
             .expect("sample control");
         assert!(Widget::focus_synthetic_accessibility(
-            &mut app,
+            &mut *app,
             &[0, sample_index]
         ));
         assert_eq!(app.toolbar_focus, Some(Action::LoadSample));
         assert!(Widget::perform_semantic_action(
-            &mut app,
+            &mut *app,
             "diffmerge.toolbar.show-diff",
             &ui::a11y::Action::Activate,
             &mut state.doc,
@@ -2421,8 +2402,9 @@ mod tests {
         app.mode = Mode::Diff;
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        draw_merge_frame(&mut app, (390.0, 760.0));
-        let root = Widget::accessibility(&app).expect("diff semantics");
+        let mut app = merge_frame(app, state, (390.0, 760.0));
+        let (app, state) = Framed::split(&mut app);
+        let root = Widget::accessibility(&*app).expect("diff semantics");
         let diff = root
             .children
             .iter()
@@ -2444,7 +2426,7 @@ mod tests {
             2
         );
         assert!(Widget::perform_semantic_action(
-            &mut app,
+            &mut *app,
             "diffmerge.diff-source:right",
             &ui::a11y::Action::Activate,
             &mut state.doc,
@@ -2491,7 +2473,7 @@ mod tests {
     fn narrow_status_bubble_stays_within_the_viewport_for_long_errors() {
         let mut app = DiffMergeApp::for_shot(Some("error"));
         app.arm_status_bubble_for_shots();
-        draw_merge_frame(&mut app, (390.0, 760.0));
+        let app = merge_frame(app, ui::State::new(), (390.0, 760.0));
         let bubble = app.status_bubble_rect();
         assert!(
             bubble.x0 >= app.rect.x0 && bubble.x1 <= app.rect.x1,
@@ -2509,9 +2491,10 @@ mod tests {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        draw_merge_frame(&mut app, (980.0, 720.0));
+        let mut app = merge_frame(app, state, (980.0, 720.0));
+        let (app, state) = Framed::split(&mut app);
 
-        let root = Widget::accessibility(&app).expect("root semantics");
+        let root = Widget::accessibility(&*app).expect("root semantics");
         let merge = root
             .children
             .iter()
@@ -2524,7 +2507,7 @@ mod tests {
             .expect("one drawn resolution action is accessible");
         let before = crate::doc::MergeDoc::merged_text(&state.doc);
         assert!(Widget::perform_semantic_action(
-            &mut app,
+            &mut *app,
             &target,
             &ui::a11y::Action::Activate,
             &mut state.doc,
@@ -2534,9 +2517,9 @@ mod tests {
     }
 
     fn root_accessibility_explains_empty_and_error_content() {
-        let mut empty = DiffMergeApp::for_shot(Some("empty"));
-        draw_merge_frame(&mut empty, (980.0, 720.0));
-        let empty_semantics = Widget::accessibility(&empty).expect("empty semantics");
+        let empty = DiffMergeApp::for_shot(Some("empty"));
+        let empty = merge_frame(empty, ui::State::new(), (980.0, 720.0));
+        let empty_semantics = Widget::accessibility(&*empty).expect("empty semantics");
         let names = empty_semantics
             .children
             .iter()
@@ -2544,9 +2527,9 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(names.contains(&"No files loaded"), "{names:?}");
 
-        let mut error = DiffMergeApp::for_shot(Some("error"));
-        draw_merge_frame(&mut error, (980.0, 720.0));
-        let error_semantics = Widget::accessibility(&error).expect("error semantics");
+        let error = DiffMergeApp::for_shot(Some("error"));
+        let error = merge_frame(error, ui::State::new(), (980.0, 720.0));
+        let error_semantics = Widget::accessibility(&*error).expect("error semantics");
         let names = error_semantics
             .children
             .iter()
@@ -2565,7 +2548,8 @@ mod tests {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        draw_merge_frame(&mut app, (1200.0, 760.0));
+        let mut app = merge_frame(app, state, (1200.0, 760.0));
+        let (app, state) = Framed::split(&mut app);
 
         let hunk = app
             .merge
