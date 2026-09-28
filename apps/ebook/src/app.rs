@@ -4850,7 +4850,8 @@ impl Widget for BooksApp {
     ui::provides!(
         dyn ui::widget::Continuable,
         dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -4923,23 +4924,6 @@ impl Widget for BooksApp {
             return self.completed_resource_invocation.take();
         }
         None
-    }
-
-    /// Make books, chapters and annotations findable through canonical
-    /// resource view actions in the unified Ctrl+K palette.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![
-            Box::new(self.search_provider.clone()),
-            Box::new(
-                self.search_provider
-                    .action_search_provider()
-                    .with_live_resources(
-                        (*self.action_search_resources).clone(),
-                        Arc::clone(&self.action_search_epoch),
-                        self.action_search_epoch.load(Ordering::Acquire),
-                    ),
-            ),
-        ]
     }
 
     #[allow(
@@ -5800,6 +5784,25 @@ impl Widget for BooksApp {
 
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
+    }
+}
+
+impl ui::search::capability::SearchSource for BooksApp {
+    /// Make books, chapters and annotations findable through canonical
+    /// resource view actions in the unified Ctrl+K palette.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![
+            Box::new(self.search_provider.clone()),
+            Box::new(
+                self.search_provider
+                    .action_search_provider()
+                    .with_live_resources(
+                        (*self.action_search_resources).clone(),
+                        Arc::clone(&self.action_search_epoch),
+                        self.action_search_epoch.load(Ordering::Acquire),
+                    ),
+            ),
+        ]
     }
 }
 

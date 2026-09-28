@@ -33,6 +33,28 @@ pub struct ActionContext {
     /// history bytes are unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invoker: Option<ActionInvoker>,
+    /// What the change is to the people sharing the document, declared by
+    /// the action ([`crate::Action::change_kind`]). Omitted for content, so
+    /// existing history bytes are unchanged.
+    #[serde(skip_serializing_if = "ChangeKind::is_content")]
+    pub change: ChangeKind,
+}
+
+/// Whether a change is to a document's content or only housekeeping about
+/// it. Housekeeping (a read marker, a reading position) is durable and
+/// shared like any change, and stays in the document's own history, but a
+/// feed of what people did to the workspace leaves it out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ChangeKind {
+    #[default]
+    Content,
+    Housekeeping,
+}
+
+impl ChangeKind {
+    pub const fn is_content(&self) -> bool {
+        matches!(self, Self::Content)
+    }
 }
 
 impl ActionContext {
@@ -202,6 +224,17 @@ impl ActionContext {
     pub fn with_facet(mut self, facet: ActionFacet) -> Self {
         self.facets.push(facet);
         self
+    }
+
+    #[must_use]
+    pub fn with_change(mut self, change: ChangeKind) -> Self {
+        self.change = change;
+        self
+    }
+
+    /// Whether the change this context describes is housekeeping, not content.
+    pub fn is_housekeeping(&self) -> bool {
+        self.change == ChangeKind::Housekeeping
     }
 
     /// Encode into the Automerge change message. Returning `None` keeps an
@@ -549,6 +582,30 @@ mod tests {
         .with_facet(ActionFacet::new("file-type", "Markdown"));
         let message = context.change_message().expect("non-empty context");
         assert_eq!(ActionContext::from_change_message(&message), Some(context));
+    }
+
+    #[test]
+    fn housekeeping_is_carried_and_content_keeps_change_message_bytes() {
+        let content = ActionContext::for_resource("Rename", "r", "k", "l");
+        assert!(
+            !content.change_message().unwrap().contains("change"),
+            "content is the default and is not written"
+        );
+        let marker = content.clone().with_change(ChangeKind::Housekeeping);
+        let message = marker.change_message().unwrap();
+        let read = ActionContext::from_change_message(&message).unwrap();
+        assert!(read.is_housekeeping());
+        assert_eq!(read, marker);
+        let bare = ActionContext::default().with_change(ChangeKind::Housekeeping);
+        assert!(
+            bare.change_message().is_some(),
+            "housekeeping alone is still written"
+        );
+        assert!(
+            !ActionContext::from_change_message(&content.change_message().unwrap())
+                .unwrap()
+                .is_housekeeping()
+        );
     }
 
     fn unrelated_or_malformed_messages_are_legacy_history() {

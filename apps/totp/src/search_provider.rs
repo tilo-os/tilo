@@ -167,7 +167,7 @@ mod tests {
             let mut app = crate::app::AuthenticatorApp::demo();
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &ROOT);
-            let hits = app.search_providers()[0].search("");
+            let hits = ui::search::capability::search_providers(&app)[0].search("");
             assert!(!hits.is_empty());
             assert!(hits.iter().all(|hit| {
                 hit.action_address().is_some_and(|address| {
@@ -189,7 +189,7 @@ mod tests {
             let mut app = crate::app::AuthenticatorApp::demo();
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &ROOT);
-            let target = app.search_providers()[0]
+            let target = ui::search::capability::search_providers(&app)[0]
                 .search("")
                 .into_iter()
                 .nth(1)
@@ -208,7 +208,7 @@ mod tests {
             );
             let mut palette = ui::ActionPalette::new();
             palette.load_open_resources(&resources);
-            palette.set_providers(app.search_providers());
+            palette.set_providers(ui::search::capability::search_providers(&app));
             palette.open();
             palette.set_query(&target.title);
             let index = palette

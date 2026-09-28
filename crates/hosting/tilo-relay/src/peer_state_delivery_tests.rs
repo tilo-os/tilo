@@ -121,6 +121,8 @@ async fn writer_boundary(
         agent_reads_v1: false,
         private_tx: &private,
         revocations: &revocations,
+        live_bridge: None,
+        agents: Box::leak(Box::default()),
     };
     let source_session = SessionCtx {
         outbound: &source_tx,
@@ -390,6 +392,8 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         agent_reads_v1: false,
         private_tx: &private,
         revocations: &revocations,
+        live_bridge: None,
+        agents: Box::leak(Box::default()),
     };
     let source_session = SessionCtx {
         outbound: &source_tx,

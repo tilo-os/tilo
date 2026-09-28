@@ -1,4 +1,4 @@
-name: Snapshot / CI fast images
+name: Build / CI fast images
 
 # Publishes registry.tilo.so/tilo/ci-fast (lint, planning and other quick jobs)
 # and registry.tilo.so/tilo/ci-control (ci-fast plus the Docker client, for
@@ -45,10 +45,29 @@ jobs:
             os/Containerfile.ci-fast
             os/Containerfile.ci-control
             os/dev/assert-native-arch.sh
+            tools/ci/compiler_cache_env.sh
+            .forgejo/actions/setup-buildx
           sparse-checkout-cone-mode: false
 
       - name: Require a native build host
         run: ./os/dev/assert-native-arch.sh x86_64
+
+      - name: Log in to registry.tilo.so
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up buildx
+        uses: ./.forgejo/actions/setup-buildx
+
+      - name: Select the compiler cache
+        env:
+          FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+          FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+        run: bash tools/ci/compiler_cache_env.sh
 
       - name: Build and exercise both images
         run: |
@@ -64,10 +83,24 @@ jobs:
           # Neither recipe copies from its context; never send the checkout.
           context=$(mktemp -d)
           trap 'rm -rf -- "$context"' EXIT
-          docker build --pull --platform linux/amd64 \
+          cache=()
+          if [[ -n ${SCCACHE_BUCKET:-} && -n ${AWS_ACCESS_KEY_ID:-} ]]; then
+            for name in SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL SCCACHE_S3_KEY_PREFIX; do
+              cache+=(--build-arg "$name")
+            done
+            cache+=(--secret id=aws_access_key_id,env=AWS_ACCESS_KEY_ID
+                    --secret id=aws_secret_access_key,env=AWS_SECRET_ACCESS_KEY)
+          fi
+          layers="$TILO_LAYER_CACHE_REGISTRY/tilo/ci-fast-buildcache:x86_64"
+          docker buildx build --pull --load --progress=plain --provenance=false \
+            --platform linux/amd64 "${cache[@]}" \
+            --cache-from "type=registry,ref=$layers" \
+            --cache-to "type=registry,ref=$layers,mode=max,ignore-error=true" \
             --file os/Containerfile.ci-fast --tag "$fast" "$context"
-          # ci-control builds on the ci-fast image just built, not the pin.
-          docker build --platform linux/amd64 --build-arg "CI_FAST_IMAGE=$fast" \
+          # ci-control builds on the ci-fast image just built, not the pin. The
+          # docker-container builder cannot read that loaded image, so the
+          # daemon's own builder adds the Docker client; it compiles nothing.
+          docker buildx build --builder default --platform linux/amd64 --build-arg "CI_FAST_IMAGE=$fast" \
             --file os/Containerfile.ci-control --tag "$control" "$context"
           docker run --rm --network=none "$fast" bash -euo pipefail -c '
             . /etc/os-release
@@ -78,6 +111,7 @@ jobs:
             cargo deny --version
             cargo machete --version
             cargo hakari --version
+            sccache --version
             for tool in git python3 jq rg node gpg curl diff which; do
               command -v "$tool"
             done
@@ -92,14 +126,6 @@ jobs:
             docker --version
             docker buildx version
             cargo --version'
-
-      - name: Log in to registry.tilo.so
-        if: env.PUBLISH == 'true'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: registry.tilo.so
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish the tested images
         if: env.PUBLISH == 'true'

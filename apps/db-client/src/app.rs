@@ -1840,15 +1840,12 @@ fn csv_field(value: &str) -> String {
 impl Widget for DbClientApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[DB_OPERATION_TYPE]
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
     }
 
     fn start_operation(
@@ -2605,6 +2602,12 @@ impl Widget for DbClientApp {
         (self.session.tab == MainTab::Query)
             .then(|| self.editor.text_review())
             .flatten()
+    }
+}
+
+impl ui::search::capability::SearchSource for DbClientApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_index.provider())]
     }
 }
 

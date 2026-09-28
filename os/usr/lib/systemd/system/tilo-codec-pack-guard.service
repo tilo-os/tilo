@@ -7,6 +7,10 @@ Documentation=file:///usr/share/doc/tilo/codec-pack.md
 # offline, before systemd-sysext merges anything, and parks such an extension
 # (or restores a parked one after a rollback). The refresh unit rebuilds it for
 # the new base once a matching RPM Fusion build exists.
+# systemd-sysext runs before systemd-tmpfiles-setup, so nothing here may be
+# ordered after tmpfiles: that closes a cycle systemd breaks by dropping one of
+# them. PrivateTmp=disconnected keeps a private /tmp without the implicit
+# After=systemd-tmpfiles-setup.service that PrivateTmp=yes adds.
 DefaultDependencies=no
 After=local-fs.target
 Before=systemd-sysext.service sysinit.target
@@ -18,7 +22,7 @@ ExecStart=/usr/libexec/tilo-codec-pack guard
 ProtectSystem=strict
 ReadWritePaths=/var/lib/tilo/codec-pack /var/lib/extensions
 ProtectHome=yes
-PrivateTmp=yes
+PrivateTmp=disconnected
 PrivateNetwork=yes
 PrivateDevices=yes
 NoNewPrivileges=yes

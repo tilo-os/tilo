@@ -1593,7 +1593,9 @@ impl Widget for TileHost {
         dyn crate::widget::AudiencePresentationProvider,
         dyn crate::collaboration::participants::CollaborationTopology,
         dyn crate::history_mode::capability::FrameworkHistoryTopology,
-        dyn crate::widget::controls::ActionControls
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::search::capability::SearchSource,
+        dyn crate::presence::capability::PublishesPresence
     );
 
     fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
@@ -1775,17 +1777,6 @@ impl Widget for TileHost {
         match &self.content {
             TileContent::App(app) => app.needs_idle_sync(),
             _ => false,
-        }
-    }
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        match &self.content {
-            TileContent::App(app) => app.search_providers(),
-            _ => Vec::new(),
-        }
-    }
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
-        if let TileContent::App(app) = &mut self.content {
-            app.activate_search_result(action_id, doc, path);
         }
     }
 
@@ -2378,16 +2369,6 @@ impl Widget for TileHost {
             TileContent::Stub { .. } | TileContent::Notice { .. } => false,
         }
     }
-    /// Presence identity is the record shown, not the tile — the only
-    /// thing that tells two tabs of one app apart, since a peer's caret is
-    /// a position in *a document*. Unbound tiles report nothing.
-    fn presence_key(&self) -> Option<crate::presence::PresenceKey> {
-        self.binding
-            .as_ref()
-            .map(|b| crate::presence::PresenceKey::Tab {
-                id: b.live.as_str().to_string(),
-            })
-    }
     /// A bound tile has already committed the app's burst against its own
     /// record in [`Widget::update`]; saying "yes" here would commit the
     /// host's own, unrelated document too.
@@ -2441,6 +2422,33 @@ impl Widget for TileHost {
         let opening_indicator =
             Widget::opening(self) && Widget::needs_animation_frame(&self.opening_spinner);
         self.spawn_in_flight() || self.handover_in_flight() || opening_indicator || inner
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for TileHost {
+    /// Presence identity is the record shown, not the tile — the only
+    /// thing that tells two tabs of one app apart, since a peer's caret is
+    /// a position in *a document*. Unbound tiles report nothing.
+    fn presence_key(&self) -> Option<crate::presence::PresenceKey> {
+        self.binding
+            .as_ref()
+            .map(|b| crate::presence::PresenceKey::Tab {
+                id: b.live.as_str().to_string(),
+            })
+    }
+}
+
+impl crate::search::capability::SearchSource for TileHost {
+    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        match &self.content {
+            TileContent::App(app) => crate::search::capability::search_providers(app.as_ref()),
+            _ => Vec::new(),
+        }
+    }
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
+        if let TileContent::App(app) = &mut self.content {
+            crate::search::capability::activate_search_result(app.as_mut(), action_id, doc, path);
+        }
     }
 }
 

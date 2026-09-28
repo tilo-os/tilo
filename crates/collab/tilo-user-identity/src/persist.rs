@@ -75,17 +75,6 @@ fn protect_secret_process() -> io::Result<()> {
 
 #[cfg(target_os = "linux")]
 fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
-    const RESOLVE_BENEATH: u64 = 0x08;
-    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
-    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
-
-    #[repr(C)]
-    struct OpenHow {
-        flags: u64,
-        mode: u64,
-        resolve: u64,
-    }
-
     // Fedora Atomic deliberately exposes /home as a symlink to /var/home.
     // Resolving an absolute path with RESOLVE_NO_SYMLINKS therefore rejects a
     // perfectly normal login before it ever reaches Tilo's identity tree.
@@ -104,7 +93,7 @@ fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
             }
             Some((parent, path.strip_prefix(parent).ok()?))
         });
-    let (root, candidate, resolve) = if let Some((root, relative)) = managed {
+    let (root, candidate, beneath) = if let Some((root, relative)) = managed {
         let canonical_root = fs::canonicalize(root)?;
         let root_path = CString::new(canonical_root.as_os_str().as_bytes()).map_err(|_| {
             io::Error::new(
@@ -126,11 +115,7 @@ fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
         }
         // SAFETY: libc::open returned an owned descriptor.
         let root = unsafe { fs::File::from_raw_fd(root_fd) };
-        (
-            Some(root),
-            candidate,
-            RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
-        )
+        (Some(root), candidate, true)
     } else {
         let candidate = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
             io::Error::new(
@@ -138,36 +123,15 @@ fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
                 "identity artifact path contains an embedded NUL byte",
             )
         })?;
-        (None, candidate, RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS)
+        (None, candidate, false)
     };
-    let flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .map_err(|_| io::Error::other("open flags are outside the Linux u64 ABI"))?;
-    let how = OpenHow {
-        flags,
-        mode: 0,
-        resolve,
-    };
-    let directory = root
-        .as_ref()
-        .map_or(libc::AT_FDCWD, std::os::fd::AsRawFd::as_raw_fd);
-    // SAFETY: path and open_how remain live for this syscall. A successful
-    // descriptor is uniquely transferred into File below.
-    let descriptor = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            directory,
-            candidate.as_ptr(),
-            &raw const how,
-            std::mem::size_of::<OpenHow>(),
-        )
-    };
-    if descriptor < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let descriptor = i32::try_from(descriptor)
-        .map_err(|_| io::Error::other("openat2 returned an invalid descriptor"))?;
-    // SAFETY: openat2 returned this owned descriptor and no other File owns it.
-    Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+    crate::nofollow::open(
+        root.as_ref(),
+        &candidate,
+        libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK,
+        0,
+        beneath,
+    )
 }
 
 #[cfg(not(target_os = "linux"))]

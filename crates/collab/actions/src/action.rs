@@ -145,6 +145,15 @@ pub trait Action: std::fmt::Debug {
     fn risk(&self) -> crate::contract::RiskLevel {
         crate::contract::RiskLevel::Low
     }
+
+    /// Whether this value changes the document's content or is housekeeping
+    /// about it (a read marker, a reading position). The executor writes it
+    /// into the change's [`ActionContext`](crate::ActionContext), where a
+    /// workspace activity feed reads it. Must be a pure function of `self`.
+    /// Defaults to [`Content`](crate::ChangeKind::Content).
+    fn change_kind(&self) -> crate::context::ChangeKind {
+        crate::context::ChangeKind::Content
+    }
 }
 
 /// A serialized action ready to cross a process/network boundary: the

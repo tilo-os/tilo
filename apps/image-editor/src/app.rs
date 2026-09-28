@@ -1173,7 +1173,8 @@ impl Widget for ImageEditorApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -2636,9 +2637,6 @@ impl Widget for ImageEditorApp {
     fn is_focusable(&self) -> bool {
         true
     }
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search.clone())]
-    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
     }
@@ -2967,6 +2965,12 @@ impl Widget for ImageEditorApp {
             }
         }
         true
+    }
+}
+
+impl ui::search::capability::SearchSource for ImageEditorApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search.clone())]
     }
 }
 
