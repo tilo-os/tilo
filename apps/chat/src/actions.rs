@@ -403,8 +403,6 @@ pub enum ChatAction {
         color_idx: usize,
         status: String,
     },
-    /// One pass of the legacy attachment-path repair. Idempotent.
-    MigrateLegacyAttachments,
 }
 
 /// Longest agent display name recorded beside an agent-authored message.
@@ -516,15 +514,6 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
             ("Update call connection", channel, channel, "chat.call")
         }
         ChatAction::EnsureUser { id, .. } => ("Join chat", id, id, "chat.user"),
-        ChatAction::MigrateLegacyAttachments => {
-            context.action_label = "Repair attachments".into();
-            context.resource = Some(tilo_actions::ActionResource {
-                id: "chat".into(),
-                kind: "chat.workspace".into(),
-                label: "Chat".into(),
-            });
-            return context;
-        }
         // A well-formed one delegated above; a nested wrapper applies nothing.
         ChatAction::AgentAuthored { .. } => return context,
     };
@@ -563,10 +552,6 @@ impl Action for ChatAction {
         {
             let presence = status.parse().unwrap_or(crate::model::Presence::Online);
             let _ = ChatDoc::ensure_user(doc, id, name, initials, *color_idx, presence);
-            return Ok(());
-        }
-        if matches!(self, ChatAction::MigrateLegacyAttachments) {
-            ChatDoc::migrate_legacy_attachment_paths(doc);
             return Ok(());
         }
         // Each helper matches only its own category's variants (a `_ => {}`
