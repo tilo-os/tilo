@@ -1,4 +1,4 @@
-name: Development / pair retained Wine RPMs
+name: Build / Wine RPM pair
 
 on:
   workflow_dispatch:

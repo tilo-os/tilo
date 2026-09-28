@@ -4,7 +4,7 @@ The ARM image carries a separate x86 Windows compatibility rootfs. Its current
 consumer requires the traditional Wine pair, including both x86-64 and i686
 loaders. Fedora's stock Wine packages do not satisfy that consumer contract.
 
-Run **Development / assemble retained Windows guest** on a `codex/` branch after
+Run **Build / Windows guest** on a `codex/` branch after
 the Wine producer has published its paired artifact. This workflow packages
 existing Wine RPMs; it does not compile Wine, the browser or the OS.
 

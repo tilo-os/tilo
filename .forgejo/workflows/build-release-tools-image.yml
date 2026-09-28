@@ -1,4 +1,4 @@
-name: Snapshot / release tools
+name: Build / release tools image
 
 # Pull requests build and exercise both native variants. Internal pull requests
 # also publish an immutable candidate so the consumer can pin the reviewed
