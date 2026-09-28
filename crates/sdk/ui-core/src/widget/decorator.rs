@@ -673,56 +673,6 @@ pub trait Decorator {
         self.inner_mut().start_operation(op, doc, path)
     }
 
-    fn invoke_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<bool, String> {
-        self.inner_mut()
-            .invoke_resource_operation(kind, type_id, payload, doc, path)
-    }
-
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        self.inner_mut()
-            .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        self.inner_mut()
-            .start_resource_operation(invocation, kind, type_id, payload, doc, path)
-    }
-
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        self.inner_mut()
-            .start_resource_operation_with_document(invocation, kind, type_id, payload, doc, path)
-    }
-
     fn poll_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -1496,54 +1446,6 @@ impl<T: Decorator> Widget for T {
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         Decorator::start_operation(self, op, doc, path)
-    }
-
-    fn invoke_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<bool, String> {
-        Decorator::invoke_resource_operation(self, kind, type_id, payload, doc, path)
-    }
-
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        Decorator::invoke_resource_operation_v2(self, kind, type_id, payload, doc, path)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        Decorator::start_resource_operation(self, invocation, kind, type_id, payload, doc, path)
-    }
-
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        Decorator::start_resource_operation_with_document(
-            self, invocation, kind, type_id, payload, doc, path,
-        )
     }
 
     fn poll_resource_operation(
