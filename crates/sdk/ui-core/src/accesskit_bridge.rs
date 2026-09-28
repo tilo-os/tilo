@@ -63,7 +63,7 @@ use accesskit::{
 };
 use taffy::NodeId as TaffyNodeId;
 
-use crate::a11y::{AccessNode, Action, FnvHasher, Role};
+use crate::a11y::{AccessNode, Action, Role};
 use crate::a11y_tree::SemanticId;
 use crate::text_break::{grapheme_indices, graphemes};
 use crate::widget::Widget;
@@ -88,14 +88,12 @@ const ADDRESS_ID_MASK: u64 = (1u64 << 60) - 1;
 fn stable_address_hash(parts: &[&str]) -> u64 {
     // FNV-1a is deliberately fixed here rather than using RandomState: node
     // identity must survive process restarts and Rust upgrades.
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut hasher = fnv::FnvHasher::default();
     for part in parts {
-        for byte in part.as_bytes().iter().copied().chain([0]) {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
+        std::hash::Hasher::write(&mut hasher, part.as_bytes());
+        std::hash::Hasher::write(&mut hasher, &[0]);
     }
-    hash & ADDRESS_ID_MASK
+    std::hash::Hasher::finish(&hasher) & ADDRESS_ID_MASK
 }
 
 #[must_use]
@@ -241,7 +239,7 @@ fn text_run_node_id(parent: AkNodeId) -> AkNodeId {
 /// silently find it pointing somewhere else.
 fn synthetic_node_id(parent: AkNodeId, key: u64) -> AkNodeId {
     use std::hash::Hasher;
-    let mut h = FnvHasher::new();
+    let mut h = fnv::FnvHasher::default();
     h.write(&parent.0.to_le_bytes());
     h.write(&key.to_le_bytes());
     // Force the marker bit; everything else is hash.

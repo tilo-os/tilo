@@ -180,7 +180,6 @@ pub fn peer_live_reset(id: u32) {
 /// Checked admission of one forwarded canonical item on top of `state`: the
 /// same bounded native-cut path as durable replay.
 fn admit_forwarded(
-    peer: &Peer,
     state: &StatePeer,
     canonical: &[u8],
     now: SystemTime,
@@ -286,7 +285,7 @@ pub(super) fn settle_durable_cut(
         let settled = custody
             .speculation
             .settle(candidate, now_ns, |state, bytes| {
-                admit_forwarded(peer, state, bytes, now)
+                admit_forwarded(state, bytes, now)
             });
         (previous, settled)
     });
@@ -349,7 +348,7 @@ pub(super) fn after_durable_install(peer: &Peer) {
             custody
                 .speculation
                 .rebase(&durable, now_ns, |state, bytes| {
-                    admit_forwarded(peer, state, bytes, now)
+                    admit_forwarded(state, bytes, now)
                 }),
         )
     });
@@ -529,7 +528,7 @@ pub fn peer_live_admit(id: u32, frame: Vec<u8>, checked_base: String) -> Result<
         let view = peer.state.borrow();
         with_custody(id, |custody| {
             custody.speculation.admit(&view, item, |state, bytes| {
-                admit_forwarded(&peer, state, bytes, now)
+                admit_forwarded(state, bytes, now)
             })
         })
     };
@@ -556,9 +555,9 @@ pub fn peer_live_reconcile(id: u32) -> Result<String, JsValue> {
     let now_ns = tilo_delivery_protocol::clock::now_ns();
     let now = SystemTime::now();
     let expired = with_custody(id, |custody| {
-        custody.speculation.expire(now_ns, |state, bytes| {
-            admit_forwarded(&peer, state, bytes, now)
-        })
+        custody
+            .speculation
+            .expire(now_ns, |state, bytes| admit_forwarded(state, bytes, now))
     });
     let withdrawn = expired
         .as_ref()

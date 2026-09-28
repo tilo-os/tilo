@@ -358,9 +358,11 @@ async fn deployment() -> (
     tempfile::TempDir,
     std::path::PathBuf,
     std::path::PathBuf,
+    std::net::TcpListener,
+    std::net::UdpSocket,
 ) {
-    let (transport_root, store_root, config, ready, _) = enrolled_deployment().await;
-    (transport_root, store_root, config, ready)
+    let (transport_root, store_root, config, ready, _, tcp, udp) = enrolled_deployment().await;
+    (transport_root, store_root, config, ready, tcp, udp)
 }
 async fn enrolled_deployment() -> (
     tempfile::TempDir,
@@ -368,8 +370,10 @@ async fn enrolled_deployment() -> (
     std::path::PathBuf,
     std::path::PathBuf,
     tilo_user_identity::cloud_enrollment::EnrollmentRequest,
+    std::net::TcpListener,
+    std::net::UdpSocket,
 ) {
-    let (transport_root, store_root, config, ready) =
+    let (transport_root, store_root, config, ready, tcp, udp) =
         crate::https_owner::serve::tests::fixture().await;
     let owner_root = SigningKey::from_bytes(&[7; 32]);
     let device = SigningKey::from_bytes(&[8; 32]);
@@ -385,54 +389,47 @@ async fn enrolled_deployment() -> (
     json["initial_owner_root"] = serde_json::Value::Null;
     std::fs::write(&config, serde_json::to_vec(&json).unwrap()).unwrap();
     std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
-    (transport_root, store_root, config, ready, request)
+    (transport_root, store_root, config, ready, request, tcp, udp)
 }
-/// Start the composed service and wait for its Ready record.
+/// Start the composed service on the reserved sockets and wait for Ready.
 async fn started(
     config: &Path,
     ready: &Path,
+    tcp: std::net::TcpListener,
+    udp: std::net::UdpSocket,
 ) -> (
     tokio::sync::oneshot::Sender<()>,
     tokio::task::JoinHandle<anyhow::Result<()>>,
     String,
 ) {
-    let mut attempt = 0;
-    let (stop, server) = loop {
-        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-        let server = {
-            let (config, ready) = (config.to_owned(), ready.to_owned());
-            tokio::spawn(async move {
-                crate::https_owner::serve::serve_broker_only_until(&config, &ready, async {
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = {
+        let (config, ready) = (config.to_owned(), ready.to_owned());
+        tokio::spawn(async move {
+            crate::https_owner::serve::serve_broker_only_until_bound(
+                &config,
+                &ready,
+                Some((tcp, udp)),
+                async {
                     let _ = stopped.await;
-                })
-                .await
-            })
-        };
-        let deadline = tilo_test_env::hang_deadline();
-        while !ready.exists() && !server.is_finished() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the server never published its Ready record"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        if !server.is_finished() || ready.exists() {
-            break (stop, server);
-        }
-        // The fixture's free address was taken by another test process
-        // before the service bound it: assign another and start again.
-        let error = format!("{:#}", server.await.unwrap().unwrap_err());
-        assert!(
-            attempt < 8 && error.contains("Address already in use"),
-            "server stopped before Ready: {error}"
-        );
-        attempt += 1;
-        let json: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
-        crate::https_owner::serve::tests::assign_free_origin(Path::new(
-            json["transport_config"].as_str().unwrap(),
-        ));
+                },
+            )
+            .await
+        })
     };
+    let deadline = tilo_test_env::hang_deadline();
+    while !ready.exists() && !server.is_finished() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the server never published its Ready record"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !server.is_finished() || ready.exists(),
+        "server stopped before Ready: {:#}",
+        server.await.unwrap().unwrap_err()
+    );
     let record: serde_json::Value = serde_json::from_slice(&std::fs::read(ready).unwrap()).unwrap();
     assert_eq!(record["capabilities"], PRODUCT_DATA_V1);
     (stop, server, record["origin"].as_str().unwrap().to_owned())
@@ -440,10 +437,10 @@ async fn started(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_https_loopback_product_data_survives_owner_reopen() {
-    let (_transport_root, store_root, config, ready) = deployment().await;
+    let (_transport_root, store_root, config, ready, tcp, udp) = deployment().await;
     let root = store_root.path().to_owned();
     // Ready is published only after the complete service is installed.
-    let (stop, server, origin) = started(&config, &ready).await;
+    let (stop, server, origin) = started(&config, &ready, tcp, udp).await;
     let mut client = Client {
         http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
@@ -716,10 +713,10 @@ async fn cloud_https_loopback_product_data_survives_owner_reopen() {
 /// is still answered promptly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_https_upload_and_private_replies_are_answered_without_ticks() {
-    let (_transport_root, store_root, config, ready) = deployment().await;
+    let (_transport_root, store_root, config, ready, tcp, udp) = deployment().await;
     let root = store_root.path().to_owned();
     super::quiet_ticks::quiet(&root);
-    let (stop, server, origin) = started(&config, &ready).await;
+    let (stop, server, origin) = started(&config, &ready, tcp, udp).await;
     let mut client = Client {
         http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
@@ -821,7 +818,7 @@ async fn cloud_https_upload_and_private_replies_are_answered_without_ticks() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_https_serve_refuses_unactivated_store_without_ready() {
-    let (_transport_root, store_root, config, ready) =
+    let (_transport_root, store_root, config, ready, tcp, udp) =
         crate::https_owner::serve::tests::fixture().await;
     let owner_root = SigningKey::from_bytes(&[7; 32]);
     let device = SigningKey::from_bytes(&[8; 32]);
@@ -835,9 +832,14 @@ async fn cloud_https_serve_refuses_unactivated_store_without_ready() {
     std::fs::write(&config, serde_json::to_vec(&json).unwrap()).unwrap();
     let before = std::fs::read(store_root.path().join("state.json")).unwrap();
     // The transport config has no explicit activation: no schema transition.
-    let error = crate::https_owner::serve::serve_until(&config, &ready, std::future::pending())
-        .await
-        .unwrap_err();
+    let error = crate::https_owner::serve::serve_until_bound(
+        &config,
+        &ready,
+        Some((tcp, udp)),
+        std::future::pending(),
+    )
+    .await
+    .unwrap_err();
     assert!(error.to_string().contains("activate_delivery"), "{error}");
     assert_eq!(
         std::fs::read(store_root.path().join("state.json")).unwrap(),
@@ -904,9 +906,10 @@ async fn cloud_https_invited_device_onboards_then_authenticates_for_product_data
         JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest as Join,
         JoinTransportResponse as Reply, decode_and_verify_invitation_text, sign_join_proof,
     };
-    let (_transport_root, store_root, config, ready, enrollment) = enrolled_deployment().await;
+    let (_transport_root, store_root, config, ready, enrollment, tcp, udp) =
+        enrolled_deployment().await;
     let root = store_root.path().to_owned();
-    let (stop, server, origin) = started(&config, &ready).await;
+    let (stop, server, origin) = started(&config, &ready, tcp, udp).await;
     // The owner issues an invitation; the installed descriptor adds the one
     // exact HTTPS origin locator the browser uses for discovery.
     let admin =
@@ -1052,14 +1055,15 @@ async fn cloud_https_structural_owner_membership_refresh_returns_owner_bootstrap
         JoinTransportRequest as Join, JoinTransportResponse as Reply, MembershipChallengeRequest,
         MembershipCompleteRequest, sign_membership_proof,
     };
-    let (_transport_root, store_root, config, ready, enrollment) = enrolled_deployment().await;
+    let (_transport_root, store_root, config, ready, enrollment, tcp, udp) =
+        enrolled_deployment().await;
     let root = store_root.path().to_owned();
     let (authority, room) = {
         let store = crate::Store::open(&root, MACHINE).unwrap();
         let peer = store.peer().unwrap();
         (peer.authority().clone(), peer.room().to_owned())
     };
-    let (stop, server, origin) = started(&config, &ready).await;
+    let (stop, server, origin) = started(&config, &ready, tcp, udp).await;
     let device = SigningKey::from_bytes(&[8; 32]);
     let cert = enrollment.browser_certificate.clone();
     assert_eq!(cert.device_public_key, device.verifying_key().to_bytes());
@@ -1139,7 +1143,7 @@ async fn cloud_https_structural_owner_membership_refresh_returns_owner_bootstrap
 /// stay up, keep Ready, and shut down cleanly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_https_serve_with_actual_agent_runtime_stays_ready() {
-    let (_transport_root, store_root, config, ready) = deployment().await;
+    let (_transport_root, store_root, config, ready, tcp, udp) = deployment().await;
     {
         let mut store = crate::Store::open(store_root.path(), MACHINE).unwrap();
         let mut peer = store.peer().unwrap();
@@ -1156,7 +1160,7 @@ async fn cloud_https_serve_with_actual_agent_runtime_stays_ready() {
     let server = {
         let (config, ready) = (config.clone(), ready.clone());
         tokio::spawn(async move {
-            crate::https_owner::serve::serve_until(&config, &ready, async {
+            crate::https_owner::serve::serve_until_bound(&config, &ready, Some((tcp, udp)), async {
                 let _ = stopped.await;
             })
             .await
@@ -1244,9 +1248,9 @@ async fn renewed(client: &Client, before: [u8; 32]) -> [u8; 32] {
 /// data session for the same device still replaces the retained one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_https_descriptor_renewal_keeps_live_sessions() {
-    let (_transport_root, store_root, config, ready) = deployment().await;
+    let (_transport_root, store_root, config, ready, tcp, udp) = deployment().await;
     let root = store_root.path().to_owned();
-    let (stop, server, origin) = started(&config, &ready).await;
+    let (stop, server, origin) = started(&config, &ready, tcp, udp).await;
     let http = tilo_net::http::client()
         .danger_accept_invalid_certs(true)
         .build()
@@ -1416,9 +1420,9 @@ async fn baseline_snapshot(client: &Client, root: &Path) -> CommitBoundary {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_https_oversized_replay_group_resets_to_a_snapshot_instead_of_refusing() {
     use tilo_delivery_protocol::delivery_v3::state::{ResetReason, SnapshotRequired};
-    let (_transport_root, store_root, config, ready) = deployment().await;
+    let (_transport_root, store_root, config, ready, tcp, udp) = deployment().await;
     let root = store_root.path().to_owned();
-    let (stop, server, origin) = started(&config, &ready).await;
+    let (stop, server, origin) = started(&config, &ready, tcp, udp).await;
     let mut client = Client {
         http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
@@ -1526,9 +1530,9 @@ async fn cloud_https_oversized_replay_group_resets_to_a_snapshot_instead_of_refu
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_https_retention_rotation_recovers_consumers_by_snapshot_and_suffix() {
     use tilo_delivery_protocol::delivery_v3::state::{ResetReason, SnapshotRequired};
-    let (_transport_root, store_root, config, ready) = deployment().await;
+    let (_transport_root, store_root, config, ready, tcp, udp) = deployment().await;
     let root = store_root.path().to_owned();
-    let (stop, server, origin) = started(&config, &ready).await;
+    let (stop, server, origin) = started(&config, &ready, tcp, udp).await;
     let mut client = Client {
         http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
@@ -1717,7 +1721,7 @@ async fn private_call(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_https_private_lane_with_actual_agent_runtime_answers_every_operation() {
     trace();
-    let (_transport_root, store_root, config, ready) = deployment().await;
+    let (_transport_root, store_root, config, ready, tcp, udp) = deployment().await;
     let root = store_root.path().to_owned();
     {
         let mut store = crate::Store::open(&root, MACHINE).unwrap();
@@ -1731,7 +1735,7 @@ async fn cloud_https_private_lane_with_actual_agent_runtime_answers_every_operat
     let server = {
         let (config, ready) = (config.clone(), ready.clone());
         tokio::spawn(async move {
-            crate::https_owner::serve::serve_until(&config, &ready, async {
+            crate::https_owner::serve::serve_until_bound(&config, &ready, Some((tcp, udp)), async {
                 let _ = stopped.await;
             })
             .await
@@ -1858,9 +1862,9 @@ async fn cloud_https_private_lane_with_actual_agent_runtime_answers_every_operat
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_https_snapshot_pin_recovers_after_actual_restart() {
     trace();
-    let (_transport_root, store_root, config, ready) = deployment().await;
+    let (_transport_root, store_root, config, ready, tcp, udp) = deployment().await;
     let root = store_root.path().to_owned();
-    let (stop, server, origin) = started(&config, &ready).await;
+    let (stop, server, origin) = started(&config, &ready, tcp, udp).await;
     let mut client = Client {
         http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
@@ -1906,7 +1910,12 @@ async fn cloud_https_snapshot_pin_recovers_after_actual_restart() {
     server.await.unwrap().unwrap();
 
     // Actual restart: new process-local boot and registry, same Store.
-    let (stop, server, origin) = started(&config, &ready).await;
+    // Re-reserve the origin after the first service released its listeners.
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    let (tcp, udp) = crate::https_owner::serve::tests::bind_free_origin(Path::new(
+        json["transport_config"].as_str().unwrap(),
+    ));
+    let (stop, server, origin) = started(&config, &ready, tcp, udp).await;
     let mut client = Client {
         http: client.http.clone(),
         origin,
@@ -2005,7 +2014,7 @@ async fn cloud_https_media_control_route_grants_over_installed_listener() {
         ChallengeTranscript, ControlCommand, ControlReply, ControlRequest, ControlResult,
         GrantOperation, GrantRequest, MediaDirections, SignedGrant,
     };
-    let (_transport_root, store_root, config, ready) = deployment().await;
+    let (_transport_root, store_root, config, ready, tcp, udp) = deployment().await;
     let root = store_root.path().to_owned();
     let device = SigningKey::from_bytes(&[8; 32]);
     let call = {
@@ -2071,7 +2080,7 @@ async fn cloud_https_media_control_route_grants_over_installed_listener() {
             serde_json::from_value(receipt.output.unwrap()).unwrap();
         hex::encode(result.call_id)
     };
-    let (stop, server, origin) = started(&config, &ready).await;
+    let (stop, server, origin) = started(&config, &ready, tcp, udp).await;
     let mut client = Client {
         http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
@@ -2281,8 +2290,8 @@ async fn h3_get(origin: &str, target: &str) -> (String, Vec<u8>) {
 /// over HTTP/3 on its QUIC endpoint and advertised on HTTP/2 with Alt-Svc.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_https_routes_are_served_over_h3_and_advertised_with_alt_svc() {
-    let (_transport_root, _store_root, config, ready) = deployment().await;
-    let (stop, server, origin) = started(&config, &ready).await;
+    let (_transport_root, _store_root, config, ready, tcp, udp) = deployment().await;
+    let (stop, server, origin) = started(&config, &ready, tcp, udp).await;
     let http = tilo_net::http::client()
         .danger_accept_invalid_certs(true)
         .build()
@@ -2322,9 +2331,9 @@ async fn cloud_https_multi_item_upload_is_one_group_and_new_sessions_catch_up_in
     use tilo_delivery_protocol::delivery_v3::capabilities::{
         KNOWN_DATA, MULTI_GROUP_REPLAY_V1, client_allowed, handshake_policy,
     };
-    let (_transport_root, store_root, config, ready) = deployment().await;
+    let (_transport_root, store_root, config, ready, tcp, udp) = deployment().await;
     let root = store_root.path().to_owned();
-    let (stop, server, origin) = started(&config, &ready).await;
+    let (stop, server, origin) = started(&config, &ready, tcp, udp).await;
     let mut client = Client {
         http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
@@ -2443,9 +2452,9 @@ async fn cloud_https_multi_item_upload_is_one_group_and_new_sessions_catch_up_in
 /// or its 20 s idle deadline (the agent Chat delivery stall).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_https_held_poll_is_woken_by_a_commit_made_under_a_held_lock() {
-    let (_transport_root, store_root, config, ready) = deployment().await;
+    let (_transport_root, store_root, config, ready, tcp, udp) = deployment().await;
     let root = store_root.path().to_owned();
-    let (stop, server, origin) = started(&config, &ready).await;
+    let (stop, server, origin) = started(&config, &ready, tcp, udp).await;
     let mut client = Client {
         http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
@@ -2520,10 +2529,10 @@ async fn cloud_https_held_poll_is_woken_by_a_commit_made_under_a_held_lock() {
 /// with no batching delay.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_https_held_poll_is_woken_at_once_by_another_components_commit() {
-    let (_transport_root, store_root, config, ready) = deployment().await;
+    let (_transport_root, store_root, config, ready, tcp, udp) = deployment().await;
     let root = store_root.path().to_owned();
     super::quiet_ticks::quiet(&root);
-    let (stop, server, origin) = started(&config, &ready).await;
+    let (stop, server, origin) = started(&config, &ready, tcp, udp).await;
     let mut client = Client {
         http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)

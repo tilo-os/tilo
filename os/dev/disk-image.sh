@@ -39,6 +39,8 @@
 #                            store and scratch in DIR instead of
 #                            /var/lib/containers and /var/tmp (a build host
 #                            whose root filesystem is small)
+#   TILO_QCOW2_COMPRESS=1      write zstd clusters in the first qcow2 conversion;
+#                            useful for the dev-disk runner's limited scratch
 #
 # Why not bib: bib has no composefs, UKI or backend-selection surface anywhere
 # in its config, and the request for one (osbuild/bootc-image-builder#1164) has
@@ -737,6 +739,13 @@ if [ -n "$USERSPEC" ]; then
       # which is exactly the offline-relabel case it exists for.
       fc=/etc/selinux/targeted/contexts/files/file_contexts
       [ -r \"\$fc\" ] || { echo 'no file_contexts in the image; home left unlabelled' >&2; exit 1; }
+      # useradd and chpasswd atomically replace these account files. With
+      # SELinux inactive in the offline container, their new inodes otherwise
+      # boot as unlabeled_t and break NSS in dbus-broker and greetd.
+      for db in passwd group shadow gshadow; do
+        [ -f \"/etc/\$db\" ] || { echo \"missing /etc/\$db after account creation\" >&2; exit 1; }
+        setfiles -F \"\$fc\" \"/etc/\$db\"
+      done
       setfiles -F \"\$fc\" /var/home"
 fi
 
@@ -906,10 +915,14 @@ if [ "$KEEP_RAW" = 1 ]; then
 else
   msg "4/4 qemu-img convert -> $QCOW"
   sudo -n chown "$(id -u):$(id -g)" "$RAW"
+  qcow_compress=${TILO_QCOW2_COMPRESS:-0}
+  [[ $qcow_compress == 0 || $qcow_compress == 1 ]] || die 'TILO_QCOW2_COMPRESS must be 0 or 1'
+  qcow_opts=''
+  if [[ $qcow_compress == 1 ]]; then qcow_opts='-c -o compression_type=zstd'; fi
   # /usr/bin/qemu-img by path: an Android SDK on PATH shadows it with a
   # qemu-img 2.12 that writes an image the rest of the toolkit then reads.
   inenv "\$(test -x /usr/bin/qemu-img && echo /usr/bin/qemu-img || echo qemu-img) \
-    convert -f raw -O qcow2 '$RAW' '$QCOW'"
+    convert -f raw -O qcow2 $qcow_opts '$RAW' '$QCOW'"
   rm -f "$RAW"
   msg "DONE: $QCOW"
   ls -lh "$QCOW" >&2

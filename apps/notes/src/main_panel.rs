@@ -1843,6 +1843,7 @@ impl Widget for MainPanel {
         ) && self.title_rect.contains(self.last_pointer);
         if !self.title_label.is_editing() && press_in_title {
             self.begin_title_edit();
+            *focus_target = self.title_node;
             *handled = true;
             return;
         }

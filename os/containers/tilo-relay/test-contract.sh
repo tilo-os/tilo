@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Static contract for the operator-facing composite home-peer deployment.
 #
-# Keep this cheap: image construction is covered by tilo-relay.yaml, while this
+# Keep this cheap: image construction is covered by release-relay.yml, while this
 # asserts the Compose artifact includes the complete filesystem replica.
 set -euo pipefail
 
@@ -11,7 +11,7 @@ config="$root/relay.toml.example"
 readme="$root/README.md"
 containerfile="$root/Containerfile"
 dockerignore="$root/Containerfile.dockerignore"
-workflow="$root/../../../.forgejo/workflows/tilo-relay.yaml"
+workflow="$root/../../../.forgejo/workflows/release-relay.yml"
 compose="$root/compose.yaml"
 entrypoint="$root/tilo-home-peer"
 

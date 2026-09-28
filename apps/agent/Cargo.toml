@@ -73,6 +73,8 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 tempfile.workspace = true
 hex.workspace = true
 shell = { path = "../../crates/session/shell", default-features = false, features = ["test-support"] }
+# The workspace-settings governance the triage tests drive, as the shell runs it.
+tilo-desktop = { path = "../../crates/session/desktop" }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ed25519-dalek.workspace = true

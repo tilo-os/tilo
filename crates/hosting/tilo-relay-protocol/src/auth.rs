@@ -502,6 +502,114 @@ mod tests {
         ));
     }
 
+    /// `Hello` as a build from before the foreign-device marker encodes it.
+    mod v1 {
+        #[allow(
+            clippy::struct_excessive_bools,
+            reason = "a frozen copy of the v1 wire type"
+        )]
+        #[derive(serde::Serialize, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct DeviceCapabilities {
+            pub can_own_workspaces: bool,
+            pub can_admit_devices: bool,
+            pub can_act_as_host: bool,
+            pub can_read_all_workspaces: bool,
+        }
+
+        #[derive(serde::Serialize, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct DeviceCert {
+            pub user_public_key: [u8; 32],
+            pub device_public_key: [u8; 32],
+            pub device_label: String,
+            pub capabilities: DeviceCapabilities,
+            pub issued_at_ns: u64,
+            pub expires_at_ns: Option<u64>,
+            #[serde(with = "crate::sig64")]
+            pub signature: [u8; 64],
+        }
+
+        #[derive(serde::Serialize, serde::Deserialize)]
+        pub struct Hello {
+            pub cert: DeviceCert,
+            pub client_nonce: [u8; 32],
+        }
+    }
+
+    /// An old relay decodes the frame with its own types; for what it can
+    /// decode, verification is the unchanged v1 path.
+    fn old_relay_accepts(frame: &[u8], user: &[u8; 32]) -> bool {
+        postcard::from_bytes::<v1::Hello>(frame).is_ok() && new_relay_accepts(frame, user).is_some()
+    }
+
+    fn new_relay_accepts(frame: &[u8], user: &[u8; 32]) -> Option<AuthenticatedPeer> {
+        let hello: Hello = postcard::from_bytes(frame).ok()?;
+        let policy = TrustPolicy::default();
+        accept_hello(&hello, user, &policy, &RevocationList::new(), 1000).ok()
+    }
+
+    #[test]
+    fn relay_handshakes_across_certificate_versions() {
+        let (root_sk, user) = UserIdentity::generate("Alice", 1);
+        let native = enrol(
+            &root_sk,
+            user.public_key,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
+        let foreign = enrol(
+            &root_sk,
+            user.public_key,
+            "mac",
+            DeviceCapabilities {
+                foreign: true,
+                ..DeviceCapabilities::primary()
+            },
+        );
+        let hello = |cert: &DeviceCert| {
+            postcard::to_stdvec(&Hello {
+                cert: cert.clone(),
+                client_nonce: [1; 32],
+            })
+            .unwrap()
+        };
+
+        // Old client, new relay: the old client's frame is the native frame.
+        let caps = &native.cert.capabilities;
+        let old_frame = postcard::to_stdvec(&v1::Hello {
+            cert: v1::DeviceCert {
+                user_public_key: native.cert.user_public_key,
+                device_public_key: native.cert.device_public_key,
+                device_label: native.cert.device_label.clone(),
+                capabilities: v1::DeviceCapabilities {
+                    can_own_workspaces: caps.can_own_workspaces,
+                    can_admit_devices: caps.can_admit_devices,
+                    can_act_as_host: caps.can_act_as_host,
+                    can_read_all_workspaces: caps.can_read_all_workspaces,
+                },
+                issued_at_ns: native.cert.issued_at_ns,
+                expires_at_ns: native.cert.expires_at_ns,
+                signature: native.cert.signature,
+            },
+            client_nonce: [1; 32],
+        })
+        .unwrap();
+        assert_eq!(hello(&native.cert), old_frame);
+        assert!(new_relay_accepts(&old_frame, &user.public_key).is_some());
+
+        // New native client, old relay.
+        assert!(old_relay_accepts(&hello(&native.cert), &user.public_key));
+
+        // New foreign client: an old relay cannot decode it; a new relay
+        // admits it with the marker the room's role cap reads.
+        let foreign_frame = hello(&foreign.cert);
+        assert!(!old_relay_accepts(&foreign_frame, &user.public_key));
+        let peer = new_relay_accepts(&foreign_frame, &user.public_key).unwrap();
+        assert!(peer.cert.capabilities.foreign);
+        assert_eq!(peer.role, PeerRole::Device);
+    }
+
     #[test]
     fn client_rejects_acks_from_strangers_non_hosts_and_bad_signatures() {
         let (root_sk, alice) = UserIdentity::generate("Alice", 1);

@@ -48,6 +48,7 @@ thread_local! {
     static MOUNTS: RefCell<HashMap<u64, Mount>> = RefCell::new(HashMap::new());
     static REQUESTS: RefCell<HashMap<u64, Request>> = RefCell::new(HashMap::new());
     static CACHES: RefCell<HashMap<(String,String), PortableStorage>> = RefCell::new(HashMap::new());
+    static CONTENT: RefCell<HashMap<(String,String), tilo_content::ContentStore>> = RefCell::new(HashMap::new());
     static NEXT: RefCell<u64> = const { RefCell::new(1) };
     static CLOSED: RefCell<crate::close_recovery::ClosedComponents> = RefCell::new(crate::close_recovery::ClosedComponents::default());
     static STOP: RefCell<Option<Function>> = const { RefCell::new(None) };
@@ -76,6 +77,37 @@ struct Config {
     /// `semantics_status::SEMANTICS_WINDOW_MS`; zero sends every changed tree.
     #[serde(default)]
     semantics_window_ms: Option<u64>,
+    /// A file the page hands the app to open; its bytes are `mount`'s last
+    /// argument.
+    #[serde(default)]
+    open: Option<OpenRequest>,
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenRequest {
+    name: String,
+    media_type: String,
+}
+/// What a page may hand one mount's content store: an opened file each, up
+/// to the SDK's per-file bound, a few of them per page.
+fn content_limits() -> tilo_content::ContentLimits {
+    tilo_content::ContentLimits {
+        max_item_bytes: ui::application::MAX_OPEN_FILE_BYTES,
+        max_total_bytes: 4 * ui::application::MAX_OPEN_FILE_BYTES,
+        ..tilo_content::ContentLimits::default()
+    }
+}
+/// The content store every standalone mount of one profile/device cache
+/// shares for the page's lifetime, as they share its records.
+fn content_store(profile: &str, device: &str) -> tilo_content::ContentStore {
+    CONTENT.with_borrow_mut(|stores| {
+        stores
+            .entry((profile.into(), device.into()))
+            .or_insert_with(|| {
+                tilo_content::ContentStore::new(tilo_content::MemoryBackend::new(content_limits()))
+            })
+            .clone()
+    })
 }
 /// Default publication window. Changed records publish at most once per window
 /// while edits keep arriving; close, hide, focus loss, IME end and peer rebind
@@ -107,6 +139,7 @@ struct Request {
     fonts: JsValue,
     hydrated: JsValue,
     status: Function,
+    open: Option<Vec<u8>>,
 }
 struct Gpu {
     cx: ui::gpu::RenderContext,
@@ -204,6 +237,8 @@ fn proxy() -> Result<EventLoopProxy<u64>, JsValue> {
     event_loop.spawn_app(Runner);
     Ok(proxy)
 }
+/// Mount `config.app` on `canvas`. `open` holds the bytes of the file
+/// `config.open` names, which the app receives as an explicit open request.
 #[wasm_bindgen]
 pub fn mount(
     canvas: web_sys::HtmlCanvasElement,
@@ -211,6 +246,7 @@ pub fn mount(
     fonts: JsValue,
     hydrated: JsValue,
     status: Function,
+    open: Option<Uint8Array>,
 ) -> Result<u64, JsValue> {
     if STOP.with_borrow(|s| s.is_some()) {
         return Err(error("terminal shutdown is still pending"));
@@ -224,8 +260,17 @@ pub fn mount(
     let config: Config = serde_json::from_str(config).map_err(error)?;
     // An unknown app rejects the mount itself, before any window or storage exists.
     if config.app != DESKTOP {
-        crate::catalog::resolve_mount(&config.app).map_err(error)?;
+        let definition = crate::catalog::resolve_mount(&config.app).map_err(error)?;
+        if let Some(request) = &config.open {
+            crate::catalog::check_opens(definition, &request.media_type).map_err(error)?;
+        }
+    } else if config.open.is_some() {
+        return Err(error("the desktop is not handed files to open"));
     }
+    if config.open.is_some() != open.is_some() {
+        return Err(error("an open request needs both its name and its bytes"));
+    }
+    let open = open.map(|bytes| bytes.to_vec());
     REQUESTS.with_borrow_mut(|r| {
         r.insert(
             id,
@@ -235,6 +280,7 @@ pub fn mount(
                 fonts,
                 hydrated,
                 status,
+                open,
             },
         )
     });
@@ -524,6 +570,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         fonts,
         hydrated,
         status,
+        open,
     } = request;
     if config.app == DESKTOP {
         #[cfg(feature = "cloud")]
@@ -574,7 +621,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             vec![],
         )
     }));
-    let context = HostContext::prepare(
+    let mut context = HostContext::prepare(
         definition,
         records.clone(),
         views,
@@ -586,6 +633,17 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         &target,
     )
     .map_err(error)?;
+    context.provide_content(content_store(&config.profile, &config.device));
+    let opening = match (config.open, open) {
+        (Some(request), Some(bytes)) => {
+            let (file, receipt) =
+                ui::application::OpenFile::new(&request.name, &request.media_type, bytes)
+                    .map_err(error)?;
+            context.provide_open_file(file);
+            Some((request, receipt))
+        }
+        _ => None,
+    };
     let loaders = Rc::new(RefCell::new(Vec::new()));
     let destination = loaders.clone();
     let component = ui::ImageStore::with_host_factory_with_max_dimension(
@@ -597,6 +655,16 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         || definition.instantiate(context, target, restore),
     )
     .map_err(error)?;
+    if let Some((request, receipt)) = opening {
+        emit(
+            &status,
+            serde_json::json!({"opened": {
+                "name": request.name,
+                "mediaType": request.media_type,
+                "resource": receipt.opened_resource(),
+            }}),
+        );
+    }
     let images = std::mem::take(&mut *loaders.borrow_mut());
     let checkout = component.record().clone();
     let record_version = records

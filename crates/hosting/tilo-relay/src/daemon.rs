@@ -2919,6 +2919,41 @@ mod tests {
         }
     }
 
+    /// The full replica's status heartbeat: rewrites `status` every 250 ms
+    /// until dropped, as the live replica does, so a proof stays fresh however
+    /// long the relay takes to start or a discovery takes to answer.
+    struct StatusHeartbeat {
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        beat: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl StatusHeartbeat {
+        fn start(path: &std::path::Path, status: &fs::full_replica::FullReplicaStatus) -> Self {
+            fs::full_replica::save_status(path, status).unwrap();
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (path, status, stopped) = (path.to_path_buf(), status.clone(), Arc::clone(&stop));
+            let beat = std::thread::spawn(move || {
+                while !stopped.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(250));
+                    fs::full_replica::save_status(&path, &status).unwrap();
+                }
+            });
+            Self {
+                stop,
+                beat: Some(beat),
+            }
+        }
+    }
+
+    impl Drop for StatusHeartbeat {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(beat) = self.beat.take() {
+                let _ = beat.join();
+            }
+        }
+    }
+
     #[tokio::test]
     #[allow(
         clippy::too_many_lines,
@@ -2967,7 +3002,7 @@ mod tests {
             status
                 .filesystem_endpoints
                 .push(filesystem_endpoint.clone());
-            fs::full_replica::save_status(&status_path, &status).unwrap();
+            let _heartbeat = StatusHeartbeat::start(&status_path, &status);
             let relay = Relay::start(
                 RelayConfig {
                     state_root: temp.path().join("relay-state"),
@@ -2981,9 +3016,6 @@ mod tests {
             .await
             .unwrap();
 
-            // The full replica heartbeats its status; a proof counts only while
-            // fresh, so beat again now that the relay has started.
-            fs::full_replica::save_status(&status_path, &status).unwrap();
             let profile = relay.handle().mesh_profile();
             let wire = serde_json::to_vec(&profile).unwrap();
             let published: crate::mesh::DeviceMeshProfile = serde_json::from_slice(&wire).unwrap();
@@ -3036,7 +3068,7 @@ mod tests {
             status.state = "ready".into();
             status.full_content_replication = true;
             status.filesystem_endpoints.push(filesystem.clone());
-            fs::full_replica::save_status(&status_path, &status).unwrap();
+            let _heartbeat = StatusHeartbeat::start(&status_path, &status);
             let owner_endpoint = EndpointAddr::new(iroh::SecretKey::from_bytes(&[91; 32]).public());
             let workspace_topic = [29; 32];
             let bundle_path = temp.path().join("home-peer.toml");
@@ -3090,9 +3122,6 @@ mod tests {
                 "relay transport discovery must not collide with the filesystem node"
             );
             let client_endpoint = Endpoint::bind(presets::N0).await.unwrap();
-            // The full replica heartbeats its status; a proof counts only while
-            // fresh, so beat again now that the relay has started.
-            fs::full_replica::save_status(&status_path, &status).unwrap();
             let discovered = crate::client::RelayClient::discover_content_endpoint(
                 &client_endpoint,
                 relay.node_addr(),

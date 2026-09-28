@@ -1383,6 +1383,11 @@ fn provide_resources_from(
     revisions: bool,
 ) -> Vec<Resource> {
     let mut root = resource_root(ctx, doc, file, body);
+    if !revisions {
+        // A hosted document's History is the framework's surface; the
+        // editor's own version strip is not offered beside it.
+        root.actions.retain(|action| action.id != "history");
+    }
     editing::add_operations(&mut root, ctx, doc, body);
     view_ops::add_operations(&mut root, ctx);
     add_search_resources(&mut root, ctx, listed);
@@ -2697,6 +2702,7 @@ mod tests {
                 level: Some(2),
                 ordered: None,
                 align: Some("center".into()),
+                attrs: std::collections::BTreeMap::default(),
             };
             let actions = [
                 generate_toc_action(vec![TocTarget {

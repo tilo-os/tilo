@@ -342,13 +342,13 @@ pub enum PersonalFabricAction {
         notification: crate::notifications::ContinuityNotificationProjection,
     },
     NotificationRetire {
-        id: crate::notifications::ContinuityNotificationId,
+        id: tilo_desktop::notifications::ContinuityNotificationId,
     },
     NotificationDismiss {
-        id: crate::notifications::ContinuityNotificationId,
+        id: tilo_desktop::notifications::ContinuityNotificationId,
     },
     NotificationInvoke {
-        id: crate::notifications::ContinuityNotificationId,
+        id: tilo_desktop::notifications::ContinuityNotificationId,
         action_key: String,
     },
     /// Metadata-only realtime handoff offer. Capture grants, media handles,
@@ -449,21 +449,28 @@ pub enum PersonalFabricAction {
     RemoteCaptureChunk {
         chunk: crate::shell::remote_capture::device::RemoteCaptureChunk,
     },
-    /// Shell-owned liveness, RTT and clock probe. The random nonce is bound to
-    /// the exact authenticated peer and is never exposed through an app
-    /// contract. `sent_us` is the prober's `CLOCK_MONOTONIC` send time in
-    /// microseconds, echoed back so the report closes a four-timestamp
-    /// exchange.
+    /// Shell-owned liveness and RTT probe. The random nonce is bound to the
+    /// exact authenticated peer and is never exposed through an app contract.
     DeviceHealthProbe {
+        nonce: [u8; 16],
+    },
+    /// Power is diagnostic routing context, never authorization. Latency is
+    /// deliberately absent because the probing compositor measures it.
+    DeviceHealthReport {
+        report: crate::shell::spatial_calibration::DeviceHealthReport,
+    },
+    /// Fabric clock probe, sent only while something on the prober holds
+    /// this peer's clock in sync. `sent_us` is the prober's
+    /// `CLOCK_MONOTONIC` send time in microseconds, echoed back so the
+    /// report closes a four-timestamp exchange. Carries nothing else.
+    FabricClockProbe {
         nonce: [u8; 16],
         sent_us: u64,
     },
-    /// Power is diagnostic routing context, never authorization. Latency is
-    /// deliberately absent because the probing compositor measures it; the
-    /// reporter's receive and reply times let the prober estimate clock
-    /// offset and skew.
-    DeviceHealthReport {
-        report: crate::shell::spatial_calibration::DeviceHealthReport,
+    /// The reporter's receive and reply times for one clock probe, from
+    /// which the prober estimates clock offset and skew.
+    FabricClockReport {
+        report: crate::shell::fabric_clock::ClockReport,
     },
     /// Consent-bound request, grant, sealed credential, or teardown for an
     /// exact certified phone. Plaintext Wi-Fi secrets are not representable.
@@ -513,6 +520,10 @@ pub enum PersonalFabricAction {
     RemoteAudioKeepalive {
         session_id: [u8; 16],
         authorization: [u8; 16],
+        /// Sent by the playing device only: whether it has the source's
+        /// clock, so the source can show a member still syncing, or why it
+        /// cannot play in time.
+        playout: Option<crate::shell::fabric_clock::ClockSyncState>,
     },
     /// Ask one exact member device to join a group. The member's own
     /// compositor asks its user; nothing plays until it approves.
@@ -558,8 +569,9 @@ pub enum PersonalFabricAction {
     },
     /// The group's leader, calibrating, asks a member to play the
     /// measurement sweep so its first sample leaves the speaker at `start_ns`
-    /// on the leader's `CLOCK_MONOTONIC`. The member converts that through
-    /// its own estimate of the leader's clock.
+    /// on the member's own `CLOCK_MONOTONIC`. The leader converts its
+    /// schedule through its estimate of the member's clock, and refuses to
+    /// calibrate without one.
     SpeakerSweep {
         group: crate::shell::speaker_group::SpeakerGroupId,
         start_ns: i64,
@@ -892,6 +904,7 @@ impl PersonalFabricActionEnvelope {
             | PersonalFabricAction::RemoteAudioKeepalive {
                 session_id,
                 authorization,
+                ..
             } => {
                 if session_id == &[0; 16] || authorization == &[0; 16] {
                     return Err(FabricError::InvalidAction);
@@ -973,13 +986,19 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::DeviceHealthProbe { nonce, .. }
+            PersonalFabricAction::DeviceHealthProbe { nonce }
+            | PersonalFabricAction::FabricClockProbe { nonce, .. }
             | PersonalFabricAction::InputLeaseRevoked { nonce } => {
                 if nonce == &[0; 16] {
                     return Err(FabricError::InvalidAction);
                 }
             }
             PersonalFabricAction::DeviceHealthReport { report } => {
+                if !report.valid() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::FabricClockReport { report } => {
                 if !report.valid() {
                     return Err(FabricError::InvalidAction);
                 }
@@ -3254,7 +3273,7 @@ mod tests {
             .unwrap();
             assert_eq!(nearby.first(), Some(&13));
             let notification = postcard::to_allocvec(&PersonalFabricAction::NotificationRetire {
-                id: crate::notifications::ContinuityNotificationId {
+                id: tilo_desktop::notifications::ContinuityNotificationId {
                     epoch: [1; 16],
                     token: [2; 16],
                 },
@@ -3360,7 +3379,7 @@ mod tests {
             let source = id("source");
             let target = id("target");
             let notification = crate::notifications::ContinuityNotificationProjection {
-                id: crate::notifications::ContinuityNotificationId {
+                id: tilo_desktop::notifications::ContinuityNotificationId {
                     epoch: [1; 16],
                     token: [2; 16],
                 },
@@ -3388,7 +3407,7 @@ mod tests {
 
             let invalid = PersonalFabricActionEnvelope {
                 action: PersonalFabricAction::NotificationInvoke {
-                    id: crate::notifications::ContinuityNotificationId {
+                    id: tilo_desktop::notifications::ContinuityNotificationId {
                         epoch: [1; 16],
                         token: [2; 16],
                     },
@@ -3552,6 +3571,7 @@ mod tests {
                 envelope(PersonalFabricAction::RemoteAudioKeepalive {
                     session_id: [4; 16],
                     authorization: [5; 16],
+                    playout: None,
                 })
                 .validate_at(&source, &target, 10_100),
                 Ok(())
@@ -3560,6 +3580,7 @@ mod tests {
                 envelope(PersonalFabricAction::RemoteAudioKeepalive {
                     session_id: [4; 16],
                     authorization: [0; 16],
+                    playout: None,
                 })
                 .validate_at(&source, &target, 10_100),
                 Err(FabricError::InvalidAction)

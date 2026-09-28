@@ -76,8 +76,9 @@ class ShellPushTests(unittest.TestCase):
         self.assertIn('--tag "$IMAGE_REPOSITORY:$unique"', text)
 
     def test_base_mirror_dev_disk_and_wine_pushes_are_unique(self):
-        mirror = self.read("mirror-base.yml")
-        self.assertIn('fedora-bootc:${BASE_SOURCE##*:}-$(date -u +%Y%m%d)-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"', mirror)
+        mirror = (ROOT / "os/dev/ensure-base-mirror.sh").read_text()
+        self.assertIn('fedora-bootc:${BASE_SOURCE##*:}-recover-', mirror)
+        self.assertIn('skopeo copy --all --preserve-digests', mirror)
         dev_disk = self.read("dev-disk.yml")
         self.assertIn("build-candidate-${SOURCE_REVISION:0:12}-$BASE_TRUST-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$ARCH", dev_disk)
         publish = (ROOT / "os/dev/publish-dev-disk.sh").read_text()

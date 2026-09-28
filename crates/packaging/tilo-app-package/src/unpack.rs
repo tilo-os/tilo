@@ -48,9 +48,9 @@ pub fn validate_materialized_payload(
     collection: &Collection,
     mut len_of: impl FnMut(&BlobHash) -> Option<u64>,
 ) -> Result<(), UnpackError> {
-    if manifest.package.kind != crate::id::Kind::App {
+    let Some(limit) = crate::app_size_limit(manifest) else {
         return Ok(());
-    }
+    };
     if collection.entries.len() > crate::MAX_APP_PAYLOAD_ENTRIES {
         return Err(UnpackError::TooManyPayloadEntries {
             found: collection.entries.len(),
@@ -69,10 +69,10 @@ pub fn validate_materialized_payload(
             len
         };
         materialized = materialized.saturating_add(len);
-        if materialized > crate::MAX_APP_UNPACKED_BYTES {
+        if materialized > limit {
             return Err(UnpackError::PayloadTooLarge {
                 found: materialized,
-                limit: crate::MAX_APP_UNPACKED_BYTES,
+                limit,
             });
         }
     }

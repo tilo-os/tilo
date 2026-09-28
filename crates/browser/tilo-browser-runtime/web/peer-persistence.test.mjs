@@ -1,29 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {commitPeerWrites} from './peer-persistence.mjs';
 import * as persistence from './peer-persistence.mjs';
-test('shared batch reader uses owned binary payloads without invoking the JSON export',()=>{
+test('shared batch reader uses the typed binary export',()=>{
  const batch={id:'peer:1',writes:[{bytes:new Uint8Array([0,128,255]),actor:new Uint8Array([7]),revision:'9007199254740993'}]};
- const runtime={peer_pending_batch_bytes(id){assert.equal(id,17);return batch;},peer_pending_batch(){throw Error('binary data must not round trip through JSON');}};
+ const runtime={peer_pending_batch_bytes(id){assert.equal(id,17);return batch;}};
  assert.equal(persistence.readPeerBatch(runtime,17),batch);
-});
-test('shared batch reader supports older JSON runtimes with exact revision strings',()=>{
- const batch={id:'peer:1',writes:[{bytes:[0,128,255],revision:'9007199254740993'}]};
- assert.deepEqual(persistence.readPeerBatch({peer_pending_batch:id=>{assert.equal(id,17);return JSON.stringify(batch);}},17),batch);
-});
-test('a newer checkpoint arriving during IDB commit is committed before publication',async()=>{
- let revision=1,durable=0;const batches=[];let publishes=0;
- await commitPeerWrites({pending:()=>revision>durable?[{revision}]:[],commit:async writes=>{batches.push(writes.map(w=>w.revision));if(revision===1){await Promise.resolve();revision=2;}},acknowledge:write=>{durable=Math.max(durable,write.revision);},publish:()=>{assert.equal(durable,revision,'cannot publish over a newer uncommitted admission');publishes++;}});
- assert.deepEqual(batches,[[1],[2]]);assert.equal(publishes,1);
-});
-test('an aborted transaction retains admission and never publishes',async()=>{
- let acknowledged=false,published=false;
- await assert.rejects(commitPeerWrites({pending:()=>[{revision:1}],commit:async()=>{throw Error('aborted');},acknowledge:()=>{acknowledged=true;},publish:()=>{published=true;}}),/aborted/);
- assert.equal(acknowledged,false);assert.equal(published,false);
-});
-test('publication failure is separate from completed local durability',async()=>{
- let durable=false;const result=await commitPeerWrites({pending:()=>durable?[]:[{revision:'9007199254740993'}],commit:async()=>{},acknowledge:()=>{durable=true;},publish:()=>{throw Error('relay unavailable');}});
- assert.equal(durable,true);assert.equal(result.localDurable,true);assert.match(String(result.publicationError),/relay unavailable/);
 });
 test('immutable batch settlement identifies transaction epoch and preserves newer batches',async()=>{
  const {commitPeerBatches}=await import('./peer-persistence.mjs');let index=0;const committed=[],settled=[];

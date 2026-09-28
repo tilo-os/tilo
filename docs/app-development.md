@@ -41,6 +41,58 @@ or test harness:
 tilo-app test -- --nocapture
 ```
 
+For scripts and agents, every command accepts `--json`. Stdout then carries
+exactly one JSON document: `{"ok": true, "command": …, "result": …}`, or
+`{"ok": false, "command": …, "error": …, "causes": […], "result": …}`. A
+command that ran but failed its verdict, such as `doctor`, `check` or
+`scenario run`, still reports what it found in `result`. Progress text and the
+output of Cargo, the app and other tools move to stderr, and nothing prompts:
+`new --json` needs a name and `add --json` needs an artifact subcommand. Usage
+errors are JSON too, with exit status 2.
+
+```bash
+tilo-app new reading-list --dry-run --json | jq -r '.result.files[]'
+tilo-app check --json | jq '.result.stages[] | select(.passed == false)'
+```
+
+### Outside the Tilo repository
+
+An app does not have to live in this repository. Install the CLI from the
+repository and create the app anywhere:
+
+```bash
+cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilo-app-cli
+tilo-app new reading-list --id org.example.reading-list
+```
+
+Outside a checkout, the app depends on the SDK from
+`https://code.tilo.so/tilo/tilo.git`, pinned to the commit the CLI was built
+from. `--sdk-rev` selects another commit and `--sdk-git` another repository.
+If a checkout is nearby, such as the one the CLI was built in, `--ui-path`, or
+`TILO_UI_PATH`, the app builds against that checkout by relative path instead.
+
+A standalone app builds the code this repository tests:
+
+- `[patch.crates-io]` repeats each fork the SDK's dependency graph uses,
+  because Cargo does not apply the SDK workspace's patches to an app that
+  depends on it. The forks pinned in git come from their public repositories
+  at the revision the workspace pins.
+- `Cargo.lock` starts as this repository's lockfile, so the first build picks
+  the dependency versions CI tested rather than the newest ones. Cargo drops
+  the entries the app does not use.
+- `rust-toolchain.toml` pins Tilo's compiler. A thin app links the toolkit
+  library the OS ships, and Rust keeps that library's symbols stable only for
+  the compiler that built it.
+- `.cargo/config.toml` carries Tilo's target CPU floor and hardening flags,
+  and the profiles in `Cargo.toml` are Tilo's `dev`, `test`, `release` and
+  `thin-app` profiles.
+- A `.gitignore` for `target/`, and a git repository of its own when the app
+  is not created inside one already.
+
+Without `--id`, an app outside this repository is named `local.dev.<name>`.
+That name cannot be published. Choose an id in a namespace you control before
+you package the app.
+
 ## The Tilo-native contract
 
 Generated applications depend on `tilo-app` (normally under the concise Rust
@@ -513,10 +565,8 @@ cargo run -p tilo-app-cli --bin tilo-app -- doctor apps/reading-list
 `doctor` finds the app from any descendant path, parses the Cargo manifest,
 resolves its `ui` dependency, validates `tilo-app.toml` through the same package
 schema used by installation, and checks the standard app-root and launch
-lifecycle seams. It also runs `capnp --version`, because the shared UI runtime
-generates its collaboration protocol while compiling; a missing compiler is
-reported with an install-or-development-container remedy before Cargo starts.
-It validates every serialized screen with the renderer's
+lifecycle seams. The SDK's Cap'n Proto bindings are checked in, so building an
+app never needs the `capnp` compiler. It validates every serialized screen with the renderer's
 lightweight graph schema, parses every Fluent catalog, reconciles the generated
 locale registry with files on disk, and checks saved headless scenarios with
 the exact wire grammar used by the runtime driver. It reports every problem in
@@ -613,63 +663,68 @@ Build an installable package from the same app root with:
 tilo-app package
 tilo-app package --identity publisher.json
 tilo-app package --output dist/reading-list.tapp --force
-tilo-app package --runtime-out dist/runtime --runtime-identity runtime-publisher.json
 ```
 
-`package` runs the structural checks, builds the app, places the resulting
-binaries at their declared payload paths, and asks `tilo-app-package` to sign
-and verify the bundle. The verified result is published as
-`dist/<cargo-package>.tapp` by default. An existing output is never replaced
-unless `--force` is present, and even then replacement happens only after the
-new package verifies successfully.
-
-Apps are packaged thin, exactly as releases are. `os/scripts/build-thin-apps.sh`
-builds the app with the `thin-app` profile and its `thin` feature, and
-`tools/ci/rustc-thin-app-wrapper.sh` links it with `-C prefer-dynamic` against
-`runtime-dylib`, the shared UI/runtime SDK, resolved together with the default
-app collection (`tools/apps/app_release.py --collection default`) as
-`dist/apps/package-apps.sh` does. Chat comes out under 3 MB instead of 46 MB,
-well inside the 5 MiB package limit. A thin app loads only against the
-`libruntime_dylib.so` it was linked with, so `package` also bakes that runtime,
-with `os/scripts/bake-runtime-bundle.sh`, into a signed bundle at
-`<runtime-out>/tilo-runtime/0.0.0-local+<hash>/` (by default `runtime/` beside
-the package). The packaged manifest's `runtime` names that version, not the
-released `tilo-runtime/<version>` in the source manifest. The hash covers the
-runtime dylib and the toolchain, so installing the bundle never shadows the
-system runtime the other apps were built against, and repackaging against an
-unchanged runtime keeps the same version. Install both:
-
-```bash
-tilo-install runtime install --bundle dist/runtime/tilo-runtime/0.0.0-local+<hash>
-tilo-install install --allow-self-signed dist/reading-list.tapp
-```
-
-When `/etc/tilo/runtime-bundle-trusted-publishers.txt` names any publishers,
-the launcher accepts only those, so add the runtime's publisher
-(`<runtime-out>/runtime-bundle-publisher.hex`) to it as root. `tilo-install`
-warns you when it is missing. Without `--runtime-identity`, the runtime is signed with
-`<runtime-out>/identity.json`, which is created on first use and reused, so
-keep that directory private. `tilo-vm swap app:<dir>` does all of this
-for a slot. It uploads the runtime only when the slot user lacks that
-version, and it adds the runtime's publisher to the VM's trust list.
-
-Thin packaging runs from a Tilo checkout, for an app at `apps/<name>` with a
-`thin = ["dep:runtime-dylib"]` feature, and uses `python3`, `bash` and
-`rustc`. Set `CARGO` to build with a Cargo drop-in such as `rcargo`: the wrapper
-travels as `--config`, not environment, so it survives a remote build. For an
-app outside the Tilo tree, `--fat` builds one self-contained binary with plain
-Cargo and the `release` profile. A fat UI app is usually over the size limit.
+`package` runs the structural checks, builds every entrypoint declared in
+`tilo-app.toml` thin, places the resulting binaries at their declared payload
+paths, and signs and verifies the bundle itself; no separate packer is needed.
+A thin build uses the app's `thin` feature and the `thin-app` profile, and links
+against the toolkit and `libstd` that Tilo OS ships, so a typical app is well
+under a megabyte. `--static` links them in instead, which is useful for a local
+experiment but lands far over the application size limit.
+The verified result is published as `dist/<cargo-package>.tapp` by default.
+An existing output is never replaced unless `--force` is present, and even
+then replacement happens only after the new package verifies successfully.
 
 Files under an app-local `payload/` directory are included before the built
 entrypoints are overlaid. Symbolic links are rejected so package contents do
-not depend on files outside the app. Without `--identity`, `tilo-app-package` creates an
-ephemeral self-signing key, which is useful for local testing; use one
-persistent identity for updates and publication. `--profile` and `--features`
-pick the Cargo profile (`thin-app` by default, `release` with `--fat`) and extra
-app features. `--target` and `--no-default-features` apply to `--fat` only,
-since a thin app must match the runtime it links. Set `TILO_PKG` to the
-`tilo-app-package` executable when it is not on `PATH`, and `BUNDLE_BIN` to a
-built `tilo-runtime-bundle` to save the bake script from building one.
+not depend on files outside the app. Without `--identity`, `package` signs with an
+ephemeral key, which is useful for local testing; use one
+persistent identity for updates and publication. `--profile`, `--target`,
+`--features`, and `--no-default-features` expose the corresponding Cargo build
+choices.
+
+Every package run prints where the bytes go: each payload file, largest first,
+with entrypoint binaries split into code, read-only data, dynamic-linking
+tables and the rest, then the signed package against the 8 MiB application
+limit. An app can hold itself to a tighter ceiling in `tilo-app.toml`:
+
+```toml
+[budget]
+package = "1 MiB"   # the signed .tapp
+binary = "900 KiB"  # each entrypoint binary
+```
+
+Sizes are byte counts or strings in B, KB, MB (powers of ten), KiB or MiB
+(powers of two); an unknown key is an error, so a misspelt ceiling cannot
+quietly stop applying. The budget is a build-time check, not package metadata.
+A package over budget fails with the amount it is over, and the previous output
+is left in place. `--json` carries the same breakdown under `size`.
+
+### Other platforms and architectures
+
+`--arch x86_64|aarch64` picks the CPU (the host's by default) and
+`--platform` the system:
+
+```bash
+tilo-app package --arch aarch64                      # Tilo OS, thin
+tilo-app package --platform macos --arch aarch64     # dist/<pkg>-macos-aarch64.tapp
+tilo-app package --platform windows --arch x86_64    # dist/<pkg>-windows-x86_64.tapp
+```
+
+Windows and macOS ship no Tilo toolkit, so a build for them is one static
+executable (`release` profile, `<arch>-pc-windows-msvc` or
+`<arch>-apple-darwin`) with the toolkit linked in, packed as `bin/<name>` (or
+`bin/<name>.exe`). Its signed `[target]` names the platform, the architecture
+and the toolkit release it links, which is `[package].runtime`, so the
+manifest must declare one (`tilo-app new` does). Only the GUI entrypoint ships.
+There, collaboration comes from the per-user `tilo-runtime` service when it is
+running, as for Tilo's own apps on those systems. `[budget]` applies to the
+thin Tilo OS build only; a desktop build answers to the registry's 64 MiB
+desktop limit instead. A static build of a starter app is about 40 MB.
+
+Build on the system you target, or with a cross toolchain Cargo can drive;
+`--target` overrides the triple (for example `x86_64-pc-windows-gnu`).
 
 ## The app shape
 
@@ -1267,7 +1322,7 @@ command path.
 This is the Tilo application API, not an optional automation adapter. A toolbar
 button, menu item, shortcut, context-menu item, search result, script, and agent
 must converge on the same `ActionBinding` and action address. Do not wire a
-direct callback beside `invoke_resource_operation`; bind the control and let
+direct callback beside `Widget::start_operation`; bind the control and let
 the host invoke that operation handler. Do not add a second socket, command
 enum, hidden test callback, or agent-only implementation. CI runs
 `tools/policy/check_app_resource_action_contract.py`, and the runtime independently
@@ -1366,10 +1421,16 @@ framework view, and imports action types through
 implementation and needs no direct internal actions dependency.
 
 Register document action decoders in `App::action_registry_mut`. Handle every
-effect and view type in `Widget::invoke_resource_operation_v2`, return an
-`ActionOutput`, and declare the locally handled type in
-`Widget::local_resource_operation_handlers`; the legacy unit-returning hook is
-only a compatibility adapter.
+effect and view type in `Widget::start_operation`, the single entry: return
+`Completed` with the promised `ActionOutput` for synchronous work or `Accepted`
+for a job `poll_resource_operation` finishes, and declare the locally handled
+type in `Widget::local_resource_operation_handlers`. Read the request through
+`op.unscoped()`, which hides a hosted invocation that carries its original
+caller's custody; a handler that honours that custody reads it through
+`op.with_custody()` instead and routes every effect and document write through
+the scope. Offer unhandled types to children with
+`ui::widget::start_in_children`. The older `invoke_resource_operation*` and
+`start_resource_operation*` hooks are adapters that CI ratchets to zero.
 Publication refuses duplicate addresses, unsafe confirmation declarations,
 unregistered document actions, empty availability reasons, incoherent job
 contracts, and other contract violations.

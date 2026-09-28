@@ -60,18 +60,13 @@ pub const SEARCH_RESULT_RESOURCE_LIMIT: usize = 32;
 /// different result set.  This is deliberately an address token rather than a
 /// display value; the original query remains in the operation payload.
 pub fn search_result_token(query: &str, whole_word: bool, case_sensitive: bool) -> String {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in query
-        .trim()
-        .as_bytes()
-        .iter()
-        .copied()
-        .chain([u8::from(whole_word), u8::from(case_sensitive)])
-    {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{hash:016x}")
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, query.trim().as_bytes());
+    std::hash::Hasher::write(
+        &mut hasher,
+        &[u8::from(whole_word), u8::from(case_sensitive)],
+    );
+    format!("{:016x}", std::hash::Hasher::finish(&hasher))
 }
 
 /// Return the stable resource id for one source-PDF outline entry.
@@ -92,21 +87,15 @@ pub fn outline_resource_id(ctx: &PdfResourceCtx, index: usize) -> Option<String>
             prior_title == title && prior_page == page && prior_level == level
         })
         .count();
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in title
-        .as_bytes()
-        .iter()
-        .copied()
-        .chain([0])
-        .chain(page.to_string().bytes())
-        .chain([0])
-        .chain(level.to_string().bytes())
-        .chain([0])
-        .chain(occurrence.to_string().bytes())
-    {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, title.as_bytes());
+    std::hash::Hasher::write_u8(&mut hasher, 0);
+    std::hash::Hasher::write(&mut hasher, page.to_string().as_bytes());
+    std::hash::Hasher::write_u8(&mut hasher, 0);
+    std::hash::Hasher::write(&mut hasher, level.to_string().as_bytes());
+    std::hash::Hasher::write_u8(&mut hasher, 0);
+    std::hash::Hasher::write(&mut hasher, occurrence.to_string().as_bytes());
+    let hash = std::hash::Hasher::finish(&hasher);
     Some(format!("pdf.outline:{}:{hash:016x}", ctx.doc_id))
 }
 
@@ -540,10 +529,14 @@ pub enum PdfViewerAction {
         #[serde(default)]
         user_space: bool,
     },
-    /// Replace a comment's body text (the inline editor / palette edit).
+    /// Replace a comment's text (the inline editor / palette edit). `rich`,
+    /// when given, is the text as written (paragraphs, kinds, marks) and
+    /// `body` its plain text; otherwise `body` is the whole text.
     SetCommentBody {
         id: String,
         body: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rich: Vec<qdoc_rich_text::ClipBlock>,
     },
     /// Set a comment's resolved flag (the resolve chip toggles it).
     SetCommentResolved {
@@ -558,6 +551,9 @@ pub enum PdfViewerAction {
         id: String,
         author: String,
         body: String,
+        /// The reply as written, when it carries more than plain text.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rich: Vec<qdoc_rich_text::ClipBlock>,
     },
     /// Delete a comment. If it pins a sticky note, the note annotation is
     /// removed too (its cascade drops this comment and any siblings), matching
@@ -753,11 +749,12 @@ impl Action for PdfViewerAction {
                     created: *created,
                     resolved: false,
                     replies: Vec::new(),
+                    blocks: Vec::new(),
                 };
                 PdfDoc::add_comment(doc, &c);
             }
-            PdfViewerAction::SetCommentBody { id, body } => {
-                PdfDoc::set_comment_body(doc, id, body);
+            PdfViewerAction::SetCommentBody { id, body, rich } => {
+                PdfDoc::set_comment_text(doc, id, &comment_text(body, rich)?);
             }
             PdfViewerAction::SetCommentResolved { id, resolved } => {
                 PdfDoc::set_comment_resolved(doc, id, *resolved);
@@ -767,7 +764,9 @@ impl Action for PdfViewerAction {
                 id,
                 author,
                 body,
+                rich,
             } => {
+                let clips = comment_text(body, rich)?;
                 PdfDoc::add_reply(
                     doc,
                     comment_id,
@@ -775,7 +774,9 @@ impl Action for PdfViewerAction {
                         id: id.clone(),
                         author: author.clone(),
                         body: body.clone(),
+                        blocks: Vec::new(),
                     },
+                    &clips,
                 );
             }
             PdfViewerAction::DeleteComment { id } => {
@@ -866,8 +867,10 @@ impl Action for PdfViewerAction {
                                     id: id.clone(),
                                     author: author.clone(),
                                     body: body.clone(),
+                                    blocks: Vec::new(),
                                 })
                                 .collect(),
+                            blocks: Vec::new(),
                         })
                         .collect(),
                     form_values: form_values
@@ -1135,7 +1138,85 @@ pub fn set_comment_body_action(id: &str, body: &str) -> PdfViewerAction {
     PdfViewerAction::SetCommentBody {
         id: id.to_string(),
         body: body.to_string(),
+        rich: Vec::new(),
     }
+}
+
+/// Replace a comment's text with what was written in the editor: its
+/// paragraphs as `clips`, its plain text derived from them.
+pub fn set_comment_text_action(id: &str, clips: Vec<qdoc_rich_text::ClipBlock>) -> PdfViewerAction {
+    PdfViewerAction::SetCommentBody {
+        id: id.to_string(),
+        body: plain_of(&clips),
+        rich: clips,
+    }
+}
+
+/// Reply to a comment with what was written in the editor.
+pub fn add_reply_text_action(
+    comment_id: &str,
+    author: &str,
+    clips: Vec<qdoc_rich_text::ClipBlock>,
+) -> PdfViewerAction {
+    PdfViewerAction::AddReply {
+        comment_id: comment_id.to_string(),
+        id: Reply::new_id(),
+        author: author.to_string(),
+        body: plain_of(&clips),
+        rich: clips,
+    }
+}
+
+/// The plain text of paragraphs, a line each.
+fn plain_of(clips: &[qdoc_rich_text::ClipBlock]) -> String {
+    clips
+        .iter()
+        .map(|clip| clip.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The most text one comment or reply holds.
+const MAX_COMMENT_CHARS: usize = 100_000;
+
+/// A comment or reply's text as stored: `rich` when given, checked against
+/// its plain text `body`; otherwise `body`, a paragraph per line.
+fn comment_text(
+    body: &str,
+    rich: &[qdoc_rich_text::ClipBlock],
+) -> Result<Vec<qdoc_rich_text::ClipBlock>, ActionError> {
+    let refuse = |why: &str| Err(ActionError::Refused(why.to_owned()));
+    if body.chars().count() > MAX_COMMENT_CHARS {
+        return refuse("the comment is too long");
+    }
+    if rich.is_empty() {
+        return Ok(tilo_rich_text::plain_clips(body));
+    }
+    if rich.len() > 1_000 || plain_of(rich) != body {
+        return refuse("the comment's paragraphs do not match its text");
+    }
+    let safe_name = |name: &str| {
+        !name.is_empty()
+            && name.len() <= 128
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    };
+    let valid = rich.iter().all(|clip| {
+        let len = clip.text.chars().count();
+        safe_name(&clip.kind)
+            && clip.level.is_none_or(|level| (0..=9).contains(&level))
+            && clip.attrs.len() <= 16
+            && clip.attrs.keys().all(|key| safe_name(key))
+            && clip
+                .marks
+                .iter()
+                .all(|mark| safe_name(&mark.name) && mark.start < mark.end && mark.end <= len)
+    });
+    if !valid {
+        return refuse("the comment's paragraphs are not valid");
+    }
+    Ok(rich.to_vec())
 }
 
 pub fn set_comment_resolved_action(id: &str, resolved: bool) -> PdfViewerAction {
@@ -1163,6 +1244,7 @@ pub fn add_reply_action_with_id(
         id: reply_id.to_string(),
         author: author.to_string(),
         body: body.to_string(),
+        rich: Vec::new(),
     }
 }
 

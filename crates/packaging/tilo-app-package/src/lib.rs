@@ -47,6 +47,7 @@
 )]
 
 pub mod blobs;
+pub mod desktop;
 pub mod id;
 pub mod manifest;
 pub mod pack;
@@ -85,15 +86,43 @@ pub use validate::{
 };
 pub use verify::{Verification, verify, verify_with_trust};
 
+/// The application size ceiling, in bytes. It lives in a plain file beside
+/// this crate so the packaging scripts (`os/scripts/pack-apps.sh`,
+/// `dist/apps/package-apps.sh`) read the very same number instead of carrying
+/// a copy that can drift.
+const APP_SIZE_LIMIT_BYTES: u64 = parse_size_limit(include_str!("../max-app-bytes"));
+
+const fn parse_size_limit(text: &str) -> u64 {
+    let mut rest = text.as_bytes();
+    let mut value: u64 = 0;
+    while let [digit @ b'0'..=b'9', tail @ ..] = rest {
+        value = value
+            .saturating_mul(10)
+            .saturating_add(digit.wrapping_sub(b'0') as u64);
+        rest = tail;
+    }
+    assert!(
+        matches!(rest, [] | [b'\n']),
+        "max-app-bytes must be a decimal byte count"
+    );
+    assert!(value > 0, "max-app-bytes must be positive");
+    value
+}
+
 /// Maximum wire size of an application `.tapp`. Large shared dependencies
 /// belong in a versioned runtime bundle; user documents and downloadable
 /// content are resources, not application payload.
-pub const MAX_APP_TAPP_BYTES: u64 = 5 * 1024 * 1024;
+pub const MAX_APP_TAPP_BYTES: u64 = APP_SIZE_LIMIT_BYTES;
 
 /// Materialized application payload budget. Collection entries may legally
 /// share one content-addressed blob; count every reference so deduplication
 /// cannot turn a tiny tapp into an arbitrarily large install.
-pub const MAX_APP_UNPACKED_BYTES: u64 = 5 * 1024 * 1024;
+pub const MAX_APP_UNPACKED_BYTES: u64 = APP_SIZE_LIMIT_BYTES;
+
+/// Wire size limit of a Windows or macOS build. Those systems ship no Tilo
+/// toolkit, so the executable links it in; the limit is a distribution
+/// policy, not a design target.
+pub const MAX_DESKTOP_APP_TAPP_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Bound filesystem work/inodes independently of bytes. Empty files are not
 /// allowed to bypass the materialized-byte limit indefinitely.
@@ -106,13 +135,31 @@ pub fn tapp_size_allowed(kind: Kind, size: u64) -> bool {
     kind != Kind::App || size <= MAX_APP_TAPP_BYTES
 }
 
+/// The wire and materialized size limit of the application `manifest`
+/// describes: [`MAX_DESKTOP_APP_TAPP_BYTES`] for a Windows or macOS build,
+/// [`MAX_APP_TAPP_BYTES`] otherwise. `None` for non-app bundles.
+pub fn app_size_limit(manifest: &Manifest) -> Option<u64> {
+    if manifest.package.kind != Kind::App {
+        return None;
+    }
+    let desktop = manifest.target.as_ref().is_some_and(|target| {
+        registry_types::DESKTOP_PLATFORMS.contains(&target.platform.as_str())
+    });
+    Some(if desktop {
+        MAX_DESKTOP_APP_TAPP_BYTES
+    } else {
+        MAX_APP_TAPP_BYTES
+    })
+}
+
 #[cfg(test)]
 mod size_tests {
     use super::*;
 
     #[test]
-    fn app_limit_is_five_mib_and_runtime_bundles_are_separate() {
-        assert_eq!(MAX_APP_TAPP_BYTES, 5_242_880);
+    fn app_limit_is_eight_mib_and_runtime_bundles_are_separate() {
+        assert_eq!(MAX_APP_TAPP_BYTES, 8 * 1024 * 1024);
+        assert_eq!(MAX_APP_UNPACKED_BYTES, MAX_APP_TAPP_BYTES);
         assert!(tapp_size_allowed(Kind::App, MAX_APP_TAPP_BYTES));
         assert!(!tapp_size_allowed(Kind::App, MAX_APP_TAPP_BYTES + 1));
         assert!(tapp_size_allowed(Kind::Runtime, u64::MAX));

@@ -96,7 +96,7 @@ impl App {
             {
                 return false;
             }
-            let Some(read) = self.collaboration.manager.prepare_native_record(&want.id) else {
+            let Some(read) = self.collaboration.manager.prepare_native_record(&want) else {
                 return false;
             };
             Some((want, read))
@@ -122,7 +122,7 @@ impl App {
                 .unwrap_or(false);
             if accepted {
                 read.applied();
-                Some(want.id.clone())
+                Some(want.clone())
             } else {
                 None
             }
@@ -138,7 +138,7 @@ impl App {
             )
         };
         match switched {
-            Some(id) => {
+            Some(checkout) => {
                 self.advance_autosave_generation();
                 if let Some(history) = &mut self.history {
                     self.layout.node_map.clear();
@@ -160,14 +160,14 @@ impl App {
                             .primary_route()
                             .map(|witness| witness.route.clone());
                     }
-                    if let Err(error) = self.collaboration.manager.switch_native_record(&id) {
+                    if let Err(error) = self.collaboration.manager.switch_native_record(&checkout) {
                         tracing::warn!(%error,"native document route switch remains unavailable");
                         return false;
                     }
                 } else {
                     // One connection: the primary route moves to the record and
                     // the route it leaves stays joined for the room index.
-                    let left = self.collaboration.manager.move_primary_to_record(&id);
+                    let left = self.collaboration.manager.move_primary_to_record(&checkout);
                     if self.collaboration.room_route.is_none() {
                         self.collaboration.room_route = left;
                     }
@@ -175,7 +175,7 @@ impl App {
                 tracing::debug!(
                     target: "tilo.state",
                     event = "record_checkout",
-                    record = id.as_str(),
+                    record = checkout.id.as_str(),
                     connected = self.collaboration.manager.is_connected(),
                     "switched document collaboration route"
                 );

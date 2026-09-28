@@ -303,21 +303,18 @@ fn whole_seconds(time: SystemTime) -> u64 {
 }
 
 fn encode_path(path: &str) -> String {
-    let mut out = String::new();
-    for (i, segment) in path.split('/').enumerate() {
-        if i > 0 {
-            out.push('/');
-        }
-        for byte in segment.bytes() {
-            if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
-                out.push(char::from(byte));
-            } else {
-                let _ = write!(out, "%{byte:02X}");
-            }
-        }
-    }
-    out
+    path.split('/')
+        .map(|segment| percent_encoding::utf8_percent_encode(segment, UNRESERVED).to_string())
+        .collect::<Vec<_>>()
+        .join("/")
 }
+
+/// Everything but the RFC 3986 unreserved characters.
+const UNRESERVED: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
 
 fn decode_path(raw: &str) -> Option<String> {
     let parts: Option<Vec<String>> = raw
@@ -329,25 +326,7 @@ fn decode_path(raw: &str) -> Option<String> {
 }
 
 fn base64(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in input.chunks(3) {
-        let b = [
-            chunk.first().copied().unwrap_or(0),
-            chunk.get(1).copied().unwrap_or(0),
-            chunk.get(2).copied().unwrap_or(0),
-        ];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        for (i, shift) in [18_u32, 12, 6, 0].into_iter().enumerate() {
-            if i <= chunk.len() {
-                let index = usize::try_from((n >> shift) & 63).unwrap_or(0);
-                out.push(char::from(TABLE.get(index).copied().unwrap_or(b'A')));
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
+    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, input)
 }
 
 impl State {

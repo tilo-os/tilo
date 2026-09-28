@@ -253,9 +253,26 @@ display-identify-row = Die Nummer jedes Bildschirms darauf anzeigen
 
 # Displays pane: layout tools trusted to change displays without asking
 display-tools-title = Bildschirmwerkzeuge
-display-tools-caption = Diese Programme ordnen Ihre Bildschirme neu an, ohne jede Änderung bestätigen zu lassen.
+display-tools-caption = Diese Programme dürfen riskante Bildschirmänderungen vornehmen, ohne sie bestätigen zu lassen.
 display-tools-forget = Wieder nachfragen
-display-tools-forgotten = Bildschirmänderungen dieses Werkzeugs müssen wieder bestätigt werden.
+display-tools-forgotten = Riskante Bildschirmänderungen dieses Werkzeugs müssen wieder bestätigt werden.
+
+# Displays pane: HDR
+display-hdr = HDR
+display-hdr-description = Hellere Spitzlichter und kräftigere Farben für HDR-Spiele, -Videos und -Fotos
+display-hdr-sdr-brightness = Helligkeit von SDR-Inhalten
+display-hdr-sdr-brightness-description = Wie hell alles, was nicht HDR ist, bei eingeschaltetem HDR erscheint
+display-hdr-unsupported = Von diesem Bildschirm nicht unterstützt
+display-hdr-driver-unsupported = Der Grafiktreiber kann kein HDR-Signal an diesen Bildschirm senden
+display-hdr-format-unsupported = Die Grafikkarte konnte auf diesem Bildschirm kein 10-Bit-Bild anzeigen
+display-hdr-driver-rejected = Der Grafiktreiber hat das Einschalten von HDR abgelehnt, daher bleibt dieser Bildschirm bei SDR
+
+# Displays pane: variable refresh rate
+display-vrr = Variable Bildwiederholrate
+display-vrr-description = Schaltet sich bei Spielen und Videos im Vollbild von selbst ein
+display-vrr-unsupported = Von diesem Bildschirm nicht unterstützt
+display-vrr-driver-unsupported = Der Grafiktreiber bietet sie für diesen Bildschirm nicht an
+display-vrr-driver-rejected = Der Grafiktreiber hat das Einschalten abgelehnt
 
 # Mouse & Keyboard pane: touchpad
 input-touchpad-title = Touchpad
@@ -423,3 +440,14 @@ settings-shortcut-unassigned = Nicht belegt
 settings-shortcuts-vim = Vim-Navigation (H J K L)
 settings-shortcuts-actions = Aktionen
 settings-shortcuts-actions-caption = Der Tastatur-Auslöser eines gespeicherten Kurzbefehls belegt hier seine Tastenkombination; ändere oder entferne ihn im Kurzbefehl.
+
+# Geräte: was jeder Kontinuitätsschalter teilt
+continuity-clipboard-description = Kopierte Texte und Bilder mit dem aktuellen zertifizierten Gerät teilen.
+continuity-notifications-description = Inhalte und Aktionen von Benachrichtigungen auf das aktuelle Gerät spiegeln.
+continuity-wifi-settings-description = Gespeicherte Netzwerke und passende persönliche Einstellungen anbieten.
+continuity-media-description = Wiedergabe fortsetzen, Mediensteuerung anbieten und das Lautsprecher-Timing für Lautsprechergruppen und Audio auf anderen Geräten synchron halten.
+continuity-display-input-description = Diesem Gerät erlauben, einen Bildschirm zu erweitern oder Eingaben von anderen Geräten anzunehmen.
+continuity-file-transfer-description = Ausdrücklich gesendete Dateien zwischen deinen zertifizierten Geräten annehmen.
+continuity-realtime-sessions-description = Laufende Anrufe und andere Live-Sitzungen von Apps übergeben.
+continuity-typed-gamepad-description = Typisierte Gamepad-Ereignisse weiterleiten, niemals einen untypisierten Eingabestrom.
+continuity-app-continuations-description = App-Platzierung und einen begrenzten Fortsetzungsstand für deine zertifizierten Geräte anbieten.

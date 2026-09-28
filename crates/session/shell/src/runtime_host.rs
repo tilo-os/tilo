@@ -1,8 +1,9 @@
 //! Compositor-free host of the same services used by the Tilo desktop.
 //!
 //! This module contains lifecycle wiring only. Policy and RPC remain in the
-//! existing brokers. Keeping it in this library initially avoids copying the
-//! workspace model while its dependencies are separated from shell chrome.
+//! existing brokers; the profile, native endpoint, app attachment and MCP
+//! projection are `tilo_runtime`'s, which reaches these services through
+//! [`RuntimeServices`].
 
 use crate::{
     identity_broker,
@@ -17,11 +18,8 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command},
 };
-
-pub mod daemon;
-pub mod mcp;
-pub mod mcp_process;
-mod unix;
+use tilo_runtime::RuntimeServices;
+use tilo_runtime::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, unix};
 
 /// A single-user service session. Drop applications before dropping the session.
 /// Identity discovery uses the same environment as Tilo; configure it before
@@ -33,7 +31,7 @@ pub struct Session {
     pub actor: String,
     identity_socket: PathBuf,
     blob_socket: PathBuf,
-    _media: MediaHost,
+    _media: tilo_runtime::profile::MediaHost,
     _membership: crate::shell::state::WorkspaceTreeHandle,
     _lock: advisory_lock::FileLock,
 }
@@ -52,22 +50,7 @@ impl Session {
     /// Rejects a locked profile, invalid persisted state, or failed provisioning.
     pub fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
         stage("locking the profile");
-        unix::private_directory(root)?;
-        let lock_path = root.join("runtime.lock");
-        let lock = advisory_lock::FileLock::try_exclusive(unix::private_file(&lock_path)?)
-            .map_err(|error| match error {
-                advisory_lock::TryLockError::WouldBlock => {
-                    let owner = advisory_lock::owner_pid(&lock_path)
-                        .map(|pid| format!(" by process {pid}"))
-                        .unwrap_or_default();
-                    io::Error::new(
-                        io::ErrorKind::WouldBlock,
-                        format!("runtime profile {} is in use{owner}", root.display()),
-                    )
-                }
-                advisory_lock::TryLockError::Error(error) => error,
-            })?;
-        lock.record_owner()?;
+        let lock = tilo_runtime::profile::lock(root)?;
         stage("provisioning the collaboration identity");
         let identity_dir = runtime_identity::identity_dir_from_env()?;
         crate::firstboot::ensure_collaboration_identity(
@@ -102,17 +85,17 @@ impl Session {
         stage("saving the workspace");
         persist::save_tree_to(&tree, &path)?;
         let tree = tree.shared();
-        let identity_socket = root.join("identity.sock");
+        let identity_socket = root.join(IDENTITY_SOCKET);
         let channel_keys = crate::shell::channel_encryption::ChannelKeyProvider::default();
         stage("starting the identity service");
         let identity =
             identity_broker::spawn(identity_socket.clone(), tree.clone(), channel_keys.clone())?;
         stage("starting the collaboration broker");
-        let broker = collab_broker::spawn_native(root.join("collab.sock"), &None, tree.clone())?;
+        let broker = collab_broker::spawn_native(root.join(COLLAB_SOCKET), &None, tree.clone())?;
         channel_keys.set(broker.channel_encryption());
-        let blob_socket = root.join("blobs.sock");
+        let blob_socket = root.join(BLOB_SOCKET);
         stage("opening the content store");
-        let media = MediaHost::start(&root.join("content"), &blob_socket)?;
+        let media = tilo_runtime::profile::MediaHost::start(&root.join("content"), &blob_socket)?;
         Ok(Self {
             broker,
             _identity: identity,
@@ -140,15 +123,7 @@ impl Session {
     /// # Errors
     /// Returns connection errors; `Ok(None)` when the content is not readable.
     pub fn read_media(&self, app_id: &str, hash: &str) -> io::Result<Option<Vec<u8>>> {
-        use runtime_fs::blobs::{BlobClient, ReadOutcome};
-        let session = BlobClient::connect_session(&self.blob_socket).map_err(io::Error::other)?;
-        let scoped = session
-            .scope(&self.room, app_id)
-            .map_err(io::Error::other)?;
-        match scoped.read_all(hash).map_err(io::Error::other)? {
-            ReadOutcome::Ready { bytes, .. } => Ok(Some(bytes)),
-            ReadOutcome::Pending | ReadOutcome::Unavailable => Ok(None),
-        }
+        tilo_runtime::profile::read_media(&self.blob_socket, &self.room, app_id, hash)
     }
 
     /// Launch a trusted native app through the existing SDK descriptor contract.
@@ -169,53 +144,30 @@ impl Session {
     }
 }
 
-/// Serves the host's apps their document media: the filesystem daemon's
-/// content store and capability, on the host's private profile.
-struct MediaHost {
-    store: std::sync::Arc<tilo_fs::ContentStore>,
-    _server: std::thread::JoinHandle<()>,
-    runtime: Option<tokio::runtime::Runtime>,
-}
+impl RuntimeServices for Session {
+    type ActionHost = crate::shell::remote_actions::BrokerActionHost;
 
-impl MediaHost {
-    fn start(content: &Path, socket: &Path) -> io::Result<Self> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .thread_name("tilo-media")
-            .enable_all()
-            .build()?;
-        let store = std::sync::Arc::new(
-            runtime
-                .block_on(tilo_fs::ContentStore::open(content))
-                .map_err(io::Error::other)?,
-        );
-        let media =
-            tilo_fs::document_media::DocumentMedia::new(std::sync::Arc::clone(&store), None);
-        let server = {
-            let _entered = runtime.enter();
-            tilo_fs::document_media::serve_socket(socket, media).map_err(io::Error::other)?
-        };
-        Ok(Self {
-            store,
-            _server: server,
-            runtime: Some(runtime),
-        })
+    fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
+        Self::start_reporting(root, stage)
     }
-}
 
-impl Drop for MediaHost {
-    /// Release the store's database so the profile can be served again in
-    /// this process; the server thread then only answers with errors.
-    fn drop(&mut self) {
-        let Some(runtime) = self.runtime.take() else {
-            return;
-        };
-        let store = std::sync::Arc::clone(&self.store);
-        let _ = std::thread::spawn(move || {
-            let _ = runtime.block_on(store.shutdown());
-            runtime.shutdown_background();
-        })
-        .join();
+    fn room(&self) -> &str {
+        &self.room
+    }
+
+    fn actor(&self) -> &str {
+        &self.actor
+    }
+
+    fn action_host(&self) -> io::Result<Self::ActionHost> {
+        self.broker
+            .app_action_broker()
+            .map(crate::shell::remote_actions::BrokerActionHost::new)
+            .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))
+    }
+
+    fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
+        Self::launch(self, app_id, command)
     }
 }
 
@@ -224,3 +176,10 @@ impl Drop for MediaHost {
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
 )]
 use crate::shell::state::WorkspaceExt as _;
+
+#[cfg(test)]
+#[path = "runtime_host/mcp_process_tests.rs"]
+mod mcp_process_tests;
+#[cfg(test)]
+#[path = "runtime_host/mcp_tests.rs"]
+mod mcp_tests;

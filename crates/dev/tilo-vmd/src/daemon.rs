@@ -10,12 +10,12 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::Serialize;
 use tilo_vm_protocol::{
-    Action, AppInstallResult, AppRuntimeResult, ApplyResult, BaseInfo, BootConfirmResult,
-    ComponentInfo, GcResult, HelloResult, InputAction, InputResult, Issue, KeptLayer,
-    LayerImportResult, LayerSource, LayerUploadBeginResult, LayerUploadChunkResult, Lease,
-    LogsResult, Manifest, OutputSpec, Owner, PROTOCOL_VERSION, Policy, Provenance, Request, Scope,
-    SeatResult, ShotResult, SlotCreateResult, SlotFile, SlotInfo, SlotKind, SlotRmResult,
-    SlotShowResult, StatusResult, Storage, UPLOAD_CHUNK_BYTES, VM_SLOT, VmTools,
+    Action, AppInstallResult, ApplyResult, BaseInfo, BootConfirmResult, ComponentInfo, GcResult,
+    HelloResult, InputAction, InputResult, Issue, KeptLayer, LayerImportResult, LayerSource,
+    LayerUploadBeginResult, LayerUploadChunkResult, Lease, LogsResult, Manifest, OutputSpec, Owner,
+    PROTOCOL_VERSION, Policy, Provenance, Request, Scope, SeatResult, ShotResult, SlotCreateResult,
+    SlotFile, SlotInfo, SlotKind, SlotRmResult, SlotShowResult, StatusResult, Storage,
+    UPLOAD_CHUNK_BYTES, VM_SLOT, VmTools,
 };
 
 use crate::apply::{self, Apply, GREETER_UNIT, SessionChange, session_unit};
@@ -439,15 +439,7 @@ impl Daemon {
             }
             Request::AppInstall(p) => {
                 let _locks = self.slot_locks(&p.slot)?;
-                to_value(&self.install_app(&p.slot, p.source, p.runtime)?)
-            }
-            Request::AppRuntime(p) => {
-                let (record, user) = self.user_slot(&p.slot)?;
-                to_value(&AppRuntimeResult {
-                    installed: self.apply.has_runtime(&user, &p.version),
-                    slot: record.name,
-                    version: p.version,
-                })
+                to_value(&self.install_app(&p.slot, p.source)?)
             }
             Request::BootConfirm(p) => {
                 let _locks = self.slot_locks(VM_SLOT)?;
@@ -490,7 +482,6 @@ impl Daemon {
 
     /// Install a `.tapp` into the slot user's app store. Not a generation:
     /// the user store shadows the image's apps, live at their next launch.
-    /// A thin app's `runtime` bundle is installed for the user first.
     ///
     /// # Errors
     /// Unknown slots, the `vm` slot, missing uploads and tilo-install failures.
@@ -498,7 +489,6 @@ impl Daemon {
         &mut self,
         slot: &str,
         source: LayerSource,
-        runtime: Option<LayerSource>,
     ) -> Result<AppInstallResult, DaemonError> {
         let (record, user) = self.user_slot(slot)?;
         let (path, uploaded) = match source {
@@ -510,12 +500,7 @@ impl Daemon {
             ),
             LayerSource::Path(path) => (PathBuf::from(path), false),
         };
-        let runtime_output = match runtime {
-            None => Ok(String::new()),
-            Some(runtime) => self.install_runtime(&user, runtime),
-        };
-        let output =
-            runtime_output.and_then(|runtime| Ok(runtime + &self.apply.install_app(&user, &path)?));
+        let output = self.apply.install_app(&user, &path);
         if uploaded {
             let _ = fs::remove_file(&path);
         }
@@ -527,29 +512,6 @@ impl Daemon {
             version,
             output,
         })
-    }
-
-    /// Install a runtime bundle for `user`: an upload is a tar of the bundle
-    /// directory's contents, a path the bundle directory itself.
-    fn install_runtime(&mut self, user: &str, runtime: LayerSource) -> Result<String, DaemonError> {
-        match runtime {
-            LayerSource::Path(path) => self.apply.install_runtime(user, Path::new(&path)),
-            LayerSource::Upload(id) => {
-                let archive = self
-                    .uploads
-                    .remove(&id)
-                    .ok_or(DaemonError::UploadNotFound(id))?;
-                let staging = self
-                    .root
-                    .join("staging")
-                    .join(format!("runtime-{}", uuid::Uuid::new_v4().simple()));
-                let installed = crate::runtime::unpack(&archive, &staging)
-                    .and_then(|()| self.apply.install_runtime(user, &staging));
-                let _ = fs::remove_file(&archive);
-                let _ = fs::remove_dir_all(&staging);
-                installed
-            }
-        }
     }
 
     fn status(&mut self, slot: Option<String>) -> Result<StatusResult, DaemonError> {

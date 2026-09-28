@@ -22,8 +22,9 @@ use crate::text_selection::{
     word_boundaries,
 };
 
-/// A horizontal / range caret motion. Vertical motion (Up/Down) is the host's
-/// job because it needs laid-out line geometry.
+/// A caret motion. Vertical motion across wrapped lines is the host's job
+/// because it needs laid-out line geometry; [`Motion::LineUp`] and
+/// [`Motion::LineDown`] move across `\n`-delimited lines only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Motion {
     /// One Unicode scalar left / right.
@@ -38,6 +39,34 @@ pub enum Motion {
     /// Start / end of the whole buffer.
     DocStart,
     DocEnd,
+    /// The `\n`-delimited line above / below, at the same character column
+    /// or the end of a shorter line; unchanged on the first / last line.
+    LineUp,
+    LineDown,
+}
+
+/// The byte offset in the `\n`-delimited line above (`up`) or below the one
+/// holding `byte`, at the same character column, clamped to that line's end.
+fn line_step(text: &str, byte: usize, up: bool) -> usize {
+    let (start, end) = line_boundaries(text, byte);
+    let column = text.get(start..byte).map_or(0, |line| line.chars().count());
+    let (target_start, target_end) = if up {
+        if start == 0 {
+            return byte;
+        }
+        line_boundaries(text, start.saturating_sub(1))
+    } else {
+        if end >= text.len() {
+            return byte;
+        }
+        line_boundaries(text, end.saturating_add(1))
+    };
+    let line = text.get(target_start..target_end).unwrap_or_default();
+    target_start.saturating_add(
+        line.char_indices()
+            .nth(column)
+            .map_or(line.len(), |(offset, _)| offset),
+    )
 }
 
 /// A splice to apply to the buffer, in **byte** offsets over the pre-edit text:
@@ -155,6 +184,8 @@ impl EditCore {
             Motion::LineEnd => line_boundaries(text, c).1,
             Motion::DocStart => 0,
             Motion::DocEnd => text.len(),
+            Motion::LineUp => line_step(text, c, true),
+            Motion::LineDown => line_step(text, c, false),
         }
     }
 
@@ -305,6 +336,29 @@ impl EditCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_up_and_down_keep_the_column_and_stop_at_the_edges() {
+        let text = "abc\ndéf\nghij";
+        let at = |core: &EditCore| core.selection().cursor;
+        let mut core = EditCore::new();
+        // Line 0, column 2 → line 1, column 2 (after the two-byte "é").
+        core.set_caret(2);
+        core.motion(text, Motion::LineDown, false);
+        assert_eq!(at(&core), "abc\ndé".len());
+        core.motion(text, Motion::LineUp, false);
+        assert_eq!(at(&core), 2);
+        // Up on the first line and down on the last are no-ops.
+        core.motion(text, Motion::LineUp, false);
+        assert_eq!(at(&core), 2);
+        core.set_caret(text.len());
+        core.motion(text, Motion::LineDown, false);
+        assert_eq!(at(&core), text.len());
+        // Column 4 clamps to the end of a shorter line, and extends a selection.
+        core.motion(text, Motion::LineUp, true);
+        assert_eq!(at(&core), "abc\ndéf".len());
+        assert!(core.has_selection());
+    }
 
     /// Apply an `Edit` to a `String` the way the host CRDT splice would, so the
     /// tests can assert the model produces coherent text.

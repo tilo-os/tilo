@@ -1198,6 +1198,7 @@ impl RoutedPrimary {
             record_kind: crate::RecordKind::new("primary.probe"),
             required: vec![],
             optional: vec![],
+            opens: &[],
             create: primary_routed_factory,
         };
         let target = LaunchTarget::PrimaryNew;
@@ -3905,15 +3906,18 @@ impl crate::widget::Widget for PaletteHistoryOwner {
             .into_iter()
             .collect()
     }
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        _: tilo_actions::InvocationId,
-        _: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         _: &mut automerge::AutoCommit,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(crate::widget::OperationRequest {
+            type_id, payload, ..
+        }) = op.unscoped()
+        else {
+            return Ok(None);
+        };
         if !self.resource_operation_handlers().contains(type_id) {
             return Ok(None);
         }
@@ -4505,15 +4509,21 @@ impl crate::widget::Widget for ComponentControlOwner {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         [self.operation.clone()].into_iter().collect()
     }
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        _: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         _: &mut automerge::AutoCommit,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(crate::widget::OperationRequest {
+            invocation,
+            type_id,
+            payload,
+            ..
+        }) = op.unscoped()
+        else {
+            return Ok(None);
+        };
         if type_id != self.operation {
             return Ok(None);
         }
@@ -6312,23 +6322,21 @@ impl crate::widget::Widget for CustodyControlsRoot {
         handlers.insert("fixture.control".into());
         handlers
     }
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        operation: &str,
-        payload: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         doc: &mut automerge::AutoCommit,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if operation != "fixture.control" {
-            return self.child.start_resource_operation_with_document(
-                invocation, kind, operation, payload, doc, path,
-            );
-        }
+        let Some(request) = op
+            .unscoped()
+            .filter(|request| request.type_id == "fixture.control")
+        else {
+            return self.child.start_operation(op, doc, path);
+        };
         self.ledger
             .borrow_mut()
-            .push(serde_json::from_slice(payload).unwrap());
+            .push(serde_json::from_slice(request.payload).unwrap());
         Ok(Some(crate::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))

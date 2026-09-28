@@ -61,7 +61,7 @@ third-party = [
     { name = "iroh-relay" },
     # A git-pinned YouTube client only the Tube app uses; server images and
     # the builder canary must not compile it.
-    { name = "rustypipe", git = "ssh://git@code.tilo.so/tilo/rustypipe.git", rev = "aeb292fb23856c335ee3423745ed98ae0e683760" },
+    { name = "rustypipe", git = "https://code.tilo.so/tilo/rustypipe.git", rev = "aeb292fb23856c335ee3423745ed98ae0e683760" },
 ]
 
 [final-excludes]
@@ -105,4 +105,13 @@ workspace-members = [
     "registry-types",
     "registry-web",
     "registry-web-bindgen",
+]
+# A -sys crate in the hack is linked into runtime-dylib, whose exports carry
+# Rust symbols only. A thin app that monomorphises its safe wrapper (Imager's
+# zstd Reader) then references C symbols no library provides and fails to link.
+# Keep such crates out of the hack so each user links its own copy.
+third-party = [
+    { name = "zstd" },
+    { name = "zstd-safe" },
+    { name = "zstd-sys" },
 ]

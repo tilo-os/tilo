@@ -52,37 +52,40 @@ pub mod terminal;
 
 pub use app::ContainersApp;
 
-#[cfg(any(test, feature = "test-support"))]
+/// Inert root for the binary's launch-composition tests. Not feature-gated:
+/// the binary's tests cannot switch on a library feature without a self
+/// dev-dependency, which would claim `--features containers/thin`.
+#[doc(hidden)]
 pub fn history_test_root() -> ContainersApp {
     ContainersApp::history_test_root()
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn history_test_open_create_root() -> ContainersApp {
     ContainersApp::history_test_open_create_root()
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn history_test_palette_root() -> ContainersApp {
     ContainersApp::history_test_palette_root()
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn history_test_prompt_root() -> ContainersApp {
     ContainersApp::history_test_prompt_root()
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn history_test_confirm_root() -> ContainersApp {
     ContainersApp::history_test_confirm_root()
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn history_test_pull_root() -> ContainersApp {
     ContainersApp::history_test_pull_root()
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn history_test_retention_root() -> (
     ContainersApp,
     std::sync::mpsc::Receiver<app::ControlledRuntimeRequest>,

@@ -258,6 +258,13 @@ pub fn spawn_native(
     peer_sync: &Option<Arc<ShellNetwork>>,
     membership: crate::shell::state::WorkspaceTreeHandle,
 ) -> std::io::Result<BrokerHandle> {
+    // Records this device lacks are brought from the room's other devices
+    // over the same network this broker answers their requests on.
+    if let Some(network) = peer_sync {
+        crate::shell::record_hydration::set_source(Arc::new(
+            crate::shell::record_hydration::NetworkSource(Arc::clone(network)),
+        ));
+    }
     let publisher = PeerPublisher::with_optional_owner_commit(
         peer_sync
             .clone()
@@ -1069,6 +1076,29 @@ pub(crate) fn answer_remote_actions(
     requests: Vec<crate::shell::remote_action_link::InboundRemoteAction>,
 ) {
     for request in requests {
+        // A record is read from where this device keeps it, by the device
+        // itself; no action host is asked.
+        if let tilo_actions::remote::RemoteActionMessage::RecordRequest { correlation, query } =
+            &request.message
+        {
+            let workspace = crate::shell::state::RoomId::parse(&query.room)
+                .and_then(|room| net.workspace_of_room(room));
+            let result = crate::shell::record_hydration::serve(
+                workspace.as_ref(),
+                ::launcher::appdir::host_data_home().as_deref(),
+                &request.caller,
+                query,
+            );
+            net.send_remote_action(
+                request.workspace_topic,
+                request.from,
+                tilo_actions::remote::RemoteActionMessage::RecordResponse {
+                    correlation: *correlation,
+                    result,
+                },
+            );
+            continue;
+        }
         let answer = match host {
             Some(host) => tilo_actions::remote::serve(host, &request.caller, request.message),
             None => tilo_actions::remote::refuse(

@@ -538,7 +538,7 @@ pub fn local_participant_rows(
                 participant.label.clone(),
             );
             match ws.role_of_agent(&participant.agent) {
-                Some(role) => row.with_role(crate::shell::workspace_settings::role_label(role)),
+                Some(role) => row.with_role(tilo_desktop::workspace_settings::role_label(role)),
                 None => row,
             }
         })

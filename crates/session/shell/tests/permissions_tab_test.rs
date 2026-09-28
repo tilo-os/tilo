@@ -32,7 +32,7 @@ use shell::shell::state::{
     CapOverride, Capability, Expiry, GRANT_ALWAYS, GRANT_SESSION, ResourceRef, Scope, Subject,
     Verb, Workspace, WorkspaceId, WorkspaceTree,
 };
-use shell::shell::workspace_settings::{self, GrantDraft, SubjectKind};
+use tilo_desktop::workspace_settings::{self, GrantDraft, SubjectKind};
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -776,7 +776,11 @@ fn an_app_allowed_another_apps_action_is_listed_under_app_actions_and_revocable(
     tree.set_active(id);
 
     let pane = vello::kurbo::Rect::new(0.0, 0.0, 660.0, 480.0);
-    let listed = workspace_settings::permissions_pane_layout(&tree.desktop.workspaces[0], pane);
+    let listed = workspace_settings::permissions_pane_layout(
+        &tree.desktop.workspaces[0],
+        pane,
+        &shell::shell::launcher::ShellApps,
+    );
     let row = listed
         .rows
         .iter()

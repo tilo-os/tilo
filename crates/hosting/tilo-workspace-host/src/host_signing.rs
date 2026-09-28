@@ -147,6 +147,32 @@ impl HostSigning {
             owner: self.ordinary.clone(),
         })
     }
+    /// Documents proposed into `room` and the owner's answers, decided in
+    /// the owner's serialized turn.
+    pub fn document_imports(
+        &self,
+        room: String,
+    ) -> Arc<dyn tilo_action_broker::services::DocumentImports> {
+        struct Imports {
+            room: String,
+            owner: OwnerCommitHandle,
+        }
+        impl tilo_action_broker::services::DocumentImports for Imports {
+            fn room(&self) -> &str {
+                &self.room
+            }
+            fn execute(
+                &self,
+                request: OwnerCommitRequest,
+            ) -> tilo_action_broker::services::DesktopCommandFuture {
+                self.owner.document_import(request)
+            }
+        }
+        Arc::new(Imports {
+            room,
+            owner: self.ordinary.clone(),
+        })
+    }
     pub fn new(ordinary: OwnerCommitHandle) -> (Self, SignatureMailbox) {
         let (shared, receiver) = HostDocuments::new(Arc::new(ordinary.clone()));
         let policy_time = Arc::new(OnceLock::new());
@@ -745,8 +771,7 @@ mod tests {
         );
     }
     #[tokio::test]
-    async fn host_signing_lost_response_keeps_committed_uncertainty_and_mailbox_failure_retires_health()
-     {
+    async fn host_signing_lost_response_keeps_receipt_and_mailbox_failure_retires_health() {
         let root = tempfile::tempdir().unwrap();
         let state = root.path().join("owner");
         let mut owner = SessionOwner::initialize(&state).unwrap();
@@ -766,7 +791,11 @@ mod tests {
         result.unwrap();
         complete();
         assert!(owner.status().generation > before);
-        assert!(service.health().unwrap_err().contains("outcome unknown"));
+        assert!(
+            service.health().is_ok(),
+            "dropping the waiting signer reply must not latch the service: {:?}",
+            service.health()
+        );
         assert_eq!(service.shared.pending_exact_receipts().unwrap(), 1);
         let committed = owner.status();
         drop(owner);
@@ -1040,7 +1069,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_signer_after_enqueue_preserves_owner_effect_and_fails_closed() {
+    async fn cancelled_signer_after_enqueue_preserves_owner_effect_without_latching() {
         let root = tempfile::tempdir().unwrap();
         let state = root.path().join("owner");
         let mut owner = SessionOwner::initialize(&state).unwrap();
@@ -1060,7 +1089,11 @@ mod tests {
         result.expect("enqueued owner turn remains authoritative after caller cancellation");
         complete();
         assert!(owner.status().generation > before);
-        assert!(service.health().unwrap_err().contains("outcome unknown"));
+        assert!(
+            service.health().is_ok(),
+            "dropping the waiting signer reply must not latch the service: {:?}",
+            service.health()
+        );
         assert_eq!(service.shared.pending_exact_receipts().unwrap(), 1);
         let committed = owner.status();
         drop(owner);

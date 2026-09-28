@@ -295,24 +295,6 @@ fn lyrics_from_record(json: &serde_json::Value) -> Option<Lyrics> {
     None
 }
 
-/// Percent-encode a query-string value (RFC 3986 unreserved bytes pass through).
-fn enc(s: &str) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            b' ' => out.push_str("%20"),
-            _ => {
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-    }
-    out
-}
-
 /// Collapse internal runs of whitespace to a single space and trim the ends.
 fn collapse_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -417,8 +399,8 @@ pub fn normalize_artist(raw: &str) -> String {
 fn lrclib_search_url(meta: &TrackMeta) -> String {
     format!(
         "https://lrclib.net/api/search?track_name={}&artist_name={}",
-        enc(&normalize_title(&meta.title)),
-        enc(&normalize_artist(&meta.artist)),
+        ui::uri::encode_component(&normalize_title(&meta.title)),
+        ui::uri::encode_component(&normalize_artist(&meta.artist)),
     )
 }
 
@@ -428,9 +410,9 @@ fn lrclib_search_url(meta: &TrackMeta) -> String {
 pub fn lrclib_url(meta: &TrackMeta) -> String {
     format!(
         "https://lrclib.net/api/get?track_name={}&artist_name={}&album_name={}&duration={}",
-        enc(&normalize_title(&meta.title)),
-        enc(&normalize_artist(&meta.artist)),
-        enc(&normalize_title(&meta.album)),
+        ui::uri::encode_component(&normalize_title(&meta.title)),
+        ui::uri::encode_component(&normalize_artist(&meta.artist)),
+        ui::uri::encode_component(&normalize_title(&meta.album)),
         meta.duration_s
     )
 }

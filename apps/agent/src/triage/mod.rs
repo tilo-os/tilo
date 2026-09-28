@@ -343,6 +343,7 @@ mod tests {
             author: author.into(),
             ts,
             text: text.into(),
+            body: Vec::new(),
             edited: false,
             history: vec![],
             parent: None,

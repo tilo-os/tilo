@@ -139,7 +139,9 @@ class CompatibilityTests(unittest.TestCase):
         # Build a separate exact baseline with a real multi-stage recipe.
         self.git('reset','--hard',self.base)
         old=b'FROM x AS builder\nRUN compile\nFROM ${BASE_REF} AS rootfs\nRUN old\nFROM rootfs AS split\n'
+        wpe_recipe=b'FROM scratch AS wpe-builder-1\n'
         (self.repo/'os/Containerfile').write_bytes(old)
+        (self.repo/'os/Containerfile.wpe').write_bytes(wpe_recipe)
         (self.repo/'os/dev/build-wpe.sh').write_bytes(b'wpe\n')
         self.git('add','.');self.git('commit','-qm','baseline recipe')
         self.base=self.git('rev-parse','HEAD').decode().strip()
@@ -148,13 +150,12 @@ class CompatibilityTests(unittest.TestCase):
         provider=self.git('rev-parse','HEAD').decode().strip()
         new=old.replace(b'RUN old',b'RUN fixed');(self.repo/'os/Containerfile').write_bytes(new)
         self.git('commit','-qam','rootfs');self.revision=self.git('rev-parse','HEAD').decode().strip()
-        original=dict(reference='immutable',config_digest='same',payload_sha256='same',audit_sha256='a'*64,
-            audit=dict(compatible_recipes={'os/Containerfile':c.sha(old),'os/dev/build-wpe.sh':c.sha(b'wpe\n')},original_source_revision=None))
-        updated=json.loads(json.dumps(original));updated['audit']['compatible_recipes']['os/Containerfile']=c.sha(new)
-        updated['audit_sha256']=c.sha((json.dumps(updated['audit'],sort_keys=True,separators=(',',':'))+'\n').encode())
+        adoption=dict(reference='immutable',config_digest='same',payload_sha256='same',
+            audit=dict(compatible_recipes={'os/Containerfile.wpe':c.sha(wpe_recipe),'os/dev/build-wpe.sh':c.sha(b'wpe\n')},original_source_revision=None))
+        adoption['audit_sha256']=c.sha((json.dumps(adoption['audit'],sort_keys=True,separators=(',',':'))+'\n').encode())
         bridge={}
-        for prefix,value in (('original',original),('assembly',updated)):
-            raw=json.dumps(value);bridge[prefix+'_receipt_json']=raw;bridge[prefix+'_receipt_sha256']=c.sha(raw.encode())
+        for prefix in ('original','assembly'):
+            raw=json.dumps(adoption);bridge[prefix+'_receipt_json']=raw;bridge[prefix+'_receipt_sha256']=c.sha(raw.encode())
         self.value.update(purpose='tilo-rootfs-native-source-compatibility',native_source_revision=self.base,
             assembly_source_revision=self.revision,provider_revision=provider,wpe_bridge=bridge)
         for name in (*c.PATHS,'os/Containerfile'):
@@ -170,9 +171,10 @@ class CompatibilityTests(unittest.TestCase):
         self.assertEqual(result['wpe_receipt_sha256'],bridge['original_receipt_sha256'])
         c.verify_selected_wpe(proof,bridge['assembly_receipt_json'].encode(),bridge['assembly_receipt_sha256'])
         with self.assertRaises(ValueError):c.verify_selected_wpe(proof,b'{}',bridge['assembly_receipt_sha256'])
-        updated['payload_sha256']='changed';raw=json.dumps(updated);bridge['assembly_receipt_json']=raw;bridge['assembly_receipt_sha256']=c.sha(raw.encode())
-        with self.assertRaisesRegex(ValueError,'more than'):self.verify()
-        updated['payload_sha256']='same'
+        changed=json.loads(json.dumps(adoption));changed['payload_sha256']='changed'
+        raw=json.dumps(changed);bridge['assembly_receipt_json']=raw;bridge['assembly_receipt_sha256']=c.sha(raw.encode())
+        with self.assertRaisesRegex(ValueError,'identical'):self.verify()
+        raw=json.dumps(adoption);bridge['assembly_receipt_json']=raw;bridge['assembly_receipt_sha256']=c.sha(raw.encode())
         # Rootfs-only policy follow-up: recreate baseline with policy files, then
         # replay the same provider/recipe corrections as separate exact commits.
         self.git('reset','--hard',self.base)
@@ -193,11 +195,8 @@ class CompatibilityTests(unittest.TestCase):
             for label,rev in (('old',self.base),('new',self.revision)):
                 self.value['changes'][name][label+'_blob']=self.git('rev-parse',rev+':'+name).decode().strip()
                 self.value['changes'][name][label+'_sha256']=c.sha(self.git('show',rev+':'+name))
-        original['audit']['compatible_recipes']['os/Containerfile']=c.sha(old)
-        updated['audit']['compatible_recipes']['os/Containerfile']=c.sha(new)
-        updated['audit_sha256']=c.sha((json.dumps(updated['audit'],sort_keys=True,separators=(',',':'))+'\n').encode())
-        for prefix,value in (('original',original),('assembly',updated)):
-            raw=json.dumps(value);bridge[prefix+'_receipt_json']=raw;bridge[prefix+'_receipt_sha256']=c.sha(raw.encode())
+        for prefix in ('original','assembly'):
+            raw=json.dumps(adoption);bridge[prefix+'_receipt_json']=raw;bridge[prefix+'_receipt_sha256']=c.sha(raw.encode())
         self.verify()
         # A reviewed recipe-only follow-up retains policy ancestry and bridges
         # the new consumer recipe back to the original native/WPE identities.
@@ -210,9 +209,7 @@ class CompatibilityTests(unittest.TestCase):
         self.value['changes']['os/Containerfile'].update(
             new_blob=self.git('rev-parse',self.revision+':os/Containerfile').decode().strip(),
             new_sha256=c.sha(newest))
-        updated['audit']['compatible_recipes']['os/Containerfile']=c.sha(newest)
-        updated['audit_sha256']=c.sha((json.dumps(updated['audit'],sort_keys=True,separators=(',',':'))+'\n').encode())
-        raw=json.dumps(updated);bridge['assembly_receipt_json']=raw;bridge['assembly_receipt_sha256']=c.sha(raw.encode())
+        raw=json.dumps(adoption);bridge['assembly_receipt_json']=raw;bridge['assembly_receipt_sha256']=c.sha(raw.encode())
         proof=self.verify()
         inputs.update(revision=self.revision,epoch=proof['assembly_epoch'],containerfile_sha256=c.sha(newest),wpe_receipt_sha256=bridge['assembly_receipt_sha256'])
         with patch.object(c,'SOURCE',self.base): result=c.original_native_inputs(inputs,proof)
@@ -229,9 +226,7 @@ class CompatibilityTests(unittest.TestCase):
         self.git('reset','--hard',policy_rev)
         self.revision=policy_rev;self.value['assembly_source_revision']=policy_rev;del self.value['policy_revision']
         self.value['changes']['os/Containerfile'].update(new_blob=self.git('rev-parse',policy_rev+':os/Containerfile').decode().strip(),new_sha256=c.sha(new))
-        updated['audit']['compatible_recipes']['os/Containerfile']=c.sha(new)
-        updated['audit_sha256']=c.sha((json.dumps(updated['audit'],sort_keys=True,separators=(',',':'))+'\n').encode())
-        raw=json.dumps(updated);bridge['assembly_receipt_json']=raw;bridge['assembly_receipt_sha256']=c.sha(raw.encode())
+        raw=json.dumps(adoption);bridge['assembly_receipt_json']=raw;bridge['assembly_receipt_sha256']=c.sha(raw.encode())
         self.value['rootfs_revision']=provider
         with self.assertRaisesRegex(ValueError,'ancestry'):self.verify()
         self.value['rootfs_revision']=recipe_rev

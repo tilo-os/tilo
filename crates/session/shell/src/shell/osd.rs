@@ -328,7 +328,7 @@ impl Osd {
                 "osd-pointer-held",
                 &[(
                     "chord",
-                    crate::compositor::pointer_lock::RELEASE_CHORD_LABEL.into(),
+                    crate::compositor::pointer_lock::release_chord_label().into(),
                 )],
             ),
             OsdKind::PointerHeld { held: false } => t("osd-pointer-released"),
@@ -339,7 +339,7 @@ impl Osd {
                 "osd-keys-captured",
                 &[(
                     "chord",
-                    crate::compositor::pointer_lock::RELEASE_CHORD_LABEL.into(),
+                    crate::compositor::pointer_lock::release_chord_label().into(),
                 )],
             ),
             OsdKind::KeysCaptured { captured: false } => t("osd-keys-released"),

@@ -1479,7 +1479,7 @@ mod tests {
                 &mut document,
                 &automerge::ROOT,
             ));
-            dispatch_view_actions(&mut shell, &document);
+            dispatch_view_actions(&mut shell, &mut document);
             assert!(shell.take_structure_dirty());
             assert_eq!(screen.with(Clone::clone), NarrowScreen::List);
         }
@@ -1634,10 +1634,10 @@ mod tests {
         dispatch(s, &left_press(), &mut handled);
         let mut handled = false;
         dispatch(s, &left_release(), &mut handled);
-        dispatch_view_actions(s, &AutoCommit::new());
+        dispatch_view_actions(s, &mut AutoCommit::new());
     }
 
-    fn dispatch_view_actions(s: &mut AppShell, doc: &AutoCommit) {
+    fn dispatch_view_actions(s: &mut AppShell, doc: &mut AutoCommit) {
         while let Some(intent) = s.take_control_invocation() {
             let mut resources = Vec::new();
             crate::widget::collect_widget_resources(s, doc, &mut resources);
@@ -1645,13 +1645,15 @@ mod tests {
                 tilo_actions::door::encode_json(&resources, &intent.address, &intent.arguments)
                     .expect("AppShell Back exports the action it emits");
             assert!(
-                s.start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
+                s.start_operation(
+                    &crate::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
                     doc,
-                    &automerge::ROOT,
+                    &automerge::ROOT
                 )
                 .expect("Back view action succeeds")
                 .is_some()

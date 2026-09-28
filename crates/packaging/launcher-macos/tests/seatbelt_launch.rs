@@ -1,0 +1,377 @@
+//! A real app launch under the generated Seatbelt profile.
+//!
+//! A tiny C probe (`fixtures/probe.c`) is compiled and ad-hoc signed per
+//! test, installed into a payload directory, and started through
+//! [`launcher_macos::launch`] — the production path, profile preflight,
+//! `sandbox-exec` and descriptor inheritance included. Each run performs one
+//! operation; exit 0 means it succeeded, 1 that the sandbox refused it.
+
+use std::ffi::OsString;
+use std::io::Read as _;
+use std::os::fd::AsRawFd as _;
+use std::os::unix::net::UnixListener;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use launcher::capabilities::CapabilityPlan;
+use launcher::netgate::{EgressDecision, EgressPolicy};
+use launcher_macos::policy::prepare_container;
+use launcher_macos::{
+    CodeSignature, LaunchRequest, MacLaunchMode, SeatbeltReason, TrustRequirement, inspect, launch,
+};
+
+const OK: i32 = 0;
+const REFUSED: i32 = 1;
+const PACKAGE: &str = "so.tilo.seatbelt-probe";
+
+struct Fixture {
+    _base: tempfile::TempDir,
+    root: PathBuf,
+    payload: PathBuf,
+    probe: PathBuf,
+    container: PathBuf,
+    secret: PathBuf,
+    granted: PathBuf,
+}
+
+fn run_ok(cmd: &mut Command) {
+    let out = cmd.output().unwrap_or_else(|e| panic!("{cmd:?}: {e}"));
+    assert!(
+        out.status.success(),
+        "{cmd:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn compile_probe(out: &Path) {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/probe.c");
+    run_ok(Command::new("cc").arg("-O0").arg("-o").arg(out).arg(source));
+    run_ok(
+        Command::new("/usr/bin/codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(out),
+    );
+}
+
+fn fixture() -> Fixture {
+    let base = tempfile::tempdir().unwrap();
+    // Seatbelt sees `/private/var/folders/…`, not `/var/folders/…`.
+    let root = std::fs::canonicalize(base.path()).unwrap();
+    let payload = root.join("payload");
+    std::fs::create_dir_all(&payload).unwrap();
+    let probe = payload.join("probe");
+    compile_probe(&probe);
+    std::fs::write(payload.join("data.txt"), b"payload").unwrap();
+
+    let container = prepare_container(&root.join("support"), None, PACKAGE).unwrap();
+    let outside = root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let secret = outside.join("secret.txt");
+    std::fs::write(&secret, b"not the app's").unwrap();
+    let granted = root.join("granted");
+    std::fs::create_dir_all(&granted).unwrap();
+    std::fs::write(granted.join("file.txt"), b"granted").unwrap();
+    Fixture {
+        _base: base,
+        root,
+        payload,
+        probe,
+        container,
+        secret,
+        granted,
+    }
+}
+
+fn request(f: &Fixture, op: &str, arg: &Path) -> LaunchRequest {
+    request_with(f, &f.probe, op, arg.as_os_str().to_owned())
+}
+
+fn request_with(f: &Fixture, exe: &Path, op: &str, arg: OsString) -> LaunchRequest {
+    LaunchRequest {
+        package_id: PACKAGE.to_string(),
+        executable: exe.to_path_buf(),
+        args: vec![OsString::from(op), arg],
+        payload_dir: f.payload.clone(),
+        runtime_dylib_dir: None,
+        container_dir: f.container.clone(),
+        capabilities: CapabilityPlan::empty(),
+        egress: EgressDecision::Blocked,
+        gate_socket: None,
+        inherit_fds: Vec::new(),
+        env: Vec::new(),
+        trust: TrustRequirement::DeveloperId,
+    }
+}
+
+fn exit_code(req: &LaunchRequest) -> i32 {
+    let mut app = launch(req).unwrap_or_else(|e| panic!("launch failed: {e}"));
+    assert!(
+        matches!(app.mode(), MacLaunchMode::Seatbelt(_)),
+        "{:?}",
+        app.mode()
+    );
+    let status = app.wait().unwrap();
+    status
+        .code()
+        .unwrap_or_else(|| panic!("the probe did not exit normally: {status:?}"))
+}
+
+#[test]
+fn an_ad_hoc_app_is_confined_to_its_payload_and_container() {
+    let f = fixture();
+    assert!(matches!(
+        inspect(&f.probe, &TrustRequirement::DeveloperId),
+        CodeSignature::AdHoc { app_sandbox: false }
+    ));
+    let mut app = launch(&request(&f, "read", &f.payload.join("data.txt"))).unwrap();
+    assert_eq!(app.mode(), MacLaunchMode::Seatbelt(SeatbeltReason::AdHoc));
+    assert_eq!(app.wait().unwrap().code(), Some(OK), "payload read");
+
+    assert_eq!(
+        exit_code(&request(&f, "read", &f.secret)),
+        REFUSED,
+        "a file outside every grant was readable"
+    );
+    let home_file = f.root.join("home-like/.ssh/id_ed25519");
+    std::fs::create_dir_all(home_file.parent().unwrap()).unwrap();
+    std::fs::write(&home_file, b"key").unwrap();
+    assert_eq!(exit_code(&request(&f, "read", &home_file)), REFUSED);
+
+    let written = f.container.join(".local/share/state.bin");
+    assert_eq!(
+        exit_code(&request(&f, "write", &written)),
+        OK,
+        "container write"
+    );
+    assert!(written.is_file());
+
+    let escaped = f.root.join("outside/new.txt");
+    assert_eq!(
+        exit_code(&request(&f, "write", &escaped)),
+        REFUSED,
+        "a write outside the container succeeded"
+    );
+    assert!(!escaped.exists());
+
+    let into_payload = f.payload.join("dropped");
+    assert_eq!(exit_code(&request(&f, "write", &into_payload)), REFUSED);
+    assert!(!into_payload.exists());
+}
+
+#[test]
+fn the_container_is_the_environment_and_nothing_else_is_inherited() {
+    let f = fixture();
+    let expect = |kv: String| exit_code(&request_with(&f, &f.probe, "env", OsString::from(kv)));
+    assert_eq!(expect(format!("HOME={}", f.container.display())), OK);
+    assert_eq!(
+        expect(format!("TMPDIR={}", f.container.join("tmp").display())),
+        OK
+    );
+    assert_eq!(
+        expect(format!(
+            "XDG_CONFIG_HOME={}",
+            f.container.join(".config").display()
+        )),
+        OK
+    );
+
+    let tmp_file = f.container.join("tmp/scratch");
+    assert_eq!(exit_code(&request(&f, "write", &tmp_file)), OK);
+}
+
+#[test]
+fn only_granted_paths_widen_the_profile_and_payload_stays_read_only() {
+    let f = fixture();
+    let granted_file = f.granted.join("file.txt");
+    let mut req = request(&f, "read", &granted_file);
+    assert_eq!(exit_code(&req), REFUSED, "ungranted path was readable");
+
+    req.capabilities = CapabilityPlan {
+        ro_paths: vec![f.granted.clone()],
+        ..CapabilityPlan::empty()
+    };
+    assert_eq!(exit_code(&req), OK, "read-only grant");
+    let mut write = request(&f, "write", &f.granted.join("new.txt"));
+    write.capabilities = req.capabilities;
+    assert_eq!(
+        exit_code(&write),
+        REFUSED,
+        "a read-only grant allowed a write"
+    );
+
+    // A read-write grant on a directory containing the payload still cannot
+    // make the payload writable.
+    let wide = CapabilityPlan {
+        rw_paths: vec![f.root.clone()],
+        ..CapabilityPlan::empty()
+    };
+    let mut granted_write = request(&f, "write", &f.root.join("outside/new.txt"));
+    granted_write.capabilities = wide.clone();
+    assert_eq!(exit_code(&granted_write), OK, "read-write grant");
+    let mut payload_write = request(&f, "write", &f.payload.join("dropped"));
+    payload_write.capabilities = wide;
+    assert_eq!(
+        exit_code(&payload_write),
+        REFUSED,
+        "payload became writable"
+    );
+    assert!(!f.payload.join("dropped").exists());
+}
+
+#[test]
+fn code_runs_only_from_the_payload() {
+    let f = fixture();
+    // The probe exec'd with no operation exits 2: the exec itself worked.
+    assert_eq!(exit_code(&request(&f, "exec", &f.probe)), 2);
+    assert_eq!(
+        exit_code(&request(&f, "exec", Path::new("/bin/sh"))),
+        REFUSED
+    );
+
+    let copied = f.container.join("probe");
+    std::fs::copy(&f.probe, &copied).unwrap();
+    assert_eq!(
+        exit_code(&request(&f, "exec", &copied)),
+        REFUSED,
+        "code written to the container ran"
+    );
+}
+
+#[test]
+fn network_follows_the_egress_decision() {
+    let f = fixture();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = OsString::from(listener.local_addr().unwrap().port().to_string());
+
+    let offline = request_with(&f, &f.probe, "tcp", port.clone());
+    assert_eq!(exit_code(&offline), REFUSED, "offline app reached TCP");
+
+    let mut online = offline;
+    online.egress = EgressDecision::Unrestricted;
+    assert_eq!(exit_code(&online), OK, "unrestricted egress was blocked");
+
+    // A filesystem socket the user owns (an `ssh-agent`, say) stays closed
+    // even with an unrestricted network; only the gate is ever reachable.
+    let agent = f.root.join("agent.sock");
+    let _agent = UnixListener::bind(&agent).unwrap();
+    let mut to_agent = request(&f, "unix", &agent);
+    to_agent.egress = EgressDecision::Unrestricted;
+    assert_eq!(exit_code(&to_agent), REFUSED, "a user socket was reachable");
+
+    let gate = f.root.join("gate.sock");
+    let _gate = UnixListener::bind(&gate).unwrap();
+    let filtered = EgressDecision::Filtered(EgressPolicy::new(vec!["example.com".into()]));
+    let mut to_gate = request(&f, "unix", &gate);
+    to_gate.egress = filtered.clone();
+    assert_eq!(exit_code(&to_gate), REFUSED, "no gate was configured");
+    to_gate.gate_socket = Some(gate.clone());
+    assert_eq!(exit_code(&to_gate), OK, "the gate was unreachable");
+    let mut tcp_gated = request_with(&f, &f.probe, "tcp", port);
+    tcp_gated.egress = filtered;
+    tcp_gated.gate_socket = Some(gate);
+    assert_eq!(
+        exit_code(&tcp_gated),
+        REFUSED,
+        "filtered egress bypassed the gate"
+    );
+}
+
+#[test]
+fn service_descriptors_are_inherited_and_nothing_else_is() {
+    let f = fixture();
+    let (mut reader, writer) = std::io::pipe().unwrap();
+    let fd = writer.as_raw_fd();
+    let mut req = request_with(&f, &f.probe, "fd", OsString::from(fd.to_string()));
+    req.inherit_fds = vec![fd];
+    assert_eq!(
+        exit_code(&req),
+        OK,
+        "the service descriptor was not inherited"
+    );
+    drop(writer);
+    let mut got = String::new();
+    reader.read_to_string(&mut got).unwrap();
+    assert_eq!(got, "ok");
+
+    // An inheritable descriptor the request does not name stays behind.
+    let (_reader, stray) = std::io::pipe().unwrap();
+    let stray_fd = stray.as_raw_fd();
+    // SAFETY: clearing FD_CLOEXEC on a descriptor this test owns.
+    assert_eq!(unsafe { libc::fcntl(stray_fd, libc::F_SETFD, 0) }, 0);
+    let leak = request_with(&f, &f.probe, "fd", OsString::from(stray_fd.to_string()));
+    assert_eq!(exit_code(&leak), REFUSED, "an unnamed descriptor leaked");
+}
+
+#[test]
+fn unsigned_tampered_and_self_entitled_code_is_never_app_sandbox() {
+    let f = fixture();
+    let trust = TrustRequirement::DeveloperId;
+
+    let unsigned = f.payload.join("unsigned");
+    std::fs::copy(&f.probe, &unsigned).unwrap();
+    run_ok(
+        Command::new("/usr/bin/codesign")
+            .arg("--remove-signature")
+            .arg(&unsigned),
+    );
+    assert_eq!(inspect(&unsigned, &trust), CodeSignature::Unsigned);
+    // Launching ad-hoc signs it where the CPU requires a signature, and it
+    // is confined either way.
+    let secret = f.secret.as_os_str().to_owned();
+    let mut app = launch(&request_with(&f, &unsigned, "read", secret)).unwrap();
+    let expected = if cfg!(target_arch = "aarch64") {
+        SeatbeltReason::AdHoc
+    } else {
+        SeatbeltReason::Unsigned
+    };
+    assert_eq!(app.mode(), MacLaunchMode::Seatbelt(expected));
+    assert_eq!(app.wait().unwrap().code(), Some(REFUSED));
+
+    let entitled = f.payload.join("entitled");
+    std::fs::copy(&f.probe, &entitled).unwrap();
+    let plist = f.root.join("entitlements.plist");
+    std::fs::write(
+        &plist,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
+         \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\"><dict>\
+         <key>com.apple.security.app-sandbox</key><true/>\
+         </dict></plist>\n",
+    )
+    .unwrap();
+    run_ok(
+        Command::new("/usr/bin/codesign")
+            .args(["--force", "--sign", "-", "--entitlements"])
+            .arg(&plist)
+            .arg(&entitled),
+    );
+    assert_eq!(
+        inspect(&entitled, &trust),
+        CodeSignature::AdHoc { app_sandbox: true },
+        "an ad-hoc signature's own entitlement claim"
+    );
+    assert_eq!(
+        launcher_macos::classify(&entitled, &trust),
+        MacLaunchMode::Seatbelt(SeatbeltReason::AdHoc)
+    );
+
+    let tampered = f.payload.join("tampered");
+    let mut bytes = std::fs::read(&f.probe).unwrap();
+    let marker = b"TILO_SEATBELT_PROBE_MARKER";
+    let at = bytes
+        .windows(marker.len())
+        .position(|w| w == marker)
+        .expect("marker in the probe");
+    bytes[at] = b'X';
+    std::fs::write(&tampered, &bytes).unwrap();
+    assert!(
+        matches!(inspect(&tampered, &trust), CodeSignature::Invalid { .. }),
+        "{:?}",
+        inspect(&tampered, &trust)
+    );
+    assert_eq!(
+        launcher_macos::classify(&tampered, &trust),
+        MacLaunchMode::Seatbelt(SeatbeltReason::InvalidSignature)
+    );
+}

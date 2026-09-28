@@ -16,6 +16,8 @@
 //! strips: [ { id, window_groups: [ { id, tabs: [ { id, title, tile_json } ] } ] } ] } ] }`.
 //! Geometry and maximization are presentation state and never written.
 
+use std::collections::HashSet;
+
 use automerge::{
     AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
@@ -188,117 +190,257 @@ fn insert_group(doc: &mut AutoCommit, groups: &ObjId, index: usize, group: &Wind
     }
 }
 
-fn put_blob_map<T: serde::Serialize>(
+/// The child `key` of `parent` as an object of type `kind`: the existing one
+/// when it already has that type, otherwise a fresh one in its place.
+fn child_object(doc: &mut AutoCommit, parent: &ObjId, key: &str, kind: ObjType) -> Option<ObjId> {
+    match obj(doc, parent, key) {
+        Some(id) if doc.object_type(&id).ok() == Some(kind) => Some(id),
+        _ => doc.put_object(parent, key, kind).ok(),
+    }
+}
+
+/// Writing an unchanged value is still an operation, and every operation is
+/// a history row; these write only a value that differs.
+fn put_text_if_changed(doc: &mut AutoCommit, parent: &ObjId, key: &str, value: &str) {
+    if text(doc, parent, key).as_deref() != Some(value) {
+        let _ = doc.put(parent, key, value.to_string());
+    }
+}
+
+fn put_bool_if_changed(doc: &mut AutoCommit, parent: &ObjId, key: &str, value: bool) {
+    let current = match doc.get(parent, key).ok().flatten() {
+        Some((Value::Scalar(scalar), _)) => match scalar.as_ref() {
+            ScalarValue::Boolean(current) => Some(*current),
+            _ => None,
+        },
+        _ => None,
+    };
+    if current != Some(value) {
+        let _ = doc.put(parent, key, value);
+    }
+}
+
+/// Compared as JSON values rather than bytes: a map inside `value`
+/// serialises in a different order once it has been read back, and that is
+/// not a change. `false` when `value` does not serialise.
+fn put_json_if_changed<T: serde::Serialize>(
+    doc: &mut AutoCommit,
+    parent: &ObjId,
+    key: &str,
+    value: &T,
+) -> bool {
+    let Ok(wanted) = serde_json::to_value(value) else {
+        return false;
+    };
+    let current = bytes(doc, parent, key)
+        .and_then(|blob| serde_json::from_slice::<serde_json::Value>(&blob).ok());
+    if current.as_ref() != Some(&wanted)
+        && let Ok(blob) = serde_json::to_vec(value)
+    {
+        let _ = doc.put(parent, key, ScalarValue::Bytes(blob));
+    }
+    true
+}
+
+fn delete_if_present(doc: &mut AutoCommit, parent: &ObjId, key: &str) {
+    if doc.get(parent, key).ok().flatten().is_some() {
+        let _ = doc.delete(parent, key);
+    }
+}
+
+/// Make the map `key` hold exactly `items`, as JSON blobs: changed blobs are
+/// rewritten and keys no longer present are deleted.
+fn sync_blob_map<T: serde::Serialize>(
     doc: &mut AutoCommit,
     parent: &ObjId,
     key: &str,
     items: impl IntoIterator<Item = (String, T)>,
 ) {
-    let Ok(map) = doc.put_object(parent, key, ObjType::Map) else {
+    let Some(map) = child_object(doc, parent, key, ObjType::Map) else {
         return;
     };
+    let mut wanted = HashSet::new();
     for (item_key, item) in items {
-        if let Ok(blob) = serde_json::to_vec(&item) {
-            let _ = doc.put(&map, item_key, ScalarValue::Bytes(blob));
+        if put_json_if_changed(doc, &map, &item_key, &item) {
+            wanted.insert(item_key);
         }
+    }
+    let stale: Vec<String> = doc.keys(&map).filter(|k| !wanted.contains(k)).collect();
+    for item_key in stale {
+        let _ = doc.delete(&map, item_key.as_str());
     }
 }
 
-/// Write `desktop` into `doc`, replacing whatever workspaces it held. Not
-/// diff-aware, so a concurrent append to the document can be clobbered;
-/// the tree is the source of truth. Best-effort: a write that fails skips
-/// the entries nested under it rather than aborting.
+fn entry_id(doc: &AutoCommit, list: &ObjId, index: usize) -> Option<u64> {
+    obj(doc, list, index).and_then(|entry| uint(doc, &entry, "id"))
+}
+
+/// Make the list of id-keyed map entries `list` match `items`, in order.
+/// An entry whose id is still wanted is updated in place by `write`; a
+/// missing one is inserted; a stale or duplicate one is deleted. Only a
+/// reorder rewrites an entry whole, because an automerge list has no move.
+fn sync_list<T>(
+    doc: &mut AutoCommit,
+    list: &ObjId,
+    items: &[T],
+    id_of: impl Fn(&T) -> u64,
+    mut write: impl FnMut(&mut AutoCommit, &ObjId, &T),
+) {
+    let wanted: HashSet<u64> = items.iter().map(&id_of).collect();
+    let mut seen = HashSet::new();
+    let mut doomed = Vec::new();
+    for index in 0..doc.length(list) {
+        match entry_id(doc, list, index) {
+            Some(id) if wanted.contains(&id) && seen.insert(id) => {}
+            _ => doomed.push(index),
+        }
+    }
+    for index in doomed.into_iter().rev() {
+        let _ = doc.delete(list, index);
+    }
+    for (index, item) in items.iter().enumerate() {
+        let id = id_of(item);
+        if entry_id(doc, list, index) == Some(id) {
+            if let Some(entry) = obj(doc, list, index) {
+                write(doc, &entry, item);
+            }
+            continue;
+        }
+        let later = (index.saturating_add(1)..doc.length(list))
+            .find(|&j| entry_id(doc, list, j) == Some(id));
+        if let Some(later) = later {
+            let _ = doc.delete(list, later);
+        }
+        let at = index.min(doc.length(list));
+        let Ok(entry) = doc.insert_object(list, at, ObjType::Map) else {
+            continue;
+        };
+        let _ = doc.put(&entry, "id", ScalarValue::Uint(id));
+        write(doc, &entry, item);
+    }
+    for index in (items.len()..doc.length(list)).rev() {
+        let _ = doc.delete(list, index);
+    }
+}
+
+fn write_tab(doc: &mut AutoCommit, entry: &ObjId, tab: &Tab) {
+    put_text_if_changed(doc, entry, "title", &tab.title);
+    put_json_if_changed(doc, entry, "tile_json", &tab.tile);
+}
+
+fn write_group(doc: &mut AutoCommit, entry: &ObjId, group: &WindowGroup) {
+    if let Some(tabs) = child_object(doc, entry, TABS_KEY, ObjType::List) {
+        sync_list(doc, &tabs, &group.tabs, |tab| tab.id, write_tab);
+    }
+}
+
+fn write_strip(doc: &mut AutoCommit, entry: &ObjId, strip: &Strip) {
+    if let Some(groups) = child_object(doc, entry, GROUPS_KEY, ObjType::List) {
+        sync_list(
+            doc,
+            &groups,
+            &strip.window_groups,
+            |group| group.id,
+            write_group,
+        );
+    }
+}
+
+fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
+    put_text_if_changed(doc, entry, "name", &ws.name);
+    // Room identity travels with the workspace: a reader hydrating from
+    // this document must land in this room, not mint its own.
+    put_text_if_changed(doc, entry, "room", &ws.room.to_string());
+    match &ws.owner {
+        Some(owner) => put_text_if_changed(doc, entry, "owner", owner),
+        None => delete_if_present(doc, entry, "owner"),
+    }
+    put_text_if_changed(doc, entry, CHANNEL_CLASS_KEY, ws.channel_class.as_str());
+    put_bool_if_changed(
+        doc,
+        entry,
+        RECORDING_DELEGATES_FORBIDDEN_KEY,
+        ws.recording_delegates_forbidden,
+    );
+    put_bool_if_changed(
+        doc,
+        entry,
+        TRIAGE_IN_DIRECT_ROOMS_KEY,
+        ws.triage_in_direct_rooms,
+    );
+    sync_blob_map(
+        doc,
+        entry,
+        CAPABILITIES_KEY,
+        ws.capabilities.iter().map(|cap| (cap.id.clone(), cap)),
+    );
+    sync_blob_map(
+        doc,
+        entry,
+        PERMISSION_PROFILES_KEY,
+        ws.permission_profiles
+            .iter()
+            .map(|profile| (permission_profile_key(&profile.name), profile)),
+    );
+    sync_blob_map(
+        doc,
+        entry,
+        TASKS_KEY,
+        ws.tasks.iter().map(|task| (task.id.clone(), task)),
+    );
+    sync_blob_map(
+        doc,
+        entry,
+        ROOM_EFFECT_RECEIPTS_KEY,
+        ws.effect_receipts
+            .iter()
+            .map(|receipt| (receipt.invocation.0.to_string(), receipt)),
+    );
+    sync_blob_map(
+        doc,
+        entry,
+        ROOM_AUTOMATIONS_KEY,
+        ws.shortcuts
+            .iter()
+            .map(|shortcut| (shortcut.id.clone(), shortcut)),
+    );
+    sync_blob_map(
+        doc,
+        entry,
+        ROOM_SCHEDULE_CLAIMS_KEY,
+        ws.schedule_claims.iter().map(|claim| (claim.key(), claim)),
+    );
+    if let Some(strips) = child_object(doc, entry, STRIPS_KEY, ObjType::List) {
+        sync_list(
+            doc,
+            &strips,
+            &ws.strips,
+            |strip| strip.id.raw(),
+            write_strip,
+        );
+    }
+}
+
+/// Make `doc` describe exactly `desktop`, writing only the difference.
+/// Workspaces, strips, groups and tabs are matched by id, so an unchanged
+/// entry keeps its object, its history and any concurrent edit made to it,
+/// and a rename is one write to `name`. The tree is the source of truth:
+/// an entry the tree no longer holds is deleted. Best-effort: a write that
+/// fails skips the entries nested under it rather than aborting.
 pub fn seed(doc: &mut AutoCommit, desktop: &DesktopTree) {
-    let _ = doc.put(&ROOT, ACTIVE_KEY, ScalarValue::Uint(desktop.active.raw()));
-    let Some(list) = obj(doc, &ROOT, WORKSPACES_KEY)
-        .or_else(|| doc.put_object(&ROOT, WORKSPACES_KEY, ObjType::List).ok())
-    else {
+    if uint(doc, &ROOT, ACTIVE_KEY) != Some(desktop.active.raw()) {
+        let _ = doc.put(&ROOT, ACTIVE_KEY, ScalarValue::Uint(desktop.active.raw()));
+    }
+    let Some(list) = child_object(doc, &ROOT, WORKSPACES_KEY, ObjType::List) else {
         return;
     };
-    for i in (0..doc.length(&list)).rev() {
-        let _ = doc.delete(&list, i);
-    }
-    for (i, ws) in desktop.workspaces.iter().enumerate() {
-        let Ok(entry) = doc.insert_object(&list, i, ObjType::Map) else {
-            continue;
-        };
-        let _ = doc.put(&entry, "id", ScalarValue::Uint(ws.id.raw()));
-        let _ = doc.put(&entry, "name", ws.name.clone());
-        // Room identity travels with the workspace: a reader hydrating from
-        // this document must land in this room, not mint its own.
-        let _ = doc.put(&entry, "room", ws.room.to_string());
-        if let Some(owner) = &ws.owner {
-            let _ = doc.put(&entry, "owner", owner.clone());
-        }
-        let _ = doc.put(&entry, CHANNEL_CLASS_KEY, ws.channel_class.as_str());
-        let _ = doc.put(
-            &entry,
-            RECORDING_DELEGATES_FORBIDDEN_KEY,
-            ws.recording_delegates_forbidden,
-        );
-        let _ = doc.put(
-            &entry,
-            TRIAGE_IN_DIRECT_ROOMS_KEY,
-            ws.triage_in_direct_rooms,
-        );
-        put_blob_map(
-            doc,
-            &entry,
-            CAPABILITIES_KEY,
-            ws.capabilities.iter().map(|cap| (cap.id.clone(), cap)),
-        );
-        put_blob_map(
-            doc,
-            &entry,
-            PERMISSION_PROFILES_KEY,
-            ws.permission_profiles
-                .iter()
-                .map(|profile| (permission_profile_key(&profile.name), profile)),
-        );
-        put_blob_map(
-            doc,
-            &entry,
-            TASKS_KEY,
-            ws.tasks.iter().map(|task| (task.id.clone(), task)),
-        );
-        put_blob_map(
-            doc,
-            &entry,
-            ROOM_EFFECT_RECEIPTS_KEY,
-            ws.effect_receipts
-                .iter()
-                .map(|receipt| (receipt.invocation.0.to_string(), receipt)),
-        );
-        put_blob_map(
-            doc,
-            &entry,
-            ROOM_AUTOMATIONS_KEY,
-            ws.shortcuts
-                .iter()
-                .map(|shortcut| (shortcut.id.clone(), shortcut)),
-        );
-        put_blob_map(
-            doc,
-            &entry,
-            ROOM_SCHEDULE_CLAIMS_KEY,
-            ws.schedule_claims.iter().map(|claim| (claim.key(), claim)),
-        );
-        let Ok(strips) = doc.put_object(&entry, STRIPS_KEY, ObjType::List) else {
-            continue;
-        };
-        for (j, strip) in ws.strips.iter().enumerate() {
-            let Ok(strip_entry) = doc.insert_object(&strips, j, ObjType::Map) else {
-                continue;
-            };
-            let _ = doc.put(&strip_entry, "id", ScalarValue::Uint(strip.id.raw()));
-            let Ok(groups) = doc.put_object(&strip_entry, GROUPS_KEY, ObjType::List) else {
-                continue;
-            };
-            for (k, group) in strip.window_groups.iter().enumerate() {
-                insert_group(doc, &groups, k, group);
-            }
-        }
-    }
+    sync_list(
+        doc,
+        &list,
+        &desktop.workspaces,
+        |ws| ws.id.raw(),
+        write_workspace,
+    );
 }
 
 fn read_blob_map<T: serde::de::DeserializeOwned>(

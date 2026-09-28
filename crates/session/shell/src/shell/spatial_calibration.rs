@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::shell::device_fabric::{DisplayEdge, DisplayRect};
-use crate::shell::fabric_clock::{ClockEstimate, ClockSample, PeerClockEstimator};
 use crate::shell::personal_continuity::DeviceId;
 
 pub const MAX_CALIBRATION_PROPOSALS: usize = 16;
@@ -23,10 +22,8 @@ pub const STALE_HEALTH_MS: u64 = 15_000;
 pub const MAX_ACTIVE_ROUTES: u8 = 16;
 pub const HEALTH_PROBE_INTERVAL: Duration = Duration::from_secs(10);
 pub const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
-/// Probe cadence toward a peer while something holds its clock in sync.
-pub const CLOCK_SYNC_PROBE_INTERVAL: Duration = Duration::from_millis(250);
 /// Probes awaiting a report per peer, so a round trip slower than the
-/// synchronised cadence still completes.
+/// probe cadence still completes.
 const MAX_OUTSTANDING_PROBES: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -278,15 +275,12 @@ pub struct DeviceHealthView {
     pub degraded: Vec<DeviceDegradedReason>,
 }
 
-/// Reply to one probe. The three timestamps are `CLOCK_MONOTONIC`
-/// microseconds: `probe_sent_us` echoes the prober's clock, `received_us` and
-/// `replied_us` are read from the reporter's clock.
+/// Reply to one health probe: the reporter's power state, bound to the
+/// probe's nonce. Clock timestamps travel only on the Media-classified
+/// [`crate::shell::fabric_clock::ClockReport`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceHealthReport {
     pub probe_nonce: [u8; 16],
-    pub probe_sent_us: u64,
-    pub received_us: u64,
-    pub replied_us: u64,
     pub power: DevicePower,
     pub energy_saver: bool,
 }
@@ -295,7 +289,6 @@ impl DeviceHealthReport {
     #[must_use]
     pub fn valid(self) -> bool {
         self.probe_nonce != [0; 16]
-            && self.replied_us >= self.received_us
             && match self.power {
                 DevicePower::Charging(percent) | DevicePower::Battery(percent) => percent <= 100,
                 DevicePower::Unknown | DevicePower::External => true,
@@ -307,7 +300,6 @@ impl DeviceHealthReport {
 struct PendingHealthProbe {
     nonce: [u8; 16],
     sent: Instant,
-    sent_us: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -320,23 +312,15 @@ struct MeasuredHealth {
 
 /// Exact-peer probe state. Latency is measured locally and remote reports are
 /// accepted only as replies to an outstanding random nonce for that same peer.
-/// Each accepted report also feeds that peer's clock estimator.
 #[derive(Default)]
 pub struct DeviceHealthTracker {
     pending: BTreeMap<DeviceId, VecDeque<PendingHealthProbe>>,
     measured: BTreeMap<DeviceId, MeasuredHealth>,
-    clocks: BTreeMap<DeviceId, PeerClockEstimator>,
 }
 
 impl DeviceHealthTracker {
-    /// Record a probe sent at `now`, `sent_us` on the local monotonic clock.
-    pub fn begin_probe(
-        &mut self,
-        peer: DeviceId,
-        nonce: [u8; 16],
-        now: Instant,
-        sent_us: u64,
-    ) -> bool {
+    /// Record a probe sent at `now`.
+    pub fn begin_probe(&mut self, peer: DeviceId, nonce: [u8; 16], now: Instant) -> bool {
         self.prune(now);
         if nonce == [0; 16]
             || (!self.pending.contains_key(&peer)
@@ -348,11 +332,7 @@ impl DeviceHealthTracker {
         if outstanding.len() >= MAX_OUTSTANDING_PROBES {
             outstanding.pop_front();
         }
-        outstanding.push_back(PendingHealthProbe {
-            nonce,
-            sent: now,
-            sent_us,
-        });
+        outstanding.push_back(PendingHealthProbe { nonce, sent: now });
         true
     }
 
@@ -366,14 +346,12 @@ impl DeviceHealthTracker {
         }
     }
 
-    /// Accept a report that arrived at `now`, `received_us` on the local
-    /// monotonic clock.
+    /// Accept a report that arrived at `now`.
     pub fn accept_report(
         &mut self,
         peer: &DeviceId,
         report: DeviceHealthReport,
         now: Instant,
-        received_us: u64,
     ) -> bool {
         self.prune(now);
         if !report.valid() {
@@ -382,11 +360,10 @@ impl DeviceHealthTracker {
         let Some(outstanding) = self.pending.get_mut(peer) else {
             return false;
         };
-        let Some(index) = outstanding.iter().position(|probe| {
-            probe.nonce == report.probe_nonce
-                && probe.sent_us == report.probe_sent_us
-                && now >= probe.sent
-        }) else {
+        let Some(index) = outstanding
+            .iter()
+            .position(|probe| probe.nonce == report.probe_nonce && now >= probe.sent)
+        else {
             return false;
         };
         let Some(pending) = outstanding.remove(index) else {
@@ -397,15 +374,6 @@ impl DeviceHealthTracker {
         }
         let latency_ms =
             u32::try_from(now.duration_since(pending.sent).as_millis()).unwrap_or(u32::MAX);
-        self.clocks
-            .entry(peer.clone())
-            .or_default()
-            .observe(ClockSample {
-                t1: pending.sent_us,
-                t2: report.received_us,
-                t3: report.replied_us,
-                t4: received_us,
-            });
         self.measured.insert(
             peer.clone(),
             MeasuredHealth {
@@ -418,28 +386,19 @@ impl DeviceHealthTracker {
         true
     }
 
-    /// The peer's clock model as of `now_us` on the local monotonic clock.
-    #[must_use]
-    pub fn clock(&self, peer: &DeviceId, now_us: u64) -> Option<ClockEstimate> {
-        self.clocks.get(peer)?.estimate(now_us)
-    }
-
     pub fn forget_peer(&mut self, peer: &DeviceId) {
         self.pending.remove(peer);
         self.measured.remove(peer);
-        self.clocks.remove(peer);
     }
 
     pub fn retain_peers(&mut self, mut keep: impl FnMut(&DeviceId) -> bool) {
         self.pending.retain(|peer, _| keep(peer));
         self.measured.retain(|peer, _| keep(peer));
-        self.clocks.retain(|peer, _| keep(peer));
     }
 
     pub fn clear(&mut self) {
         self.pending.clear();
         self.measured.clear();
-        self.clocks.clear();
     }
 
     #[must_use]
@@ -729,40 +688,28 @@ mod tests {
             let peer = id("tablet");
             let other = id("phone");
             let mut tracker = DeviceHealthTracker::default();
-            assert!(tracker.begin_probe(peer.clone(), [4; 16], now, 1_000_000));
+            assert!(tracker.begin_probe(peer.clone(), [4; 16], now));
             let report = DeviceHealthReport {
                 probe_nonce: [4; 16],
-                probe_sent_us: 1_000_000,
-                received_us: 70_000_000,
-                replied_us: 70_000_200,
                 power: DevicePower::Battery(64),
                 energy_saver: true,
             };
             let later = |ms| now + Duration::from_millis(ms);
-            assert!(!tracker.accept_report(&other, report, later(8), 1_008_000));
+            assert!(!tracker.accept_report(&other, report, later(8)));
             for forged in [
                 DeviceHealthReport {
                     probe_nonce: [5; 16],
                     ..report
                 },
                 DeviceHealthReport {
-                    probe_sent_us: 999_999,
-                    ..report
-                },
-                DeviceHealthReport {
-                    replied_us: 69_999_999,
+                    power: DevicePower::Battery(101),
                     ..report
                 },
             ] {
-                assert!(!tracker.accept_report(&peer, forged, later(8), 1_008_000));
+                assert!(!tracker.accept_report(&peer, forged, later(8)));
             }
-            assert!(tracker.clock(&peer, 1_012_000).is_none());
-            assert!(tracker.accept_report(&peer, report, later(12), 1_012_000));
-            assert!(!tracker.accept_report(&peer, report, later(13), 1_013_000));
-            let clock = tracker.clock(&peer, 1_012_000).expect("clock sample");
-            // ((70_000_000 - 1_000_000) + (70_000_200 - 1_012_000)) / 2
-            assert_eq!(clock.offset_us(1_006_000), Some(68_994_100));
-            assert!(!clock.synced);
+            assert!(tracker.accept_report(&peer, report, later(12)));
+            assert!(!tracker.accept_report(&peer, report, later(13)));
             let observation = tracker.observation(
                 &peer,
                 true,
@@ -782,11 +729,8 @@ mod tests {
             let now = Instant::now();
             let peer = id("speaker");
             let mut tracker = DeviceHealthTracker::default();
-            let report = |nonce: u8, sent_us| DeviceHealthReport {
+            let report = |nonce: u8| DeviceHealthReport {
                 probe_nonce: [nonce; 16],
-                probe_sent_us: sent_us,
-                received_us: 9_000_000 + sent_us,
-                replied_us: 9_000_100 + sent_us,
                 power: DevicePower::External,
                 energy_saver: false,
             };
@@ -796,18 +740,16 @@ mod tests {
                     peer.clone(),
                     [nonce; 16],
                     now + Duration::from_millis(offset),
-                    offset * 1_000,
                 ));
             }
             let arrival = now + Duration::from_millis(1_100);
             // Only the four newest probes stay outstanding.
-            assert!(!tracker.accept_report(&peer, report(1, 0), arrival, 1_100_000));
-            assert!(tracker.accept_report(&peer, report(3, 500_000), arrival, 1_100_000));
-            assert!(tracker.accept_report(&peer, report(2, 250_000), arrival, 1_100_000));
+            assert!(!tracker.accept_report(&peer, report(1), arrival));
+            assert!(tracker.accept_report(&peer, report(3), arrival));
+            assert!(tracker.accept_report(&peer, report(2), arrival));
             tracker.abandon_probe(&peer, [4; 16]);
-            assert!(!tracker.accept_report(&peer, report(4, 750_000), arrival, 1_100_000));
-            assert!(tracker.accept_report(&peer, report(5, 1_000_000), arrival, 1_100_000));
-            assert!(tracker.clock(&peer, 1_100_000).is_some());
+            assert!(!tracker.accept_report(&peer, report(4), arrival));
+            assert!(tracker.accept_report(&peer, report(5), arrival));
         }
     }
 }

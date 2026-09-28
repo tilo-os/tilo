@@ -118,6 +118,7 @@ pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
         record_kind: RecordKind::new(<A::Resource as Resource>::KIND),
         required: vec![],
         optional: vec![],
+        opens: &[],
         create: create::<A>,
     })
 }

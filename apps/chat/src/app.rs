@@ -695,18 +695,17 @@ pub struct ChatApp {
     /// Voice membership per channel in the active workspace (cached from the
     /// CRDT each reload so the sidebar can show presence without re-reading).
     pub(crate) voice_members: HashMap<Id, Vec<crate::model::VoiceMember>>,
-    /// Cached plain text of the focused drafts, mirrored from the composer
-    /// widgets each `reload`. Kept only so the composer's auto-grow height
-    /// (`composer_height`) and the tests can read the draft without reaching
-    /// into the widget; the editable source of truth is the `TextInput`.
+    /// Cached plain text of the focused drafts, mirrored from the composers.
+    /// Kept only so the composer's auto-grow height (`composer_height`) and
+    /// the tests can read the draft without reaching into the editor; the
+    /// source of truth is the draft in the document.
     pub(crate) draft_main: String,
     pub(crate) draft_thread: String,
 
-    /// The message composers are shared multiline [`TextInput`]s: Enter sends,
-    /// Shift+Enter inserts a newline, and each maintains a collaborative,
-    /// persistent CRDT draft for its surface.
-    pub(crate) composer_main: TextInput,
-    pub(crate) composer_thread: TextInput,
+    /// The message composers: the SDK rich-text editor over each surface's
+    /// shared draft. Enter sends, Shift+Enter breaks the line.
+    pub(crate) composer_main: crate::composer::DraftComposer,
+    pub(crate) composer_thread: crate::composer::DraftComposer,
 
     // Per-peer view state.
     pub(crate) active_ws: Id,
@@ -765,7 +764,7 @@ pub struct ChatApp {
     /// owns its working text, caret, selection and IME composition until Save
     /// writes through [`ChatDoc::edit_message`].
     pub(crate) editing: Option<Id>,
-    pub(crate) edit_input: TextInput,
+    pub(crate) edit_input: crate::composer::MessageEditor,
 
     // Attachment picker (browses the shared workspace for a file to share).
     pub(crate) attach_open: bool,
@@ -832,6 +831,13 @@ pub struct ChatApp {
     // Agent display names of agent-authored messages (`agent_authors` in the
     // document): what every member renders as "<name> · agent".
     pub(crate) agent_authors: HashMap<Id, String>,
+    /// Each shown message body, read-only in the SDK editor, by body size
+    /// and message id, with the mention colours it was painted with.
+    pub(crate) body_views:
+        std::cell::RefCell<HashMap<(u32, Id), (u64, tilo_rich_text::RichTextView)>>,
+    /// The colours mentions are painted in, and what they were built from.
+    pub(crate) mention_paint_cache:
+        std::cell::RefCell<Option<(u64, ui::widget::marks::MentionPaint)>>,
     // Agent task participants this (headless host) worker serves, with the
     // display name the host labelled each with. A delivered `post` resolved
     // for one of them is authored by that participant.
@@ -1090,8 +1096,8 @@ impl ChatApp {
             voice_members: HashMap::new(),
             draft_main: String::new(),
             draft_thread: String::new(),
-            composer_main: Self::new_composer(),
-            composer_thread: Self::new_composer(),
+            composer_main: crate::composer::DraftComposer::shared(),
+            composer_thread: crate::composer::DraftComposer::shared(),
             active_ws: "ws_acme".into(),
             context_ws: "ws_acme".into(),
             inbox_open: false,
@@ -1119,7 +1125,7 @@ impl ChatApp {
             history_open: None,
             history_anchor: Point::ZERO,
             editing: None,
-            edit_input: Self::new_message_editor(),
+            edit_input: crate::composer::MessageEditor::local(),
             attach_open: false,
             attach_entries: Vec::new(),
             attachment_pending: None,
@@ -1152,6 +1158,8 @@ impl ChatApp {
             room_names: HashMap::new(),
             room_colors: HashMap::new(),
             agent_authors: HashMap::new(),
+            body_views: std::cell::RefCell::new(HashMap::new()),
+            mention_paint_cache: std::cell::RefCell::new(None),
             participant_labels: HashMap::new(),
             former_ids: Vec::new(),
             // Default to the deterministic local bus; the live binary
@@ -1316,18 +1324,22 @@ impl ChatApp {
                 mentions,
                 reference,
                 references,
-            } if as_record(channel) => self.comments.post(&crate::comments::CommentMessage {
-                channel: channel.clone(),
-                id: id.clone(),
-                author: author.clone(),
-                ts: *ts,
-                text: text.clone(),
-                parent: parent.clone(),
-                mentions: mentions.clone(),
-                reference: reference.clone(),
-                also: references.clone(),
-                attachment: attachment.clone(),
-            }),
+                body,
+            } if as_record(channel) => self.comments.post(
+                &crate::comments::CommentMessage {
+                    channel: channel.clone(),
+                    id: id.clone(),
+                    author: author.clone(),
+                    ts: *ts,
+                    text: text.clone(),
+                    parent: parent.clone(),
+                    mentions: mentions.clone(),
+                    reference: reference.clone(),
+                    also: references.clone(),
+                    attachment: attachment.clone(),
+                },
+                body,
+            ),
             ChatAction::AddReaction {
                 channel,
                 msg,
@@ -1797,7 +1809,6 @@ impl ChatApp {
                 self.call = CallState::default();
                 let text = "That's the one. Starting a huddle to walk through the grid — jump in. Moving it to 3pm so the west-coast folks can make it.";
                 self.edit_input.set_text(text);
-                self.edit_input.set_cursor_pos(text.len());
                 self.editing = Some("m_me2".into());
                 self.focus = Focus::Main;
                 self.set_composer_focus();
@@ -2209,31 +2220,6 @@ impl ChatApp {
         v
     }
 
-    /// Build a composer `TextInput`: multiline (Enter sends, Shift+Enter adds a
-    /// newline), plain chrome (the composer draws its own rounded box around the
-    /// text), sized to match the surrounding chat body.
-    fn new_composer() -> TextInput {
-        let mut t = TextInput::local()
-            .multiline(true)
-            .with_enter_submits(true)
-            .with_font_size(15.0)
-            // A message is in someone's own words.
-            .with_sensitivity(ui::a11y::Sensitivity::Personal);
-        t.set_plain_chrome(true);
-        t
-    }
-
-    /// A local working copy for editing a sent message. It deliberately stays
-    /// unbound until Save so peers never observe half-finished revisions.
-    fn new_message_editor() -> TextInput {
-        TextInput::local()
-            .multiline(true)
-            .with_enter_submits(true)
-            .with_plain_chrome()
-            .with_font_size(15.0)
-            .with_sensitivity(ui::a11y::Sensitivity::Personal)
-    }
-
     /// A single-line local field for channel/category names. The host commits
     /// the trimmed value through the target-specific CRDT action on submit.
     fn new_rename_input() -> TextInput {
@@ -2244,14 +2230,14 @@ impl ChatApp {
     }
 
     /// The composer for the surface the user is typing in.
-    pub(crate) fn focused_composer(&self) -> &TextInput {
+    pub(crate) fn focused_composer(&self) -> &crate::composer::DraftComposer {
         match self.focus {
             Focus::Thread if self.thread_open.is_some() => &self.composer_thread,
             _ => &self.composer_main,
         }
     }
 
-    pub(crate) fn focused_composer_mut(&mut self) -> &mut TextInput {
+    pub(crate) fn focused_composer_mut(&mut self) -> &mut crate::composer::DraftComposer {
         match self.focus {
             Focus::Thread if self.thread_open.is_some() => &mut self.composer_thread,
             _ => &mut self.composer_main,
@@ -2265,12 +2251,10 @@ impl ChatApp {
         let editing = self.editing.is_some() || self.rename.is_some() || !self.host_focused;
         let main = matches!(self.focus, Focus::Main) && !editing;
         let thread = matches!(self.focus, Focus::Thread) && self.thread_open.is_some() && !editing;
-        ui::Widget::set_focus(&mut self.composer_main, main);
-        ui::Widget::set_focus(&mut self.composer_thread, thread);
-        ui::Widget::set_focus(
-            &mut self.edit_input,
-            self.host_focused && self.editing.is_some(),
-        );
+        self.composer_main.set_focus(main);
+        self.composer_thread.set_focus(thread);
+        self.edit_input
+            .set_focus(self.host_focused && self.editing.is_some());
         ui::Widget::set_focus(
             &mut self.rename_input,
             self.host_focused && self.rename.is_some(),
@@ -2308,13 +2292,50 @@ impl ChatApp {
         if key.is_empty() {
             return None;
         }
-        let payload = match composer.selection_range_public() {
-            Some((start, end)) if start != end => ui::PresencePayload::Selection { start, end },
-            _ => ui::PresencePayload::Caret {
-                pos: composer.cursor_pos(),
+        let payload = match composer.selection() {
+            (anchor, caret) if anchor != caret => ui::PresencePayload::Selection {
+                start: anchor.min(caret),
+                end: anchor.max(caret),
             },
+            (_, caret) => ui::PresencePayload::Caret { pos: caret },
         };
         Some((Self::draft_presence_key(&key), payload))
+    }
+
+    /// A text field's focus, value and selection (anchor, caret), for the
+    /// hit that stands for it.
+    fn text_field_access(&self, hit: &Hit) -> Option<(bool, String, (usize, usize))> {
+        match hit {
+            Hit::FocusMain | Hit::FocusThread => {
+                let composer = if matches!(hit, Hit::FocusMain) {
+                    &self.composer_main
+                } else {
+                    &self.composer_thread
+                };
+                Some((
+                    composer.is_focused(),
+                    composer.value(),
+                    composer.selection(),
+                ))
+            }
+            Hit::FocusEdit => Some((
+                self.edit_input.is_focused(),
+                self.edit_input.value(),
+                self.edit_input.selection(),
+            )),
+            Hit::FocusRename => {
+                let field = &self.rename_input;
+                let (anchor, focus) = field
+                    .selection_anchor_focus_public()
+                    .unwrap_or_else(|| (field.cursor_pos(), field.cursor_pos()));
+                Some((
+                    ui::Widget::is_focused(field),
+                    field.value().to_owned(),
+                    (anchor, focus),
+                ))
+            }
+            _ => None,
+        }
     }
 
     pub(crate) fn thread_draft_key(&self) -> Option<String> {
@@ -2395,6 +2416,11 @@ impl ChatApp {
             .flat_map(|(_, messages)| messages.iter().cloned())
             .collect();
         self.search_users = ChatDoc::list_users(doc);
+        // Drop the body views of messages no longer loaded.
+        let shown: HashSet<&str> = self.messages.iter().map(|m| m.id.as_str()).collect();
+        self.body_views
+            .borrow_mut()
+            .retain(|(_, id), _| shown.contains(id.as_str()));
         self.agent_authors = ChatDoc::agent_authors(doc);
         // Durable voice rows are legacy history. Current stream inventory is
         // projected only from the authenticated local service response.
@@ -2404,13 +2430,10 @@ impl ChatApp {
             hand.publish(&self.channels, &self.search_messages);
         }
         self.reconcile_record_sharing();
-        // Load the per-surface drafts from the CRDT into the composer widgets.
-        // `set_text` is a no-op when the value is unchanged, so this preserves
-        // the caret/selection while typing (the draft we just wrote back equals
-        // the widget's value) and only reloads when the surface actually
-        // changed (a channel/thread switch), where a caret reset is correct.
+        // Point each composer at its surface's draft; the editors read it on
+        // their next sync (`sync_composers`), keeping the caret while typing.
+        self.composer_main.set_key(&self.active_channel);
         self.draft_main = ChatDoc::draft_text(doc, &self.active_channel);
-        self.composer_main.set_text(&self.draft_main);
         let ch_name = self
             .channel(&self.active_channel)
             .map(|c| c.name.clone())
@@ -2421,24 +2444,37 @@ impl ChatApp {
         ));
         self.composer_main
             .set_local_author(Some(self.me.id.clone()));
-        self.draft_thread = match self.thread_draft_key() {
-            Some(k) => ChatDoc::draft_text(doc, &k),
-            None => String::new(),
+        let thread_key = self.thread_draft_key().unwrap_or_default();
+        self.composer_thread.set_key(&thread_key);
+        self.draft_thread = if thread_key.is_empty() {
+            String::new()
+        } else {
+            ChatDoc::draft_text(doc, &thread_key)
         };
-        self.composer_thread.set_text(&self.draft_thread);
         self.composer_thread
             .set_placeholder(&crate::i18n::t("chat-thread-composer-placeholder"));
         self.composer_thread
             .set_local_author(Some(self.me.id.clone()));
-        // `--shots` only: stage a mid-compose draft into the main composer so a
-        // screenshot shows real text + caret. Never set in a live/interactive
-        // run, so this is inert in production.
-        if let Some(draft) = self.shot_composer_draft.clone() {
-            self.composer_main.set_text(&draft);
-            self.composer_main.set_cursor_pos(draft.len());
-            self.draft_main = draft;
-        }
+        let read_only = !self.can_participate();
+        self.composer_main.set_read_only(read_only);
+        self.composer_thread.set_read_only(read_only);
         self.set_composer_focus();
+    }
+
+    /// Bring both composers up to date with their drafts, moving drafts out
+    /// of the first format once. `--shots` stages its mid-compose draft here.
+    pub(crate) fn sync_composers(&mut self, doc: &mut AutoCommit) {
+        if ChatDoc::needs_draft_upgrade(doc) && self.can_participate() {
+            ChatDoc::upgrade_drafts(doc);
+        }
+        if let Some(draft) = self.shot_composer_draft.take() {
+            ChatDoc::set_draft(doc, &self.active_channel, &draft);
+        }
+        for composer in [&mut self.composer_main, &mut self.composer_thread] {
+            composer.sync(doc);
+        }
+        self.draft_main = self.composer_main.value();
+        self.draft_thread = self.composer_thread.value();
     }
 
     /// Project the document-global identity directory onto evidence local to
@@ -2735,7 +2771,7 @@ impl ChatApp {
     pub(crate) fn thread_composer_rect(&self, tr: &mut TextRenderer, panel: Rect) -> Rect {
         let inset = 12.0;
         let w = (panel.width() - 2.0 * inset - 48.0).max(40.0) as f32;
-        let (_, h) = tr.measure(self.composer_thread.value(), 15.0, Some(w));
+        let (_, h) = tr.measure(&self.composer_thread.value(), 15.0, Some(w));
         let h =
             (COMPOSER_MIN_H + (f64::from(h) - 19.0).max(0.0)).clamp(COMPOSER_MIN_H, COMPOSER_MAX_H);
         Rect::new(
@@ -3139,8 +3175,8 @@ impl ChatApp {
                 // was laid out into — the attach / emoji / send buttons sit
                 // beside that band, not inside it. Before the first paint
                 // the band is empty, so the box stands in for it.
-                let text_band = |field: &ui::widget::TextInput| {
-                    let inner = field.get_rect();
+                let text_band = |field: &crate::composer::DraftComposer| {
+                    let inner = field.rect();
                     if inner.width() > 0.0 && inner.height() > 0.0 {
                         inner
                     } else {
@@ -3717,6 +3753,7 @@ impl Widget for ChatApp {
         if self.presented {
             self.mark_active_read(doc);
         }
+        self.sync_composers(doc);
         // Native capture/transport belongs to the shell's lease-bound service.
         // Durable voice rows never start the legacy Iroh media pump.
     }
@@ -4115,16 +4152,10 @@ impl Widget for ChatApp {
             .into_iter()
             .enumerate()
             .map(|(index, (rect, hit, name, role, selected))| {
-                let input = match &hit {
-                    Hit::FocusMain => Some(&self.composer_main),
-                    Hit::FocusThread => Some(&self.composer_thread),
-                    Hit::FocusRename => Some(&self.rename_input),
-                    Hit::FocusEdit => Some(&self.edit_input),
-                    _ => None,
-                };
+                let input = self.text_field_access(&hit);
                 let focused = self.host_focused
                     && self.keyboard_target.map_or_else(
-                        || input.is_some_and(ui::Widget::is_focused),
+                        || input.as_ref().is_some_and(|(focused, _, _)| *focused),
                         |target| target == index,
                     );
                 let mut state = AccessState::new().focusable(true).focused(focused);
@@ -4140,13 +4171,8 @@ impl Widget for ChatApp {
                     .with_bounds(rect)
                     .with_key(index as u64)
                     .with_action_target(hit.semantic_id());
-                if let Some(input) = input {
-                    let (anchor, focus) = input
-                        .selection_anchor_focus_public()
-                        .unwrap_or_else(|| (input.cursor_pos(), input.cursor_pos()));
-                    node = node
-                        .with_value(input.value())
-                        .with_text_selection(anchor, focus);
+                if let Some((_, value, (anchor, focus))) = input {
+                    node = node.with_value(&value).with_text_selection(anchor, focus);
                 }
                 node
             })
@@ -4222,10 +4248,6 @@ impl Widget for ChatApp {
     /// assistive-technology activation from taking a separate, untracked
     /// mutation path: `on_hit` builds the same `ChatAction` and delegates it
     /// to `ActionHost` for history and collaboration.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one flat semantic-target dispatch mirroring the pointer hit inventory"
-    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -4285,16 +4307,11 @@ impl Widget for ChatApp {
                 Action::SetValue(_) | Action::SetSelection { .. } => match hit {
                     Hit::FocusMain => {
                         self.focus = Focus::Main;
-                        if !ui::Widget::perform_action(&mut self.composer_main, action, state, path)
-                        {
+                        ChatDoc::ensure_rich_draft(state, &self.active_channel);
+                        self.composer_main.sync(state);
+                        if !self.composer_main.perform_action(action, state, path) {
                             return false;
                         }
-                        ChatDoc::set_draft_from(
-                            state,
-                            &self.active_channel,
-                            &self.draft_main,
-                            self.composer_main.value(),
-                        );
                         self.reload(state);
                     }
                     Hit::FocusThread => {
@@ -4302,20 +4319,11 @@ impl Widget for ChatApp {
                             return false;
                         };
                         self.focus = Focus::Thread;
-                        if !ui::Widget::perform_action(
-                            &mut self.composer_thread,
-                            action,
-                            state,
-                            path,
-                        ) {
+                        ChatDoc::ensure_rich_draft(state, &key);
+                        self.composer_thread.sync(state);
+                        if !self.composer_thread.perform_action(action, state, path) {
                             return false;
                         }
-                        ChatDoc::set_draft_from(
-                            state,
-                            &key,
-                            &self.draft_thread,
-                            self.composer_thread.value(),
-                        );
                         self.reload(state);
                     }
                     Hit::FocusRename => {
@@ -4331,7 +4339,7 @@ impl Widget for ChatApp {
                         if self.editing.is_none() {
                             return false;
                         }
-                        if !ui::Widget::perform_action(&mut self.edit_input, action, state, path) {
+                        if !self.edit_input.perform_action(action, state, path) {
                             return false;
                         }
                     }
@@ -4851,8 +4859,11 @@ mod live_draft_presence {
         let mut app = ChatApp::new_ephemeral();
         app.active_channel = "c1a2b3c4-0000-4000-8000-00000000c0de".into();
         app.rect = Rect::new(0.0, 0.0, 1100.0, 720.0);
+        let mut doc = AutoCommit::new();
+        ChatDoc::set_draft(&mut doc, &app.active_channel, text);
+        app.composer_main.set_key(&app.active_channel);
+        app.composer_main.sync(&mut doc);
         Widget::set_focus(&mut app, true);
-        app.composer_main.set_text(text);
         app
     }
 
@@ -4877,12 +4888,12 @@ mod live_draft_presence {
     fn focused_composer_publishes_caret_and_selection_in_the_draft_scope() {
         let mut app = focused_app("hello team");
         let key = ChatApp::draft_presence_key(&app.active_channel);
-        app.composer_main.set_cursor_pos(5);
+        app.composer_main.select(5, 5);
         assert_eq!(
             app.presence_payload(),
             Some((key.clone(), PresencePayload::Caret { pos: 5 }))
         );
-        app.composer_main.set_selection(0, 5);
+        app.composer_main.select(0, 5);
         assert_eq!(
             app.presence_payload(),
             Some((key, PresencePayload::Selection { start: 0, end: 5 }))
@@ -5055,6 +5066,7 @@ mod reports_read_aloud {
             author: "u_reporter".into(),
             ts: 1,
             text: text.into(),
+            body: Vec::new(),
             edited: false,
             history: vec![],
             parent: parent.map(Into::into),

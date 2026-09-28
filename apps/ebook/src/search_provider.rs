@@ -313,7 +313,7 @@ impl BookSearchProvider {
                     || -> Arc<[SearchBody]> {
                         (0..book.chapters.len())
                             .map(|chapter| {
-                                catalog.index_body(Arc::new(ChapterBody {
+                                SearchBody::new(Arc::new(ChapterBody {
                                     book: Arc::clone(book),
                                     chapter,
                                 }))
@@ -1054,7 +1054,6 @@ impl SearchProvider for BookActionSearchProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::search::BODY_CHUNK_SCALARS;
     use ui::search::testing::{CorpusRow, LATE_HIT_NEEDLE, assert_late_hit_reachable};
 
     fn sample_books() -> Vec<Book> {
@@ -1112,13 +1111,6 @@ mod tests {
                     .iter()
                     .any(|hit| hit.kind == LOCATION_KIND)
             );
-            let prose_scalars: usize = books
-                .iter()
-                .flat_map(|book| &book.chapters)
-                .flat_map(|chapter| &chapter.blocks)
-                .map(|block| block.plain_text().chars().count())
-                .sum();
-            assert!(provider.stats().normalized_scalars < prose_scalars / 4);
             assert!(provider.stats().body_records > 0);
             assert!(Arc::ptr_eq(&books, &provider.books));
         }
@@ -1172,7 +1164,7 @@ mod tests {
             );
         }
 
-        // --- phase: body_phrase_can_cross_inline_and_block_boundaries ---
+        // --- phase: body_phrase_crosses_inline_but_not_block_boundaries ---
         {
             let mut beta = crate::model::Span::plain("beta");
             beta.space_before = true;
@@ -1194,21 +1186,17 @@ mod tests {
                 ..Book::default()
             }];
             let provider = BookSearchProvider::new(&books, &[]);
-            let mut cursor: Option<SearchCursor> = None;
-            let mut found = false;
-            loop {
-                let page = provider.search_page("beta gamma", cursor.as_ref(), 1, 1);
-                found |= page
-                    .results
-                    .iter()
-                    .any(|result| result.kind == LOCATION_KIND);
-                let Some(next) = page.next else { break };
-                cursor = Some(next);
-            }
-            assert!(
-                found,
-                "streaming state must survive span and block boundaries"
-            );
+            let locations = |query: &str| {
+                provider
+                    .search(query)
+                    .into_iter()
+                    .filter(|result| result.kind == LOCATION_KIND)
+                    .count()
+            };
+            // Spans of one block read as one text; each block is its own
+            // location, so a phrase never runs from one into the next.
+            assert_eq!(locations("alpha beta"), 1);
+            assert_eq!(locations("beta gamma"), 0);
         }
 
         // --- phase: remote_metadata_hydrates_and_opens_the_canonical_workspace_book ---
@@ -1220,6 +1208,7 @@ mod tests {
                 subject: "Maps".into(),
                 shared: true,
                 added: 1,
+                content: None,
             };
             let provider = BookSearchProvider::new_with_registry(&[], &[], &[entry]);
             let hit = provider.search("mira").pop().expect("metadata");
@@ -1264,7 +1253,7 @@ mod tests {
     )]
     #[test]
     fn index_bounds_work_and_memory_on_large_libraries() {
-        // --- phase: million_scalar_book_retains_no_prose_and_few_postings ---
+        // --- phase: million_scalar_book_keeps_its_prose_by_reference ---
         {
             let books = Arc::new(vec![Arc::new(Book {
                 id: "large".into(),
@@ -1295,11 +1284,7 @@ mod tests {
                 cursor = Some(next);
             }
             assert!(found);
-            let stats = provider.stats();
-            // Only titles are retained; the million-scalar prose is not.
-            assert!(stats.normalized_scalars < 64, "{stats:?}");
-            // Postings grow with the distinct grams of the prose, not its length.
-            assert!(stats.body_postings < 64, "{stats:?}");
+            // The catalogue keeps the books' prose by reference, not a copy.
             assert_eq!(Arc::strong_count(&books), 2);
         }
 
@@ -1363,11 +1348,9 @@ mod tests {
             assert!(first.next.is_none(), "no chapter holds the query's grams");
         }
 
-        // --- phase: gram_candidates_that_do_not_contain_the_phrase_cost_one_inspection ---
+        // --- phase: chapters_holding_the_words_out_of_order_do_not_match ---
         {
-            // Every chapter holds each gram of "dog cat" but not the phrase, so
-            // all are candidates and the gram filter cannot reject them; each
-            // still costs exactly one inspection before the page yields.
+            // Every chapter holds each word of "dog cat" but not the phrase.
             let books = (0..40)
                 .map(|index| Book {
                     id: format!("book-{index}"),
@@ -1391,7 +1374,7 @@ mod tests {
                 let Some(next) = page.next else { break };
                 cursor = Some(next);
             }
-            assert_eq!(inspected, 40);
+            assert_eq!(inspected, 0);
         }
 
         // --- phase: rebuilds_over_the_same_books_reuse_the_prose_index ---
@@ -1404,7 +1387,7 @@ mod tests {
                 Arc::new(Vec::new()),
                 1,
             );
-            assert!(first.stats().body_postings > 0);
+            assert!(first.stats().body_records > 0);
             assert!(first.shares_prose_index_with(&first));
             let mut annotation = Annotation::new(&books[0].id, AnnoKind::Note, 0, 0);
             annotation.note = "a fresh note".into();
@@ -1544,7 +1527,7 @@ mod tests {
             assert_eq!(seen, 257);
         }
 
-        // --- phase: oversized_single_block_resumes_without_a_prose_copy ---
+        // --- phase: oversized_single_block_is_found_directly ---
         {
             let books = vec![Book {
                 id: "huge".into(),
@@ -1554,7 +1537,7 @@ mod tests {
                     blocks: vec![crate::model::Block::Paragraph {
                         spans: vec![crate::model::Span::plain(format!(
                             "{}needle-at-the-end",
-                            "x".repeat(BODY_CHUNK_SCALARS * 4)
+                            "x".repeat(4_096)
                         ))],
                     }],
                     ..crate::model::Chapter::default()
@@ -1562,23 +1545,12 @@ mod tests {
                 ..Book::default()
             }];
             let provider = BookSearchProvider::new(&books, &[]);
-            let mut cursor = None;
-            let mut pages = 0;
-            loop {
-                let page = provider.search_page("needle-at-the-end", cursor.as_ref(), 1, 1);
-                assert_eq!(page.inspected, 1);
-                pages += 1;
-                if !page.results.is_empty() {
-                    break;
-                }
-                cursor = page.next;
-                assert!(cursor.is_some(), "continuation before tail match");
-            }
-            assert!(pages >= 5, "the block was verified in bounded chunks");
-            assert!(provider.stats().normalized_scalars < 64);
+            let page = provider.search_page("needle-at-the-end", None, 1, 1);
+            assert_eq!(page.inspected, 1);
+            assert_eq!(page.results.len(), 1, "the index finds the tail directly");
         }
 
-        // --- phase: million_scalar_multi_span_paragraph_resumes_inside_the_first_span ---
+        // --- phase: million_scalar_multi_span_paragraph_is_found_directly ---
         {
             let mut tail = crate::model::Span::plain("tail-needle");
             tail.space_before = true;
@@ -1595,23 +1567,13 @@ mod tests {
                 ..Book::default()
             }];
             let provider = BookSearchProvider::new(&books, &[]);
-            let mut cursor: Option<SearchCursor> = None;
-            let mut pages = 0;
-            let mut found = false;
-            loop {
-                let page = provider.search_page("tail-needle", cursor.as_ref(), 1, 1);
-                assert_eq!(page.inspected, 1);
-                pages += 1;
-                found |= page
-                    .results
+            let page = provider.search_page("tail-needle", None, 1, 1);
+            assert_eq!(page.inspected, 1);
+            assert!(
+                page.results
                     .iter()
-                    .any(|result| result.kind == LOCATION_KIND);
-                let Some(next) = page.next else { break };
-                cursor = Some(next);
-            }
-            assert!(found);
-            assert!(pages >= 978, "the first span was not resumed in chunks");
-            assert!(provider.stats().normalized_scalars < 64);
+                    .any(|result| result.kind == LOCATION_KIND)
+            );
         }
     }
 

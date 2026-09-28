@@ -156,11 +156,22 @@ impl RenderContext {
             backends: wgpu::Backends::from_env().unwrap_or_else(|| {
                 if cfg!(target_os = "windows") {
                     wgpu::Backends::DX12
+                } else if cfg!(target_os = "android") {
+                    // Every device the app installs on has Vulkan 1.1.
+                    wgpu::Backends::VULKAN
                 } else {
                     wgpu::Backends::default()
                 }
             }),
-            flags: wgpu::InstanceFlags::from_build_config().with_env(),
+            flags: {
+                let flags = wgpu::InstanceFlags::from_build_config();
+                // The Android emulator's Vulkan driver crashes in
+                // vkSetDebugUtilsObjectNameEXT; `WGPU_DEBUG=1` still asks
+                // for object labels.
+                #[cfg(target_os = "android")]
+                let flags = flags.difference(wgpu::InstanceFlags::DEBUG);
+                flags.with_env()
+            },
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             backend_options,
         });

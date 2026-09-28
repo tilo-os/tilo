@@ -921,11 +921,7 @@ fn session_power_actions_respect_inhibitors_and_report_failure() {
             "Editor has an unsaved document",
             tilo_power_mgmt::inhibit::INHIBIT_LOGOUT,
         );
-        assert!(
-            host.apply_power_menu_outcome(PowerMenuClick::Execute(
-                os_actions::SessionAction::Logout
-            ))
-        );
+        assert!(host.apply_layer_intent(LayerIntent::Session(os_actions::SessionAction::Logout)));
         assert_eq!(chrome.borrow().notifications().len(), 1);
         assert!(
             chrome.borrow().notifications()[0]
@@ -937,9 +933,9 @@ fn session_power_actions_respect_inhibitors_and_report_failure() {
             "Call is sharing the screen",
             tilo_power_mgmt::inhibit::INHIBIT_USER_SWITCH,
         );
-        assert!(host.apply_power_menu_outcome(PowerMenuClick::Execute(
-            os_actions::SessionAction::SwitchUser
-        )));
+        assert!(
+            host.apply_layer_intent(LayerIntent::Session(os_actions::SessionAction::SwitchUser))
+        );
         assert_eq!(chrome.borrow().notifications().len(), 2);
         assert!(
             chrome.borrow().notifications()[1]
@@ -949,7 +945,7 @@ fn session_power_actions_respect_inhibitors_and_report_failure() {
     }
 
     fn logout_power_action_publishes_its_edge_before_dispatch_returns() {
-        let (host, _chrome) = host_with_chrome();
+        let (mut host, _chrome) = host_with_chrome();
         let directory = tempfile::tempdir().unwrap();
         let request = directory.path().join("logout-request");
         let mut env = tilo_test_env::ScopedEnv::new();
@@ -959,11 +955,7 @@ fn session_power_actions_respect_inhibitors_and_report_failure() {
         // machine.
         os_actions::owner::establish(os_actions::SystemSurfaces::Owned);
 
-        assert!(
-            host.apply_power_menu_outcome(PowerMenuClick::Execute(
-                os_actions::SessionAction::Logout
-            ))
-        );
+        assert!(host.apply_layer_intent(LayerIntent::Session(os_actions::SessionAction::Logout)));
         assert_eq!(std::fs::read_to_string(&request).unwrap(), "logout\n");
         assert!(os_actions::take_logout_request());
         assert!(!os_actions::take_logout_request());
@@ -975,11 +967,7 @@ fn session_power_actions_respect_inhibitors_and_report_failure() {
         let bridge = tilo_power_mgmt::PowerBridge::new();
         host.set_power_bridge(bridge.clone());
 
-        assert!(
-            host.apply_power_menu_outcome(PowerMenuClick::Execute(
-                os_actions::SessionAction::Suspend
-            ))
-        );
+        assert!(host.apply_layer_intent(LayerIntent::Session(os_actions::SessionAction::Suspend)));
         assert_eq!(
             bridge.drain_commands(),
             vec![tilo_power_mgmt::PowerCommand::Suspend]
@@ -988,13 +976,9 @@ fn session_power_actions_respect_inhibitors_and_report_failure() {
     }
 
     fn suspend_without_the_power_service_reports_failure() {
-        let (host, chrome) = host_with_chrome();
+        let (mut host, chrome) = host_with_chrome();
 
-        assert!(
-            host.apply_power_menu_outcome(PowerMenuClick::Execute(
-                os_actions::SessionAction::Suspend
-            ))
-        );
+        assert!(host.apply_layer_intent(LayerIntent::Session(os_actions::SessionAction::Suspend)));
         assert!(host.drain_session_action_results());
         assert_eq!(chrome.borrow().notifications().len(), 1);
         assert!(chrome.borrow().notifications()[0].body.contains("suspend"));
@@ -1028,7 +1012,7 @@ fn session_power_actions_respect_inhibitors_and_report_failure() {
             os_actions::SessionAction::ShutDown,
         ];
         for action in actions {
-            assert!(host.apply_power_menu_outcome(PowerMenuClick::Execute(action)));
+            host.execute_session_action(action);
         }
         assert!(
             bridge.drain_commands().is_empty(),
@@ -1088,7 +1072,7 @@ fn launch_notices_retire_once_and_escape_dismisses_the_latest_error() {
             crate::compositor::tab_binding::Placement::NewGroup,
         );
         let notice = chrome.borrow_mut().push_notification_full(
-            crate::shell::notification::Notification::new("Opening Fixture", "Loading…")
+            tilo_desktop::notifications::Notification::new("Opening Fixture", "Loading…")
                 .with_dismiss_after(std::time::Duration::from_secs(120)),
         );
         crate::shell::catalogue::note_pending_notice(package_id, notice);
@@ -1436,6 +1420,47 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
     compact_shortcut_recovery_actions_fit_their_cells();
     shortcut_reference_columns_stay_semantically_grouped();
     shortcut_accessibility_names_workspace_and_group_navigation();
+}
+
+#[test]
+fn shortcut_guide_names_keys_as_the_active_layout_prints_them() {
+    use settings_store::hardware::{KeyChord, ShortcutAction};
+
+    let (mut host, chrome) = host_with_chrome();
+    host.shortcut_config
+        .set(
+            ShortcutAction::Search,
+            KeyChord::parse("Ctrl+Shift+G").expect("chord"),
+        )
+        .expect("free chord");
+    chrome.borrow_mut().overlays.shortcut_help = true;
+    let guide_description = |host: &ShellOverlayHost| {
+        host.accessibility()
+            .expect("shell semantics")
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Desktop keyboard and mouse guide"))
+            .and_then(|guide| guide.description.clone())
+            .expect("guide description")
+    };
+
+    ui::keycaps::set_active(ui::Keycaps::from_xkb("de", ""));
+    let german_rows = shortcut_reference_rows(&host.shortcut_config);
+    let german = guide_description(&host);
+    ui::keycaps::set_active(ui::Keycaps::US);
+    let english = guide_description(&host);
+
+    assert!(german_rows.contains(&("Global search".into(), "Strg+Umschalt+G".into())));
+    assert!(german_rows.contains(&("Reopen closed tab".into(), "Super+Umschalt+T".into())));
+    assert!(german.contains("Screenshot: Druck"), "{german}");
+    assert!(german.contains("Strg+Umschalt+G"), "{german}");
+    // The layout, not the stored chord, changed: switching back restores it.
+    assert!(english.contains("Ctrl+Shift+G"), "{english}");
+    assert!(english.contains("Screenshot: Print Screen"), "{english}");
+    assert_eq!(
+        host.shortcut_config.bindings[&ShortcutAction::Search].display(),
+        "Ctrl+Shift+g"
+    );
 }
 
 #[test]
@@ -2016,7 +2041,7 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         let (h, chrome) = host_with_launch_polling();
         let notice = {
             let mut st = chrome.borrow_mut();
-            st.push_notification_full(crate::shell::notification::Notification::new(
+            st.push_notification_full(tilo_desktop::notifications::Notification::new(
                 "Opening Ledger",
                 "Loading…",
             ))
@@ -2096,7 +2121,7 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         let (h, chrome) = host_with_launch_polling();
         let notice = {
             let mut st = chrome.borrow_mut();
-            st.push_notification_full(crate::shell::notification::Notification::new(
+            st.push_notification_full(tilo_desktop::notifications::Notification::new(
                 "Opening Ledger",
                 "Loading…",
             ))

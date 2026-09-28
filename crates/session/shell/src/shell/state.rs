@@ -2,7 +2,7 @@ use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use tilo_automerge::ApplyIncoming;
-use tilo_clock::{unix_now, unix_now_i64};
+use tilo_clock::unix_now_i64;
 
 mod local_app_records;
 use super::fs_authority::schedule_fs_authority_publication;
@@ -460,37 +460,10 @@ impl std::fmt::Display for PeerOrigin {
     }
 }
 
-/// Id prefix of the membership a host-delegated admission grants in a public
-/// room. Such a grant is its own signed record (`HostAdmissionV1`), delivered
-/// and verified independently of the room's governance: the authority never
-/// projects it into governance, and a governance sync never removes it.
-pub const DELEGATED_ADMISSION_CAP_PREFIX: &str = "host-admission-";
-
-/// Id prefix of the membership a person gives an agent acting for them on
-/// their own device, such as the session recorder. It needs no room
-/// administrator, because it grants nothing the person cannot already do:
-/// its verb is bounded by the person's own role, and it stands only while
-/// that person still holds the role. Like a delegated admission it is held
-/// outside governance, and a governance sync never removes it.
-///
-/// The device the agent runs on holds `delegate-<person>:<admission id>`
-/// ([`WorkspaceTree::admit_device_delegate`]) and announces it to the room
-/// as a signed delegation; every other member lists it, once verified, as
-/// `delegate-<person>:device-<device>:<agent>`
-/// ([`remote_device_delegate_id`]). A room whose administrators turned off
-/// recording delegates ([`Workspace::recording_delegates_forbidden`]) holds
-/// neither.
-pub const DEVICE_DELEGATE_CAP_PREFIX: &str = "delegate-";
-
-/// Marks the device-delegate memberships another member's device announced.
-const REMOTE_DELEGATE_MARK: &str = "device-";
-
-/// Whether `cap` is an admission governance never carries: a host-delegated
-/// admission or a person's device delegate.
-pub fn held_outside_governance(cap: &CapOverride) -> bool {
-    cap.id.starts_with(DELEGATED_ADMISSION_CAP_PREFIX)
-        || cap.id.starts_with(DEVICE_DELEGATE_CAP_PREFIX)
-}
+pub use tilo_desktop_model::capability::{
+    DELEGATED_ADMISSION_CAP_PREFIX, DEVICE_DELEGATE_CAP_PREFIX, REMOTE_DELEGATE_MARK,
+    held_outside_governance, remote_device_delegate_id,
+};
 
 /// The widest verb `role` grants in its room; `None` for a blocked member.
 fn role_verb(role: CapRole) -> Option<Verb> {
@@ -523,14 +496,6 @@ pub fn is_local_device_delegate(cap: &CapOverride) -> bool {
 /// Whether `cap` lists another member's device delegate.
 pub fn is_remote_device_delegate(cap: &CapOverride) -> bool {
     device_delegate_parts(cap).is_some_and(|(_, rest)| rest.starts_with(REMOTE_DELEGATE_MARK))
-}
-
-/// Id under which a member lists `person`'s `agent` on `device`.
-pub fn remote_device_delegate_id(person: &str, device: &[u8; 32], agent: &str) -> String {
-    format!(
-        "{DEVICE_DELEGATE_CAP_PREFIX}{person}:{REMOTE_DELEGATE_MARK}{}:{agent}",
-        hex::encode(device)
-    )
 }
 
 /// Whether `person` still holds a role in `workspace` that allows `verb`, so
@@ -571,177 +536,7 @@ pub struct GovernedPeerIdentity {
 
 /// Former name of [`WorkspaceAuthority`], still imported (`as _`) by
 /// shell modules written against the Cloud-side extension trait.
-pub use self::WorkspaceAuthority as WorkspaceExt;
-
-/// The model's authority questions answered at this machine's clock. The
-/// model takes `now` explicitly; this is the one place the compositor
-/// supplies it.
-pub trait WorkspaceAuthority {
-    /// See [`Workspace::set_default_app_policy_as_at`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Workspace::set_default_app_policy_as_at`].
-    fn set_default_app_policy_as(
-        &mut self,
-        actor: &UserId,
-        resource: desktop_policy::ResourceKind,
-        policy: desktop_policy::WorkspaceDefaultPolicy,
-        resolver: &desktop_policy::DefaultAppResolver<'_>,
-    ) -> Result<(), WorkspaceDefaultError>;
-    fn app_capabilities(&self, app_id: &str) -> Vec<&CapOverride>;
-    fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>>;
-    fn has_app_grants(&self) -> bool;
-    fn app_grant_ids(&self, app_id: &str) -> Vec<String>;
-    fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision;
-    fn allows(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> bool;
-    fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String>;
-    /// See [`Workspace::save_permission_profile_as_at`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Workspace::save_permission_profile_as_at`].
-    fn save_permission_profile_as(
-        &mut self,
-        actor: &UserId,
-        profile: PermissionProfile,
-    ) -> Result<(), PermissionProfileMutationError>;
-    /// See [`Workspace::save_permission_profile_as_actor_at`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Workspace::save_permission_profile_as_actor_at`].
-    fn save_permission_profile_as_actor(
-        &mut self,
-        actor: &Actor,
-        profile: PermissionProfile,
-    ) -> Result<(), PermissionProfileMutationError>;
-    /// See [`Workspace::assign_permission_profile_as_at`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Workspace::assign_permission_profile_as_at`].
-    fn assign_permission_profile_as(
-        &mut self,
-        actor: &UserId,
-        profile_name: &str,
-        subject: &Subject,
-        expiry: Expiry,
-    ) -> Result<Vec<String>, PermissionProfileMutationError>;
-    /// See [`Workspace::assign_permission_profile_as_actor_at`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Workspace::assign_permission_profile_as_actor_at`].
-    fn assign_permission_profile_as_actor(
-        &mut self,
-        actor: &Actor,
-        profile_name: &str,
-        subject: &Subject,
-        expiry: Expiry,
-    ) -> Result<Vec<String>, PermissionProfileMutationError>;
-    fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool;
-    fn may_administer(&self, user: &UserId) -> bool;
-    fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool;
-    fn role_of(&self, user: &UserId) -> Option<CapRole>;
-    fn actor_for_person(&self, user: &UserId) -> Actor;
-    fn roster(&self) -> Vec<(UserId, CapRole)>;
-    fn role_of_agent(&self, agent: &str) -> Option<CapRole>;
-    fn agent_members(&self) -> Vec<(String, CapRole)>;
-    fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride>;
-}
-
-impl WorkspaceAuthority for Workspace {
-    fn set_default_app_policy_as(
-        &mut self,
-        actor: &UserId,
-        resource: desktop_policy::ResourceKind,
-        policy: desktop_policy::WorkspaceDefaultPolicy,
-        resolver: &desktop_policy::DefaultAppResolver<'_>,
-    ) -> Result<(), WorkspaceDefaultError> {
-        self.set_default_app_policy_as_at(actor, resource, policy, resolver, unix_now())
-    }
-    fn app_capabilities(&self, app_id: &str) -> Vec<&CapOverride> {
-        self.app_capabilities_at(app_id, unix_now())
-    }
-    fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>> {
-        self.app_grants_snapshot_at(unix_now())
-    }
-    fn has_app_grants(&self) -> bool {
-        self.has_app_grants_at(unix_now())
-    }
-    fn app_grant_ids(&self, app_id: &str) -> Vec<String> {
-        self.app_grant_ids_at(app_id, unix_now())
-    }
-    fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision {
-        self.decide_at(actor, resource, verb, unix_now())
-    }
-    fn allows(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> bool {
-        self.allows_at(actor, resource, verb, unix_now())
-    }
-    fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String> {
-        self.grant_as_at(grantor, cap, unix_now())
-    }
-    fn save_permission_profile_as(
-        &mut self,
-        actor: &UserId,
-        profile: PermissionProfile,
-    ) -> Result<(), PermissionProfileMutationError> {
-        self.save_permission_profile_as_at(actor, profile, unix_now())
-    }
-    fn save_permission_profile_as_actor(
-        &mut self,
-        actor: &Actor,
-        profile: PermissionProfile,
-    ) -> Result<(), PermissionProfileMutationError> {
-        self.save_permission_profile_as_actor_at(actor, profile, unix_now())
-    }
-    fn assign_permission_profile_as(
-        &mut self,
-        actor: &UserId,
-        profile_name: &str,
-        subject: &Subject,
-        expiry: Expiry,
-    ) -> Result<Vec<String>, PermissionProfileMutationError> {
-        self.assign_permission_profile_as_at(actor, profile_name, subject, expiry, unix_now())
-    }
-    fn assign_permission_profile_as_actor(
-        &mut self,
-        actor: &Actor,
-        profile_name: &str,
-        subject: &Subject,
-        expiry: Expiry,
-    ) -> Result<Vec<String>, PermissionProfileMutationError> {
-        self.assign_permission_profile_as_actor_at(actor, profile_name, subject, expiry, unix_now())
-    }
-    fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool {
-        self.revoke_as_at(revoker, id, unix_now())
-    }
-    fn may_administer(&self, user: &UserId) -> bool {
-        self.may_administer_at(user, unix_now())
-    }
-    fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool {
-        self.transfer_owner_as_at(current_owner, new_owner, unix_now())
-    }
-    fn role_of(&self, user: &UserId) -> Option<CapRole> {
-        self.role_of_at(user, unix_now())
-    }
-    fn actor_for_person(&self, user: &UserId) -> Actor {
-        self.actor_for_person_at(user, unix_now())
-    }
-    fn roster(&self) -> Vec<(UserId, CapRole)> {
-        self.roster_at(unix_now())
-    }
-    fn role_of_agent(&self, agent: &str) -> Option<CapRole> {
-        self.role_of_agent_at(agent, unix_now())
-    }
-    fn agent_members(&self) -> Vec<(String, CapRole)> {
-        self.agent_members_at(unix_now())
-    }
-    fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride> {
-        self.shares_of_at(resource, unix_now())
-    }
-}
+pub use tilo_desktop::authority::{WorkspaceAuthority, WorkspaceAuthority as WorkspaceExt};
 
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomicOrdering};
 
@@ -865,47 +660,6 @@ pub struct NativeDocumentReference {
     pub path: std::path::PathBuf,
 }
 
-fn bounded_receipt_text(value: &str, max: usize) -> String {
-    value
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(max)
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
-fn redact_receipt_context(context: &mut tilo_actions::ActionContext) {
-    // A receipt is written into the workspace document every member syncs,
-    // so the resource is recorded as it may travel beyond this device.
-    *context = std::mem::take(context).redacted_for(tilo_actions::Audience::BeyondDevice);
-    context.action_label = bounded_receipt_text(&context.action_label, 200);
-    if let Some(app) = &mut context.app {
-        app.id = bounded_receipt_text(&app.id, 160);
-        app.label = bounded_receipt_text(&app.label, 160);
-    }
-    if let Some(resource) = &mut context.resource {
-        resource.id = bounded_receipt_text(&resource.id, 512);
-        resource.kind = bounded_receipt_text(&resource.kind, 160);
-        resource.label = bounded_receipt_text(&resource.label, 200);
-    }
-    context.purpose = context
-        .purpose
-        .as_deref()
-        .map(|value| bounded_receipt_text(value, 512))
-        .filter(|value| !value.is_empty());
-    if let Some(group) = &mut context.group {
-        group.id = bounded_receipt_text(&group.id, 160);
-        group.label = bounded_receipt_text(&group.label, 200);
-        group.kind = bounded_receipt_text(&group.kind, 160);
-    }
-    context.facets.truncate(32);
-    for facet in &mut context.facets {
-        facet.key = bounded_receipt_text(&facet.key, 96);
-        facet.value = bounded_receipt_text(&facet.value, 160);
-    }
-}
-
 /// The id of the person sitting at this machine. Derived from the device
 /// identity when provisioned, falling back to the OS account name —
 /// stable across restarts, or an owner would lose their own workspaces.
@@ -989,7 +743,9 @@ pub struct WorkspaceTree {
     pub desktop: DesktopTree,
     /// Automerge backing doc for peer-sync. The cache (other fields) is
     /// the source of truth for reads; this doc for peer change export.
-    /// `#[serde(skip)]` — repopulates as peer-sync runs. Public so tests
+    /// Not in `state.json`: saved beside it with its whole history (see
+    /// [`crate::shell::persist::state_doc_path`]), which Activity and
+    /// Replay read. Public so tests
     /// can synthesize change-blobs, but real consumers must go through
     /// [`Self::current_heads`] / [`Self::export_changes_since`] /
     /// [`Self::apply_changes`]: direct access bypasses the cache rebuild.
@@ -1625,6 +1381,20 @@ impl WorkspaceTree {
     /// ([`crate::network::behaviour::peer_liveness_handle`]), not the
     /// id — the document stores real identity, this bridges the gap. A
     /// peer with no entry is labelled with its handle.
+    /// Every device the room names, by transport endpoint: the devices a
+    /// record of the room may be asked for.
+    pub fn room_peer_endpoints(&self, room: RoomId) -> Vec<iroh::EndpointId> {
+        let named = if self.governs_room(room) {
+            self.room_peer_names.get(&room).cloned().unwrap_or_default()
+        } else {
+            self.room_peer_names_in_doc(room)
+        };
+        named
+            .keys()
+            .filter_map(|peer| peer.parse::<iroh::EndpointId>().ok())
+            .collect()
+    }
+
     pub fn room_peer_labels(&self, room: RoomId) -> std::collections::BTreeMap<u64, String> {
         let mut out = std::collections::BTreeMap::new();
         // Room documents aren't persisted, so a just-restarted machine
@@ -3216,8 +2986,9 @@ impl WorkspaceTree {
         Ok(landed)
     }
 
-    /// Seed the automerge doc from the cache. Idempotent (truncates
-    /// `workspaces` and re-fills it). Tests building literal trees
+    /// Seed the automerge doc from the cache. Idempotent and diff-aware:
+    /// it writes only what differs, so an unchanged tree adds no history
+    /// and a rename is one write. Tests building literal trees
     /// should call this to flow doc-side changes out via
     /// [`Self::export_changes_since`]. `active_strip`/`active_group`
     /// stay cache-only.
@@ -3574,16 +3345,15 @@ impl WorkspaceTree {
             );
             return None;
         }
-        let ws = self
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id == workspace_id)?;
-        let id = ws.grant_as(grantor, cap)?;
-        let stored = ws.capabilities.iter().find(|c| c.id == id).cloned()?;
+        let stored = self.desktop.grant_in_workspace_at(
+            workspace_id,
+            grantor,
+            cap,
+            tilo_clock::unix_now(),
+        )?;
         self.doc_insert_capability(workspace_id, &stored);
         self.flush_to_disk();
-        Some(id)
+        Some(stored.id)
     }
 
     /// Admit an agent to `workspace_id` as `person`'s delegate on this device,
@@ -4104,21 +3874,11 @@ impl WorkspaceTree {
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == workspace_id)
-            .and_then(|workspace| workspace.tasks.iter_mut().find(|task| task.id == task_id))
+            .and_then(|workspace| workspace.set_task_status_at(task_id, status, actor, now))
+            .cloned()
         else {
             return false;
         };
-        if task.status == status {
-            return false;
-        }
-        task.status = status;
-        task.updated_at = now;
-        task.audit.push(WorkspaceTaskAuditEvent {
-            at: now,
-            actor: actor.to_string(),
-            summary: format!("Status · {}", task.status.label()),
-        });
-        let task = task.clone();
         self.doc_upsert_workspace_task(workspace_id, &task);
         self.flush_to_disk();
         true
@@ -4144,17 +3904,11 @@ impl WorkspaceTree {
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == workspace_id)
-            .and_then(|workspace| workspace.tasks.iter_mut().find(|task| task.id == task_id))
+            .and_then(|workspace| workspace.append_task_audit_at(task_id, actor, summary, now))
+            .cloned()
         else {
             return false;
         };
-        task.updated_at = now;
-        task.audit.push(WorkspaceTaskAuditEvent {
-            at: now,
-            actor: actor.to_string(),
-            summary: summary.into(),
-        });
-        let task = task.clone();
         self.doc_upsert_workspace_task(workspace_id, &task);
         self.flush_to_disk();
         true
@@ -4185,47 +3939,20 @@ impl WorkspaceTree {
         workspace_id: WorkspaceId,
         invocation: tilo_actions::InvocationId,
         actor: &str,
-        mut context: tilo_actions::ActionContext,
+        context: tilo_actions::ActionContext,
         status: tilo_actions::EffectReceiptStatus,
         completed_at: i64,
     ) -> bool {
-        let Some(workspace) = self
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == workspace_id)
-        else {
-            return false;
-        };
-        if workspace
-            .effect_receipts
-            .iter()
-            .any(|receipt| receipt.invocation == invocation)
-        {
-            return false;
-        }
-        let original_action = bounded_receipt_text(&context.action_label, 160);
-        context.action_label = if original_action.is_empty() {
-            status.label().to_string()
-        } else {
-            format!("{} · {original_action}", status.label())
-        };
-        context
-            .facets
-            .push(tilo_actions::ActionFacet::new("tilo.receipt", "effect"));
-        context.facets.push(tilo_actions::ActionFacet::new(
-            "tilo.invocation",
-            invocation.0.to_string(),
-        ));
-        redact_receipt_context(&mut context);
-        let receipt = WorkspaceEffectReceipt {
+        let Some(receipt) = self.desktop.append_workspace_effect_receipt_at(
+            workspace_id,
             invocation,
-            actor: bounded_receipt_text(actor, 160),
+            actor,
             context,
             status,
             completed_at,
+        ) else {
+            return false;
         };
-        workspace.effect_receipts.push(receipt.clone());
         self.doc_upsert_workspace_effect_receipt(workspace_id, &receipt);
         self.flush_to_disk();
         true
@@ -5495,42 +5222,37 @@ impl WorkspaceTree {
     /// now connected, primary first (see [`OutputPartition::reconcile`]).
     /// A partition is kept once a second display has been seen; a device
     /// that only ever had one display carries none. Returns whether the
-    /// partition or any strip order changed.
+    /// partition changed. The partition is this device's alone: it never
+    /// touches the strips' shared order.
     pub fn reconcile_displays(&mut self, displays: &[Display]) -> bool {
         if displays.len() < 2 && self.desktop.outputs.is_empty() {
             return false;
         }
         let before = self.desktop.outputs.clone();
         let desktop = &mut self.desktop;
-        let reordered = desktop.outputs.reconcile(&mut desktop.workspaces, displays);
+        desktop.outputs.reconcile(&desktop.workspaces, displays);
         desktop.outputs.place_unhomed(&desktop.workspaces);
-        self.mirror_partition_reorder(&reordered);
-        let changed = !reordered.is_empty() || self.desktop.outputs != before;
+        let changed = self.desktop.outputs != before;
         if changed {
             self.flush_to_disk();
         }
         changed
     }
 
-    /// Show `group_id` on display `display` from now on (see
-    /// [`OutputPartition::move_group`]). `false` when there is no such
-    /// display or the group is already there.
+    /// Show `group_id` on display `display` from now on, at its place in
+    /// the strip's shared order (see [`OutputPartition::move_group`]).
+    /// `false` when there is no such display or the group is already there.
     pub fn move_group_to_display(&mut self, group_id: GroupId, display: u32) -> bool {
-        if self.desktop.outputs.display_of(group_id) == Some(display)
-            || !self
-                .desktop
-                .outputs
-                .displays
-                .iter()
-                .any(|d| d.id == display)
-        {
+        if self.desktop.outputs.display_of(group_id) == Some(display) {
             return false;
         }
         let desktop = &mut self.desktop;
-        let reordered = desktop
+        if !desktop
             .outputs
-            .move_group(&mut desktop.workspaces, group_id, display);
-        self.mirror_partition_reorder(reordered.as_slice());
+            .move_group(&desktop.workspaces, group_id, display)
+        {
+            return false;
+        }
         self.flush_to_disk();
         true
     }
@@ -5547,23 +5269,6 @@ impl WorkspaceTree {
         }
         self.flush_to_disk();
         true
-    }
-
-    /// Mirror strips a partition change reordered into the collaboration
-    /// document, the same as any other group reorder.
-    fn mirror_partition_reorder(&mut self, strips: &[StripId]) {
-        for &strip_id in strips {
-            let groups = self
-                .desktop
-                .workspaces
-                .iter()
-                .flat_map(|w| &w.strips)
-                .find(|s| s.id == strip_id)
-                .map(|s| s.window_groups.clone());
-            if let Some(groups) = groups {
-                self.doc_rewrite_strip_groups(strip_id, &groups);
-            }
-        }
     }
 
     /// Commit `command` as this device's topology owner: the shared
@@ -5715,43 +5420,11 @@ fn public_key_user_id(key: collab_types::Ed25519PublicKey) -> UserId {
     hex::encode(key.as_bytes())
 }
 
-/// What colour each person on `roster` is drawn in. One function so
-/// cursor and avatar cannot disagree and read as two participants: both
-/// go through [`ui::presence::assign_peer_colors`], which settles the
-/// whole room at once. An explicit [`Collaborator::cursor_color`]
-/// outranks anything computed and is held back from the assignment; the
-/// local user is included in the settled set (never the avatar stack) so
-/// every host computes the same one.
+/// What colour each person on `roster` is drawn in, as this process's
+/// local user sees the room; see
+/// [`tilo_desktop::collaborators::roster_colors_with_local_user`].
 pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
-    roster_colors_with_local_user(roster, &local_user_id())
-}
-
-pub(crate) fn roster_colors_with_local_user(
-    roster: &[Collaborator],
-    local: &str,
-) -> HashMap<String, (u8, u8, u8)> {
-    let mut explicit: HashMap<String, (u8, u8, u8)> = HashMap::new();
-    for c in roster {
-        if let Some(rgb) = c
-            .cursor_color
-            .as_deref()
-            .and_then(ui::presence::parse_hex_color)
-        {
-            explicit.insert(c.id.clone(), rgb);
-        }
-    }
-    let mut ids: Vec<&str> = roster
-        .iter()
-        .filter(|c| !explicit.contains_key(&c.id))
-        .map(|c| c.id.as_str())
-        .collect();
-    if !explicit.contains_key(local) {
-        ids.push(local);
-    }
-    let reserved: Vec<(u8, u8, u8)> = explicit.values().copied().collect();
-    let mut assigned = ui::presence::assign_peer_colors(&ids, &reserved);
-    assigned.extend(explicit);
-    assigned
+    tilo_desktop::collaborators::roster_colors_with_local_user(roster, &local_user_id())
 }
 
 /// Present collaborator count for the active workspace, excluding the local

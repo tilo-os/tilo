@@ -93,7 +93,7 @@ impl App {
         true
     }
 
-    fn checkpoint_before_close(&mut self) -> Vec<String> {
+    pub(super) fn checkpoint_before_close(&mut self) -> Vec<String> {
         let _entry = self.enter_wake_scope();
         let mut errors = Vec::new();
         if self.legacy_persistence == crate::launch::LegacyPersistencePolicy::WidgetOwned {
@@ -444,7 +444,7 @@ impl App {
             },
         );
         if let Some(dialog) = self.close_admission.dialog.as_mut() {
-            dialog.apply_layout(&self.layout.taffy, root, vello::kurbo::Point::ORIGIN);
+            dialog.apply_layout(&self.layout.taffy, root, self.layout.content_origin);
         }
         self.update_focusable_order();
         self.layout.structure_dirty = false;
@@ -555,16 +555,16 @@ mod tests {
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &[crate::widget::resource_actions::OPERATION_TYPE]
         }
-        fn start_resource_operation(
+        fn start_operation(
             &mut self,
-            _: tilo_actions::InvocationId,
-            _: tilo_actions::OperationKind,
-            type_id: &str,
-            _: &[u8],
-            _: &automerge::AutoCommit,
+            op: &crate::widget::ResourceOperation<'_>,
+            _: &mut automerge::AutoCommit,
             _: &automerge::ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-            if type_id != crate::widget::resource_actions::OPERATION_TYPE {
+            let Some(request) = op.unscoped() else {
+                return Ok(None);
+            };
+            if request.type_id != crate::widget::resource_actions::OPERATION_TYPE {
                 return Ok(None);
             }
             if !self.save_allowed {

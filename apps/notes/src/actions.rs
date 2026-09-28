@@ -414,6 +414,10 @@ pub enum InlineMark {
     ExternalLink {
         url: String,
     },
+    /// A reference to a participant, by id.
+    Mention {
+        id: String,
+    },
 }
 
 /// A half-open UTF-8 byte range with one inline mark.
@@ -439,6 +443,7 @@ impl InlineMarkSpan {
                 page: page.to_string(),
             },
             Mark::ExternalLink(url) => InlineMark::ExternalLink { url: url.clone() },
+            Mark::Mention(id) => InlineMark::Mention { id: id.clone() },
         };
         Self {
             start: span.range.start,
@@ -459,6 +464,7 @@ impl InlineMarkSpan {
             InlineMark::ExternalLink { url } => {
                 crate::markdown::safe_external_url(url).then(|| Mark::ExternalLink(url.clone()))?
             }
+            InlineMark::Mention { id } => Mark::Mention(id.clone()),
         };
         Some(MarkSpan::new(self.start..self.end, mark))
     }

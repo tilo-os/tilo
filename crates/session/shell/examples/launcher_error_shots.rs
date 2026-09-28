@@ -8,13 +8,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use shell::shell::chrome_state::ChromeState;
-use shell::shell::notification::{Notification, NotificationSeverity, NotificationStack};
+use shell::shell::notification::ChromeNotifications;
 use shell::shell::state::WorkspaceTree;
+use tilo_desktop::notifications::{Notification, NotificationSeverity, NotificationStack};
 use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::Fill;
@@ -71,14 +70,14 @@ fn shot(out: &Path, width: u32, height: u32) {
         ),
     );
 
-    let mut stack = NotificationStack::new(chrome);
+    let mut stack = NotificationStack::new();
     stack.set_viewport(viewport);
     stack.draw(
+        &ChromeNotifications::new(&chrome),
         &mut scene,
         Affine::IDENTITY,
         &mut TextRenderer::new(),
         &theme,
-        &PresenceCtx::default(),
     );
     OffscreenRenderer::new(width, height).render_png(&scene, theme.bg_app, out);
     println!("wrote {}", out.display());

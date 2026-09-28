@@ -105,6 +105,7 @@ impl std::fmt::Debug for DialogAction {
 /// boxing — same pattern the file picker uses.
 pub struct ModalDialog<C: Widget> {
     action_identity: uuid::Uuid,
+    test_id: Option<String>,
     title: String,
     content: C,
     primary_action: Option<DialogAction>,
@@ -156,6 +157,7 @@ impl<C: Widget> ModalDialog<C> {
     pub fn new(title: impl Into<String>, content: C) -> Self {
         Self {
             action_identity: uuid::Uuid::new_v4(),
+            test_id: None,
             title: title.into(),
             content,
             primary_action: None,
@@ -199,6 +201,13 @@ impl<C: Widget> ModalDialog<C> {
     fn adopt_theme(&mut self, theme: &Theme) {
         self.layout_theme = theme.clone();
         self.refresh_chrome(theme);
+    }
+
+    /// A stable address for inspection, headless scenarios and `tilo-control`.
+    #[must_use]
+    pub fn with_test_id(mut self, id: impl Into<String>) -> Self {
+        self.test_id = Some(id.into());
+        self
     }
 
     /// When closed, `draw` and `handle_event` are no-ops — the host can keep
@@ -793,6 +802,10 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
 
     fn name(&self) -> &'static str {
         "ModalDialog"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        self.test_id.as_deref()
     }
 
     fn modal_capture(&self) -> Option<Rect> {

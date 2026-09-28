@@ -19,7 +19,9 @@ impl FrameHarness {
     /// app) keeps that one: wrapping it in the standalone adapter as well
     /// would stack two History toolbars and squeeze the app's layout.
     pub fn enable_document_history_chrome(&mut self) {
-        if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
+        if self.history.is_some()
+            || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
+            || self.root.provides_document_history()
         {
             return;
         }
@@ -114,6 +116,7 @@ impl FrameHarness {
         };
         let mut pending = vec![layout.toolbar];
         pending.extend(layout.pane);
+        pending.extend(layout.preview);
         while let Some(next) = pending.pop() {
             if next == node {
                 return true;
@@ -290,12 +293,15 @@ impl FrameHarness {
                 .document_history
                 .pane_mut()
                 .ok_or("History is not open")?;
-            pane.start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &self.state.doc,
+            crate::widget::start_without_document_writes(
+                pane,
+                &crate::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut self.state.doc,
                 &self.state.root,
             )?
             .ok_or("Unknown local History operation")?;
@@ -305,8 +311,51 @@ impl FrameHarness {
             .map(|_| ())
             .map_err(|error| format!("History is unavailable: {error:?}"))
         };
+        self.apply_confirmed_history_restore();
+        self.fulfil_history_preview();
         self.history_focus_pending |= !was_open && self.document_history.is_open();
         result
+    }
+
+    /// Let History preview a selected version with a fresh read-only instance
+    /// of the app's root, as the native App does.
+    pub fn set_history_preview_root(
+        &mut self,
+        factory: impl Fn() -> Result<Box<dyn Widget>, String> + 'static,
+    ) {
+        self.document_history
+            .set_preview_root(std::rc::Rc::new(factory));
+    }
+
+    fn fulfil_history_preview(&mut self) {
+        if !self.document_history.has_preview_request() {
+            return;
+        }
+        let root = self
+            .document_history
+            .preview_root()
+            .and_then(|factory| factory().ok());
+        self.with_history(|host, context| host.install_preview(root, context));
+        self.invalidate_layout_tree();
+    }
+
+    /// The headless counterpart of the App's restore door: the same checked
+    /// write through the same undo log, attributed to this harness's author.
+    fn apply_confirmed_history_restore(&mut self) {
+        let Some(confirmed) = self.document_history.take_confirmed_restore() else {
+            return;
+        };
+        let result = crate::standalone_history::apply_restore(
+            &mut self.state,
+            &confirmed,
+            Some(self.author.clone()),
+        );
+        if matches!(result, Ok(true)) {
+            self.invalidate_layout_tree();
+        }
+        let _ = self
+            .with_history(super::super::standalone_history_host::StandaloneHistoryHost::refresh);
+        self.document_history.report_restore(&result);
     }
 
     pub(super) fn history_tick(&mut self) -> Result<(), String> {
@@ -354,6 +403,8 @@ impl FrameHarness {
             )
             .map(|_| ())
             .map_err(|error| format!("History is unavailable: {error:?}"));
+        self.apply_confirmed_history_restore();
+        self.fulfil_history_preview();
         // Keep Accepted app jobs alive while browsing chrome. This existing idle
         // boundary records completed actions but does not commit unrelated typing.
         self.idle_control_tick();
@@ -387,9 +438,10 @@ impl FrameHarness {
         }
         self.document_history
             .sync(&mut self.state.doc, &self.state.root);
+        let reshaped = self.document_history.take_structure_dirty();
         (
             revision != self.document_history.revision(),
-            presented_open != self.document_history.is_open(),
+            presented_open != self.document_history.is_open() || reshaped,
         )
     }
 
@@ -441,9 +493,11 @@ impl FrameHarness {
             self.child_node,
         )];
         roots.extend(
-            chrome
-                .into_iter()
-                .zip(std::iter::once(layout.toolbar).chain(layout.pane)),
+            chrome.into_iter().zip(
+                std::iter::once(layout.toolbar)
+                    .chain(layout.pane)
+                    .chain(layout.preview),
+            ),
         );
         if let (Some(node), Some(palette)) = (palette_node, self.action_palette.as_deref()) {
             roots.push((palette, node));
@@ -623,6 +677,22 @@ impl FrameHarness {
             && let Some(pane) = self.document_history.pane_mut()
         {
             pane.handle_event(
+                event,
+                self.input_scale,
+                &self.modifiers,
+                &mut self.state.doc,
+                &self.state.root,
+                handled,
+                focus,
+                node,
+                &self.taffy,
+            );
+        }
+        if !*handled
+            && let Some(node) = layout.preview
+            && let Some(preview) = self.document_history.preview_mut()
+        {
+            preview.handle_event(
                 event,
                 self.input_scale,
                 &self.modifiers,

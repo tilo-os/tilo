@@ -374,9 +374,9 @@ pub fn crash_notification(
     display_name: &str,
     package_id: &str,
     buffered: bool,
-) -> crate::shell::notification::Notification {
+) -> tilo_desktop::notifications::Notification {
     use crate::shell::i18n::{t, t_args, text};
-    crate::shell::notification::Notification::new(
+    tilo_desktop::notifications::Notification::new(
         t_args("remark-crash-title", &[("app", text(display_name))]),
         t(if buffered {
             "remark-crash-body"
@@ -384,7 +384,7 @@ pub fn crash_notification(
             "remark-crash-body-no-buffer"
         }),
     )
-    .with_severity(crate::shell::notification::NotificationSeverity::Error)
+    .with_severity(tilo_desktop::notifications::NotificationSeverity::Error)
     .with_app_name(display_name.to_string())
     .with_shell_action(
         t("remark-crash-action"),

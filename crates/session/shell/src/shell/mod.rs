@@ -41,8 +41,6 @@ pub mod collab_history;
 pub mod collab_mls_authority;
 pub mod collab_outbound;
 pub mod collab_presence;
-mod collaboration_launchpad;
-mod collaborators_overlay;
 pub mod color_pipeline;
 pub mod community;
 pub mod continuity_policy;
@@ -60,8 +58,9 @@ pub mod display_bars;
 pub mod display_confirm;
 pub mod display_identify;
 pub mod doc_open;
+pub mod document_import;
 pub mod editor_app;
-pub mod emoji_picker;
+pub mod emoji_recents;
 pub mod fabric_clock;
 mod file_picker_overlay;
 pub mod fixed_chords;
@@ -99,7 +98,6 @@ pub mod overview;
 pub mod pad_map;
 pub mod participant_keys;
 pub mod peer_actions;
-pub mod peer_join_toast;
 pub mod peer_presence;
 pub mod peer_sync_overlay;
 pub mod peer_view;
@@ -121,6 +119,7 @@ pub mod quick_settings;
 pub mod realtime_session;
 pub mod recent_files;
 pub mod record_custody;
+pub mod record_hydration;
 pub mod recorder;
 pub mod remark;
 pub mod remote_action_link;
@@ -139,7 +138,6 @@ pub mod session_audio_policy;
 pub mod session_policy;
 pub mod session_services;
 pub mod shell_narrator;
-pub mod sidebar_wheel_disc;
 pub mod spatial_calibration;
 pub mod speaker_calibration;
 pub mod speaker_group;
@@ -157,7 +155,6 @@ pub mod test_control;
 #[cfg(unix)]
 pub mod test_control_socket;
 pub mod test_support;
-pub mod text_entry;
 pub mod tile;
 pub mod tool_intents;
 pub mod topbar_chrome;
@@ -165,13 +162,12 @@ pub mod triage_runtime;
 pub mod uri_open;
 pub mod window_actions;
 pub mod window_previews;
-pub mod window_switcher;
+pub mod window_transfer;
 #[cfg(target_os = "linux")]
 pub mod windows_compat;
 pub mod workspace_drop;
+pub mod workspace_governance;
 pub mod workspace_history;
-pub mod workspace_settings;
-mod workspace_settings_overlay;
 
 use state::{AppKind as ShellKind, TileContent as ShellTile, WorkspaceTree};
 use ui::widget::context_menu::MenuItem;
@@ -191,13 +187,13 @@ use crate::shell::tile::{
     WindowGroup as RuntimeGroup, Workspace as RuntimeWorkspace, WorkspaceTree as RuntimeTree,
 };
 
-use crate::shell::workspace_settings::WorkspaceSettings;
-pub use collaboration_launchpad::{
+use file_explorer::FileExplorerWidget;
+use terminal::TerminalWidget;
+pub use tilo_desktop::launchpad::{
     EMPTY_WORKSPACE_ACTIVITY, EMPTY_WORKSPACE_CHAT, EMPTY_WORKSPACE_INVITE, EMPTY_WORKSPACE_MEET,
     EMPTY_WORKSPACE_NOTES, EMPTY_WORKSPACE_TASKS,
 };
-use file_explorer::FileExplorerWidget;
-use terminal::TerminalWidget;
+use tilo_desktop::workspace_settings::WorkspaceSettings;
 
 /// Root tilo shell handle. Owns the runtime workspace tree — the live
 /// counterpart to the persisted [`state::WorkspaceTree`], holding real
@@ -1563,13 +1559,15 @@ pub(crate) fn workspace_surface_chrome(
         topbar: Box::new(topbar),
         backdrop,
         empty_workspace: Some(Box::new(
-            collaboration_launchpad::CollaborationLaunchpad::new(),
+            tilo_desktop::launchpad::CollaborationLaunchpad::new(
+                overlay_host::workspace_rail_clearance_for_viewport,
+            ),
         )),
         // Compact top bars of the displays other than the primary.
         display_chrome: Some(Box::new(display_bars::DisplayBars::new(chrome.clone()))),
         // Reserves canvas-x [0, SIDEBAR_RESERVE_PX] for the wheel disc, which
         // lives in the overlay layer, so wheel and strip pan together.
-        leading_inset: f64::from(sidebar_wheel_disc::SIDEBAR_RESERVE_PX),
+        leading_inset: f64::from(tilo_desktop::sidebar_wheel_disc::SIDEBAR_RESERVE_PX),
         notify: None,
     }
 }
@@ -1703,12 +1701,12 @@ fn build_overlay_host_from_chrome(
     let (root, group_row_ptrs) = build_workspace_root(tree, &records, &chrome);
     // Each workspace is a spoke; dragging rotates them, releasing snaps to
     // the nearest one.
-    let spokes: Vec<sidebar_wheel_disc::SpokeLabel> = tree
+    let spokes: Vec<tilo_desktop::sidebar_wheel_disc::SpokeLabel> = tree
         .desktop
         .workspaces
         .iter()
         .filter(|w| w.is_shown())
-        .map(|w| sidebar_wheel_disc::SpokeLabel {
+        .map(|w| tilo_desktop::sidebar_wheel_disc::SpokeLabel {
             text: w.name.clone(),
             workspace_id: Some(w.id.0),
         })
@@ -1721,9 +1719,9 @@ fn build_overlay_host_from_chrome(
         .position(|w| w.id == tree.desktop.active)
         .unwrap_or(0);
     let sidebar: Box<dyn Widget> = Box::new(
-        sidebar_wheel_disc::SidebarWheelDisc::new(spokes)
+        tilo_desktop::sidebar_wheel_disc::SidebarWheelDisc::new(spokes)
             .with_active_idx(active_idx)
-            .with_chrome(chrome.clone()),
+            .with_host(std::rc::Rc::new(chrome_state::ChromeWheel(chrome.clone()))),
     );
 
     // The slot's top is pinned below the topbar so the sidebar's
@@ -1775,6 +1773,30 @@ pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut ui::presence:
         if let Some(hex) = &c.cursor_color {
             ctx.set_color_override(UserId(c.id.clone()), hex);
         }
+    }
+}
+
+#[cfg(test)]
+mod tab_presence_tests {
+    use super::*;
+
+    #[test]
+    fn a_hidden_room_shows_nobody_on_its_tabs_even_when_it_is_active() {
+        use crate::shell::state::{Collaborator, Workspace, WorkspaceId};
+
+        let mut workspace = Workspace::new(WorkspaceId(901), "Check");
+        workspace.ephemeral = true;
+        workspace.hidden = true;
+        let mut viewing = Collaborator::new("replay", "Replay");
+        viewing.active_tab = Some(1);
+        workspace.collaborators.push(viewing);
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.active = workspace.id;
+        tree.desktop.workspaces.push(workspace);
+
+        let mut presence = ui::presence::PresenceCtx::default();
+        sync_tab_presence_from_tree(&tree, &mut presence);
+        assert!(presence.here.is_empty());
     }
 }
 

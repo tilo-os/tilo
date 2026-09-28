@@ -16,7 +16,7 @@ use crate::tilo_actions::{
     OperationKind, ParamType, Resource, ResultSpec,
 };
 use crate::vello::Scene;
-use crate::widget::{ResourceOperationStart, TaffyTreeExt, Widget};
+use crate::widget::{ResourceOperation, ResourceOperationStart, TaffyTreeExt, Widget};
 
 /// Shared effect-operation type used by the one-resource app host.
 pub const OPERATION_TYPE: &str = "tilo.app.operation";
@@ -379,6 +379,22 @@ pub fn background(
     })
 }
 
+impl ResourceActionHost {
+    fn run_operation(
+        &mut self,
+        invocation: InvocationId,
+        payload: &[u8],
+    ) -> Result<ResourceOperationStart, String> {
+        match &mut self.runner {
+            Runner::Immediate(run) => run(payload).map(ResourceOperationStart::Completed),
+            Runner::Background(run) => {
+                self.pending.insert(invocation, run(payload)?);
+                Ok(ResourceOperationStart::Accepted)
+            }
+        }
+    }
+}
+
 impl Widget for ResourceActionHost {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.root.sync(state, path);
@@ -552,6 +568,28 @@ impl Widget for ResourceActionHost {
         vec![self.resource.clone()]
     }
 
+    fn start_operation(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op
+            .unscoped()
+            .filter(|request| request.kind != OperationKind::Document)
+            .filter(|request| request.type_id == OPERATION_TYPE)
+        else {
+            return Ok(None);
+        };
+        self.run_operation(request.invocation, request.payload)
+            .map(Some)
+    }
+
+    /// Legacy adapter: apps not yet on [`Widget::start_operation`] still reach
+    /// this host through their read-only routing.
     fn invoke_resource_operation_v2(
         &mut self,
         kind: OperationKind,
@@ -569,6 +607,7 @@ impl Widget for ResourceActionHost {
         }
     }
 
+    /// Legacy adapter; see [`Self::invoke_resource_operation_v2`].
     fn start_resource_operation(
         &mut self,
         invocation: InvocationId,
@@ -583,15 +622,7 @@ impl Widget for ResourceActionHost {
                 .root
                 .start_resource_operation(invocation, kind, type_id, payload, doc, path);
         }
-        match &mut self.runner {
-            Runner::Immediate(run) => run(payload)
-                .map(ResourceOperationStart::Completed)
-                .map(Some),
-            Runner::Background(run) => {
-                self.pending.insert(invocation, run(payload)?);
-                Ok(Some(ResourceOperationStart::Accepted))
-            }
-        }
+        self.run_operation(invocation, payload).map(Some)
     }
 
     fn poll_resource_operation(

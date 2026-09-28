@@ -7,6 +7,7 @@ license.workspace = true
 description = "Dropbox accounts as a cloud-source provider: API v2 listings and cursor feed, long-poll, content_hash, revisions, upload sessions, ranged reads, share links and quota."
 
 [dependencies]
+chrono = { workspace = true, features = ["std"] }
 cloud-source = { path = "../cloud-source" }
 reqwest = { workspace = true, features = ["blocking"] }
 tilo-net = { path = "../tilo-net", features = ["blocking"] }

@@ -17,7 +17,7 @@ license.workspace = true
 # installs its own `host::HostServices`.
 # Thread-local chooser and URI backends a test selects for scoped requests.
 test-support = []
-native = ["dep:arboard", "dep:open", "dep:smithay-clipboard", "dep:smithay-client-toolkit"]
+native = ["dep:arboard", "dep:open", "dep:smithay-clipboard", "dep:smithay-client-toolkit", "dep:jni", "dep:ndk-context"]
 # Host-native file open/save, OpenURI, location and screen capture through
 # the XDG Desktop Portal on Unix and the Common Item Dialogs on Windows. The
 # request vocabulary always compiles, so a build without it degrades to a
@@ -46,6 +46,8 @@ url.workspace = true
 # unchanged; it keeps the host seam buildable where `std` has none.
 web-time = "1"
 winit.workspace = true
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
 # Clipboard for non-Wayland platforms (X11, Windows, macOS). Wayland goes
 # through `smithay-clipboard` below; `arboard`'s Wayland path needs the
 # data-control manager protocol Tilo withholds from sandboxed apps.
@@ -68,6 +70,14 @@ workspace-hack = { version = "0.1" }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 
+[target.'cfg(target_os = "android")'.dependencies]
+# The Android backends call the framework through the activity's JVM, which
+# `ndk-context` holds for the process (android-activity installs it).
+jni = { version = "0.21.1", optional = true }
+ndk-context = { version = "0.1.1", optional = true }
+# winit's Android backend refuses to compile without an activity flavour.
+winit = { workspace = true, features = ["android-native-activity"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # `smithay-clipboard` speaks Wayland protocols and does not compile on native
 # Windows/macOS targets.
@@ -77,7 +87,7 @@ smithay-clipboard = { version = "0.7", optional = true }
 # while data-control would bypass Tilo's focus/privilege boundary.
 smithay-client-toolkit = { version = "0.20.0", features = ["calloop"], optional = true }
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(all(unix, not(target_os = "android")))'.dependencies]
 # MPRIS needs a Unix session bus; p2p supports hermetic tests.
 zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
 ashpd = { workspace = true, optional = true, features = ["file_chooser", "open_uri", "location", "screencast", "wallpaper"] }
@@ -86,7 +96,7 @@ futures-util = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", optional = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
-mime_guess = { version = "2.0.5", optional = true }
+mime_guess = { workspace = true, optional = true }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]

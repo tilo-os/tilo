@@ -5,6 +5,7 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 description = "Developer workflow for creating Tilo applications"
+autotests = false
 
 [lib]
 name = "tilo_app_cli"
@@ -13,16 +14,21 @@ name = "tilo_app_cli"
 name = "tilo-app"
 path = "src/main.rs"
 
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
 [dependencies]
 anyhow.workspace = true
-blake3.workspace = true
 clap.workspace = true
 fluent.workspace = true
 fluent-syntax.workspace = true
+hex.workspace = true
 libc.workspace = true
-notify = { workspace = true, default-features = true }
+notify.workspace = true
 image = { workspace = true, features = ["png"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
+registry-types = { path = "../../packaging/registry-types" }
 atomic-file = { path = "../../system/atomic-file" }
 # serde comes in through serde_json. A direct dependency is unused and fails machete.
 serde_json.workspace = true

@@ -31,8 +31,9 @@
 //! partial rows.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use tilo_clock::unix_now;
-use ui::search::{FieldWeight, RankField};
+use ui::search::{FieldWeight, ListIndex, MAX_FIELD_RANK};
 
 /// Keep history useful without letting a long-lived profile turn every
 /// address-bar query, resource snapshot, or persisted JSON write into an
@@ -66,6 +67,8 @@ pub struct History {
     /// Changes only when the durable corpus changes.  Consumers such as the
     /// global-search index can therefore make an unchanged sync O(1).
     revision: u64,
+    /// Titles and URLs, indexed while they stay the same.
+    search: Arc<ListIndex>,
 }
 
 // The revision is an in-memory cache token rather than part of history's
@@ -95,6 +98,7 @@ impl History {
         Self {
             entries: Vec::new(),
             revision: 0,
+            search: Arc::default(),
         }
     }
 
@@ -187,17 +191,24 @@ impl History {
     pub fn suggest_at(&self, query: &str, limit: usize, now: u64) -> Vec<HistoryEntry> {
         let needle = query.trim();
         let mut scored: Vec<(f64, &HistoryEntry)> = Vec::new();
-
-        for entry in &self.entries {
-            let match_score = if needle.is_empty() {
-                // No text signal — rank purely on recency + frequency.
-                0.0
-            } else {
-                match match_score(needle, entry) {
-                    Some(s) => s,
-                    None => continue, // matches neither field — drop it
-                }
+        // Title and URL are both things a person types from memory, so they
+        // weigh the same. An empty needle ranks every entry 0: purely on
+        // recency and frequency.
+        let ranks = self.search.ranks(
+            needle,
+            self.entries.iter().map(|entry| {
+                [
+                    (entry.title.as_str(), FieldWeight::TITLE),
+                    (entry.url.as_str(), FieldWeight::TITLE),
+                ]
+            }),
+        );
+        for (entry, rank) in self.entries.iter().zip(ranks) {
+            // An entry matching neither field is dropped.
+            let Some(rank) = rank else {
+                continue;
             };
+            let match_score = f64::from(rank) / f64::from(MAX_FIELD_RANK);
 
             let score = W_MATCH * match_score
                 + W_RECENCY * recency_score(entry.last_visit, now)
@@ -323,7 +334,7 @@ impl History {
         }
         let mut history = History {
             entries,
-            revision: 0,
+            ..History::new()
         };
         history.trim_to_limit();
         history
@@ -381,19 +392,6 @@ fn recency_score(last_visit: u64, now: u64) -> f64 {
 fn frequency_score(visit_count: u32) -> f64 {
     let n = f64::from(visit_count.max(1));
     1.0 - 1.0 / (1.0 + n)
-}
-
-/// The shared search ranker's relevance of `entry` to `needle` in `[0, 1]`,
-/// or `None` when neither its title nor its URL matches. Title and URL are
-/// both things a person types from memory, so they weigh the same.
-fn match_score(needle: &str, entry: &HistoryEntry) -> Option<f64> {
-    ui::search::relevance_fraction(
-        needle,
-        &[
-            RankField::new(&entry.title, FieldWeight::TITLE),
-            RankField::new(&entry.url, FieldWeight::TITLE),
-        ],
-    )
 }
 
 #[cfg(test)]
@@ -471,37 +469,29 @@ mod tests {
         }
     }
 
-    /// Fuzzy matching: subsequences match, others do not, prefixes score higher.
+    /// Matching: substrings and typos match, others do not, prefixes score higher.
     #[test]
-    fn fuzzy_matching_is_a_case_insensitive_subsequence_filter() {
-        let github = entry("https://github.com", "Code hosting", 1_000, 1);
-        let example = entry("https://example.com", "", 1, 1);
-        let abc = entry("abc", "", 1, 1);
-        for (row, needle, matches, why) in [
-            (&github, "ghcm", true, "a URL subsequence matches"),
-            (&github, "hosting", true, "a title substring matches"),
-            (
-                &example,
-                "zzz",
-                false,
-                "characters absent from the haystack do not match",
-            ),
-            (
-                &abc,
-                "acb",
-                false,
-                "out-of-order characters are not a subsequence",
-            ),
-        ] {
-            assert_eq!(match_score(needle, row).is_some(), matches, "{why}");
-        }
+    fn matching_is_case_insensitive_and_tolerates_typos() {
+        let matches = |needle: &str, row: HistoryEntry| {
+            let mut history = History::new();
+            history.entries.push(row);
+            !history.suggest_at(needle, 1, 1_000).is_empty()
+        };
+        let github = || entry("https://github.com", "Code hosting", 1_000, 1);
+        assert!(matches("githbu", github()), "a typo in the URL matches");
+        assert!(matches("HOSTING", github()), "a title substring matches");
+        assert!(!matches("zzz", entry("https://example.com", "", 1, 1)));
+        assert!(!matches("acb", entry("abc", "", 1, 1)));
 
-        let prefix = match_score("git", &entry("github", "", 1, 1)).unwrap();
-        let scattered = match_score("git", &entry("goldieturtle", "", 1, 1)).unwrap();
-        assert!(
-            prefix > scattered,
-            "contiguous prefix ({prefix}) must beat a scattered match ({scattered})"
-        );
+        let mut history = History::new();
+        history.entries.push(entry("legit", "", 1, 1));
+        history.entries.push(entry("github", "", 1, 1));
+        let urls: Vec<_> = history
+            .suggest_at("git", 2, 1)
+            .into_iter()
+            .map(|row| row.url)
+            .collect();
+        assert_eq!(urls, ["github", "legit"], "a prefix beats an infix");
     }
 
     /// Suggestion filtering, ranking signals and tie-breaks.
@@ -527,12 +517,12 @@ mod tests {
                 first: None,
             },
             // Equal recency + frequency isolates the match-quality signal;
-            // both are subsequence matches for 'git'.
+            // both hold 'git'.
             Case {
-                name: "the contiguous prefix match ranks first",
+                name: "the prefix match ranks first",
                 rows: &[
+                    ("https://legit.example", "Legit", 1_000, 1),
                     ("https://github.com", "GitHub", 1_000, 1),
-                    ("https://goldieturtle.example", "Goldie", 1_000, 1),
                 ],
                 query: "git",
                 now: 2_000,

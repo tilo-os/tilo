@@ -7,7 +7,10 @@
 //!
 //! - one resource, [`RESOURCE`], carrying `list` (every shortcut with its
 //!   label, current and default chords, whether it can be rebound and its
-//!   category, as JSON) and `reset-all`;
+//!   category, as JSON) and `reset-all`. Chords come twice: canonically
+//!   (`chords`, `defaults`: what `rebind` takes back) and as the active
+//!   keyboard layout's keycaps spell them (`chord_labels`, `default_labels`:
+//!   what a person reads, `Strg+Umschalt+T` on a German layout);
 //! - one resource per rebindable shortcut, `keyboard-shortcut:<id>`,
 //!   carrying `rebind` (to the chord given) and `reset`.
 //!
@@ -73,20 +76,20 @@ pub fn label(entry: &ShortcutEntry) -> String {
     t(&entry.label_key)
 }
 
-/// `chord` as people read it (`Super+K`, `Super+Page Up`), spelled the way
-/// the shortcut guide spells the desktop's fixed chords.
+/// `chord` as people read it (`Super+K`, `Super+Page Up`), in the legends
+/// of the active keyboard layout, the way the shortcut guide spells the
+/// desktop's fixed chords: a German layout reads `Strg+Umschalt+T`. The
+/// chord itself stays canonical; only its label follows the layout.
 #[must_use]
 pub fn chord_text(chord: &KeyChord) -> String {
-    if let Some(routed) = crate::shell::fixed_chords::routed(chord) {
-        return routed.display();
-    }
-    let display = chord.display();
-    match display.rsplit_once('+') {
-        Some((modifiers, key)) if key.chars().count() == 1 => {
-            format!("{modifiers}+{}", key.to_uppercase())
-        }
-        _ => display,
-    }
+    ui::keycaps::active().chord(chord.modifiers.iter().map(String::as_str), &chord.key)
+}
+
+/// `chord` in the desktop's canonical US spelling, whatever layout is
+/// active: the form callers read back and pass to `rebind`.
+#[must_use]
+pub fn canonical_chord_text(chord: &KeyChord) -> String {
+    ui::Keycaps::US.chord(chord.modifiers.iter().map(String::as_str), &chord.key)
 }
 
 fn chords_text(chords: &[KeyChord]) -> String {
@@ -103,12 +106,16 @@ fn chords_text(chords: &[KeyChord]) -> String {
 /// One catalogue row as the door returns it.
 #[must_use]
 pub fn entry_json(entry: &ShortcutEntry) -> Value {
-    let texts = |chords: &[KeyChord]| chords.iter().map(chord_text).collect::<Vec<_>>();
+    let texts = |chords: &[KeyChord], text: fn(&KeyChord) -> String| {
+        chords.iter().map(text).collect::<Vec<_>>()
+    };
     json!({
         "id": entry.id,
         "label": label(entry),
-        "chords": texts(&entry.chords),
-        "defaults": texts(&entry.defaults),
+        "chords": texts(&entry.chords, canonical_chord_text),
+        "chord_labels": texts(&entry.chords, chord_text),
+        "defaults": texts(&entry.defaults, canonical_chord_text),
+        "default_labels": texts(&entry.defaults, chord_text),
         "rebindable": entry.rebindable,
         "category": entry.category.id(),
         "category_label": t(&entry.category.label_key()),
@@ -143,7 +150,7 @@ fn contract(permission: PermissionRequirement, result: Value) -> ActionContract 
 fn entry_schema() -> Value {
     json!({
         "type": "object",
-        "required": ["id", "label", "chords", "defaults", "rebindable", "category"],
+        "required": ["id", "label", "chords", "chord_labels", "defaults", "default_labels", "rebindable", "category"],
     })
 }
 
@@ -422,13 +429,14 @@ fn refusal(
     chord: Option<&KeyChord>,
     error: ShortcutConfigError,
 ) -> ActionFailure {
-    let chord_json = chord.map(chord_text);
+    let chord_json = chord.map(canonical_chord_text);
+    let chord_label = chord.map(chord_text);
     let holder = |id: &str, name: String, kind: &str| json!({"chord": chord_json, "conflict": {"kind": kind, "id": id, "label": name}});
     let message = |name: &str| {
         t_args(
             "keyboard-shortcut-conflict",
             &[
-                ("chord", chord_json.clone().unwrap_or_default().into()),
+                ("chord", chord_label.clone().unwrap_or_default().into()),
                 ("shortcut", name.to_string().into()),
             ],
         )
@@ -463,13 +471,16 @@ fn refusal(
                         .find_map(|chord| config.action_for(chord))
                 });
             let name = held.map(|bound| bound.label.clone()).unwrap_or_default();
-            let chord_json = held.map(|bound| chord_text(&bound.chord)).or(chord_json);
+            let chord_label = held.map(|bound| chord_text(&bound.chord)).or(chord_label);
+            let chord_json = held
+                .map(|bound| canonical_chord_text(&bound.chord))
+                .or(chord_json);
             failure(
                 "shortcut_conflict",
                 t_args(
                     "keyboard-shortcut-conflict",
                     &[
-                        ("chord", chord_json.clone().unwrap_or_default().into()),
+                        ("chord", chord_label.unwrap_or_default().into()),
                         ("shortcut", name.clone().into()),
                     ],
                 ),
@@ -562,6 +573,33 @@ mod tests {
             )),
         )
         .expect("a well-formed rebind")
+    }
+
+    #[test]
+    fn rows_carry_canonical_chords_and_labels_in_the_active_layout() {
+        let config = ShortcutConfig::default();
+        ui::keycaps::set_active(ui::Keycaps::from_xkb("de", "nodeadkeys"));
+        let list = list_json(&config);
+        ui::keycaps::set_active(ui::Keycaps::US);
+        let row = |id: &str| {
+            list["shortcuts"]
+                .as_array()
+                .and_then(|rows| rows.iter().find(|row| row["id"] == id))
+                .cloned()
+                .unwrap_or_default()
+        };
+        let mouse_keys = row("fixed-toggle-mouse-keys");
+        assert_eq!(mouse_keys["chords"], json!(["Alt+Shift+Num Lock"]));
+        assert_eq!(mouse_keys["chord_labels"], json!(["Alt+Umschalt+Num"]));
+        let terminal = row(ShortcutAction::OpenTerminal.id());
+        assert_eq!(terminal["defaults"], json!(["Ctrl+Alt+T"]));
+        assert_eq!(terminal["default_labels"], json!(["Strg+Alt+T"]));
+        // The canonical form is what `rebind` reads back.
+        let chord = terminal["chords"][0].as_str().unwrap_or_default();
+        assert_eq!(
+            KeyChord::parse(chord),
+            Ok(ShortcutConfig::default().bindings[&ShortcutAction::OpenTerminal].clone())
+        );
     }
 
     #[test]

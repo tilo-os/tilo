@@ -69,23 +69,11 @@ so neither pull needs a login.
 
 ## Apps (`app:<dir>`)
 
-`swap app:notes` builds `apps/notes` with `tilo-app package` (a thin,
-self-signed `.tapp`, built as releases build it) and installs it as your slot
-user with `tilo-install install --allow-self-signed --force`. The user store
-shadows the image's copy, so it is live the next time the app launches;
-nothing restarts. App installs are not generations: `rollback` does not undo
-them.
-
-A thin app runs only against the `libruntime_dylib.so` it was linked with, so
-the package brings its runtime: a bundle named `tilo-runtime/0.0.0-local+<hash>`
-by content, which the packaged manifest names. When your slot user lacks that
-version, it is uploaded and installed with `tilo-install runtime install
---bundle` (it is large, and unchanged runtimes are not sent again), and its
-publisher (one key per worktree, `target/tilo-vm/runtime-publisher.json`) is
-added to the VM's `/etc/tilo/runtime-bundle-trusted-publishers.txt`. The
-image's runtime and the other apps are untouched; `apps+runtime` is the swap
-that replaces those. A VM whose `tilo-vmd` predates this refuses with the fix:
-`tilo-vm swap --slot vm vmd`, then retry.
+`swap app:notes` builds `apps/notes` with `tilo-app package` (self-signed
+`.tapp`) and installs it as your slot user with
+`tilo-install install --allow-self-signed --force`. The user store shadows
+the image's copy, so it is live the next time the app launches; nothing
+restarts. App installs are not generations: `rollback` does not undo them.
 
 ## What restarts
 

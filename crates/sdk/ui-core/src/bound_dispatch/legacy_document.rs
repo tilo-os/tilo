@@ -428,29 +428,27 @@ impl ResourceRequest<'_> {
         } = self
         {
             *result = Some(if interactive {
-                let started = match scope {
-                    Some(scope) => tile.start_resource_operation_scoped(
+                let op = match scope {
+                    Some(scope) => crate::widget::ResourceOperation::scoped(
                         scope,
                         *kind,
                         &encoded.type_id,
                         &encoded.payload,
-                        outer,
-                        &ROOT,
                     ),
-                    None => tile.start_resource_operation_with_document(
+                    None => crate::widget::ResourceOperation::local(
                         *invocation,
                         *kind,
                         &encoded.type_id,
                         &encoded.payload,
-                        outer,
-                        &ROOT,
                     ),
                 };
-                started.map_err(DoorError::Failed).and_then(|value| {
-                    value.ok_or_else(|| {
-                        refused("unknown_action", "Selected owner declined the operation")
+                tile.start_operation(&op, outer, &ROOT)
+                    .map_err(DoorError::Failed)
+                    .and_then(|value| {
+                        value.ok_or_else(|| {
+                            refused("unknown_action", "Selected owner declined the operation")
+                        })
                     })
-                })
             } else {
                 Err(refused("hidden_document", "Live document is hidden"))
             });

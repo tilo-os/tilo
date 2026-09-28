@@ -73,6 +73,14 @@ launcher currently checks Linux process birth information under `/proc`; its
 non-Linux implementation returns no attestation. Both macOS and Windows need
 an authenticated launch adapter before they can reuse the broker safely.
 
+Confinement is settled separately. A macOS app launched by the per-user
+runtime runs under App Sandbox only if it is Developer ID-signed,
+notarized and App Sandbox-entitled. Every other app runs under a
+generated Seatbelt profile, and none runs unsandboxed. See
+[the macOS section of the sandbox doc](app-model/sandbox.md#macos-app-sandbox-or-seatbelt),
+which includes the Seatbelt caveats (deprecated SPI; the GPU and IOKit
+surface).
+
 Windows already has a native Common Item Dialog adapter. The current macOS
 picker follows the Unix portal path; that gap should be fixed in the shared
 picker backend rather than copied into Windows.

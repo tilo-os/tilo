@@ -606,23 +606,10 @@ fn resume_uri(source: &ResumeSource) -> Option<String> {
             if path.chars().any(char::is_control) {
                 return None;
             }
-            Some(format!("file://{}", percent_encode_path(path)))
+            url::Url::from_file_path(path).ok().map(String::from)
         }
         ResumeSource::LocalFile(_) => None,
     }
-}
-
-fn percent_encode_path(path: &str) -> String {
-    let mut encoded = String::with_capacity(path.len());
-    for byte in path.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'.' | b'_' | b'~') {
-            encoded.push(char::from(byte));
-        } else {
-            use std::fmt::Write as _;
-            let _ = write!(encoded, "%{byte:02X}");
-        }
-    }
-    encoded
 }
 
 async fn discover_handoff_reports() -> Vec<PlaybackReport> {
@@ -852,34 +839,10 @@ fn safe_remote_locator(locator: &str) -> bool {
 }
 
 fn percent_decode(value: &str) -> Option<String> {
-    let bytes = value.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        let byte = *bytes.get(index)?;
-        if byte == b'%' {
-            let high_index = index.checked_add(1)?;
-            let low_index = index.checked_add(2)?;
-            let high = hex_nibble(*bytes.get(high_index)?)?;
-            let low = hex_nibble(*bytes.get(low_index)?)?;
-            decoded.push(high.checked_shl(4)?.checked_add(low)?);
-            index = index.saturating_add(3);
-        } else {
-            decoded.push(byte);
-            index = index.saturating_add(1);
-        }
-    }
-    let decoded = String::from_utf8(decoded).ok()?;
-    (!decoded.chars().any(char::is_control)).then_some(decoded)
-}
-
-fn hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => byte.checked_sub(b'0'),
-        b'a'..=b'f' => byte.checked_sub(b'a')?.checked_add(10),
-        b'A'..=b'F' => byte.checked_sub(b'A')?.checked_add(10),
-        _ => None,
-    }
+    let decoded = percent_encoding::percent_decode_str(value)
+        .decode_utf8()
+        .ok()?;
+    (!decoded.chars().any(char::is_control)).then(|| decoded.into_owned())
 }
 
 fn locator_has_video(locator: &str) -> bool {

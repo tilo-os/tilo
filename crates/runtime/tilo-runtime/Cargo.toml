@@ -1,0 +1,78 @@
+[package]
+name = "tilo-runtime"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The per-user shared runtime daemon: private profile, native endpoint, app attachment and the MCP projection of the action host."
+
+# Deliberately free of the compositor: the desktop session supplies its
+# services through `RuntimeServices`, and `standalone` hosts the shared broker
+# and identity service itself, so this crate and its `tilo-runtime`
+# executable build on stock macOS and on Linux without a Wayland stack.
+
+[lib]
+name = "tilo_runtime"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-runtime"
+path = "src/bin/tilo-runtime.rs"
+
+[dependencies]
+advisory-lock = { path = "../../system/advisory-lock" }
+atomic-file = { path = "../../system/atomic-file" }
+automerge.workspace = true
+base64.workspace = true
+blake3.workspace = true
+collab-types = { path = "../../collab/collab-types" }
+ed25519-dalek.workspace = true
+http-body-util = "0.1.3"
+hyper = { version = "1.8.1", features = ["http1", "server"] }
+hyper-util = { version = "0.1.20", features = ["tokio"] }
+image = { workspace = true, features = ["jpeg", "png"] }
+# The launcher's manifest view, service names and developer-override gate;
+# its binary builds every Linux app sandbox.
+launcher = { path = "../../packaging/launcher" }
+libc.workspace = true
+package-store = { path = "../../packaging/package-store" }
+postcard = { workspace = true, features = ["alloc"] }
+runtime-fs = { path = "../runtime-fs" }
+runtime-identity = { path = "../runtime-identity" }
+serde.workspace = true
+serde_json.workspace = true
+tilo-action-broker = { path = "../../collab/tilo-action-broker" }
+tilo-actions = { path = "../../collab/actions" }
+# The semantic-tree query `tilo_inspect` forwards to a live application.
+tilo-reference = { path = "../../collab/reference" }
+tilo-automerge-isolate.workspace = true
+tilo-desktop-model = { path = "../../session/desktop-model" }
+# The document-media capability over the content store, without the mount.
+tilo-fs = { package = "fs", path = "../../system/fs", default-features = false, features = ["document-media"] }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
+tilo-identity-host = { path = "../tilo-identity-host" }
+tilo-installed-apps = { path = "../../packaging/installed-apps" }
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-rt.workspace = true
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "time"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+workspace-hack = { version = "0.1" }
+
+# App Sandbox or Seatbelt: how every app launches on stock macOS.
+[target.'cfg(target_os = "macos")'.dependencies]
+launcher-macos = { path = "../../packaging/launcher-macos" }
+
+[dev-dependencies]
+# Signs the installed-package fixtures the launch path verifies.
+ed25519-dalek.workspace = true
+tempfile.workspace = true
+tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-test-env = { path = "../../dev/test-env" }
+# An ordinary SDK app, to prove the standalone session admits and publishes it.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+
+[lints]
+workspace = true

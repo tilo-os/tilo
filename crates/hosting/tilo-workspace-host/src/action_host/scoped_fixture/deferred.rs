@@ -48,6 +48,7 @@ pub(super) fn definition(app: &str) -> Option<&'static ApplicationDefinition> {
             record_kind: original.record_kind.clone(),
             required: original.required.clone(),
             optional: original.optional.clone(),
+            opens: original.opens,
             create: factory,
         }
     }))

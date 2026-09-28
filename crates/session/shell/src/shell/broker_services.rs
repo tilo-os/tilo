@@ -612,7 +612,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
         resource.starts_with(&format!(
             "{}:",
             super::public_room_governance::RESOURCE_KIND
-        )) || super::workspace_settings::is_governance_action(action)
+        )) || tilo_desktop::workspace_settings::is_governance_action(action)
     }
     fn descriptors(
         &self,
@@ -627,7 +627,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
             .find(|workspace| workspace.room == room)
             .map(|workspace| {
                 tilo_actions::door::survey(&[
-                    super::workspace_settings::permission_profile_resource_with_access(
+                    tilo_desktop::workspace_settings::permission_profile_resource_with_access(
                         workspace, true,
                     ),
                     // Public-room governance, the same actions the palette offers.
@@ -657,8 +657,9 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
             .get(workspace_index)
             .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
         let caller = governance_caller(workspace, actor);
-        let surface =
-            super::workspace_settings::permission_profile_resource_with_access(workspace, true);
+        let surface = tilo_desktop::workspace_settings::permission_profile_resource_with_access(
+            workspace, true,
+        );
         let resource = find_resource(&surface, request.resource)
             .ok_or_else(|| "unknown workspace governance resource".to_string())?;
         let spec = resource
@@ -738,7 +739,7 @@ fn find_resource<'a>(
 fn decode_permission_profile_operation(
     spec: &tilo_actions::ActionSpec,
     argument: Option<&str>,
-) -> Result<super::workspace_settings::PermissionProfileOperation, String> {
+) -> Result<tilo_desktop::workspace_settings::PermissionProfileOperation, String> {
     let json = argument
         .and_then(|value| value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
         .ok_or_else(|| "workspace governance action requires typed arguments".to_string())?;
@@ -753,7 +754,7 @@ fn decode_permission_profile_operation(
             String::from_utf8_lossy(&encoded.payload)
         ));
     }
-    if encoded.type_id != super::workspace_settings::PERMISSION_PROFILE_ACTION_TYPE {
+    if encoded.type_id != tilo_desktop::workspace_settings::PERMISSION_PROFILE_ACTION_TYPE {
         return Err("workspace governance action encoded an unexpected operation".into());
     }
     serde_json::from_slice(&encoded.payload)
@@ -767,10 +768,10 @@ fn apply_permission_profile_operation(
     workspace_index: usize,
     workspace_id: super::state::WorkspaceId,
     caller: &super::state::Actor,
-    operation: super::workspace_settings::PermissionProfileOperation,
+    operation: tilo_desktop::workspace_settings::PermissionProfileOperation,
 ) -> Result<(), String> {
     match operation {
-        super::workspace_settings::PermissionProfileOperation::Save {
+        tilo_desktop::workspace_settings::PermissionProfileOperation::Save {
             name,
             description,
             rules,
@@ -788,7 +789,7 @@ fn apply_permission_profile_operation(
                 .map_err(|error| error.to_string())?;
             tree.doc_upsert_permission_profile(workspace_id, &profile);
         }
-        super::workspace_settings::PermissionProfileOperation::Assign {
+        tilo_desktop::workspace_settings::PermissionProfileOperation::Assign {
             profile,
             subject_kind,
             subject,
@@ -821,13 +822,13 @@ fn apply_permission_profile_operation(
                 tree.doc_insert_capability(workspace_id, &capability);
             }
         }
-        operation @ (super::workspace_settings::PermissionProfileOperation::GrantAppAction {
+        operation @ (tilo_desktop::workspace_settings::PermissionProfileOperation::GrantAppAction {
             ..
         }
-        | super::workspace_settings::PermissionProfileOperation::RevokeAppAction {
+        | tilo_desktop::workspace_settings::PermissionProfileOperation::RevokeAppAction {
             ..
         }) => {
-            super::workspace_settings::apply_app_action_operation(
+            super::workspace_governance::apply_app_action_operation(
                 tree,
                 workspace_id,
                 caller,
@@ -871,21 +872,12 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
             super::launcher::display_name_for_app_id(app)
                 .unwrap_or_else(|| super::launcher::display_name_for_package_id(app))
         };
-        let context = tilo_actions::ActionContext::for_resource(
-            format!(
-                "Allowed {} to use {}: {} {}",
-                label(&request.app_id),
-                label(&request.target_app),
-                request.action_label,
-                answer.lifetime(),
-            ),
-            format!("workspace.permissions:{}", request.room),
-            "workspace.permissions",
-            "App actions",
-        )
-        .with_app(
-            super::state::WORKSPACE_GOVERNANCE_APP_ID,
-            "Workspace permissions",
+        let context = tilo_desktop_model::grants::app_action_grant_context(
+            &request.room,
+            &label(&request.app_id),
+            &label(&request.target_app),
+            &request.action_label,
+            answer.lifetime(),
         );
         let _ = tree.append_workspace_effect_receipt(
             workspace_id,
@@ -957,6 +949,15 @@ impl ContinuationServices for NativeContinuations {
             );
         Ok(())
     }
+    fn handoff(
+        &self,
+        room: tilo_desktop_model::RoomId,
+        app: String,
+        instance: u64,
+        message: Vec<u8>,
+    ) -> Result<(), String> {
+        super::window_transfer::report_handoff(room, app, instance, &message)
+    }
 }
 
 /// The native identity selector and fleet remain native service dependencies.
@@ -967,39 +968,14 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for NativeCertificat
         room: uuid::Uuid,
         cert: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
-        let profile = crate::identity_registry::selected_identity_profile(&room.to_string())
-            .map_err(|e| e.to_string())?
-            .ok_or("workspace identity unavailable")?;
-        let fleet = crate::device_fleet::DeviceFleetStore::from_env()
-            .and_then(|store| store.load(&profile.id))
-            .map_err(|e| e.to_string())?;
-        if cert.user_public_key != profile.user_public_key
-            || fleet.is_revoked(&cert.device_public_key)
-        {
-            return Err("device revoked or identity mismatched".into());
-        }
-        Ok(())
+        tilo_identity_host::certificates::authorize(&room.to_string(), cert)
     }
     fn authorize_join(
         &self,
         room: uuid::Uuid,
         cert: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
-        self.authorize(room, cert)?;
-        let profile = crate::identity_registry::selected_identity_profile(&room.to_string())
-            .map_err(|e| e.to_string())?
-            .ok_or("workspace identity unavailable")?;
-        let fleet = crate::device_fleet::DeviceFleetStore::from_env()
-            .and_then(|store| store.load(&profile.id))
-            .map_err(|e| e.to_string())?;
-        if !fleet
-            .certificates
-            .iter()
-            .any(|known| known.device_public_key == cert.device_public_key)
-        {
-            return Err("certified collaboration device is not enrolled".into());
-        }
-        Ok(())
+        tilo_identity_host::certificates::authorize_join(&room.to_string(), cert)
     }
 }
 pub fn native_services(

@@ -1970,13 +1970,7 @@ pub(crate) fn timeline_day_from_capture(captured_at: &str) -> Option<String> {
     let month = day.get(5..7)?.parse::<u8>().ok()?;
     let day_of_month = day.get(8..10)?.parse::<u8>().ok()?;
     let year = day.get(..4)?.parse::<u16>().ok()?;
-    let days_in_month = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
-        2 => 28,
-        _ => 0,
-    };
+    let days_in_month = ui::date::days_in_month(i64::from(year), u32::from(month));
     (bytes.len() == 10
         && bytes.get(4) == Some(&b'-')
         && bytes.get(7) == Some(&b'-')
@@ -1985,7 +1979,7 @@ pub(crate) fn timeline_day_from_capture(captured_at: &str) -> Option<String> {
             .enumerate()
             .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit())
         && (1..=12).contains(&month)
-        && (1..=days_in_month).contains(&day_of_month))
+        && (1..=days_in_month).contains(&u32::from(day_of_month)))
     .then(|| day.to_owned())
 }
 
@@ -3165,14 +3159,8 @@ fn valid_capture_date(value: &str) -> bool {
     ) else {
         return false;
     };
-    let days = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) => 29,
-        2 => 28,
-        _ => return false,
-    };
-    day >= 1 && day <= days
+    (1..=12).contains(&month)
+        && (1..=ui::date::days_in_month(i64::from(year), month)).contains(&day)
 }
 
 fn valid_capture_time(value: &str, has_seconds: bool) -> bool {

@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 use runtime_collab::{
     CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationPhaseInfo,
     SpeakerCommand, SpeakerDeviceInfo, SpeakerEndpointInfo, SpeakerGroupInfo, SpeakerMemberInfo,
-    SpeakerMemberSpec, SpeakerMemberStatus, SpeakerReply, SpeakerRoleSpec, SpeakerSnapshot,
-    SpeakerTrimInfo,
+    SpeakerMemberSpec, SpeakerMemberStatus, SpeakerPlaybackInfo, SpeakerReply, SpeakerRoleSpec,
+    SpeakerSnapshot, SpeakerTrimInfo,
 };
 
 use crate::shell::device_fabric::DeviceFabric;
@@ -24,7 +24,7 @@ use crate::shell::speaker_group::{
     AudioEndpointKind, EndpointSelector, RoomPoint, SpeakerGroupId, SpeakerMemberState,
     SpeakerRole, SpeakerTrim, StereoSide, SurroundChannel,
 };
-use crate::shell::speaker_group_runtime::MemberSpec;
+use crate::shell::speaker_group_runtime::{MemberSpec, SpeakerGroupsView, SpeakerSessionStatus};
 
 /// Shortest interval between two identify sounds on one device.
 pub const IDENTIFY_INTERVAL: Duration = Duration::from_millis(800);
@@ -102,6 +102,34 @@ fn parse_members(members: &[SpeakerMemberSpec]) -> Result<Vec<MemberSpec>, Strin
 fn parse_group(value: &str) -> Result<SpeakerGroupId, String> {
     SpeakerGroupId::from_hex(value)
         .ok_or_else(|| crate::shell::i18n::t("speaker-error-group-invalid"))
+}
+
+/// The most urgent state of any session on `group`, as Settings shows it.
+#[must_use]
+pub fn playback_info(
+    view: &SpeakerGroupsView,
+    group: SpeakerGroupId,
+) -> Option<SpeakerPlaybackInfo> {
+    let urgency = |status: SpeakerSessionStatus| match status {
+        SpeakerSessionStatus::ClockFailed(_) => 0,
+        SpeakerSessionStatus::SyncingClocks => 1,
+        SpeakerSessionStatus::Connecting => 2,
+        SpeakerSessionStatus::Playing => 3,
+    };
+    let status = view
+        .sessions
+        .iter()
+        .filter(|session| session.group == group)
+        .map(crate::shell::speaker_group_runtime::SpeakerSessionView::status)
+        .min_by_key(|status| urgency(*status))?;
+    Some(match status {
+        SpeakerSessionStatus::Playing => SpeakerPlaybackInfo::Playing,
+        SpeakerSessionStatus::Connecting => SpeakerPlaybackInfo::Connecting,
+        SpeakerSessionStatus::SyncingClocks => SpeakerPlaybackInfo::SyncingClocks,
+        SpeakerSessionStatus::ClockFailed(reason) => SpeakerPlaybackInfo::ClockFailed {
+            reason: bounded_reason(crate::shell::i18n::t(reason.message_key())),
+        },
+    })
 }
 
 /// Every device's endpoints as Settings shows them.
@@ -302,6 +330,7 @@ fn snapshot(network: &crate::shell::network::ShellNetwork) -> SpeakerSnapshot {
                     trim: trim_info(&member.trim),
                 })
                 .collect(),
+            playback: playback_info(&view, group.id),
         })
         .collect();
     let calibrations = state()

@@ -467,6 +467,23 @@ impl SessionFollowDispatcher {
             &CrdtRoute::cluster(room.to_string()),
         );
     }
+
+    /// Ask exactly one application instance, addressed by its primary route
+    /// in `room`, for the next step of moving its window. Session-local like
+    /// Follow; the answer arrives through the host's continuation services.
+    pub fn request_handoff(
+        &self,
+        room: &str,
+        app: &str,
+        instance: u64,
+        request: ui::collaboration::handoff::HandoffRequest,
+    ) {
+        self.fanout.fanout_to_route(
+            &CollabEvent::Handoff { request },
+            u64::MAX,
+            &CrdtRoute::record(app, room, format!("continuation:{instance}")),
+        );
+    }
 }
 
 /// Cloneable, transport-owning facade used by shell search providers. It

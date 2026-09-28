@@ -256,6 +256,9 @@ struct RunHostArgs {
     /// anything.
     #[arg(long)]
     dry_run: bool,
+    /// Prefer the desktop entry's declared New Window action.
+    #[arg(long)]
+    new_window: bool,
 }
 
 /// Fold an `i32` exit code (from [`std::process::ExitStatus::code`] or
@@ -706,6 +709,7 @@ fn run_host(args: RunHostArgs) -> ExitCode {
         open,
         open_url,
         dry_run,
+        new_window,
     } = args;
     let env = LaunchEnv {
         wayland_socket,
@@ -717,6 +721,7 @@ fn run_host(args: RunHostArgs) -> ExitCode {
             .map(|path| vec![path.display().to_string()])
             .unwrap_or_default(),
         urls: open_url.into_iter().collect(),
+        prefer_new_window: new_window,
     };
     let planned = match desktop_file.as_deref() {
         Some(path) => launcher::host::plan_host_file(path, &env),

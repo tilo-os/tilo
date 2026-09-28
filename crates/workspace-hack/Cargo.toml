@@ -84,7 +84,6 @@ group = { version = "0.13", default-features = false, features = ["alloc"] }
 guillotiere = { version = "0.7", default-features = false, features = ["std"] }
 half = { version = "2", features = ["num-traits"] }
 harfrust = { version = "0.5" }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17", default-features = false, features = ["default-hasher", "raw-entry"] }
 hashbrown-986da7b5efc2b80e = { package = "hashbrown", version = "0.16" }
 hayro-syntax = { version = "0.7", features = ["unsafe"] }
@@ -94,6 +93,7 @@ hpke-rs = { version = "0.7", default-features = false, features = ["experimental
 hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["experimental", "std"] }
 hybrid-array = { version = "0.4", default-features = false, features = ["alloc", "ctutils", "extra-sizes", "subtle", "zeroize"] }
 hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 hypher = { version = "0.1" }
 icu_collections = { version = "2", default-features = false, features = ["serde"] }
 icu_locale_core = { version = "2", default-features = false, features = ["alloc", "serde", "zerovec"] }
@@ -118,7 +118,6 @@ mio = { version = "1", features = ["net", "os-ext"] }
 ml-kem = { version = "0.3", features = ["hazmat"] }
 n0-error = { version = "1", features = ["anyhow"] }
 naga = { version = "29", features = ["wgsl-in"] }
-notify = { version = "8" }
 num-bigint-9fbad63c4bcf4a8f = { package = "num-bigint", version = "0.4" }
 num-bigint-d8f496e17d97b5cb = { package = "num-bigint", version = "0.5", features = ["rand_0_10"] }
 num-integer = { version = "0.1", features = ["i128"] }
@@ -148,6 +147,7 @@ rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14" }
 read-fonts = { version = "0.39" }
+regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "brotli", "form", "gzip", "json", "query", "rustls-no-provider"] }
@@ -180,6 +180,7 @@ stable_deref_trait = { version = "1" }
 subtle = { version = "2", features = ["const-generics"] }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
+tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
 time = { version = "0.3", features = ["macros", "serde-well-known"] }
 tinystr = { version = "0.8", features = ["serde", "zerovec"] }
@@ -215,9 +216,6 @@ zerofrom = { version = "0.1", default-features = false, features = ["alloc", "de
 zeroize = { version = "1", features = ["derive"] }
 zerotrie = { version = "0.2", default-features = false, features = ["serde", "yoke", "zerofrom", "zerovec"] }
 zerovec = { version = "0.11", default-features = false, features = ["alloc", "derive", "serde", "yoke"] }
-zstd = { version = "0.13", features = ["experimental"] }
-zstd-safe = { version = "7", default-features = false, features = ["arrays", "experimental", "legacy", "std", "zdict_builder"] }
-zstd-sys = { version = "2", default-features = false, features = ["experimental", "legacy", "std", "zdict_builder"] }
 
 [build-dependencies]
 adblock = { version = "0.12", default-features = false, features = ["content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
@@ -292,7 +290,6 @@ group = { version = "0.13", default-features = false, features = ["alloc"] }
 guillotiere = { version = "0.7", default-features = false, features = ["std"] }
 half = { version = "2", features = ["num-traits"] }
 harfrust = { version = "0.5" }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17", default-features = false, features = ["default-hasher", "raw-entry"] }
 hashbrown-986da7b5efc2b80e = { package = "hashbrown", version = "0.16" }
 hayro-syntax = { version = "0.7", features = ["unsafe"] }
@@ -302,6 +299,7 @@ hpke-rs = { version = "0.7", default-features = false, features = ["experimental
 hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["experimental", "std"] }
 hybrid-array = { version = "0.4", default-features = false, features = ["alloc", "ctutils", "extra-sizes", "subtle", "zeroize"] }
 hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 hypher = { version = "0.1" }
 icu_collections = { version = "2", default-features = false, features = ["serde"] }
 icu_locale_core = { version = "2", default-features = false, features = ["alloc", "serde", "zerovec"] }
@@ -326,7 +324,6 @@ mio = { version = "1", features = ["net", "os-ext"] }
 ml-kem = { version = "0.3", features = ["hazmat"] }
 n0-error = { version = "1", features = ["anyhow"] }
 naga = { version = "29", features = ["wgsl-in"] }
-notify = { version = "8" }
 num-bigint-9fbad63c4bcf4a8f = { package = "num-bigint", version = "0.4" }
 num-bigint-d8f496e17d97b5cb = { package = "num-bigint", version = "0.5", features = ["rand_0_10"] }
 num-integer = { version = "0.1", features = ["i128"] }
@@ -356,6 +353,7 @@ rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14" }
 read-fonts = { version = "0.39" }
+regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "brotli", "form", "gzip", "json", "query", "rustls-no-provider"] }
@@ -388,6 +386,7 @@ stable_deref_trait = { version = "1" }
 subtle = { version = "2", features = ["const-generics"] }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
+tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
 time = { version = "0.3", features = ["macros", "serde-well-known"] }
 time-macros = { version = "0.2", default-features = false, features = ["formatting", "parsing", "serde"] }
@@ -425,18 +424,17 @@ zerofrom = { version = "0.1", default-features = false, features = ["alloc", "de
 zeroize = { version = "1", features = ["derive"] }
 zerotrie = { version = "0.2", default-features = false, features = ["serde", "yoke", "zerofrom", "zerovec"] }
 zerovec = { version = "0.11", default-features = false, features = ["alloc", "derive", "serde", "yoke"] }
-zstd = { version = "0.13", features = ["experimental"] }
-zstd-safe = { version = "7", default-features = false, features = ["arrays", "experimental", "legacy", "std", "zdict_builder"] }
-zstd-sys = { version = "2", default-features = false, features = ["experimental", "legacy", "std", "zdict_builder"] }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "server-auto"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
-linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+linux-raw-sys-9fbad63c4bcf4a8f = { package = "linux-raw-sys", version = "0.4", default-features = false, features = ["elf", "errno", "general", "ioctl", "no_std", "prctl", "system"] }
+log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
@@ -445,7 +443,6 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 profiling = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
-regex = { version = "1" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }
@@ -469,9 +466,11 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "server-auto"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
-linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+linux-raw-sys-9fbad63c4bcf4a8f = { package = "linux-raw-sys", version = "0.4", default-features = false, features = ["elf", "errno", "general", "ioctl", "no_std", "prctl", "system"] }
+log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
@@ -480,7 +479,6 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 profiling = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
-regex = { version = "1" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }
@@ -504,9 +502,11 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "server-auto"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
-linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+linux-raw-sys-9fbad63c4bcf4a8f = { package = "linux-raw-sys", version = "0.4", default-features = false, features = ["elf", "errno", "general", "ioctl", "no_std", "prctl", "system"] }
+log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
@@ -515,7 +515,6 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 profiling = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
-regex = { version = "1" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }
@@ -539,9 +538,11 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "server-auto"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
-linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+linux-raw-sys-9fbad63c4bcf4a8f = { package = "linux-raw-sys", version = "0.4", default-features = false, features = ["elf", "errno", "general", "ioctl", "no_std", "prctl", "system"] }
+log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
@@ -550,7 +551,6 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 profiling = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
-regex = { version = "1" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }

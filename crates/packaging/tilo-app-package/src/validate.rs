@@ -50,6 +50,8 @@ pub enum ManifestError {
     BadProviderMime(String),
     #[error("invalid or reserved provider URI scheme {0:?}")]
     BadProviderScheme(String),
+    #[error("invalid resource kind {0:?}")]
+    BadResourceKind(String),
     #[error("publisher.identity: {0}")]
     BadPublisherIdentity(String),
     #[error("publisher.signature: {0}")]
@@ -211,7 +213,19 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
         }
         Kind::Service | Kind::Plugin | Kind::Runtime => {}
     }
+    validate_declarations(m)?;
 
+    m.publisher
+        .identity_bytes()
+        .map_err(|e| ManifestError::BadPublisherIdentity(e.to_string()))?;
+    m.publisher
+        .signature_bytes()
+        .map_err(|e| ManifestError::BadPublisherSignature(e.to_string()))?;
+    validate_target(m)
+}
+
+/// What the app claims to open and the resource kinds its records hold.
+fn validate_declarations(m: &Manifest) -> Result<(), ManifestError> {
     for ext in &m.providers.ext {
         if ext.is_empty()
             || ext.len() > 64
@@ -232,14 +246,12 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
             return Err(ManifestError::BadProviderScheme(scheme.clone()));
         }
     }
-
-    m.publisher
-        .identity_bytes()
-        .map_err(|e| ManifestError::BadPublisherIdentity(e.to_string()))?;
-    m.publisher
-        .signature_bytes()
-        .map_err(|e| ManifestError::BadPublisherSignature(e.to_string()))?;
-    validate_target(m)
+    for kind in &m.resources.kinds {
+        if !valid_resource_kind(kind) {
+            return Err(ManifestError::BadResourceKind(kind.clone()));
+        }
+    }
+    Ok(())
 }
 
 fn validate_target(m: &Manifest) -> Result<(), ManifestError> {
@@ -255,6 +267,9 @@ fn validate_target(m: &Manifest) -> Result<(), ManifestError> {
     registry_target
         .validate()
         .map_err(|error| ManifestError::BadTarget(error.to_string()))?;
+    if registry_types::DESKTOP_PLATFORMS.contains(&target.platform.as_str()) {
+        return validate_desktop_target(m, target);
+    }
     let runtime = registry_target.web_runtime().ok_or_else(|| {
         ManifestError::BadTarget(format!(
             "platform {:?} is native; native builds declare `[package.isa]` instead",
@@ -296,6 +311,41 @@ fn validate_target(m: &Manifest) -> Result<(), ManifestError> {
         Kind::Service | Kind::FormatProvider | Kind::Plugin => {
             return Err(ManifestError::TargetKindUnsupported);
         }
+    }
+    Ok(())
+}
+
+/// A Windows or macOS app: `module` is the executable the entrypoint names,
+/// and `runtime` is the toolkit release linked into it, as declared.
+fn validate_desktop_target(
+    m: &Manifest,
+    target: &crate::manifest::Target,
+) -> Result<(), ManifestError> {
+    if !crate::package::is_safe_path(&target.module) || target.module.len() > 255 {
+        return Err(ManifestError::BadTargetModule(target.module.clone()));
+    }
+    if m.package.isa.x86_64.is_some() || m.package.isa.aarch64.is_some() {
+        return Err(ManifestError::TargetWithNativeIsa);
+    }
+    if m.package.kind != Kind::App {
+        return Err(ManifestError::TargetKindUnsupported);
+    }
+    let declared = m.package.runtime.clone().unwrap_or_default();
+    if declared.is_empty() || declared != target.runtime {
+        return Err(ManifestError::TargetRuntimeMismatch {
+            declared,
+            target: target.runtime.clone(),
+        });
+    }
+    let entry = m
+        .entrypoint
+        .as_ref()
+        .and_then(|entry| entry.gui_bin_path())
+        .and_then(|path| path.to_str());
+    if entry != Some(target.module.as_str()) {
+        return Err(ManifestError::TargetEntrypointMismatch(
+            target.module.clone(),
+        ));
     }
     Ok(())
 }
@@ -360,6 +410,17 @@ fn valid_scheme(scheme: &str) -> bool {
         && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
         && !matches!(scheme, "file" | "data" | "javascript")
+}
+
+/// The shape the toolkit's `RecordKind` accepts, so every declared kind can
+/// name a record.
+fn valid_resource_kind(kind: &str) -> bool {
+    !kind.is_empty()
+        && kind.len() <= 64
+        && kind.bytes().enumerate().all(|(i, byte)| {
+            (byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+                && (i != 0 || byte.is_ascii_alphabetic())
+        })
 }
 
 fn validate_runtime_string(raw: &str) -> Result<(), ManifestError> {
@@ -516,6 +577,20 @@ mode = "off"
                 Some("tilo-runtime/2026.7.0-browser")
             );
             assert_eq!(validate_manifest(&manifest), Ok(()));
+        }
+    }
+
+    #[test]
+    fn declared_resource_kinds_must_be_record_kinds() {
+        let mut m = minimal_runtime_manifest();
+        m.resources.kinds = vec!["example.note".into(), "notes.note-book_2".into()];
+        assert_eq!(validate_manifest(&m), Ok(()));
+        for bad in ["", "1note", "note book", "note/page", &"k".repeat(65)] {
+            m.resources.kinds = vec![bad.to_owned()];
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::BadResourceKind(bad.to_owned()))
+            );
         }
     }
 

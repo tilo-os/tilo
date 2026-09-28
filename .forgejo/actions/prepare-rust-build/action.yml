@@ -1,14 +1,5 @@
 name: Prepare Rust build
-description: Ensure native build tools, restore Cargo downloads, and configure the optional remote compiler cache.
-
-inputs:
-  slot-cache:
-    description: >-
-      Mount the runner slot's persistent target/ and Cargo downloads
-      (tools/ci/slot_cache.py). The job must mount the slot-cache volume of
-      its trust class at /ci-slot-cache, and end with `slot_cache.py seal`.
-    required: false
-    default: "false"
+description: Ensure native build tools, restore Cargo downloads, and select the runner compiler cache or this repository's cache.
 
 outputs:
   cargo-cache-hit:
@@ -29,19 +20,13 @@ runs:
           dnf install -y autoconf automake libtool libgcrypt-devel
         fi
 
-    # Before the download restore, which then fills the slot's registry with
-    # whatever it lacks. Only a push to main is trusted; its volume is never
-    # one a pull request or another branch wrote.
-    - name: Mount the runner slot's Rust caches
-      if: inputs.slot-cache == 'true'
-      shell: bash
-      env:
-        SLOT_CACHE_TRUST: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}
-      run: python3 tools/ci/slot_cache.py mount --trust "$SLOT_CACHE_TRUST"
-
     - name: Restore Cargo downloads
       id: cargo-downloads
       uses: ./.forgejo/actions/restore-cargo-downloads
+
+    - name: Select the compiler cache
+      shell: bash
+      run: bash tools/ci/compiler_cache_env.sh
 
     - name: Configure optional compiler cache
       shell: bash

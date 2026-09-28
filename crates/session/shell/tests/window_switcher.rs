@@ -384,7 +384,10 @@ fn clicking_a_window_in_the_switcher_goes_there() {
         let state = h.chrome.borrow();
         h.host
             .window_switcher()
-            .ordered_windows(&state.tree())
+            .ordered_windows(
+                &state.tree().desktop,
+                &shell::shell::window_previews::ShellWindows,
+            )
             .iter()
             .map(|window| window.address.tab)
             .collect()

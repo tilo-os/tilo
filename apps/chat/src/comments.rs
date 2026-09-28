@@ -42,6 +42,7 @@ pub const REACTIONS_LOCAL: &str = "reactions";
 
 const MESSAGE_KEY: &str = "message";
 const WITHDRAWN_KEY: &str = "withdrawn";
+const BODY_KEY: &str = "rich";
 const USER_KEY: &str = "user";
 const REACTIONS_KEY: &str = "reactions";
 
@@ -219,6 +220,7 @@ impl Comments {
                 author: comment.author,
                 ts: comment.ts,
                 text: comment.text,
+                body: self.joined.read(record, read_body).unwrap_or_default(),
                 edited: false,
                 history: Vec::new(),
                 parent: comment.parent,
@@ -287,7 +289,11 @@ impl Comments {
     /// # Errors
     ///
     /// Why the record could not be written, in words for the reader.
-    pub fn post(&mut self, message: &CommentMessage) -> Result<(), String> {
+    pub fn post(
+        &mut self,
+        message: &CommentMessage,
+        body: &[qdoc_rich_text::ClipBlock],
+    ) -> Result<(), String> {
         let parent = match &message.parent {
             Some(parent) => self.target(parent),
             None => channel_record(&message.channel),
@@ -302,7 +308,8 @@ impl Comments {
         self.joined
             .create(&checkout, |doc| {
                 doc.put(ROOT, MESSAGE_KEY, json.as_str())
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.to_string())?;
+                write_body(doc, body)
             })
             .map_err(|e| e.to_string())?;
         self.reindex();
@@ -389,6 +396,30 @@ pub fn message_text_of(doc: &AutoCommit) -> Option<String> {
 /// Whether a reactions record says its author reacts with `emoji`.
 pub fn reacts_with(doc: &AutoCommit, emoji: &str) -> bool {
     read_reactions(doc).iter().any(|e| e == emoji)
+}
+
+/// The body as written, as rich text under the record's `rich` map, as a
+/// conversation-document message keeps it; nothing for an empty body (the
+/// plain text is the whole message).
+fn write_body(doc: &mut AutoCommit, body: &[qdoc_rich_text::ClipBlock]) -> Result<(), String> {
+    if body.is_empty() {
+        return Ok(());
+    }
+    let root = doc
+        .put_object(ROOT, BODY_KEY, automerge::ObjType::Map)
+        .map_err(|e| e.to_string())?;
+    qdoc_rich_text::RichText::initialize_under(doc, &root).map_err(|e| e.to_string())?;
+    tilo_rich_text::fill_clips_under(doc, &root, body).map_err(|e| e.to_string())
+}
+
+/// The body as written, when the message has one.
+fn read_body(doc: &AutoCommit) -> Vec<ui::widget::BlockContent> {
+    match doc.get(ROOT, BODY_KEY) {
+        Ok(Some((Value::Object(_), root))) => {
+            tilo_rich_text::blocks_under(doc, &root).unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
 }
 
 fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {

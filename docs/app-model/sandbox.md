@@ -340,6 +340,81 @@ After all three layers, your `main()` sees:
   `~/.local/share/<pkg-id>/` fallback; an app that writes through it needs
   a capability on the path it writes to.
 
+## macOS: App Sandbox or Seatbelt
+
+On stock macOS there is no bubblewrap, seccomp or Landlock. The macOS
+launcher (`crates/packaging/launcher-macos`) still runs every app
+sandboxed, and it picks one of two mechanisms from the app's code
+signature. The registry check above (a signed index verified against the
+Ed25519 root, [`trust.md`](./trust.md)) comes first in both cases. An Apple
+signature never replaces it.
+
+| The executable's signature | Launched under |
+| --- | --- |
+| Valid under strict validation, Apple Developer ID Application (or the configured team), notarized, entitlements include `com.apple.security.app-sandbox = true` | **App Sandbox**: exec'd directly, and the kernel enforces the sandbox its entitlements describe |
+| Anything else: unsigned, ad-hoc, invalid or tampered, another signer, not notarized, or no App Sandbox entitlement | **Seatbelt**: exec'd under a generated deny-default profile |
+
+The check fails closed. If the signature cannot be read, or if any
+Security.framework call fails, the app goes to Seatbelt. An ad-hoc
+signature's entitlements are only the payload's own claim, so they earn
+nothing. An unsigned binary on Apple silicon is ad-hoc signed before exec,
+because the CPU refuses to run unsigned code, and it still goes to Seatbelt.
+
+**Closing the gap between check and exec.** A file can be swapped between
+inspection and exec. So an App Sandbox app is spawned suspended, and the
+*running* image is checked again: trusted identity, not ad-hoc,
+entitlement present. It is resumed only if every check passes, and
+otherwise killed before it runs an instruction. Notarization is checked
+on the file only. It says nothing about whether the kernel enforces the
+sandbox.
+
+**The Seatbelt profile** is rendered from the same inputs as the Linux
+layers: the per-room app directory, the user's `CapabilityPlan` and the
+resolved `EgressDecision`. Paths travel as `sandbox-exec -D` parameters
+and are never spliced into the profile text. Every path is canonicalised,
+because Seatbelt matches real paths (`/tmp` is `/private/tmp`).
+
+| Grant | Rule |
+| --- | --- |
+| Baseline | Apple's `system.sb` (dyld, `/System`, `/usr/lib`, `/usr/share`, logging, `cfprefsd`), plus `(system-graphics)` for Metal |
+| GUI | Fixed Mach services for WindowServer, the window manager, Dock, LaunchServices, pasteboard, input methods, HID, fonts and icons; `/Library/Fonts`; read-only AppKit preference domains |
+| Payload | Read, map-executable and exec. Never writable, even under a broader user grant |
+| Runtime dylibs | Read and map-executable |
+| Container | Read and write, never exec: `~/Library/Application Support/Tilo/tilo-rooms/<room>/<package>`, which is also `HOME`, `XDG_*` and `TMPDIR` |
+| User grants | `ro_paths` read, `rw_paths` read and write |
+| Network: off | No sockets beyond `AF_UNIX` creation. No connect or bind, IP or filesystem |
+| Network: allowlist | Connect to the egress gate's Unix socket only (`TILO_NET_GATE`) |
+| Network: host | IP in and out, the system resolver, `trustd`. Filesystem sockets such as an `ssh-agent` stay closed |
+| Service descriptors | Inherited from the runtime at fixed numbers. Every other descriptor is closed by `POSIX_SPAWN_CLOEXEC_DEFAULT` |
+
+The profile is applied by `/usr/bin/sandbox-exec`, which is SIP-protected.
+It runs a preflight first, against a target that cannot exist. If the
+kernel rejects the profile, the launch is refused with an error, and
+nothing is ever started unsandboxed.
+
+**Caveats and gaps.**
+
+- Seatbelt (`sandbox_init_with_parameters`, `sandbox-exec`, SBPL and
+  `system.sb`) is deprecated, undocumented Apple SPI. Apple can change
+  it in any release. The profile has a pinned snapshot, and a real
+  enforcement test runs on macOS.
+- The GPU is the weak spot. Metal needs the IOAccelerator and IOSurface
+  user clients, which are a large kernel attack surface that no profile
+  can narrow. Mach services the profile allows (WindowServer, fonts,
+  pasteboard) are reachable IPC surface as well.
+- Device grants (camera, microphone) are not honoured under Seatbelt.
+  macOS gates them through TCC, and the profile grants no TCC service,
+  so the app is denied rather than widened.
+- An allowlisted network under Seatbelt reaches only the gate's Unix
+  socket. There is no network namespace in which to run the loopback
+  relay, so `HTTP_PROXY`/`ALL_PROXY`-style clients are offline until the
+  app talks to `TILO_NET_GATE` directly.
+- Metal's shader cache under `/var/folders/…/C` is not writable, so
+  shaders recompile on each launch.
+- A process whose ad-hoc signature claims the App Sandbox entitlement
+  gets Seatbelt, and then `libsystem_secinit` tries to apply App Sandbox
+  on top. That aborts the process, which fails closed.
+
 ## Debugging
 
 - `tilo-install run <pkg> --no-services` skips service resolution entirely.

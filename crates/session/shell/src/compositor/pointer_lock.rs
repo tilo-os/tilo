@@ -5,7 +5,8 @@
 //! The compositor, not the client, decides when a constraint takes effect:
 //! only for the surface that holds keyboard focus *and* sits under the local
 //! pointer, and never while the session is locked or shell chrome owns
-//! input. Losing either focus releases it. [`RELEASE_CHORD_LABEL`] always
+//! input. Losing either focus releases it. The release chord
+//! ([`release_chord_label`]) always
 //! releases it too, and the surface is not granted again until focus moves
 //! on, so a misbehaving game cannot trap the pointer.
 //!
@@ -27,8 +28,11 @@ use crate::compositor::state::State;
 /// The chord that always releases a locked or confined pointer. Super+Esc
 /// is the remote-input kill switch, so the release uses the other
 /// long-standing "get me out" chord; it is intercepted only while a
-/// constraint is engaged and otherwise reaches the focused client.
-pub const RELEASE_CHORD_LABEL: &str = "Ctrl+Alt+Esc";
+/// constraint is engaged and otherwise reaches the focused client. Named
+/// in the legends of the active keyboard layout (`Strg+Alt+Esc` on German).
+pub fn release_chord_label() -> String {
+    ui::keycaps::active().chord(["Ctrl", "Alt"], "escape")
+}
 
 /// Whether `event` is the release chord, on key press.
 pub fn is_release_chord(

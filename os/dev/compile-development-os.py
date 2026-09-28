@@ -38,8 +38,7 @@ RECONSTRUCTION_SOURCE = '4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc'
 PRIVATE = Path('/var/lib/tilo-provisional-compile')
 EVIDENCE = Path('/evidence')
 BUILDER = 'registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9'
-PIN_FILES = {'BASE_REF': 'base-snapshot.env', 'RPMS_REF': 'rpms-snapshot.env',
-             'KERNEL_RPMS_REF': 'kernel-snapshot.env'}
+PIN_FILES = {'BASE_REF': 'base-snapshot.env', 'KERNEL_RPMS_REF': 'kernel-snapshot.env'}
 ARCHITECTURES = {'x86_64': 'amd64', 'aarch64': 'arm64'}
 LOADER_NAMES = {'x86_64': 'systemd-bootx64.efi', 'aarch64': 'systemd-bootaa64.efi'}
 GIB = 1024**3
@@ -298,21 +297,27 @@ def adopted_wpe_receipt(path, digest, architecture):
 
 
 def cache_configuration(environment):
-    # The CI fleet's public S3 identity (the workflow env binds it). Do not
-    # send existing credentials to a redirected endpoint.
-    expected = {
-        'SCCACHE_ENDPOINT': 'https://s3.us-west-2.amazonaws.com',
-        'SCCACHE_BUCKET': 'tilo-ci-sccache-125650147312-us-west-2',
-        'SCCACHE_REGION': 'us-west-2', 'SCCACHE_S3_USE_SSL': 'true',
-    }
-    if any(environment.get(name) != value for name, value in expected.items()):
-        raise ValueError('remote compiler cache configuration differs from the reviewed runner S3 identity')
+    # The runner injects its S3 cache. Accept that identity when the endpoint,
+    # region and TLS agree, and refuse a redirected or malformed one.
+    endpoint = environment.get('SCCACHE_ENDPOINT', '')
+    bucket = environment.get('SCCACHE_BUCKET', '')
+    region = environment.get('SCCACHE_REGION', '')
+    ssl = environment.get('SCCACHE_S3_USE_SSL', '')
     prefix = environment.get('SCCACHE_S3_KEY_PREFIX', '')
+    hosted = re.fullmatch(r'https://s3\.([a-z]{2}-[a-z]+-[0-9])\.amazonaws\.com', endpoint)
+    if hosted is None or hosted.group(1) != region or ssl != 'true':
+        raise ValueError('remote compiler cache configuration differs from the reviewed runner S3 identity')
+    if not re.fullmatch(r'[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]', bucket):
+        raise ValueError('remote compiler cache bucket is not a DNS-compatible name')
     if not re.fullmatch(r'[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*', prefix) or len(prefix) > 128:
         raise ValueError('remote compiler cache requires a canonical runner key prefix')
-    # Compiler, arguments and source content determine cache validity. Reuse
-    # the existing trusted runner namespace rather than forcing a cold lane.
-    return {**expected, 'SCCACHE_S3_KEY_PREFIX': prefix}
+    return {
+        'SCCACHE_ENDPOINT': endpoint,
+        'SCCACHE_BUCKET': bucket,
+        'SCCACHE_REGION': region,
+        'SCCACHE_S3_USE_SSL': ssl,
+        'SCCACHE_S3_KEY_PREFIX': prefix,
+    }
 
 
 def stage_cache_credentials(directory):
@@ -346,10 +351,10 @@ def cache_credentials():
     return values
 
 
-def cache_counters(raw, prefix):
+def cache_counters(raw, prefix, bucket):
     payload = json.loads(raw)
     location = payload.get('cache_location', '')
-    expected_location = f's3, name: tilo-ci-sccache-125650147312-us-west-2, prefix: /{prefix}/'
+    expected_location = f's3, name: {bucket}, prefix: /{prefix}/'
     if location != expected_location:
         raise ValueError('compiler probe did not use the requested remote S3 cache')
     counters = payload.get('stats', {})
@@ -394,7 +399,7 @@ def verify_remote_cache(configuration):
                 run('sccache', 'rustc', '--crate-name', 'tilo_cache_probe', '--crate-type', 'rlib',
                     str(source), '--emit=link,dep-info', '--out-dir', temporary, env=environment, timeout=45)
                 counters = cache_counters(run('sccache', '--show-stats', '--stats-format=json',
-                                              env=environment, timeout=15), configuration['SCCACHE_S3_KEY_PREFIX'])
+                                              env=environment, timeout=15), configuration['SCCACHE_S3_KEY_PREFIX'], configuration['SCCACHE_BUCKET'])
                 receipt[attempt] = counters
                 if not counters['cache_hits'] and not counters['cache_writes']:
                     raise ValueError('remote compiler probe neither hit nor populated the cache')
@@ -554,15 +559,24 @@ def immutable_candidate(reference):
     return reference
 
 
+def resolve_rpms_ref():
+    """Resolve the published set-<fingerprint> snapshot for this checkout."""
+    reference = run(str(REPO / 'os/dev/resolve-rpm-snapshot.sh')).strip()
+    return immutable_candidate(reference)
+
+
 def selected_pins(architecture='x86_64', kernel_candidate='', rpms_candidate='', require_kernel=True):
     if architecture not in ARCHITECTURES:
         raise ValueError('unsupported native architecture')
     if require_kernel and architecture == 'aarch64' and not kernel_candidate:
         raise ValueError('ARM full-build requires an explicit immutable kernel candidate')
     pins = pinned_inputs(architecture, kernel_candidate, include_kernel=require_kernel)
-    for name, candidate in (('KERNEL_RPMS_REF', kernel_candidate), ('RPMS_REF', rpms_candidate)):
-        if candidate and (name != 'KERNEL_RPMS_REF' or require_kernel):
-            pins[name] = immutable_candidate(candidate)
+    if kernel_candidate and require_kernel:
+        pins['KERNEL_RPMS_REF'] = immutable_candidate(kernel_candidate)
+    if rpms_candidate:
+        pins['RPMS_REF'] = immutable_candidate(rpms_candidate)
+    else:
+        pins['RPMS_REF'] = resolve_rpms_ref()
     return pins
 
 

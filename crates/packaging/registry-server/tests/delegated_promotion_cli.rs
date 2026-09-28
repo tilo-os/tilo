@@ -60,6 +60,7 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
                 pubkey_hex: publisher_hex.clone(),
                 can_add_new: false,
                 note: "first party".into(),
+                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
             }],
         })
         .unwrap();
@@ -97,6 +98,7 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
                 pubkey_hex: publisher_hex.clone(),
                 can_add_new: true,
                 note: "first party".into(),
+                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
             }],
         })
         .unwrap();

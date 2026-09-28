@@ -153,6 +153,12 @@ of `add`, `update`, or `delete`. All three must carry:
   entry-without-sig preimage;
 - a `publisher_pubkey_hex` matching a row in `publishers.toml`.
 
+`add` and `update` also require the `package_id` to lie in one of that row's
+`namespaces`: `com.acme.notes` needs `com.acme`. Package ids are
+lowercase reverse DNS with at least three labels
+(`registry_types::namespace`). A row without `namespaces` is one of Tilo's own
+publishers and owns `so.tilo`.
+
 `update` and `delete` additionally require that the
 `publisher_pubkey_hex` matches the stored entry's — publishers
 may only edit their own entries. `update` further requires
@@ -190,13 +196,15 @@ under the systemd unit).
 tilo-registry-server add-publisher \
     --pubkey <publisher-hex> \
     --can-add-new \
+    --namespace com.acme \
     --note "in-house team"
 ```
 
 `--can-add-new` says this publisher may submit new entries. Without
 it, they may only propose edits or deletion of their own rows —
 useful for onboarding a publisher who's inheriting an existing
-entry.
+entry. `--namespace` (repeatable) is the reverse-DNS prefix the publisher's
+package ids must start with; it defaults to `so.tilo`.
 
 ### 4. Serve
 
@@ -274,6 +282,18 @@ loopback address (`http://127.0.0.1:<port>`, `http://localhost:<port>`,
 its URL. `tools/web/local-registry.sh` runs the whole flow against a
 throwaway local registry (see [Web apps in the browser](#web-apps-in-the-browser)).
 
+A publisher without its own artifact hosting uploads the file to the registry
+instead: `PUT /uploads/<blake3>.tapp` with the exact bytes, its public key in
+`Tilo-Publisher` and, in `Tilo-Signature`, its Ed25519 signature over
+`"tilo-registry-upload-v1\0"` followed by the lowercase BLAKE3 hex
+(`registry_types::upload`). The registry accepts only an allowlisted
+publisher's upload of a package that publisher signed, within the package's
+size limit, and answers `201` with `{"blake3", "url"}`. The URL is
+`https://apps.tilo.so/artifacts/<blake3>.tapp`, or the loopback prefix on a
+local registry. Uploads stay private: review reads them from storage instead of
+fetching the URL (`review_entry_bytes`), and `review approve` imports the
+approved bytes as the artifact the URL then serves.
+
 Presentation metadata is a signed part of the entry. Localized fields use one
 consistent language-tag map, and every non-empty localized map must contain an
 English (`en`) fallback. Language tags are canonical BCP 47 spellings (for
@@ -315,19 +335,29 @@ the same fallback rule and distinguish `icon`, `screenshot`, and `banner`.
 
 Each signed version binds the package root, exact final-file BLAKE3 and size,
 platform family, architecture, minimum ISA and runtime ABI. The schema can add
-future platform families without changing the signed entry shape. Two families
-are accepted (`registry_types::target`):
+future platform families without changing the signed entry shape. Four
+families are accepted (`registry_types::target`):
 
 | `platform` | `architecture` | `isa` | `runtime` |
 |---|---|---|---|
 | `tilo-os` | `x86_64`, `aarch64` | `x86_64`, `x86_64-v2`…`v4`, `aarch64`, `aarch64-v8.2`/`v8.4`/`v9` | optional, `tilo-runtime/<version>` |
 | `web` | `wasm32` | canonical wasm feature set, see below | **required**, `tilo-runtime/<version>+wasm.<32 hex>` |
+| `windows` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
+| `macos` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
 
 A native release must publish a distinct `.tapp` for both architectures. Pass
-each tapp's target with `tilo-app-package entry --arch`; generic Linux, macOS,
-and Windows builds do not belong in the Tilo OS app channel. Web versions sit
-beside native versions in the same entry: version identity is
-`(version, platform, architecture)`.
+each tapp's target with `tilo-app-package entry --arch`. Web, Windows and macOS
+versions sit beside Tilo OS versions in the same entry: version identity is
+`(version, platform, architecture)`, and a Tilo OS client installs only
+`tilo-os` versions. Generic Linux builds do not belong in the registry.
+
+**Windows and macOS.** Those systems ship no Tilo toolkit, so the package is one
+self-contained executable with the toolkit linked in. Its signed `[target]`
+names the executable as `module` (the GUI entrypoint must name the same path)
+and the linked release as `runtime`, equal to `[package].runtime`
+(`tilo_app_package::desktop::desktop_manifest`). Such a build may be up to
+`MAX_DESKTOP_APP_TAPP_BYTES` (64 MiB), a distribution policy rather than a
+design target; `tilo-app-package entry --platform windows|macos` binds it.
 
 **Web `isa`.** `wasm32-mvp` followed by zero or more `+<feature>`, where each
 feature is one of `atomics`, `bulk-memory`, `bulk-memory-opt`,

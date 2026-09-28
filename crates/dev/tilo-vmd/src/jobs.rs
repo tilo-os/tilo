@@ -342,10 +342,6 @@ impl Daemon {
             .join(format!("app-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&staging).map_err(DaemonError::io("create app staging"))?;
         let tapp = staging.join(format!("{dir}.tapp"));
-        let runtime_out = staging.join("runtime");
-        // One signing key for every runtime this daemon bakes, so the slot's
-        // trust list gains one publisher, not one per build.
-        let runtime_identity = self.root.join("runtime-publisher.json");
         let built = timer.time("build", || {
             let mut tools = Command::new("cargo");
             tools.args(app_tool_args()).current_dir(src);
@@ -353,27 +349,16 @@ impl Daemon {
             step("cargo build (tilo-app)", &mut tools)?;
             let mut package = Command::new(src.join("target/release/tilo-app"));
             package
-                .args(app_package_args(
-                    dir,
-                    &tapp,
-                    &runtime_out,
-                    &runtime_identity,
-                ))
+                .args(app_package_args(dir, &tapp))
                 .env("TILO_PKG", src.join("target/release/tilo-app-package"))
-                .env("BUNDLE_BIN", src.join("target/release/tilo-runtime-bundle"))
                 .current_dir(src);
             cargo_env(&mut package, job.color, sccache);
             step("tilo-app package", &mut package)
         });
         let installed = built.and_then(|()| {
-            let runtime = baked_runtime(&runtime_out)?;
             timer.time("install", || {
                 let _locks = self.slot_locks(slot)?;
-                self.install_app(
-                    slot,
-                    LayerSource::Path(tapp.display().to_string()),
-                    runtime.map(|bundle| LayerSource::Path(bundle.display().to_string())),
-                )
+                self.install_app(slot, LayerSource::Path(tapp.display().to_string()))
             })
         });
         let _ = std::fs::remove_dir_all(&staging);
@@ -475,61 +460,20 @@ pub fn app_tool_args() -> Vec<String> {
         "tilo-app-cli",
         "-p",
         "tilo-app-package-cli",
-        "-p",
-        "runtime-bundle",
     ]
     .map(str::to_owned)
     .to_vec()
 }
 
-/// `tilo-app` arguments that package `apps/<dir>` as a self-signed thin
-/// `.tapp`, with the runtime it links baked under `runtime_out`.
-pub fn app_package_args(
-    dir: &str,
-    out: &Path,
-    runtime_out: &Path,
-    runtime_identity: &Path,
-) -> Vec<String> {
+/// `tilo-app` arguments that package `apps/<dir>` as a self-signed `.tapp`.
+pub fn app_package_args(dir: &str, out: &Path) -> Vec<String> {
     vec![
         "package".into(),
         format!("apps/{dir}"),
         "--output".into(),
         out.display().to_string(),
         "--force".into(),
-        "--runtime-out".into(),
-        runtime_out.display().to_string(),
-        "--runtime-identity".into(),
-        runtime_identity.display().to_string(),
     ]
-}
-
-/// The one bundle `tilo-app package --runtime-out <runtime_out>` baked, at
-/// `<runtime_out>/tilo-runtime/<version>`; `None` when it baked none.
-///
-/// # Errors
-/// More than one bundle, or an unreadable directory.
-pub fn baked_runtime(runtime_out: &Path) -> Result<Option<PathBuf>, DaemonError> {
-    let versions = runtime_out.join("tilo-runtime");
-    if !versions.is_dir() {
-        return Ok(None);
-    }
-    let mut bundles = Vec::new();
-    for entry in std::fs::read_dir(&versions).map_err(DaemonError::io("read the baked runtime"))? {
-        let path = entry
-            .map_err(DaemonError::io("read the baked runtime"))?
-            .path();
-        if path.join("bundle.toml").is_file() {
-            bundles.push(path);
-        }
-    }
-    match bundles.len() {
-        0 => Ok(None),
-        1 => Ok(bundles.pop()),
-        _ => Err(DaemonError::Apply {
-            step: "find the baked runtime".into(),
-            detail: format!("{} holds more than one bundle", versions.display()),
-        }),
-    }
 }
 
 pub fn ci_provenance(job: &CiJob, digest: Option<String>, revision: Option<String>) -> Provenance {
@@ -725,33 +669,12 @@ mod tests {
         {
             assert_eq!(
                 app_tool_args().join(" "),
-                "build --locked --release -p tilo-app-cli -p tilo-app-package-cli -p runtime-bundle"
+                "build --locked --release -p tilo-app-cli -p tilo-app-package-cli"
             );
             assert_eq!(
-                app_package_args(
-                    "notes",
-                    Path::new("/s/notes.tapp"),
-                    Path::new("/s/runtime"),
-                    Path::new("/var/lib/tilo-vmd/runtime-publisher.json"),
-                )
-                .join(" "),
-                "package apps/notes --output /s/notes.tapp --force --runtime-out /s/runtime \
-                 --runtime-identity /var/lib/tilo-vmd/runtime-publisher.json"
+                app_package_args("notes", Path::new("/s/notes.tapp")).join(" "),
+                "package apps/notes --output /s/notes.tapp --force"
             );
-        }
-        // Phase `the_baked_runtime_is_the_one_bundle_under_runtime_out`.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            assert_eq!(baked_runtime(dir.path()).unwrap(), None);
-            let bundle = dir.path().join("tilo-runtime/0.0.0-local+ab");
-            std::fs::create_dir_all(&bundle).unwrap();
-            assert_eq!(baked_runtime(dir.path()).unwrap(), None);
-            std::fs::write(bundle.join("bundle.toml"), "version = \"0.0.0-local+ab\"\n").unwrap();
-            assert_eq!(baked_runtime(dir.path()).unwrap(), Some(bundle));
-            let second = dir.path().join("tilo-runtime/0.0.0-local+cd");
-            std::fs::create_dir_all(&second).unwrap();
-            std::fs::write(second.join("bundle.toml"), "version = \"0.0.0-local+cd\"\n").unwrap();
-            assert!(baked_runtime(dir.path()).is_err());
         }
     }
 }

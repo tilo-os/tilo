@@ -10,6 +10,7 @@ use vello::kurbo::Point;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use tilo_rich_text::FieldOutcome;
 use ui::Widget;
 
 use crate::actions;
@@ -497,6 +498,16 @@ impl ChatApp {
         // activates the same `Hit` path as a pointer, including the composers.
         // This check deliberately precedes composer routing: a multiline input
         // must not swallow the application's navigation key.
+        // An `@name` being typed in a composer takes Tab to complete it.
+        if matches!(logical_key, Key::Named(NamedKey::Tab))
+            && self.editing.is_none()
+            && self.rename.is_none()
+            && self.focused_composer().is_focused()
+            && self.complete_mention_on_tab(event, modifiers, doc)
+        {
+            *handled = true;
+            return;
+        }
         if matches!(logical_key, Key::Named(NamedKey::Tab)) {
             self.move_keyboard_target(modifiers.state().shift_key());
             *handled = true;
@@ -611,11 +622,11 @@ impl ChatApp {
         modifiers: Modifiers,
         doc: &mut AutoCommit,
     ) {
-        drive_text_input(&mut self.edit_input, event, scale, modifiers, doc);
-        if self.edit_input.take_submit() {
-            self.commit_edit(doc);
-        } else {
-            let _ = self.edit_input.take_dirty();
+        self.edit_input.handle(event, scale, modifiers, doc);
+        match self.edit_input.take_outcome() {
+            Some(FieldOutcome::Submit) => self.commit_edit(doc),
+            Some(FieldOutcome::Cancel) => self.cancel_edit(),
+            None => {}
         }
     }
 
@@ -649,30 +660,69 @@ impl ChatApp {
             }
             return;
         }
+        // The draft is created the first time its surface is written in.
         let key = self.draft_key();
-        let base = self.draft_base();
-        drive_text_input(self.focused_composer_mut(), event, scale, modifiers, doc);
-        if self.focused_composer_mut().take_submit() {
-            self.send_focused(doc);
-        } else if let Some(text) = self.focused_composer_mut().take_dirty() {
-            ChatDoc::set_draft_from(doc, &key, &base, &text);
-            // A draft edit changes only this surface's draft. Refresh exactly
-            // the draft state `reload` would (the next splice base and the
-            // composer, which is a no-op unless a concurrent edit merged in);
-            // the full projection of every channel's messages is rebuilt by
-            // `sync` because the document moved.
-            let draft = ChatDoc::draft_text(doc, &key);
-            match self.focus {
-                Focus::Thread if self.thread_open.is_some() => {
-                    self.composer_thread.set_text(&draft);
-                    self.draft_thread = draft;
-                }
-                _ => {
-                    self.composer_main.set_text(&draft);
-                    self.draft_main = draft;
-                }
-            }
+        if ChatDoc::rich_draft(doc, &key).is_none() {
+            ChatDoc::ensure_rich_draft(doc, &key);
+            self.focused_composer_mut().sync(doc);
         }
+        self.focused_composer_mut()
+            .handle(event, scale, modifiers, doc);
+        match self.focused_composer_mut().take_outcome() {
+            Some(FieldOutcome::Submit) => self.send_focused(doc),
+            Some(FieldOutcome::Cancel) | None => {}
+        }
+        // A draft edit changes only this surface's draft; the full projection
+        // of every channel's messages is rebuilt by `sync` because the
+        // document moved.
+        let draft = self.focused_composer().value();
+        match self.focus {
+            Focus::Thread if self.thread_open.is_some() => self.draft_thread = draft,
+            _ => self.draft_main = draft,
+        }
+    }
+
+    /// Tab while an `@name` is being typed completes it with the best match
+    /// in the room, as a mention. Returns whether it did.
+    fn complete_mention_on_tab(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: Modifiers,
+        doc: &mut AutoCommit,
+    ) -> bool {
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Named(NamedKey::Tab),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        if modifiers.state().shift_key() {
+            return false;
+        }
+        let Some(before) = self.focused_composer().text_before_caret() else {
+            return false;
+        };
+        let participants = self.participants();
+        let Some(query) = crate::mention::picker_query(&before, before.len(), &participants) else {
+            return false;
+        };
+        let Some(who) = crate::mention::candidates(&participants, &query.query)
+            .first()
+            .map(|who| (*who).clone())
+        else {
+            return false;
+        };
+        let typed = before.len().saturating_sub(query.start);
+        let label = format!("@{}", who.name);
+        self.focused_composer_mut()
+            .complete_mention(doc, typed, &who.id, &label);
+        true
     }
 
     /// Forward a `CursorMoved` to every text input so hover and drag-select
@@ -684,10 +734,10 @@ impl ChatApp {
         modifiers: Modifiers,
         doc: &mut AutoCommit,
     ) {
-        drive_text_input(&mut self.composer_main, event, scale, modifiers, doc);
-        drive_text_input(&mut self.composer_thread, event, scale, modifiers, doc);
+        self.composer_main.handle(event, scale, modifiers, doc);
+        self.composer_thread.handle(event, scale, modifiers, doc);
         drive_text_input(&mut self.rename_input, event, scale, modifiers, doc);
-        drive_text_input(&mut self.edit_input, event, scale, modifiers, doc);
+        self.edit_input.handle(event, scale, modifiers, doc);
         if self.emoji_open {
             drive_text_input(&mut self.emoji_search, event, scale, modifiers, doc);
         }
@@ -701,10 +751,10 @@ impl ChatApp {
         modifiers: Modifiers,
         doc: &mut AutoCommit,
     ) {
-        drive_text_input(&mut self.composer_main, event, scale, modifiers, doc);
-        drive_text_input(&mut self.composer_thread, event, scale, modifiers, doc);
+        self.composer_main.handle(event, scale, modifiers, doc);
+        self.composer_thread.handle(event, scale, modifiers, doc);
         drive_text_input(&mut self.rename_input, event, scale, modifiers, doc);
-        drive_text_input(&mut self.edit_input, event, scale, modifiers, doc);
+        self.edit_input.handle(event, scale, modifiers, doc);
         if self.emoji_open {
             drive_text_input(&mut self.emoji_search, event, scale, modifiers, doc);
         }
@@ -730,9 +780,10 @@ impl ChatApp {
         } else if self.rename.is_some() {
             drive_text_input(&mut self.rename_input, event, scale, modifiers, doc)
         } else if self.editing.is_some() {
-            drive_text_input(&mut self.edit_input, event, scale, modifiers, doc)
+            self.edit_input.handle(event, scale, modifiers, doc)
         } else {
-            drive_text_input(self.focused_composer_mut(), event, scale, modifiers, doc)
+            self.focused_composer_mut()
+                .handle(event, scale, modifiers, doc)
         }
     }
 
@@ -1392,17 +1443,17 @@ impl ChatApp {
         match hit {
             Hit::FocusMain => {
                 self.focus = Focus::Main;
-                ui::Widget::set_focus(&mut self.composer_main, true);
-                ui::Widget::set_focus(&mut self.composer_thread, false);
+                self.composer_main.set_focus(true);
+                self.composer_thread.set_focus(false);
             }
             Hit::FocusThread => {
                 self.focus = Focus::Thread;
-                ui::Widget::set_focus(&mut self.composer_main, false);
-                ui::Widget::set_focus(&mut self.composer_thread, true);
+                self.composer_main.set_focus(false);
+                self.composer_thread.set_focus(true);
             }
             _ => {
-                ui::Widget::set_focus(&mut self.composer_main, false);
-                ui::Widget::set_focus(&mut self.composer_thread, false);
+                self.composer_main.set_focus(false);
+                self.composer_thread.set_focus(false);
             }
         }
     }
@@ -1423,13 +1474,6 @@ impl ChatApp {
 
     /// The draft text the focused composer was last loaded from (by
     /// `reload`), the base its next edit is spliced against.
-    fn draft_base(&self) -> String {
-        match self.focus {
-            Focus::Thread if self.thread_open.is_some() => self.draft_thread.clone(),
-            _ => self.draft_main.clone(),
-        }
-    }
-
     fn draft_key(&self) -> String {
         match self.focus {
             Focus::Thread => self
@@ -1449,16 +1493,15 @@ impl ChatApp {
             return;
         }
         if self.editing.is_some() {
-            self.edit_input.insert_at_cursor(s);
-            let _ = self.edit_input.take_dirty();
+            self.edit_input.insert_text(doc, s);
             return;
         }
         let key = self.draft_key();
-        let base = self.draft_base();
-        self.focused_composer_mut().insert_at_cursor(s);
-        if let Some(text) = self.focused_composer_mut().take_dirty() {
-            ChatDoc::set_draft_from(doc, &key, &base, &text);
+        if ChatDoc::rich_draft(doc, &key).is_none() {
+            ChatDoc::ensure_rich_draft(doc, &key);
+            self.focused_composer_mut().sync(doc);
         }
+        self.focused_composer_mut().insert_text(doc, s);
         self.reload(doc);
     }
 
@@ -1473,9 +1516,8 @@ impl ChatApp {
         if m.author != self.me.id {
             return;
         }
-        let text = m.text.clone();
-        self.edit_input.set_text(&text);
-        self.edit_input.set_cursor_pos(text.len());
+        let blocks = m.blocks();
+        self.edit_input.load(&blocks);
         self.editing = Some(id);
         self.focus = Focus::Main;
         self.menu = None;
@@ -1517,7 +1559,8 @@ impl ChatApp {
         let Some(id) = self.editing.take() else {
             return;
         };
-        let text = self.edit_input.value().to_string();
+        let text = self.edit_input.value();
+        let body = self.edit_input.clips();
         self.edit_input.set_text("");
         self.set_composer_focus();
         if text.trim().is_empty() {
@@ -1526,7 +1569,7 @@ impl ChatApp {
         let channel = self.active_channel.clone();
         self.perform_action(
             doc,
-            &actions::edit_message_action(&channel, &id, &text, now_secs()),
+            &actions::edit_message_action(&channel, &id, &text, now_secs()).with_body(body),
         );
         self.reload(doc);
     }
@@ -1555,6 +1598,8 @@ impl ChatApp {
         if text.trim().is_empty() {
             return;
         }
+        let body = ChatDoc::draft_clips(doc, &key);
+        let blocks = ChatDoc::draft_blocks(doc, &key);
         // The message ROW insert is the action: id + timestamp minted here at
         // authoring time and carried in the payload, dispatched through the same
         // executor path Ctrl+K uses (undo boundary + byte-identical replay). The
@@ -1566,7 +1611,7 @@ impl ChatApp {
         // message carries the resolved references, so no reader — a peer, a
         // notification, an agent watching the room — ever re-parses the body to
         // work out who it was addressed to.
-        let mentions = crate::mention::resolve(&text, &self.participants());
+        let mentions = crate::body::mentions(&blocks, &self.participants());
         self.perform_action(
             doc,
             &actions::send_message_action(
@@ -1578,9 +1623,11 @@ impl ChatApp {
                 parent,
                 None,
                 mentions,
-            ),
+            )
+            .with_body(body),
         );
         ChatDoc::clear_draft(doc, &key);
+        self.focused_composer_mut().sync(doc);
         if matches!(self.focus, Focus::Main) {
             self.jump_to_latest();
         }
@@ -2240,11 +2287,7 @@ mod tests {
                 "ab",
                 "backspace removed the last char"
             );
-            assert_eq!(
-                app.composer_main.cursor_pos(),
-                2,
-                "caret follows the deletion"
-            );
+            assert_eq!(app.composer_main.caret(), 2, "caret follows the deletion");
             assert_eq!(app.draft_main, "ab", "the draft mirrors the edit");
         }
 
@@ -3239,10 +3282,8 @@ mod tests {
             app.begin_edit("m_me1".into());
 
             feed_mods(&mut app, &mut doc, &key_char("a"), mods(true, false));
-            assert_eq!(
-                app.edit_input.selection_range_public(),
-                Some((0, original.len()))
-            );
+            let (anchor, caret) = app.edit_input.selection();
+            assert_eq!((anchor.min(caret), anchor.max(caret)), (0, original.len()));
             feed(
                 &mut app,
                 &mut doc,
@@ -3297,14 +3338,14 @@ mod tests {
                 &mut doc,
                 &mouse(ElementState::Released, MouseButton::Left),
             );
-            let cursor = app.edit_input.cursor_pos();
+            let cursor = app.edit_input.caret();
             assert!(
                 cursor < app.edit_input.value().len(),
                 "clicking near the left edge moves the caret away from the end"
             );
 
             type_str(&mut app, &mut doc, "Z");
-            assert_eq!(app.edit_input.cursor_pos(), cursor + 1);
+            assert_eq!(app.edit_input.caret(), cursor + 1);
             assert!(!app.edit_input.value().ends_with('Z'));
         }
 
@@ -3855,10 +3896,11 @@ mod tests {
                 &mut doc,
                 &automerge::ROOT,
             ));
+            let (anchor, caret) = app.composer_main.selection();
             assert_eq!(
-                app.composer_main.selection_range_public(),
-                Some((0, "🦀".len())),
-                "grapheme-indexed semantic endpoints become UTF-8 offsets only inside TextInput"
+                (anchor.min(caret), anchor.max(caret)),
+                (0, "🦀".len()),
+                "grapheme-indexed semantic endpoints become UTF-8 offsets only inside the editor"
             );
             assert!(
                 app.last_dispatched().is_none(),
@@ -3899,12 +3941,86 @@ mod tests {
     }
 
     #[test]
+    fn a_mention_completed_with_tab_is_sent_as_a_marked_reference() {
+        let (mut app, mut doc) = app_with_doc();
+        app.focus = Focus::Main;
+        app.set_composer_focus();
+        let who = app
+            .participants()
+            .into_iter()
+            .find(|participant| !app.is_me(&participant.id) && participant.name.len() > 2)
+            .expect("the demo room has someone to mention");
+        let prefix: String = who.name.chars().take(2).collect();
+        type_str(&mut app, &mut doc, &format!("ping @{prefix}"));
+        feed(&mut app, &mut doc, &key_named(NamedKey::Tab));
+        let label = format!("@{}", who.name);
+        assert_eq!(app.composer_main.value(), format!("ping {label} "));
+        type_str(&mut app, &mut doc, "now");
+        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+        let sent = ChatDoc::list_messages(&doc, &app.active_channel)
+            .into_iter()
+            .last()
+            .unwrap();
+        assert_eq!(sent.text, format!("ping {label} now"));
+        assert_eq!(sent.mentions.len(), 1, "{:?}", sent.mentions);
+        assert_eq!(sent.mentions[0].user, who.id);
+        assert_eq!(sent.mentions[0].slice(&sent.text), label);
+        assert!(
+            sent.blocks()[0]
+                .marks
+                .iter()
+                .any(|span| span.mark == ui::widget::Mark::Mention(who.id.clone())),
+            "the body keeps the mention as written"
+        );
+        // Rendered through the read-only view, it lays out at its width.
+        render_frame(&mut app, 1280.0, 720.0);
+        assert!(!app.body_views.borrow().is_empty());
+    }
+
+    #[test]
+    fn editing_a_formatted_message_keeps_its_formatting() {
+        let (mut app, mut doc) = app_with_doc();
+        app.focus = Focus::Main;
+        app.set_composer_focus();
+        type_str(&mut app, &mut doc, "plain ");
+        feed_mods(&mut app, &mut doc, &key_char("b"), mods(true, false));
+        type_str(&mut app, &mut doc, "bold");
+        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+        let sent = ChatDoc::list_messages(&doc, &app.active_channel)
+            .into_iter()
+            .last()
+            .unwrap();
+        assert_eq!(sent.text, "plain bold");
+        assert!(
+            sent.blocks()[0]
+                .marks
+                .iter()
+                .any(|span| span.mark == ui::widget::Mark::Bold && span.range == (6..10))
+        );
+        app.reload(&doc);
+        app.begin_edit(sent.id.clone());
+        assert_eq!(app.edit_input.value(), "plain bold");
+        type_str(&mut app, &mut doc, "!");
+        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+        let edited = app.message(&sent.id).unwrap();
+        assert_eq!(edited.text, "plain bold!");
+        assert!(
+            edited.blocks()[0]
+                .marks
+                .iter()
+                .any(|span| span.mark == ui::widget::Mark::Bold),
+            "the edit keeps the bold run"
+        );
+        assert_eq!(edited.history.last().unwrap().text, "plain bold");
+    }
+
+    #[test]
     fn composer_accessibility_keeps_a_backward_browser_selection_direction() {
         let (mut app, mut doc) = app_with_doc();
-        app.composer_main.set_text("Ae\u{301}👋B");
+        ChatDoc::set_draft(&mut doc, &app.active_channel, "Ae\u{301}👋B");
+        app.sync_composers(&mut doc);
         render_frame(&mut app, 1280.0, 720.0);
-        assert!(ui::Widget::perform_action(
-            &mut app.composer_main,
+        assert!(app.composer_main.perform_action(
             &ui::a11y::Action::SetSelection {
                 anchor: 4,
                 focus: 2,

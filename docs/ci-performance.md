@@ -67,6 +67,29 @@ crates, which sccache does not store. The
 standalone check only where the selector requires it), or when all were
 skipped because Rust is not applicable.
 
+When the selection includes an app with an Android host example (an
+`<app>-android` example; today calculator and notes, so every change to the SDK
+crates beneath them), a separate `android` job lints those examples with
+`-D warnings` for `aarch64-linux-android` and `x86_64-linux-android` on an
+ordinary x86-64 runner. It is a type-check, not an APK build: packaging needs
+the Android SDK, and nothing here runs on a device. The builder image carries
+the pinned NDK (`tools/ci/install-android-ndk.sh`); the job runs the same script
+first so a builder published before that recipe change still works, at the cost
+of one ~700 MB download per job until the next builder is promoted. The
+aggregate requires the job exactly when the selector does.
+
+When the selection includes a browser crate (one built on `wasm-bindgen`; the
+web core depends on the toolkit and every app of its collection, so every
+change to the SDK crates beneath them), a separate `wasm` job type-checks the
+selected browser crates for `wasm32-unknown-unknown` with `-D warnings`, then
+runs `tools/ci/check-wasm.sh`: each wasm32 build with the packages and
+features its build script uses (the `dylink` core with its app collection, the
+Cloud frontend, the registry verifier), code the default-feature check does not
+compile. Native jobs compile neither code gated to wasm32 nor the browser's
+view of modules gated away from it. It is a type check, not a build: linking
+needs wasm-bindgen and binaryen. The aggregate requires the job exactly when
+the selector does.
+
 Check scheduling lives in `tools/ci/affected_packages.py`; app releases share
 only the Git and Cargo graph helpers in `tools/ci/workspace_graph.py`. Changing
 check shard counts does not invalidate apps. Graph changes still invalidate
@@ -213,7 +236,7 @@ them to the slot's target tree.
   when the store passes 75%. Checkout gives files new mtimes; the helper
   restores them for blobs a sealed previous job built from, and an unsealed job
   leaves nothing to restore.
-- `tilo-relay.yaml` and `registry-server-image.yml` keep a persistent BuildKit
+- `release-relay.yml` and `registry-server-image.yml` keep a persistent BuildKit
   builder per slot and trust class (`setup-buildx` `persistent`), so the
   compile step's `target/` cache mount and pulled layers survive the job.
   Publications start from a fresh builder.

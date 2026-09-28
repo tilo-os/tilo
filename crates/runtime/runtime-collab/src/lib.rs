@@ -367,12 +367,14 @@ impl CollabClient {
         identity: &[u8],
         participant_handle: &str,
     ) -> Result<ChannelHandle, NotAvailable> {
-        self.join_channel_as_kind(channel_id, identity, participant_handle, "person")
+        self.join_channel_as_kind(channel_id, identity, participant_handle, "person", "")
             .await
     }
 
     /// Join as an explicitly typed participant. The broker validates an
     /// agent request against the workspace; this is not a display-name hint.
+    /// `record_kind` names the resource kind of the record the channel
+    /// carries, or is empty.
     ///
     /// # Errors
     ///
@@ -384,6 +386,7 @@ impl CollabClient {
         identity: &[u8],
         participant_handle: &str,
         participant_kind: &str,
+        record_kind: &str,
     ) -> Result<ChannelHandle, NotAvailable> {
         let mut req = self.inner.join_channel_request();
         {
@@ -392,6 +395,7 @@ impl CollabClient {
             builder.set_identity(identity);
             builder.set_participant_handle(participant_handle);
             builder.set_participant_kind(participant_kind);
+            builder.set_record_kind(record_kind);
         }
         let reply = req.send().promise.await?;
         let handle = reply.get()?.get_handle()?;
@@ -1081,6 +1085,22 @@ impl ChannelHandle {
         builder.set_app_id(app_id);
         builder.set_schema_version(schema_version);
         builder.set_metadata(metadata);
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// Answer a handoff request, or report that the shown document arrived
+    /// retired. Bound to this certified primary route like
+    /// [`Self::report_continuation`]; never relayed to peers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker request fails.
+    pub async fn handoff(&self, app_id: &str, message: &[u8]) -> Result<(), NotAvailable> {
+        let mut req = self.inner.handoff_request();
+        let mut builder = req.get();
+        builder.set_app_id(app_id);
+        builder.set_message(message);
         req.send().promise.await?;
         Ok(())
     }
@@ -3211,6 +3231,10 @@ pub struct ChannelContext {
     /// True only on a directed broker request to publish current document
     /// state. It is not a roster update and must not replace local context.
     pub snapshot_requested: bool,
+    /// `Some` only on a session-local handoff request addressed to this
+    /// instance; the bytes are `ui::collaboration::handoff` JSON. Not a
+    /// roster update either.
+    pub handoff: Option<Vec<u8>>,
 }
 
 /// A session-local Follow control frame.
@@ -3285,11 +3309,17 @@ impl ContextStream {
                 .map(str::to_owned),
             replay: ctx.get_follow_replay(),
         });
+        let handoff = ctx
+            .get_handoff()
+            .ok()
+            .filter(|bytes| !bytes.is_empty())
+            .map(<[u8]>::to_vec);
         Ok(ChannelContext {
             collaborators,
             grant,
             follow_changed,
             snapshot_requested: ctx.get_snapshot_requested(),
+            handoff,
         })
     }
 }

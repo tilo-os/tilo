@@ -3326,7 +3326,7 @@ impl NotesApp {
     }
 
     /// Execute Notes' one typed view operation locally. Search, agents and
-    /// collaboration invoke this through [`Widget::invoke_resource_operation`];
+    /// collaboration invoke this through [`Widget::start_operation`];
     /// the private jump palette and in-document links construct the identical
     /// operation and arrive here too, so every open path validates the same
     /// durable page/block resource before changing presentation state.
@@ -4238,6 +4238,81 @@ impl NotesApp {
 
 /// How a View names the page a notebook has open.
 const NOTE_PAGE_PREFIX: &str = "notes.page:";
+impl NotesApp {
+    /// A local operation keeps the order the retained host gave it before
+    /// the single entry: document writes, then file transfers and links,
+    /// then the children, then this app's own view of the notebook.
+    fn start_local_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        let kind = request.kind;
+        let operation = actions::decode_operation(request.type_id, request.payload)?;
+        let effect = kind == tilo_actions::OperationKind::Effect;
+        let started = match operation {
+            Some(actions::NotesOperation::FinalizeImport) => {
+                if !effect {
+                    return Err("Import completion requires an Effect invocation".into());
+                }
+                self.finish_pending_markdown_import(doc, None)?;
+                ui::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            }
+            Some(actions::NotesOperation::ImportMarkdownContent { title, body }) => {
+                if !effect {
+                    return Err("Markdown content import requires an Effect invocation".into());
+                }
+                if body.len() > usize::try_from(MAX_MARKDOWN_IMPORT_BYTES).unwrap_or(usize::MAX) {
+                    return Err("Markdown content is larger than 1 MiB".into());
+                }
+                if crate::markdown::parse(&body).len() > MAX_MARKDOWN_IMPORT_BLOCKS {
+                    return Err("Markdown content contains more than 10,000 blocks".into());
+                }
+                let page = self.finish_direct_markdown_import(doc, &title, &body)?;
+                let mut output = tilo_actions::ActionOutput::default();
+                output.resources.push(actions::page_resource_id(page));
+                ui::widget::ResourceOperationStart::Completed(output)
+            }
+            Some(
+                operation @ (actions::NotesOperation::ImportMarkdown
+                | actions::NotesOperation::ExportMarkdown { .. }
+                | actions::NotesOperation::InsertImage { .. }),
+            ) => {
+                if !effect {
+                    return Err("File transfers require an Effect invocation".into());
+                }
+                self.open_notes_operation(operation, doc)?;
+                self.markdown_invocation = Some(PendingOperation::local(request.invocation));
+                ui::widget::ResourceOperationStart::Accepted
+            }
+            Some(actions::NotesOperation::OpenExternalLink { url }) => {
+                if !effect {
+                    return Err("Opening a link requires an Effect invocation".into());
+                }
+                self.start_external_link(url, Some(PendingOperation::local(request.invocation)))?;
+                ui::widget::ResourceOperationStart::Accepted
+            }
+            operation => {
+                if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+                    return Ok(Some(started));
+                }
+                let Some(operation) = operation else {
+                    return Ok(None);
+                };
+                if kind == tilo_actions::OperationKind::Document {
+                    return Ok(None);
+                }
+                self.open_notes_operation(operation, doc)?;
+                ui::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            }
+        };
+        Ok(Some(started))
+    }
+}
 
 impl Widget for NotesApp {
     /// The page open here is what a follower opens.
@@ -4356,28 +4431,22 @@ impl Widget for NotesApp {
         }
     }
 
-    fn start_resource_operation_scoped(
+    fn start_operation(
         &mut self,
-        scope: &ResourceInvocationScope,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &ui::widget::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let (request, Some(scope)) = op.with_custody() else {
+            return self.start_local_operation(op, doc, path);
+        };
         scope.check()?;
+        let (kind, type_id, payload) = (request.kind, request.type_id, request.payload);
         if self.legacy_fixture_storage.is_some() {
             return Err("Scoped operations require the canonical Notes record owner".into());
         }
         let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            for child in self.children_mut() {
-                if let Some(result) = child
-                    .start_resource_operation_scoped(scope, kind, type_id, payload, doc, path)?
-                {
-                    return Ok(Some(result));
-                }
-            }
-            return Ok(None);
+            return ui::widget::start_in_children(self, op, doc, path);
         };
         if matches!(
             operation,
@@ -4446,86 +4515,6 @@ impl Widget for NotesApp {
         Ok(Some(started))
     }
 
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let operation = actions::decode_operation(type_id, payload)?;
-        if operation == Some(actions::NotesOperation::FinalizeImport) {
-            if kind != tilo_actions::OperationKind::Effect {
-                return Err("Import completion requires an Effect invocation".into());
-            }
-            self.finish_pending_markdown_import(doc, None)?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
-        }
-        if let Some(actions::NotesOperation::ImportMarkdownContent { title, body }) = operation {
-            if kind != tilo_actions::OperationKind::Effect {
-                return Err("Markdown content import requires an Effect invocation".into());
-            }
-            if body.len() > usize::try_from(MAX_MARKDOWN_IMPORT_BYTES).unwrap_or(usize::MAX) {
-                return Err("Markdown content is larger than 1 MiB".into());
-            }
-            if crate::markdown::parse(&body).len() > MAX_MARKDOWN_IMPORT_BLOCKS {
-                return Err("Markdown content contains more than 10,000 blocks".into());
-            }
-            let page = self.finish_direct_markdown_import(doc, &title, &body)?;
-            let mut output = tilo_actions::ActionOutput::default();
-            output.resources.push(actions::page_resource_id(page));
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(output)));
-        }
-        self.start_resource_operation(invocation, kind, type_id, payload, doc, path)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let operation = actions::decode_operation(type_id, payload)?;
-        if matches!(
-            operation,
-            Some(
-                actions::NotesOperation::ImportMarkdown
-                    | actions::NotesOperation::ExportMarkdown { .. }
-                    | actions::NotesOperation::InsertImage { .. }
-            )
-        ) {
-            if kind != tilo_actions::OperationKind::Effect {
-                return Err("File transfers require an Effect invocation".into());
-            }
-            self.open_notes_operation(operation.ok_or("Missing file operation")?, doc)?;
-            self.markdown_invocation = Some(PendingOperation::local(invocation));
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if let Some(actions::NotesOperation::OpenExternalLink { url }) = operation {
-            if kind != tilo_actions::OperationKind::Effect {
-                return Err("Opening a link requires an Effect invocation".into());
-            }
-            self.start_external_link(url, Some(PendingOperation::local(invocation)))?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        for child in self.children_mut() {
-            if let Some(started) =
-                child.start_resource_operation(invocation, kind, type_id, payload, doc, path)?
-            {
-                return Ok(Some(started));
-            }
-        }
-        self.invoke_resource_operation_v2(kind, type_id, payload, doc, path)
-            .map(|result| result.map(ui::widget::ResourceOperationStart::Completed))
-    }
-
     fn poll_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -4559,42 +4548,6 @@ impl Widget for NotesApp {
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::NOTES_OPERATION_TYPE]
-    }
-
-    fn invoke_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        self.open_notes_operation(operation, doc)?;
-        Ok(true)
-    }
-
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(None);
-        }
-        let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
-        };
-        self.open_notes_operation(operation, doc)?;
-        Ok(Some(tilo_actions::ActionOutput::default()))
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -6028,11 +5981,13 @@ mod tests {
             Some(actions::NotesOperation::FinalizeImport)
         );
         let started = app
-            .start_resource_operation_with_document(
-                tilo_actions::InvocationId::new(),
-                spec.kind,
-                &encoded.type_id,
-                &encoded.payload,
+            .start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    spec.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
                 &mut state.doc,
                 &state.root,
             )
@@ -7367,11 +7322,13 @@ mod tests {
         let _host = ui::host::enter(&services);
         recorder.respond_to_pick(outcome);
         assert_eq!(
-            app.start_resource_operation_with_document(
-                invocation,
-                spec.kind,
-                &encoded.type_id,
-                &encoded.payload,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    spec.kind,
+                    &encoded.type_id,
+                    &encoded.payload
+                ),
                 &mut state.doc,
                 &state.root
             )
@@ -7467,13 +7424,15 @@ mod tests {
             let before = state.doc.save();
             let block_count = NotesDoc::page_block_snapshots(&state.doc, page).len();
             assert_eq!(
-                app.start_resource_operation_with_document(
-                    invocation,
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        spec.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
                     &mut state.doc,
-                    &state.root,
+                    &state.root
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -7708,15 +7667,19 @@ mod tests {
             let payload = serde_json::to_vec(&operation).unwrap();
 
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::View,
-                    crate::actions::NOTES_OPERATION_TYPE,
-                    &payload,
-                    &state.doc,
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        crate::actions::NOTES_OPERATION_TYPE,
+                        &payload,
+                    ),
+                    &mut state.doc,
                     &state.root,
                 )
                 .expect("broker accepts the exported Notes view operation")
+                .is_some()
             );
             app.sync(&mut state.doc, &state.root);
 
@@ -7852,15 +7815,19 @@ mod tests {
                 .expect("the original block's resource resolves lazily");
             assert_eq!(resolved.id.0, old_address.resource);
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::View,
-                    crate::actions::NOTES_OPERATION_TYPE,
-                    &payload,
-                    &state.doc,
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        crate::actions::NOTES_OPERATION_TYPE,
+                        &payload,
+                    ),
+                    &mut state.doc,
                     &state.root,
                 )
                 .expect("durable block identity still resolves")
+                .is_some()
             );
             app.sync(&mut state.doc, &state.root);
             assert_eq!(

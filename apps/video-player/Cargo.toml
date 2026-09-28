@@ -15,7 +15,6 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
-test-support = []
 # `decode` ships by default for GStreamer-backed playback. Shots render a
 # synthesized frame and do not decode a file.
 default = ["decode"]
@@ -23,6 +22,7 @@ default = ["decode"]
 decode = ["media/decode"]
 
 [dependencies]
+fnv.workspace = true
 tilo-clock = { path = "../../crates/system/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -43,7 +43,6 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
-video-player = { path = ".", default-features = false, features = ["test-support"] }
 
 # Portal-only (feature-gated; never compiled for the default hermetic build).
 

@@ -7,6 +7,14 @@ use ui::{launch::LaunchError, record::RecordKind, widget::IconDescriptor};
 /// to read is the one compiled into the app: the browser.
 const BUNDLED_LIBRARY: bool = cfg!(target_arch = "wasm32");
 
+/// What Books opens when a host hands it a file.
+pub const EPUB_MEDIA_TYPE: &str = "application/epub+zip";
+
+/// The resource a book is addressed by in Books' action surface.
+pub fn book_resource(book_id: &str) -> String {
+    format!("ebook.book:{book_id}")
+}
+
 fn books_definition(create: ui::application::ComponentFactory) -> ApplicationDefinition {
     ApplicationDefinition {
         app_id: "so.tilo.ebook",
@@ -15,6 +23,7 @@ fn books_definition(create: ui::application::ComponentFactory) -> ApplicationDef
         record_kind: RecordKind::new("ebook.library"),
         required: vec![],
         optional: vec![],
+        opens: &[EPUB_MEDIA_TYPE],
         create,
     }
 }
@@ -41,28 +50,57 @@ fn create(
     target: &LaunchTarget,
     bundled: bool,
 ) -> Result<AppComponent, LaunchError> {
+    let store = context.content().cloned();
+    let handed = context
+        .take_open_file()
+        .map(|file| {
+            let handed = crate::content::open_handed_book(file.bytes(), store.as_ref()).map_err(
+                |error| LaunchError::Operation(format!("Couldn’t open {}: {error}", file.name())),
+            )?;
+            file.report_opened(book_resource(&handed.book.id));
+            Ok::<_, LaunchError>(handed)
+        })
+        .transpose()?;
     if matches!(target, LaunchTarget::New) {
+        // A library opened for a handed-over book holds that book, not the sample.
+        let sample = bundled && handed.is_none();
         context
-            .initialize_new_record(|doc| initialize_library(doc, bundled))
+            .initialize_new_record(|doc| initialize_library(doc, sample))
             .map_err(LaunchError::Record)?;
     }
     let mut root = crate::BooksApp::new();
-    if bundled {
-        let bundled_id = crate::content::bundled_book_id();
-        let shelved = context
-            .read_record(|doc| {
-                crate::doc::BooksDoc::read_library_entries(doc)
-                    .iter()
-                    .any(|entry| entry.id == bundled_id)
-            })
+    if let Some(store) = store {
+        root.set_content_store(store);
+    }
+    if let Some(handed) = handed {
+        root.open_handed_on_load(handed);
+    } else if bundled {
+        let recent = context
+            .read_record(most_recently_opened)
             .map_err(LaunchError::Record)?;
-        if shelved {
-            root.open_book_on_load(&bundled_id);
+        if let Some(book_id) = recent {
+            root.open_book_on_load(&book_id);
         }
     }
     let mut registry = tilo_actions::ActionRegistry::new();
     crate::actions::register(&mut registry);
     Ok(AppComponent::new(context, Box::new(root), registry))
+}
+
+/// The shelved book last opened (the latest added when none was), which a
+/// host without files shows again, so another mount of the library reads
+/// the same book.
+fn most_recently_opened(doc: &AutoCommit) -> Option<String> {
+    crate::doc::BooksDoc::read_library_entries(doc)
+        .into_iter()
+        .enumerate()
+        .max_by_key(|(order, entry)| {
+            (
+                crate::doc::BooksDoc::read_progress(doc, &entry.id).opened,
+                *order,
+            )
+        })
+        .map(|(_, entry)| entry.id)
 }
 
 /// A new library is empty; with a bundled library it holds the bundled book.

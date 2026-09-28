@@ -4718,6 +4718,61 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
             wp.thread_snapshot.is_none(),
             "interactive panel reads current review data"
         );
+
+        // The reply field is the SDK editor: plain Enter starts a paragraph,
+        // Ctrl+Enter sends the reply as written, and the field clears.
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        {
+            // The thread panel paints in the top layer, which lays out its field.
+            let mut tr = TextRenderer::new();
+            wp.draw_overlay(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut tr,
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            );
+        }
+        for ch in "Done".chars() {
+            type_char(&mut wp, &mut state, ch);
+        }
+        press_named(&mut wp, &mut state, NamedKey::Enter);
+        for ch in "Thanks".chars() {
+            type_char(&mut wp, &mut state, ch);
+        }
+        assert_eq!(
+            wp.thread_reply.widget().source().plain_text(),
+            "Done\nThanks"
+        );
+        press_named_with_modifiers(
+            &mut wp,
+            &mut state,
+            NamedKey::Enter,
+            Modifiers::from(winit::keyboard::ModifiersState::CONTROL),
+        );
+        let after = snapshot(&state, &c);
+        let thread = after.comments.iter().find(|cm| cm.id == comment).unwrap();
+        assert_eq!(thread.replies.len(), 2, "the reply was sent");
+        let reply = thread
+            .replies
+            .iter()
+            .find(|reply| reply.author != "Bea")
+            .unwrap();
+        let sent: Vec<&str> = reply
+            .blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect();
+        assert_eq!(sent, ["Done", "Thanks"], "sent as its paragraphs");
+        assert!(
+            wp.thread_reply.widget().source().is_empty(),
+            "the field clears"
+        );
+        assert_eq!(wp.thread_comment.as_deref(), Some(comment.as_str()));
+
+        // Escape in the field closes the thread.
+        press_named(&mut wp, &mut state, NamedKey::Escape);
+        assert!(wp.thread_comment.is_none());
     }
 
     // Phase: deleting_comment_removes_it_and_clears_the_highlight.
@@ -7439,13 +7494,15 @@ fn save_and_open_preserve_identity_recovery_and_bytes() {
                 })
                 .unwrap();
                 assert!(
-                    wp.start_resource_operation(
-                        tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                        &payload,
-                        &state.doc,
-                        &state.root,
+                    wp.start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            tilo_actions::InvocationId::new(),
+                            tilo_actions::OperationKind::Effect,
+                            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                            &payload
+                        ),
+                        &mut state.doc,
+                        &state.root
                     )
                     .is_err()
                 );
@@ -8668,12 +8725,14 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
         let payload =
             serde_json::to_vec(&crate::actions::WordProcessorOperation::Save { path: None })
                 .unwrap();
-        wp.start_resource_operation(
-            tilo_actions::InvocationId::new(),
-            tilo_actions::OperationKind::Effect,
-            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-            &payload,
-            &state.doc,
+        wp.start_operation(
+            &ui::widget::ResourceOperation::local(
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
+                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                &payload,
+            ),
+            &mut state.doc,
             &state.root,
         )
         .unwrap();
@@ -8739,13 +8798,15 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
             })
             .unwrap();
             assert!(
-                wp.start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                    &payload,
-                    &state.doc,
-                    &state.root,
+                wp.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut state.doc,
+                    &state.root
                 )
                 .is_err()
             );
@@ -8797,12 +8858,14 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
         })
         .unwrap();
         assert!(
-            wp.start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                &payload,
-                &state.doc,
+            wp.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut state.doc,
                 &state.root
             )
             .is_err()
@@ -8813,12 +8876,14 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
             serde_json::to_vec(&crate::actions::WordProcessorOperation::Save { path: None })
                 .unwrap();
         assert!(matches!(
-            wp.start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                &payload,
-                &state.doc,
+            wp.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut state.doc,
                 &state.root
             )
             .unwrap(),
@@ -9155,13 +9220,15 @@ fn tile_host_preserves_completed_direct_open_result_across_record_intent_release
     })
     .unwrap();
     assert!(matches!(
-        tile.start_resource_operation_with_document(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-            &payload,
+        tile.start_operation(
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                &payload
+            ),
             &mut outer,
-            &automerge::ROOT,
+            &automerge::ROOT
         )
         .unwrap(),
         Some(ui::widget::ResourceOperationStart::Accepted)
@@ -9245,13 +9312,15 @@ fn tile_host_routes_escape_to_old_writer_draft_before_retrying_open_handoff() {
     })
     .unwrap();
     assert!(matches!(
-        tile.start_resource_operation_with_document(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-            &payload,
+        tile.start_operation(
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                &payload
+            ),
             &mut outer,
-            &automerge::ROOT,
+            &automerge::ROOT
         )
         .unwrap(),
         Some(ui::widget::ResourceOperationStart::Accepted)
@@ -9323,4 +9392,22 @@ fn tile_host_routes_escape_to_old_writer_draft_before_retrying_open_handoff() {
             .is_none()
     );
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn the_version_strip_is_the_only_history_control() {
+    let mut state = ui::State::new();
+    let mut wp = WordProcessorWidget::new();
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut().insert_str(&mut state.doc, "draft");
+    state.commit_action(None, None);
+    let mut harness = ui::headless::FrameHarness::new(state, Box::new(wp), (1200, 800));
+    harness.enable_document_history_chrome();
+    harness.relayout();
+    let targets = harness.targets();
+    assert!(
+        !targets.contains_key("standalone-history-open"),
+        "the shared History control must not sit beside the editor's own strip"
+    );
+    assert!(harness.local_history_resources().unwrap().is_empty());
 }

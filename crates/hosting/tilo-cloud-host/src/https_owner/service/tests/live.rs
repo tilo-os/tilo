@@ -343,9 +343,9 @@ async fn forwarded(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_live_grant_route_issues_renews_refuses_and_advertises_live() {
-    let (_transport_root, store_root, config, ready) = deployment().await;
+    let (_transport_root, store_root, config, ready, tcp, udp) = deployment().await;
     let root = store_root.path().to_owned();
-    let (stop, server, origin) = started(&config, &ready).await;
+    let (stop, server, origin) = started(&config, &ready, tcp, udp).await;
     let mut owner = owner_client(&origin);
     let descriptor = handshake(&mut owner, &root).await;
     assert_eq!(
@@ -427,10 +427,11 @@ async fn cloud_live_grant_route_issues_renews_refuses_and_advertises_live() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_live_relays_presence_between_two_native_clients_and_forwards_signed_changes() {
     use tilo_action_broker::collaboration_admin::CollaborationRole;
-    let (transport_root, store_root, config, ready, enrollment) = enrolled_deployment().await;
+    let (transport_root, store_root, config, ready, enrollment, tcp, udp) =
+        enrolled_deployment().await;
     let root = store_root.path().to_owned();
     let certificate = leaf(&transport_root);
-    let (stop, server, origin) = started(&config, &ready).await;
+    let (stop, server, origin) = started(&config, &ready, tcp, udp).await;
     let mut owner = owner_client(&origin);
     handshake(&mut owner, &root).await;
     let (guest, _) = invite(&root, &origin, &enrollment, CollaborationRole::Editor, 9).await;
@@ -604,10 +605,11 @@ async fn cloud_live_viewer_subscribes_only_and_revocation_aborts_only_that_publi
     use tilo_action_broker::collaboration_admin::{
         CollaborationAdminOperation, CollaborationRole, RemoveMemberInput, SetMemberRoleInput,
     };
-    let (transport_root, store_root, config, ready, enrollment) = enrolled_deployment().await;
+    let (transport_root, store_root, config, ready, enrollment, tcp, udp) =
+        enrolled_deployment().await;
     let root = store_root.path().to_owned();
     let certificate = leaf(&transport_root);
-    let (stop, server, origin) = started(&config, &ready).await;
+    let (stop, server, origin) = started(&config, &ready, tcp, udp).await;
     let mut owner = owner_client(&origin);
     handshake(&mut owner, &root).await;
     let (viewer, _) = invite(&root, &origin, &enrollment, CollaborationRole::Viewer, 13).await;

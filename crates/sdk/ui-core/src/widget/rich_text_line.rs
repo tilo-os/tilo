@@ -169,6 +169,8 @@ pub struct RichTextLine {
     /// `(byte_start, byte_end, author_id)` read from the bound Text's marks
     /// during `sync`; drives the authorship highlight in `BlockEditor::draw`.
     author_runs: Vec<(usize, usize, String)>,
+    /// The colours mentions are painted in; accent ink when unset.
+    mention_paint: Option<marks::MentionPaint>,
 }
 
 impl RichTextLine {
@@ -200,6 +202,25 @@ impl RichTextLine {
             prev_text: String::new(),
             prev_cursor: 0,
             author_runs: Vec::new(),
+            mention_paint: None,
+        }
+    }
+
+    /// Paint mentions in the colours `paint` gives each participant.
+    pub fn set_mention_paint(&mut self, paint: Option<marks::MentionPaint>) {
+        self.mention_paint = paint;
+        self.refresh_attributes();
+    }
+
+    /// The ink and band of a mention of `id`.
+    fn mention_rgb(&self, id: &str) -> (Option<[u8; 3]>, Option<[u8; 3]>) {
+        let rgb = |color: vello::peniko::Color| [color.r(), color.g(), color.b()];
+        match &self.mention_paint {
+            Some(paint) => {
+                let colors = paint(id);
+                (Some(rgb(colors.ink)), colors.band.map(rgb))
+            }
+            None => (self.accent_rgb, None),
         }
     }
 
@@ -356,6 +377,16 @@ impl RichTextLine {
         self.inner.set_local_author(author);
     }
 
+    /// Align the line's text within its width.
+    pub fn set_align(&mut self, align: crate::richtext::TextAlign) {
+        self.inner.set_align(align);
+    }
+
+    /// How the line's text is aligned.
+    pub fn align(&self) -> crate::richtext::TextAlign {
+        self.inner.align()
+    }
+
     pub fn author_runs(&self) -> &[(usize, usize, String)] {
         &self.author_runs
     }
@@ -442,6 +473,15 @@ impl RichTextLine {
 
     pub fn font_size(&self) -> f32 {
         self.font_size
+    }
+
+    /// Change the line's type size; its height is measured again.
+    pub fn set_size(&mut self, size: f32) {
+        if self.font_size.to_bits() != size.to_bits() {
+            self.stack_measure = None;
+            self.font_size = size;
+            self.inner.set_font_size(size);
+        }
     }
 
     pub fn marks(&self) -> &[MarkSpan] {
@@ -601,16 +641,23 @@ impl RichTextLine {
                         let rgb = self.syntax.as_ref()?.color(color.kind);
                         Some([rgb.r(), rgb.g(), rgb.b()])
                     });
-                let color = if segment.code || segment.link.is_some() || segment.external_link {
+                let (mention_ink, mention_band) = segment
+                    .mention
+                    .as_deref()
+                    .map_or((None, None), |id| self.mention_rgb(id));
+                let color = if mention_ink.is_some() {
+                    mention_ink
+                } else if segment.code || segment.link.is_some() || segment.external_link {
                     self.accent_rgb
                 } else {
                     syntax
                 };
                 attributes.spans.push(
                     RichSpan::new(slice)
-                        .bold(segment.bold)
+                        .bold(segment.bold || segment.mention.is_some())
                         .italic(segment.italic)
-                        .color(color),
+                        .color(color)
+                        .background(mention_band),
                 );
             }
             if segment.underline {
@@ -728,8 +775,13 @@ impl RichTextLine {
             .filter_map(|segment| {
                 let source = text.get(segment.range)?;
                 let mut span = crate::richtext::RichSpan::new(source)
-                    .bold(segment.bold)
+                    .bold(segment.bold || segment.mention.is_some())
                     .italic(segment.italic);
+                if let Some(id) = segment.mention.as_deref() {
+                    let (ink, band) = self.mention_rgb(id);
+                    span.color = ink;
+                    span.background = band;
+                }
                 if segment.code {
                     span.family = Some(crate::richtext::FontFamily::Mono);
                     let background = theme.tokens.colors.surfaces.raised;

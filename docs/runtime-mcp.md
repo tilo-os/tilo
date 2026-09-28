@@ -12,8 +12,13 @@ Build the host on macOS or Linux:
 cargo build -p shell --bin tilo-runtime-mcp --no-default-features
 ```
 
-In an installed layout, app startup finds the sibling `tilo-runtime-mcp` binary,
-then falls back to `PATH`. In a source checkout, the first ordinary `cargo run`
+In an installed layout, app startup attaches to a runtime host beside the app,
+then on `PATH`. Inside the Tilo desktop (`XDG_CURRENT_DESKTOP=tilo`, which the
+Tilo login exports) that is only the session's `tilo-runtime-mcp`, so an app
+never attaches to a second authority beside it. Elsewhere — stock macOS or a
+foreign Linux desktop — the standalone `tilo-runtime` comes first, then
+`tilo-runtime-mcp`. Packages built by `scripts/browser/package.py` carry
+`tilo-runtime`. In a source checkout, the first ordinary `cargo run`
 can bootstrap a missing host with a bounded, serialized Cargo build using the
 checkout's normal Cargo cache, network, target directory, and explicit offline
 settings. Set `TILO_RUNTIME_BINARY` only when packaging or testing must select a
@@ -48,6 +53,48 @@ Point the assistant at the existing host with `--connect` and the same profile:
 The first ordinary app may start the daemon before the assistant connects. A
 `--connect` client can also start it when no app is running. Stdio EOF ends only
 that proxy connection.
+
+## HTTP endpoint
+
+A hosted machine (for example a provider's per-user VM) exposes the same tools
+over Streamable HTTP. Set `TILO_RUNTIME_MCP_HTTP=HOST:PORT` for the daemon; a
+non-loopback address also requires `TILO_RUNTIME_MCP_HTTP_TOKEN_FILE`, whose
+contents callers present as `Authorization: Bearer …`:
+
+```sh
+TILO_RUNTIME_MCP_HTTP=0.0.0.0:7391 \
+TILO_RUNTIME_MCP_HTTP_TOKEN_FILE=/run/secrets/mcp-token \
+  tilo-runtime --profile /data/tilo --daemon
+```
+
+`POST /mcp` carries one JSON-RPC message and answers with JSON; `initialize`
+without an `Mcp-Session-Id` opens a session and returns its id, later requests
+must carry it, and `DELETE /mcp` ends it. No server-initiated stream is offered.
+`GET /health` needs no token.
+
+Each session is its own agent run: its invocations carry an `agent-run` action
+group named after the client's declared `clientInfo.name`, so history, undo and
+activity tell concurrent agents on one machine apart. Sessions act with the
+profile actor's authority. The token authenticates the fronting proxy only; that
+proxy owns end-user authentication and must route each user to their machine.
+
+## Pixel fallback
+
+Beside a compositor, `TILO_RUNTIME_COMPUTER_CONTROL=/abs/path/to/control.sock`
+(the compositor's `TILO_TEST_CONTROL` socket) adds the canonical `computer` and
+`computer_batch` tools that hosted computer-use providers and model vendors
+share: `screenshot`, the click family, `mouse_move`, `left_click_drag`,
+`left_mouse_down`/`up`, `scroll`, `type`, `key` and `hold_key` (xdotool names
+such as `ctrl+s`), `wait`, `zoom` and `cursor_position`. They exist for
+windows that publish no typed action; tool descriptions steer models to the
+typed tools first.
+
+Each action returns its post-action screenshot (JPEG by default, `format: png`
+on request) and a text block with `frame_id`, `width` and `height`.
+Coordinates are pixels in the last screenshot's frame; screens larger than
+1280×800 are scaled down and coordinates scaled back. A batch returns frames
+only for `screenshot` steps and its last step unless `no_screenshot` says
+otherwise, and stops at the first failing step.
 
 ## Explicit manifest mode
 
@@ -134,9 +181,12 @@ construction.
 This is a local, same-user native host. The profile's workspace and actor are
 fixed when the host starts; MCP requests cannot select an actor, workspace, or
 executable. Discovery and invocation retain the production broker's workspace
-authority and current-instance checks. Actions requiring confirmation are
-refused because this stdio host has no real approval ceremony; a caller boolean
-cannot manufacture broker admission.
+authority and current-instance checks; the Tilo permission system decides what
+is visible and invokable. An action whose contract asks for confirmation is not
+refused: the MCP client's own allow/deny decision for the `tilo_invoke` call is
+the confirmation, and the host supplies the evidence the resolved contract
+names. Risk levels travel in each action's contract, and `tilo_invoke` is
+annotated as potentially destructive so clients can prompt.
 
 The concrete launcher uses Unix sockets, process execution, and descriptor
 inheritance and is currently qualified for macOS and Linux. Windows host

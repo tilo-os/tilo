@@ -5,6 +5,7 @@
 
 use crate::shell::state::WorkspaceAuthority as _;
 
+mod governor_actions;
 mod native_enrollment;
 mod native_ingress;
 
@@ -2023,6 +2024,38 @@ impl ShellNetwork {
     /// else. Empty for a cluster that is not a room this machine is in,
     /// or a room where nobody has been named; both leave every peer
     /// labelled with its own handle.
+    /// The other devices `room` names, which may keep its records.
+    pub fn room_devices(&self, room: crate::shell::state::RoomId) -> Vec<iroh::EndpointId> {
+        let Ok(replica) = self.replica.lock() else {
+            return Vec::new();
+        };
+        let local = self.local_peer_id_hash();
+        replica
+            .tree
+            .read()
+            .room_peer_endpoints(room)
+            .into_iter()
+            .filter(|device| crate::network::behaviour::peer_liveness_handle(device) != local)
+            .collect()
+    }
+
+    /// This device's copy of the workspace that is `room`, when it hosts it.
+    pub fn workspace_of_room(
+        &self,
+        room: crate::shell::state::RoomId,
+    ) -> Option<crate::shell::state::Workspace> {
+        self.replica
+            .lock()
+            .ok()?
+            .tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .cloned()
+    }
+
     pub fn peer_labels(&self, cluster_id: &str) -> std::collections::BTreeMap<u64, String> {
         let empty = std::collections::BTreeMap::new();
         let Some(room) = crate::shell::state::RoomId::parse(cluster_id) else {
@@ -3121,7 +3154,7 @@ impl ShellNetwork {
         let me = crate::shell::state::local_user_id_for_room(&room);
         let role = workspace
             .role_of(&me)
-            .map(crate::shell::workspace_settings::role_label);
+            .map(tilo_desktop::workspace_settings::role_label);
         let governed = tree
             .room_docs
             .get(&room)

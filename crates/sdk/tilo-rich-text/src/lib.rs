@@ -43,9 +43,11 @@
 
 mod blocks;
 mod convert;
+mod draft;
 mod edit;
 mod source;
 mod surface;
+mod view;
 
 use qdoc_rich_text::{RichText, RichTextAction};
 use ui::automerge::ObjId;
@@ -53,10 +55,25 @@ use ui::framework::ViewCx;
 use ui::tilo_resource::{Doc, Resource};
 use ui::widget::Element;
 
-pub use blocks::{blocks_under, fill_under};
-pub use convert::document_mark;
-pub use source::{Hosted, RichTextField, RichTextSource};
-pub use surface::RichTextSurface;
+pub use blocks::{
+    blocks_under, fill_clips_under, fill_under, plain_blocks, plain_clips, put_rich_text,
+    rich_text_at,
+};
+pub use convert::{clip_block, clip_of_content, content_of, content_of_clip, document_mark};
+pub use draft::Draft;
+pub use source::{DirectField, Hosted, RichTextField, RichTextSource};
+pub use surface::{FieldOutcome, RichTextSurface, SubmitKey};
+pub use view::RichTextView;
+
+/// A block editor for short rich text: a composer, a reply, a message row.
+/// Lines wrap, paragraphs sit close, and blocks have no drag handles.
+#[must_use]
+pub fn compact_editor() -> ui::widget::BlockEditor {
+    ui::widget::BlockEditor::new()
+        .with_wrap_lines(true)
+        .with_compact_paragraph_spacing(true)
+        .with_block_handles(false)
+}
 
 /// Rich text in a view: `cx.rich_text()`.
 pub trait RichTextViews {

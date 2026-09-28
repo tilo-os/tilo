@@ -46,12 +46,20 @@ impl ControllerFamily {
 
     /// Classify the names exposed by HID/udev, SDL or a platform gamepad API.
     /// Unknown hardware remains positional/generic rather than guessing face
-    /// letters incorrectly.
+    /// letters incorrectly. Linux hid-nintendo names a lone half "Nintendo
+    /// Switch Left Joy-Con" (with " (Grip)" in the charging grip); joycond
+    /// names a pair "Nintendo Switch Combined Joy-Cons".
     pub fn from_device_name(name: &str) -> Self {
         let name = name.to_ascii_lowercase();
-        if name.contains("joy-con (l)") || name.contains("joycon left") {
+        if name.contains("joy-con (l)")
+            || name.contains("left joy-con")
+            || name.contains("joycon left")
+        {
             Self::JoyConLeft
-        } else if name.contains("joy-con (r)") || name.contains("joycon right") {
+        } else if name.contains("joy-con (r)")
+            || name.contains("right joy-con")
+            || name.contains("joycon right")
+        {
             Self::JoyConRight
         } else if name.contains("joy-con") || name.contains("joycon") {
             Self::JoyConPair
@@ -340,6 +348,26 @@ pub(crate) fn mouse_nav_direction(
             button: MouseButton::Forward,
             ..
         } => Some(NavDirection::Forward),
+        _ => None,
+    }
+}
+
+/// Android's Back key as the Escape the toolkit dismisses with; what Escape
+/// leaves unconsumed falls through to back navigation, then to closing.
+#[cfg(any(feature = "native", test))]
+pub(crate) fn back_key_as_escape(
+    event: &winit::event::WindowEvent,
+) -> Option<winit::event::WindowEvent> {
+    use winit::keyboard::{Key, NamedKey};
+    match event {
+        winit::event::WindowEvent::KeyboardInput { event: key, .. }
+            if key.logical_key == Key::Named(NamedKey::BrowserBack) =>
+        {
+            Some(crate::synthetic_input::key_event(
+                &Key::Named(NamedKey::Escape),
+                key.state,
+            ))
+        }
         _ => None,
     }
 }
@@ -811,6 +839,18 @@ mod tests {
                 ControllerFamily::JoyConLeft
             );
             assert_eq!(
+                ControllerFamily::from_hid(Some(0x057e), "Nintendo Switch Left Joy-Con"),
+                ControllerFamily::JoyConLeft
+            );
+            assert_eq!(
+                ControllerFamily::from_hid(Some(0x057e), "Nintendo Switch Right Joy-Con (Grip)"),
+                ControllerFamily::JoyConRight
+            );
+            assert_eq!(
+                ControllerFamily::from_hid(Some(0x057e), "Nintendo Switch Combined Joy-Cons"),
+                ControllerFamily::JoyConPair
+            );
+            assert_eq!(
                 ControllerFamily::from_device_name("Sony DualSense Wireless Controller"),
                 ControllerFamily::PlayStation
             );
@@ -1019,5 +1059,22 @@ mod tests {
             4,
             "move, press, release, leave"
         );
+    }
+
+    #[test]
+    fn android_back_key_dispatches_as_escape_in_both_phases() {
+        use winit::event::{ElementState, WindowEvent};
+        use winit::keyboard::{Key, NamedKey};
+        for state in [ElementState::Pressed, ElementState::Released] {
+            let back = crate::synthetic_input::key_event(&Key::Named(NamedKey::BrowserBack), state);
+            let Some(WindowEvent::KeyboardInput { event, .. }) = back_key_as_escape(&back) else {
+                panic!("Back must become a key event");
+            };
+            assert_eq!(event.logical_key, Key::Named(NamedKey::Escape));
+            assert_eq!(event.state, state);
+        }
+        let escape =
+            crate::synthetic_input::key_event(&Key::Named(NamedKey::Escape), ElementState::Pressed);
+        assert!(back_key_as_escape(&escape).is_none());
     }
 }

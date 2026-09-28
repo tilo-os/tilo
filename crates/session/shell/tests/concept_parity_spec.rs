@@ -2048,8 +2048,16 @@ mod helper_tests {
 /// the member and listed-only-empty cases are pinned; don't relax either.
 #[test]
 fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
-    use shell::shell::overview::room_people;
     use shell::shell::state::{CapOverride, Collaborator, Principal, Subject, Verb};
+    let room_people = |ws: &shell::shell::state::Workspace, tree: &WorkspaceTree| {
+        let me = shell::shell::state::local_user_id();
+        tilo_desktop::overview::room_people(
+            ws,
+            &tree.desktop,
+            &shell::shell::overview::ShellOverview::for_user(&me),
+            tilo_clock::unix_now(),
+        )
+    };
 
     // Listed but powerless: collaborator records everywhere, no capability
     // anywhere.

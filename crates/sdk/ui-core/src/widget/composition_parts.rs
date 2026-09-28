@@ -74,6 +74,15 @@ macro_rules! retained_parts {
         retained_parts!($name, custom_apply_layout);
     };
     ($name:literal, custom_apply_layout) => {
+        fn start_operation(
+            &mut self,
+            op: &crate::widget::ResourceOperation<'_>,
+            doc: &mut AutoCommit,
+            path: &ObjId,
+        ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+            crate::widget::start_in_children(self, op, doc, path)
+        }
+        /// Legacy adapter: offered through [`Widget::start_operation`].
         fn start_resource_operation_with_document(
             &mut self,
             invocation: tilo_actions::InvocationId,
@@ -83,15 +92,11 @@ macro_rules! retained_parts {
             doc: &mut AutoCommit,
             path: &ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-            for child in &mut self.parts.children {
-                if let Some(started) = child.start_resource_operation_with_document(
-                    invocation, kind, type_id, payload, doc, path,
-                )? {
-                    return Ok(Some(started));
-                }
-            }
-            // A second read-only fallback would visit declining handlers twice.
-            Ok(None)
+            self.start_operation(
+                &crate::widget::ResourceOperation::local(invocation, kind, type_id, payload),
+                doc,
+                path,
+            )
         }
         fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
             let mut changed = false;
@@ -185,14 +190,14 @@ pub(super) use retained_parts;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::{FormSection, Manual, ResourceOperationStart};
+    use crate::widget::{FormSection, Manual, ResourceOperation, ResourceOperationStart};
     use automerge::{AutoCommit, ObjId, ReadDoc, transaction::Transactable};
     use std::{cell::RefCell, rc::Rc};
     use tilo_actions::{InvocationId, OperationKind};
     use vello::kurbo::Point;
 
     struct MutableAdmission {
-        calls: Rc<RefCell<Vec<(InvocationId, bool)>>>,
+        calls: Rc<RefCell<Vec<InvocationId>>>,
         accepts: bool,
     }
     impl Widget for MutableAdmission {
@@ -237,31 +242,17 @@ mod tests {
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &["mutable.effect"]
         }
-        fn start_resource_operation(
+        fn start_operation(
             &mut self,
-            invocation: InvocationId,
-            _: OperationKind,
-            _: &str,
-            _: &[u8],
-            _: &AutoCommit,
-            _: &ObjId,
-        ) -> Result<Option<ResourceOperationStart>, String> {
-            self.calls.borrow_mut().push((invocation, false));
-            Ok(None)
-        }
-        fn start_resource_operation_with_document(
-            &mut self,
-            invocation: InvocationId,
-            kind: OperationKind,
-            type_id: &str,
-            payload: &[u8],
+            op: &ResourceOperation<'_>,
             doc: &mut AutoCommit,
             path: &ObjId,
         ) -> Result<Option<ResourceOperationStart>, String> {
-            assert_eq!(kind, OperationKind::Effect);
-            assert_eq!(type_id, "mutable.effect");
-            assert_eq!(payload, b"payload");
-            self.calls.borrow_mut().push((invocation, true));
+            let request = op.unscoped().expect("a local operation");
+            assert_eq!(request.kind, OperationKind::Effect);
+            assert_eq!(request.type_id, "mutable.effect");
+            assert_eq!(request.payload, b"payload");
+            self.calls.borrow_mut().push(request.invocation);
             if self.accepts {
                 doc.put(path, "admitted", "mutable follow-up").unwrap();
                 Ok(Some(ResourceOperationStart::Accepted))
@@ -295,20 +286,18 @@ mod tests {
                 .put_object(automerge::ROOT, "document", automerge::ObjType::Map)
                 .unwrap();
             let invocation = InvocationId::new();
-            let result = root
-                .start_resource_operation_with_document(
-                    invocation,
-                    OperationKind::Effect,
-                    "mutable.effect",
-                    b"payload",
-                    &mut doc,
-                    &path,
-                )
-                .unwrap();
+            let result = ResourceOperation::local(
+                invocation,
+                OperationKind::Effect,
+                "mutable.effect",
+                b"payload",
+            )
+            .start(root.as_mut(), &mut doc, &path)
+            .unwrap();
             assert_eq!(
                 &*calls.borrow(),
-                &[(invocation, true)],
-                "mutable admission must be visited exactly once without read-only fallback"
+                &[invocation],
+                "the handler must be offered the operation exactly once"
             );
             assert_eq!(
                 matches!(result, Some(ResourceOperationStart::Accepted)),

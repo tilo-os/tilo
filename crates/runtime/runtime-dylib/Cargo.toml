@@ -58,6 +58,12 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
 runtime-portal-xdg = { path = "../runtime-portal-xdg" }
 accounts = { path = "../../system/accounts" }
+# Cloud-account custody (OAuth, Nextcloud Login Flow, iCloud sessions) and the
+# IMAP client are shared by Settings and Mail; linked statically they were
+# about a sixth of Settings' tapp.
+account-custody = { path = "../../system/account-custody" }
+tilo-oauth = { path = "../../system/tilo-oauth" }
+async-imap.workspace = true
 agent-provider-config = { path = "../../agent/provider-config" }
 tilo-model-gateway = { path = "../../agent/model-gateway" }
 media = { path = "../../media/core" }
@@ -71,7 +77,7 @@ tilo-pdf = { path = "../../doc/pdf" }
 thumbnail = { path = "../../media/thumbnail", features = ["pdf"] }
 roxmltree.workspace = true
 xattr = "1.6.1"
-mime_guess = "2.0.5"
+mime_guess.workspace = true
 app-cli = { path = "../../packaging/app-cli" }
 app-host = { path = "../../packaging/app-host" }
 registry-types = { path = "../../packaging/registry-types" }

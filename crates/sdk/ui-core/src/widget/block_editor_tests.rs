@@ -74,8 +74,52 @@ fn document_accessibility_exposes_role_focus_tables_and_images() {
         );
     }
 
+    fn a_personal_editor_marks_the_written_text_personal() {
+        use crate::a11y::Sensitivity;
+        // A table is where the document presents written text as values:
+        // the table's source and each cell's content.
+        let table = || {
+            vec![Block::table(
+                "| Name | Status |\n| --- | --- |\n| Mina | Away |",
+                false,
+            )]
+        };
+        fn written(node: &crate::a11y::AccessNode) -> Vec<&crate::a11y::AccessNode> {
+            let mut found: Vec<_> = node.children.iter().flat_map(written).collect();
+            if node.value.is_some() {
+                found.push(node);
+            }
+            found
+        }
+        let mut editor = BlockEditor::new().with_sensitivity(Sensitivity::Personal);
+        editor.set_blocks(table());
+        let document = Widget::accessibility(&editor).expect("document semantics");
+        assert_eq!(document.sensitivity, Sensitivity::Personal);
+        let text = written(&document);
+        assert!(
+            text.iter()
+                .any(|node| node.value.as_deref() == Some("Mina")),
+            "the cell's text is presented"
+        );
+        assert!(
+            text.iter()
+                .all(|node| node.sensitivity == Sensitivity::Personal)
+        );
+
+        let mut plain = BlockEditor::new();
+        plain.set_blocks(table());
+        let document = Widget::accessibility(&plain).expect("document semantics");
+        assert_eq!(document.sensitivity, Sensitivity::Public);
+        assert!(
+            written(&document)
+                .iter()
+                .all(|node| node.sensitivity == Sensitivity::Public)
+        );
+    }
+
     accessibility_reports_multiline_document_role();
     accessibility_focus_tracks_editor_focus();
+    a_personal_editor_marks_the_written_text_personal();
     markdown_table_exposes_rows_and_cells_to_accessibility();
     standalone_markdown_image_exposes_alt_text();
     table_cell_source_keeps_readable_internal_spaces_and_exact_edge_spaces();
@@ -2377,4 +2421,33 @@ fn toolbar_commands_format_the_focused_block() {
         11..25,
         Mark::ExternalLink("https://b.test".into())
     )));
+}
+
+#[test]
+fn a_mention_replaces_its_typed_query_as_one_marked_run() {
+    let mut e = BlockEditor::new();
+    e.set_blocks(vec![Block::paragraph("hi @ad")]);
+    e.focus_block(0, CursorPlacement::End);
+    assert_eq!(e.text_before_caret(), Some("hi @ad"));
+    e.select_before_caret("@ad".len());
+    assert!(e.insert_mention("u-ada", "@Ada"));
+    assert_eq!(e.blocks[0].line.value(), "hi @Ada ");
+    assert_eq!(
+        e.blocks[0].line.marks(),
+        [MarkSpan::new(3..7, Mark::Mention("u-ada".into()))]
+    );
+    assert_eq!(
+        e.blocks[0].line.cursor_pos(),
+        8,
+        "the caret is after the space"
+    );
+    assert!(e.insert_text("🎉"));
+    assert_eq!(e.blocks[0].line.value(), "hi @Ada 🎉");
+    assert_eq!(
+        e.blocks[0].line.marks(),
+        [MarkSpan::new(3..7, Mark::Mention("u-ada".into()))],
+        "text typed after a mention does not join it"
+    );
+    e.set_read_only(true);
+    assert!(!e.insert_text("x"), "a read-only editor takes nothing");
 }

@@ -3099,6 +3099,7 @@ mod tests {
                 author: "Scribe".into(),
                 date: "2026-09-08".into(),
                 text: "Done.".into(),
+                body: Vec::new(),
             };
             assert_eq!(
                 word_action_anchor(&reply, "unused-focus"),
@@ -4123,6 +4124,7 @@ mod tests {
                     app_id: app.into(),
                     cluster_id: peer::room(),
                     record: record.map(str::to_owned),
+                    record_kind: None,
                     handle: Some(handle.into()),
                 },
             )

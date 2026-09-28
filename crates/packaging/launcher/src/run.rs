@@ -22,9 +22,93 @@ use crate::manifest::{MinimalManifest, PortalPolicy, read_manifest};
 use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_baseline;
 use crate::services::{
-    EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext, resolve_blob_bind,
-    resolve_identity_bind, resolve_service_binds_for_launch, to_service_binds,
+    BASELINE_SECCOMP_CHILD_FD, CLONE3_COMPAT_SECCOMP_CHILD_FD, EXIT_REQUIRED_SERVICE_MISSING,
+    ServiceError, ServiceLaunchContext, resolve_blob_bind, resolve_identity_bind,
+    resolve_service_binds_for_launch, to_service_binds,
 };
+
+struct SeccompFds {
+    clone3_compat: OwnedFd,
+    baseline: OwnedFd,
+}
+
+impl SeccompFds {
+    fn prepend_bwrap_args(argv: &mut Vec<String>) {
+        let mut prefix = vec![
+            "--add-seccomp-fd".to_string(),
+            CLONE3_COMPAT_SECCOMP_CHILD_FD.to_string(),
+            "--add-seccomp-fd".to_string(),
+            BASELINE_SECCOMP_CHILD_FD.to_string(),
+        ];
+        prefix.append(argv);
+        *argv = prefix;
+    }
+
+    fn host_fds(&self) -> (RawFd, RawFd) {
+        (self.clone3_compat.as_raw_fd(), self.baseline.as_raw_fd())
+    }
+}
+
+#[cfg(test)]
+mod seccomp_fd_tests {
+    use super::*;
+
+    #[test]
+    fn both_seccomp_filters_precede_the_sandbox_arguments() {
+        let compat = stage_seccomp_blob(&[1, 2, 3]).expect("compat filter fd");
+        let baseline = stage_seccomp_blob(&[4, 5, 6]).expect("baseline filter fd");
+        let _fds = SeccompFds {
+            clone3_compat: compat,
+            baseline,
+        };
+        let mut argv = vec!["--unshare-all".to_string(), "/app/bin".to_string()];
+
+        SeccompFds::prepend_bwrap_args(&mut argv);
+
+        assert_eq!(
+            argv,
+            [
+                "--add-seccomp-fd",
+                "40",
+                "--add-seccomp-fd",
+                "41",
+                "--unshare-all",
+                "/app/bin",
+            ]
+        );
+    }
+
+    #[test]
+    fn no_handed_over_descriptor_can_replace_a_seccomp_program() {
+        use crate::services::RESERVED_CHILD_FDS;
+        // Declared services are numbered from 17 upwards around the reserved
+        // slots; a filter sharing a slot with one would make bwrap read its
+        // program from that service's socket and never start the app.
+        for fd in [CLONE3_COMPAT_SECCOMP_CHILD_FD, BASELINE_SECCOMP_CHILD_FD] {
+            assert!(RESERVED_CHILD_FDS.contains(&fd), "{fd} must be reserved");
+            assert!(fd > 31, "{fd} must stay above bwrap's own descriptors");
+        }
+        let mut unique = RESERVED_CHILD_FDS.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            RESERVED_CHILD_FDS.len(),
+            "reserved slots overlap"
+        );
+    }
+}
+
+unsafe fn place_fd(host: RawFd, child: RawFd) -> std::io::Result<()> {
+    if unsafe { libc::dup2(host, child) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let flags = unsafe { libc::fcntl(child, libc::F_GETFD) };
+    if flags != -1 {
+        let _ = unsafe { libc::fcntl(child, libc::F_SETFD, flags & !libc::FD_CLOEXEC) };
+    }
+    Ok(())
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -1613,7 +1697,7 @@ fn spawn_and_wait(
     cli_passthrough: Vec<String>,
     opts: &RunOptions,
     latency_sensitive: bool,
-    seccomp_fd: OwnedFd,
+    seccomp_fds: SeccompFds,
     resolved: Vec<crate::services::ResolvedService>,
     egress: &crate::netgate::EgressDecision,
     net_gate: Option<&crate::sandbox::NetGateBind>,
@@ -1627,7 +1711,6 @@ fn spawn_and_wait(
         Option<PathBuf>,
     )>,
 ) -> Result<ExitStatus, RunError> {
-    const SECCOMP_CHILD_FD: i32 = 16;
     let (observer, debug_output) = match observer {
         Some((observer, debug_output)) => (Some(observer), debug_output),
         None => (None, None),
@@ -1645,12 +1728,7 @@ fn spawn_and_wait(
             .map(|file| (path, file))
     });
     let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
-
-    // Insert --seccomp <child_fd> at the front so bwrap installs it
-    // before any other action (matches the compositor pattern).
-    let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
-    prefix.append(&mut argv);
-    argv = prefix;
+    SeccompFds::prepend_bwrap_args(&mut argv);
 
     // Passthrough: everything after the entrypoint token is opaque to bwrap,
     // forwarded as the sandboxed program's argv[1..].
@@ -1678,9 +1756,9 @@ fn spawn_and_wait(
         }
     }
 
-    // pre_exec: dup the seccomp blob fd into SECCOMP_CHILD_FD, and put
+    // pre_exec: place both seccomp blobs on fixed child fds, and put
     // each service socket on the fd number the app was told to read.
-    let host_seccomp_fd = seccomp_fd.as_raw_fd();
+    let (host_clone3_compat_fd, host_baseline_seccomp_fd) = seccomp_fds.host_fds();
     let mut service_fds: Vec<(RawFd, RawFd)> = resolved
         .iter()
         .map(|r| (r.host_fd(), r.child_fd as RawFd))
@@ -1727,14 +1805,8 @@ fn spawn_and_wait(
     // landlock crate's syscall wrappers. No allocator calls, no locks.
     unsafe {
         cmd.pre_exec(move || {
-            // Plumb seccomp blob fd → fixed child fd, strip CLOEXEC.
-            if libc::dup2(host_seccomp_fd, SECCOMP_CHILD_FD) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            let flags = libc::fcntl(SECCOMP_CHILD_FD, libc::F_GETFD);
-            if flags != -1 {
-                let _ = libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-            }
+            place_fd(host_clone3_compat_fd, CLONE3_COMPAT_SECCOMP_CHILD_FD)?;
+            place_fd(host_baseline_seccomp_fd, BASELINE_SECCOMP_CHILD_FD)?;
             place_service_fds(&mut service_fds)?;
             set_sandbox_resource_limits()?;
             if latency_sensitive {
@@ -1767,9 +1839,8 @@ fn spawn_and_wait(
                 .spawn(move || copy_bounded_output(err, &sink, &budget));
         }
     }
-    // Important: keep `seccomp_fd` alive until after `spawn` returns,
-    // so its dup2'd copy in the child remains valid. Drop here.
-    drop(seccomp_fd);
+    // Keep both filter fds alive until spawn has duplicated them in the child.
+    drop(seccomp_fds);
     // Same rule: the child holds its own copies, so the launcher's are dead
     // weight, dropped before the wait so the far end learns of the exit.
     drop(resolved);
@@ -1788,7 +1859,7 @@ fn spawn_and_wait(
 /// image decides whether this package may have it. An unrecognised name is a
 /// packaging mistake; a recognised-but-unentitled one is an app trying to
 /// lift a protection off itself — logged distinctly.
-fn stage_seccomp(manifest: &MinimalManifest) -> Result<OwnedFd, RunError> {
+fn stage_seccomp(manifest: &MinimalManifest) -> Result<SeccompFds, RunError> {
     let decision = crate::seccomp::resolve_profile(&manifest.sandbox.seccomp, &manifest.package_id);
     let profile = decision.applied;
     if decision.refused {
@@ -1809,8 +1880,10 @@ fn stage_seccomp(manifest: &MinimalManifest) -> Result<OwnedFd, RunError> {
             profile.as_str()
         );
     }
-    let seccomp_blob = compile_baseline(profile)?;
-    Ok(stage_seccomp_blob(&seccomp_blob)?)
+    Ok(SeccompFds {
+        clone3_compat: stage_seccomp_blob(&crate::seccomp::compile_clone3_compat()?)?,
+        baseline: stage_seccomp_blob(&compile_baseline(profile)?)?,
+    })
 }
 
 /// Resolve the selected identity record on the host, migrate legacy storage,
@@ -2027,7 +2100,7 @@ fn run_with_context(
     let binds = to_service_binds(&resolved);
 
     // 2. Seccomp baseline → tmpfile → fd.
-    let seccomp_fd: OwnedFd = stage_seccomp(manifest)?;
+    let seccomp_fds = stage_seccomp(manifest)?;
 
     // 2b. D-Bus proxy decision. Failure leaves the bus unavailable; there is
     // no raw-session-bus fallback. `_dbus_guard` stays alive until bwrap is
@@ -2145,7 +2218,7 @@ fn run_with_context(
         cli_passthrough,
         opts,
         latency_sensitive,
-        seccomp_fd,
+        seccomp_fds,
         resolved,
         &egress,
         net_gate.as_ref(),
@@ -2222,7 +2295,7 @@ fn spawn_and_capture(
     mut argv: Vec<String>,
     passthrough: Vec<String>,
     opts: &RunOptions,
-    seccomp_fd: OwnedFd,
+    seccomp_fds: SeccompFds,
     resolved: Vec<crate::services::ResolvedService>,
     identity_broker: (
         Option<UnixStream>,
@@ -2230,12 +2303,8 @@ fn spawn_and_capture(
         Option<std::thread::JoinHandle<()>>,
     ),
 ) -> Result<(ExitStatus, Vec<u8>), RunError> {
-    const SECCOMP_CHILD_FD: i32 = 16;
     let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
-
-    let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
-    prefix.append(&mut argv);
-    argv = prefix;
+    SeccompFds::prepend_bwrap_args(&mut argv);
     // Everything after the entrypoint token is opaque to bwrap and
     // becomes the child's argv[1..].
     argv.extend(passthrough);
@@ -2249,7 +2318,7 @@ fn spawn_and_capture(
     clear_bwrap_environment(&mut cmd);
     cmd.stdout(std::process::Stdio::piped());
 
-    let host_seccomp_fd = seccomp_fd.as_raw_fd();
+    let (host_clone3_compat_fd, host_baseline_seccomp_fd) = seccomp_fds.host_fds();
     let mut service_fds: Vec<(RawFd, RawFd)> = resolved
         .iter()
         .map(|r| (r.host_fd(), r.child_fd as RawFd))
@@ -2262,13 +2331,8 @@ fn spawn_and_capture(
     }
     unsafe {
         cmd.pre_exec(move || {
-            if libc::dup2(host_seccomp_fd, SECCOMP_CHILD_FD) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            let flags = libc::fcntl(SECCOMP_CHILD_FD, libc::F_GETFD);
-            if flags != -1 {
-                let _ = libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-            }
+            place_fd(host_clone3_compat_fd, CLONE3_COMPAT_SECCOMP_CHILD_FD)?;
+            place_fd(host_baseline_seccomp_fd, BASELINE_SECCOMP_CHILD_FD)?;
             place_service_fds(&mut service_fds)?;
             set_sandbox_resource_limits()?;
             Ok(())
@@ -2276,7 +2340,7 @@ fn spawn_and_capture(
     }
 
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
-    drop(seccomp_fd);
+    drop(seccomp_fds);
     // As in `run_with`: the child has its own copies, so holding these open
     // only keeps the service from seeing the app end.
     drop(resolved);
@@ -2418,7 +2482,7 @@ fn spawn_and_capture_bounded(
     mut argv: Vec<String>,
     passthrough: Vec<String>,
     opts: &RunOptions,
-    seccomp_fd: OwnedFd,
+    seccomp_fds: SeccompFds,
     resolved: Vec<crate::services::ResolvedService>,
     identity_broker: (
         Option<UnixStream>,
@@ -2428,12 +2492,9 @@ fn spawn_and_capture_bounded(
     plan: CapturedResourcePlan,
     cancellation: &CaptureCancellation,
 ) -> Result<CapturedRunOutput, RunError> {
-    const SECCOMP_CHILD_FD: i32 = 16;
     let plan = plan.validate()?;
     let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
-    let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
-    prefix.append(&mut argv);
-    argv = prefix;
+    SeccompFds::prepend_bwrap_args(&mut argv);
     argv.extend(passthrough);
 
     let bwrap = opts
@@ -2447,7 +2508,7 @@ fn spawn_and_capture_bounded(
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::null());
 
-    let host_seccomp_fd = seccomp_fd.as_raw_fd();
+    let (host_clone3_compat_fd, host_baseline_seccomp_fd) = seccomp_fds.host_fds();
     let mut service_fds: Vec<(RawFd, RawFd)> = resolved
         .iter()
         .map(|service| (service.host_fd(), service.child_fd as RawFd))
@@ -2460,13 +2521,8 @@ fn spawn_and_capture_bounded(
     }
     unsafe {
         cmd.pre_exec(move || {
-            if libc::dup2(host_seccomp_fd, SECCOMP_CHILD_FD) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            let flags = libc::fcntl(SECCOMP_CHILD_FD, libc::F_GETFD);
-            if flags != -1 {
-                let _ = libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-            }
+            place_fd(host_clone3_compat_fd, CLONE3_COMPAT_SECCOMP_CHILD_FD)?;
+            place_fd(host_baseline_seccomp_fd, BASELINE_SECCOMP_CHILD_FD)?;
             place_service_fds(&mut service_fds)?;
             set_sandbox_resource_limits()?;
             set_captured_resource_limits(plan)?;
@@ -2478,7 +2534,7 @@ fn spawn_and_capture_bounded(
     }
 
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
-    drop(seccomp_fd);
+    drop(seccomp_fds);
     drop(resolved);
     drop(identity_broker_app);
     let used = Arc::new(AtomicUsize::new(0));
@@ -2631,7 +2687,7 @@ fn run_with_capture_spawn<T>(
         Vec<String>,
         Vec<String>,
         &RunOptions,
-        OwnedFd,
+        SeccompFds,
         Vec<crate::services::ResolvedService>,
         IdentityBrokerHandles,
     ) -> Result<T, RunError>,
@@ -2667,8 +2723,12 @@ fn run_with_capture_spawn<T>(
 
     // Seccomp baseline resolved identically to `run_with` — two paths
     // reaching different conclusions would make capture a way around the filter.
-    let seccomp_blob = compile_baseline(manifest.sandbox.seccomp_profile(&manifest.package_id))?;
-    let seccomp_fd: OwnedFd = stage_seccomp_blob(&seccomp_blob)?;
+    let seccomp_fds = SeccompFds {
+        clone3_compat: stage_seccomp_blob(&crate::seccomp::compile_clone3_compat()?)?,
+        baseline: stage_seccomp_blob(&compile_baseline(
+            manifest.sandbox.seccomp_profile(&manifest.package_id),
+        )?)?,
+    };
 
     // Build the exact production sandbox shape. Capture changes stdout only.
     let resolved_runtime = resolve_runtime(manifest, opts)?;
@@ -2733,7 +2793,7 @@ fn run_with_capture_spawn<T>(
         argv,
         passthrough,
         opts,
-        seccomp_fd,
+        seccomp_fds,
         resolved,
         (
             identity_broker_app,
@@ -3252,7 +3312,10 @@ mod managed_spawn_policy_tests {
                 vec![],
                 &options,
                 false,
-                tempfile::tempfile().unwrap().into(),
+                SeccompFds {
+                    clone3_compat: tempfile::tempfile().unwrap().into(),
+                    baseline: tempfile::tempfile().unwrap().into(),
+                },
                 vec![],
                 &crate::netgate::EgressDecision::Blocked,
                 None,

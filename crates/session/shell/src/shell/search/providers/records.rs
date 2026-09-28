@@ -12,13 +12,13 @@
 //! opening are meant to be the same gesture.
 //!
 //! [`RoomRecords`] answers both halves — which records exist, and which
-//! rooms hold which — already in memory, so `query` only reads maps and
-//! matches strings; it never touches the filesystem or a CRDT.
+//! rooms hold which — already in memory. The provider indexes the known
+//! records once per corpus revision, so a query only searches.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ui::search::{FieldWeight, RankField};
+use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::i18n::{t, t_args};
@@ -41,6 +41,36 @@ const MAX_RESULTS: usize = 20;
 
 pub struct RecordsProvider {
     index: Rc<RefCell<RoomRecords>>,
+    /// The known records at one corpus revision, indexed by position.
+    snapshot: RefCell<Option<RecordsSnapshot>>,
+}
+
+struct RecordsSnapshot {
+    revision: String,
+    records: Rc<Vec<KnownRecord>>,
+    index: SearchIndex,
+}
+
+impl RecordsSnapshot {
+    /// Title first; the identity is matched lower — a file record's id
+    /// contains its whole path, so a directory-name match is a weaker
+    /// signal than the title.
+    fn new(revision: String, records: Rc<Vec<KnownRecord>>) -> Self {
+        let mut index = SearchIndex::new(Matching::LOOSE);
+        index.replace_all(records.iter().enumerate().map(|(at, record)| {
+            Document::new(at as u64)
+                .field(record.title(), FieldWeight::TITLE)
+                .field(record.id.as_str(), FieldWeight::IDENTITY)
+        }));
+        if let Err(error) = index.commit() {
+            tracing::error!(%error, "could not index records");
+        }
+        Self {
+            revision,
+            records,
+            index,
+        }
+    }
 }
 
 impl RecordsProvider {
@@ -53,7 +83,10 @@ impl RecordsProvider {
     /// A provider over a caller-supplied index — the shell shares one
     /// across every surface that references records.
     pub fn with_index(index: Rc<RefCell<RoomRecords>>) -> Self {
-        Self { index }
+        Self {
+            index,
+            snapshot: RefCell::new(None),
+        }
     }
 
     pub fn index(&self) -> Rc<RefCell<RoomRecords>> {
@@ -160,49 +193,51 @@ impl SearchProvider for RecordsProvider {
             )
         };
         let needle = ctx.needle.trim().to_lowercase();
-        let (revision, after) = {
-            let index = self.index.borrow();
-            let revision = index.search_generation();
-            let after = match cursor {
-                Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
-                Some(cursor) => match decode_cursor(&cursor.token, &needle) {
-                    Ok(after) => after,
-                    Err(InvalidCursor) => return SearchPage::stale(revision),
-                },
-                None => None,
-            };
-            (revision, after)
+        let revision = self.index.borrow().search_generation();
+        let offset = match cursor {
+            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
+            Some(cursor) => match cursor
+                .token
+                .split_once('\u{1f}')
+                .filter(|(cursor_needle, _)| *cursor_needle == needle)
+                .and_then(|(_, offset)| offset.parse::<usize>().ok())
+            {
+                Some(offset) => offset,
+                None => return SearchPage::stale(revision),
+            },
+            None => 0,
         };
-        let source = self
-            .index
-            .borrow()
-            .search_records(after.as_deref(), budget.max_work);
-        // The scan worker may have published between taking the cursor
-        // revision and acquiring its retained map. Never label those newer
-        // rows with the older revision: force a clean retry instead.
-        let current_revision = self.index.borrow().search_generation();
-        if current_revision != revision {
-            return SearchPage::stale(current_revision);
+        let mut slot = self.snapshot.borrow_mut();
+        if slot
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.revision != revision)
+        {
+            let records = self.index.borrow().known();
+            *slot = Some(RecordsSnapshot::new(revision.clone(), records));
         }
-        if source.invalid_cursor {
-            return SearchPage::stale(revision);
-        }
+        let Some(snapshot) = slot.as_ref() else {
+            return SearchPage::exhausted(revision, Vec::new());
+        };
+        let found = snapshot.index.search(
+            &needle,
+            Page {
+                offset,
+                limit: budget.max_work.min(budget.max_results),
+            },
+        );
         let mut used = 0usize;
         let mut results = Vec::new();
-        let mut last_consumed = after;
-        let mut stopped_for_budget = false;
-        for entry in source.entries {
-            let record = entry.record;
-            let title = record.title();
-            let Some(score) = match_score(&needle, &title, record.id.as_str()) else {
-                last_consumed = Some(entry.cursor);
+        let mut shown = 0usize;
+        for hit in &found.hits {
+            let Some(record) = usize::try_from(hit.key)
+                .ok()
+                .and_then(|at| snapshot.records.get(at))
+            else {
+                shown = shown.saturating_add(1);
                 continue;
             };
-            if results.len() >= budget.max_results {
-                stopped_for_budget = true;
-                break;
-            }
-            let subtitle = provenance(&record, here, &rooms);
+            let title = record.title();
+            let subtitle = provenance(record, here, &rooms);
             let bytes = record
                 .id
                 .as_str()
@@ -211,10 +246,10 @@ impl SearchProvider for RecordsProvider {
                 .saturating_add(subtitle.len())
                 .saturating_add(96);
             if used.saturating_add(bytes) > budget.max_bytes {
-                stopped_for_budget = true;
                 break;
             }
             used = used.saturating_add(bytes);
+            shown = shown.saturating_add(1);
             let index = Rc::clone(&self.index);
             let id = record.id.clone();
             let kind = record.kind.clone();
@@ -224,24 +259,24 @@ impl SearchProvider for RecordsProvider {
                 record.id.as_str().to_string(),
                 title,
                 Some(subtitle),
-                score,
+                crate::shell::search::provider_score(hit.rank.unwrap_or(0)),
                 move |_doc, _root, chrome: &Chrome| {
                     bring_into_this_room(&index, &id, &kind, chrome);
                 },
             ));
-            last_consumed = Some(entry.cursor);
         }
-        let exhausted = !stopped_for_budget && source.exhausted;
+        let exhausted = !found.more && shown == found.hits.len();
+        let next = offset.saturating_add(shown);
         SearchPage {
             revision: revision.clone(),
             results,
             next_cursor: (!exhausted).then(|| SearchCursor {
                 revision,
-                token: encode_cursor(&needle, last_consumed.as_deref()),
+                token: format!("{needle}\u{1f}{next}"),
             }),
             exhausted,
             stale_cursor: false,
-            budget_exhausted: stopped_for_budget || !source.exhausted,
+            budget_exhausted: !exhausted,
         }
     }
 }
@@ -345,36 +380,6 @@ fn display_path(path: &std::path::Path) -> String {
 /// the normalized query. A delimiter alone is ambiguous because a record
 /// search string is ordinary user text; malformed continuations are rejected
 /// as stale instead of seeking an unintended part of the corpus.
-fn encode_cursor(needle: &str, after: Option<&str>) -> String {
-    format!("{}:{needle}{}", needle.len(), after.unwrap_or_default())
-}
-
-#[derive(Debug, Clone, Copy)]
-struct InvalidCursor;
-
-fn decode_cursor(token: &str, needle: &str) -> Result<Option<String>, InvalidCursor> {
-    let (length, rest) = token.split_once(':').ok_or(InvalidCursor)?;
-    let length = length.parse::<usize>().map_err(|_| InvalidCursor)?;
-    if rest.len() < length || rest.get(..length).ok_or(InvalidCursor)? != needle {
-        return Err(InvalidCursor);
-    }
-    let after = rest.get(length..).ok_or(InvalidCursor)?;
-    Ok((!after.is_empty()).then(|| after.to_string()))
-}
-
-/// How well `needle` names this record, by the shared ranker. Title first;
-/// the identity is matched last and lowest — a file record's id contains its
-/// whole path, so a directory-name match is a weaker signal than the title.
-fn match_score(needle: &str, title: &str, id: &str) -> Option<i32> {
-    crate::shell::search::rank_fields(
-        needle,
-        &[
-            RankField::new(title, FieldWeight::TITLE),
-            RankField::new(id, FieldWeight::IDENTITY),
-        ],
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

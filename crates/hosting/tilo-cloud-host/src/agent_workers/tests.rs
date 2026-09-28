@@ -1709,6 +1709,8 @@ pub(crate) fn relay_delivers_outbox(store: &mut crate::Store) {
     }
 }
 /// Pump (settling worker publications) until `done` or a bounded deadline.
+/// Between passes it waits for the next worker publication rather than
+/// polling; the short timeout only lets grace periods elapse.
 async fn pump_until(
     workers: &mut AgentWorkers,
     documents: &mut mpsc::Receiver<PendingHostDocument>,
@@ -1725,7 +1727,11 @@ async fn pump_until(
             return;
         }
         assert!(tokio::time::Instant::now() < deadline, "timed out: {what}");
-        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        match tokio::time::timeout(std::time::Duration::from_millis(50), documents.recv()).await {
+            Ok(Some(pending)) => apply_document(workers, pending),
+            Ok(None) => panic!("worker documents closed: {what}"),
+            Err(_) => {} // Only time-based work (an unmount grace) is due.
+        }
     }
 }
 

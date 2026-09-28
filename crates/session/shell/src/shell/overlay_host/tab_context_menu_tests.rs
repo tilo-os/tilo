@@ -623,16 +623,36 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
         let mut tr = TextRenderer::new();
         let presence = ui::presence::PresenceCtx::default();
         let mut closed = Scene::new();
-        h.host
-            .draw_tab_context_menu(&mut closed, Affine::IDENTITY, &mut tr, &h.theme, &presence);
+        let viewport = h.host.rect;
+        h.host.layers.draw(
+            LayerId::TabContextMenu,
+            &mut LayerPaint {
+                scene: &mut closed,
+                transform: Affine::IDENTITY,
+                text_renderer: &mut tr,
+                theme: &h.theme,
+                presence: &presence,
+                viewport,
+            },
+        );
         assert!(
             closed.encoding().is_empty(),
             "a closed menu contributes nothing to the scene"
         );
         h.right_click_pill(1);
         let mut open = Scene::new();
-        h.host
-            .draw_tab_context_menu(&mut open, Affine::IDENTITY, &mut tr, &h.theme, &presence);
+        let viewport = h.host.rect;
+        h.host.layers.draw(
+            LayerId::TabContextMenu,
+            &mut LayerPaint {
+                scene: &mut open,
+                transform: Affine::IDENTITY,
+                text_renderer: &mut tr,
+                theme: &h.theme,
+                presence: &presence,
+                viewport,
+            },
+        );
         assert!(
             !open.encoding().is_empty(),
             "an open menu paints its surface, rows and shadow"

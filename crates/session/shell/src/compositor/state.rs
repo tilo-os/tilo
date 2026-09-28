@@ -105,7 +105,7 @@ use crate::wayland::color_management::ColorManagerState;
 
 use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
 use smithay::backend::input::KeyState;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use vello::kurbo::Rect;
 
 /// Stable identity from `apps/osk/tilo-app.toml`. It is necessary but never
@@ -1131,11 +1131,20 @@ impl State {
         //    global leaves it with none, and EGL dies before mapping a toplevel.
         // 2. **Only formats we can composite.** `foreign::import_dmabuf_rgba`
         //    CPU-maps the plane fd — correct only for single-plane RGBA under `Modifier::Linear`, so that's what goes on the wire.
+        //    10-bit RGB, half float and P010 are converted there too, so
+        //    HDR clients (PQ swapchains, 10-bit video) can hand them over.
         let dmabuf_formats: Vec<Format> = [
             Fourcc::Argb8888,
             Fourcc::Xrgb8888,
             Fourcc::Abgr8888,
             Fourcc::Xbgr8888,
+            Fourcc::Abgr2101010,
+            Fourcc::Xbgr2101010,
+            Fourcc::Argb2101010,
+            Fourcc::Xrgb2101010,
+            Fourcc::Abgr16161616f,
+            Fourcc::Xbgr16161616f,
+            Fourcc::P010,
         ]
         .into_iter()
         .map(|code| Format {
@@ -1240,8 +1249,10 @@ impl State {
     }
 
     /// Switch the seat to input source `index`; clients learn the new group
-    /// through the ordinary modifiers event.
+    /// through the ordinary modifiers event, and every key name the shell
+    /// shows from now on follows the new layout's keycaps.
     pub(crate) fn activate_keyboard_source(&mut self, index: usize) {
+        ui::keycaps::set_active(self.applied_keyboard.keycaps(index));
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
@@ -1277,7 +1288,14 @@ impl State {
         };
         match compiled {
             Ok(()) => {
-                self.activate_keyboard_source(settings.active_index);
+                tracing::info!(
+                    sources = ?settings.source_ids,
+                    active = settings.active_index,
+                    "Wayland seat: applied per-user XKB sources"
+                );
+                let active = settings.active_index;
+                self.applied_keyboard = settings;
+                self.activate_keyboard_source(active);
                 let (delay, rate) =
                     crate::compositor::backend::drm::input_config::InputSettings::load()
                         .key_repeat_params();
@@ -1286,12 +1304,6 @@ impl State {
                     i32::try_from(rate).unwrap_or(i32::MAX),
                     i32::try_from(delay.as_millis()).unwrap_or(i32::MAX),
                 );
-                tracing::info!(
-                    sources = ?settings.source_ids,
-                    active = settings.active_index,
-                    "Wayland seat: applied per-user XKB sources"
-                );
-                self.applied_keyboard = settings;
             }
             Err(error) => tracing::warn!(
                 sources = ?settings.source_ids,
@@ -1556,6 +1568,27 @@ impl State {
             }
         }
         changed
+    }
+
+    /// Outputs the person is using right now: the one under the pointer and
+    /// the one showing the focused window.
+    pub fn watched_outputs(&self) -> BTreeSet<crate::compositor::backend::OutputId> {
+        let output_at = |point: vello::kurbo::Point| {
+            self.output_rects
+                .iter()
+                .find(|(_, rect)| rect.contains(point))
+                .map(|(id, _)| *id)
+        };
+        let pointer = self.seat.get_pointer().and_then(|pointer| {
+            let location = pointer.current_location();
+            output_at((location.x, location.y).into())
+        });
+        let focus = self
+            .client_input
+            .keyboard_focus()
+            .and_then(|surface| crate::compositor::foreign::store().placement(surface))
+            .and_then(|rect| output_at(rect.center()));
+        pointer.into_iter().chain(focus).collect()
     }
 
     /// Resolve the live output rectangle used for a fullscreen configure.
@@ -2953,8 +2986,13 @@ impl State {
                 return (ForeignCommitCapture::NoBuffer, None);
             };
             if let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(&buffer).cloned() {
+                let colorimetry = states
+                    .data_map
+                    .get::<crate::wayland::color_management::ColorManagementSurfaceData>()
+                    .and_then(crate::wayland::color_management::ColorManagementSurfaceData::current_colorimetry)
+                    .map(|(colorimetry, _)| colorimetry);
                 if let Some((token, barrier)) = crate::compositor::foreign::store()
-                    .prepare_dmabuf_capture(surface_id, client, dmabuf)
+                    .prepare_dmabuf_capture(surface_id, client, dmabuf, colorimetry)
                 {
                     // `with_states` holds Smithay's PrivateSurfaceData mutex.
                     // `add_blocker` takes that same non-reentrant mutex, so it
@@ -6083,5 +6121,54 @@ mod tick_hook_tests {
             assert!(!state.session_lock.take_lock_requested());
             assert!(!state.session_lock.has_pending_locker());
         }
+    }
+}
+
+#[cfg(test)]
+mod keycap_layout_tests {
+    use super::*;
+    use smithay::reexports::calloop::EventLoop;
+    use smithay::reexports::wayland_server::Display;
+
+    fn write_input(settings: &std::path::Path, active: &str) {
+        let document = serde_json::json!({
+            "input": {"keyboard_layout": active, "keyboard_layouts": ["us", "de"]},
+        });
+        std::fs::write(settings, document.to_string()).expect("settings");
+    }
+
+    #[test]
+    fn key_names_follow_every_layout_switch_live() {
+        let temp = tempfile::tempdir().expect("temp");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", temp.path());
+        let settings = settings_store::settings_path().expect("settings path");
+        std::fs::create_dir_all(settings.parent().expect("config dir")).expect("config dir");
+        write_input(&settings, "us");
+
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("wayland display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let power = settings_store::hardware::KeyChord::parse("Ctrl+Alt+Delete").expect("chord");
+        let label = || crate::shell::keyboard_shortcuts::chord_text(&power);
+        assert_eq!(label(), "Ctrl+Alt+Delete", "the session starts on US");
+
+        // The input-source chord switches the seat's group in place.
+        state.activate_keyboard_source(1);
+        assert_eq!(label(), "Strg+Alt+Entf");
+        assert_eq!(
+            crate::compositor::pointer_lock::release_chord_label(),
+            "Strg+Alt+Esc"
+        );
+
+        // A choice made in Settings arrives through the settings reload.
+        write_input(&settings, "us");
+        state.reload_keyboard_settings();
+        assert_eq!(label(), "Ctrl+Alt+Delete");
+        write_input(&settings, "de");
+        state.reload_keyboard_settings();
+        assert_eq!(label(), "Strg+Alt+Entf");
+        // The stored chord never changed.
+        assert_eq!(power.display(), "Ctrl+Alt+Delete");
     }
 }

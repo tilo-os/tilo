@@ -562,30 +562,11 @@ pub fn normalise_url(input: &str) -> String {
     if looks_like_host {
         format!("https://{trimmed}")
     } else {
-        format!("https://duckduckgo.com/?q={}", urlencode(trimmed))
+        format!(
+            "https://duckduckgo.com/?q={}",
+            form_urlencoded::byte_serialize(trimmed.as_bytes()).collect::<String>()
+        )
     }
-}
-
-/// Minimal percent-encoding for search queries (RFC 3986 unreserved set
-/// stays literal, space becomes `+`).
-fn urlencode(s: &str) -> String {
-    use std::fmt::Write as _;
-
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            b' ' => out.push('+'),
-            // `write!` to a `String` is infallible; there is nothing
-            // useful to do with the `Result`.
-            _ => {
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-    }
-    out
 }
 
 #[cfg(test)]

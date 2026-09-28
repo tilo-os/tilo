@@ -13,7 +13,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use settings_store::display_mode::DisplayLayoutMode;
 use std::rc::Rc;
 use tilo_clock::unix_now;
-use ui::search::{FieldWeight, RankField};
+use ui::search::{FieldWeight, ListIndex};
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::i18n::{t, t_args};
@@ -689,12 +689,12 @@ fn apply_permission_profile_action(
                 tree.doc_insert_capability(workspace_id, &capability);
             }
         }
-        crate::shell::workspace_settings::APP_ACTION_GRANT_ACTION_ID
-        | crate::shell::workspace_settings::APP_ACTION_REVOKE_ACTION_ID => {
-            use crate::shell::workspace_settings::PermissionProfileOperation;
+        tilo_desktop::workspace_settings::APP_ACTION_GRANT_ACTION_ID
+        | tilo_desktop::workspace_settings::APP_ACTION_REVOKE_ACTION_ID => {
+            use tilo_desktop::workspace_settings::PermissionProfileOperation;
             let text = |name: &str| arguments.text(name).unwrap_or_default().to_string();
             let operation =
-                if action_id == crate::shell::workspace_settings::APP_ACTION_GRANT_ACTION_ID {
+                if action_id == tilo_desktop::workspace_settings::APP_ACTION_GRANT_ACTION_ID {
                     PermissionProfileOperation::GrantAppAction {
                         app: text("app"),
                         target_app: text("target_app"),
@@ -713,7 +713,7 @@ fn apply_permission_profile_action(
                 .active_workspace()
                 .ok_or_else(|| ActionError::Refused("no active workspace".into()))?
                 .actor_for_person(&actor);
-            crate::shell::workspace_settings::apply_app_action_operation(
+            crate::shell::workspace_governance::apply_app_action_operation(
                 &mut tree,
                 workspace_id,
                 &person,
@@ -1107,7 +1107,7 @@ impl Action {
             "search-action-settings-open",
             "search-action-settings-open-subtitle",
             |st, _| {
-                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::General);
+                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::General);
                 Ok(())
             },
         ),
@@ -1116,7 +1116,7 @@ impl Action {
             "search-action-settings-members-open",
             "search-action-settings-members-open-subtitle",
             |st, _| {
-                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Members);
+                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Members);
                 Ok(())
             },
         ),
@@ -1125,7 +1125,7 @@ impl Action {
             "search-action-settings-privacy-open",
             "search-action-settings-privacy-open-subtitle",
             |st, _| {
-                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Permissions);
+                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Permissions);
                 Ok(())
             },
         ),
@@ -1134,7 +1134,7 @@ impl Action {
             "search-action-settings-apps-open",
             "search-action-settings-apps-open-subtitle",
             |st, _| {
-                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Apps);
+                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Apps);
                 Ok(())
             },
         ),
@@ -1497,9 +1497,12 @@ impl Action {
             params: PRESENCE_FOLLOW_PARAMS,
             apply: |st, args| {
                 let id = args.text("collaborator").unwrap_or_default().trim();
-                let followable = crate::shell::overlay_host::collaborator_roster_rows(&st.tree())
-                    .into_iter()
-                    .any(|row| row.id == id && row.followable);
+                let followable = tilo_desktop::collaborators::collaborator_roster_rows(
+                    &st.tree().desktop,
+                    &crate::shell::state::local_user_id(),
+                )
+                .into_iter()
+                .any(|row| row.id == id && row.followable);
                 if !followable {
                     return Err(ActionError::Refused(format!(
                         "`{id}` is not a connected, followable collaborator in this workspace"
@@ -1696,7 +1699,7 @@ impl Action {
             params: AGENT_INVITE_PARAMS,
             apply: |st, args| {
                 use crate::shell::state::{CapOverride, Subject};
-                use crate::shell::workspace_settings::AgentAuthorityPreset;
+                use tilo_desktop::workspace_settings::AgentAuthorityPreset;
                 let name = args.text("name").unwrap_or(DEFAULT_AGENT_NAME).trim();
                 let name = if name.is_empty() {
                     DEFAULT_AGENT_NAME
@@ -1758,7 +1761,7 @@ impl Action {
             subtitle: "search-action-agent-invite-triage-subtitle",
             params: &[],
             apply: |st, _args| {
-                use crate::shell::workspace_settings::{TRIAGE_AGENT, triage_agent_grants};
+                use tilo_desktop::workspace_settings::{TRIAGE_AGENT, triage_agent_grants};
                 let user = st.active_local_user();
                 let admitted = {
                     let mut tree = st.tree_mut();
@@ -2751,6 +2754,8 @@ fn quick_settings_contract_for(
 
 pub struct ActionsProvider {
     qs_actions: SharedQsActions,
+    /// The rows' searchable text, indexed while it stays the same.
+    ranker: ListIndex,
     search_preferences: Option<crate::shell::search::SearchPreferencesHandle>,
     provider_catalog: Option<crate::shell::search::SearchProviderCatalogHandle>,
 }
@@ -2764,6 +2769,7 @@ impl ActionsProvider {
                 Rc::new(crate::shell::quick_settings::actions::UnavailableQsActions),
                 crate::shell::quick_settings::actions::QsActionAvailability::default(),
             )),
+            ranker: ListIndex::default(),
         }
     }
 
@@ -2776,6 +2782,7 @@ impl ActionsProvider {
             search_preferences: Some(search_preferences),
             provider_catalog: Some(provider_catalog),
             qs_actions,
+            ranker: ListIndex::default(),
         }
     }
 
@@ -2869,8 +2876,10 @@ impl SearchProvider for ActionsProvider {
         if !ctx.wanted.contains(&ResourceKind::Action) {
             return Vec::new();
         }
-        let needle_lower = ctx.needle.to_lowercase();
         let mut out = Vec::new();
+        // Every row is built with its searchable text; ranking them together
+        // then keeps the matches and scores them.
+        let mut candidates = ActionCandidates::default();
         for action in Action::ALL {
             // A session not running peer sync has nothing to invite into.
             // Public rooms are served over peer sync too.
@@ -2902,8 +2911,9 @@ impl SearchProvider for ActionsProvider {
             let subtitle = t(action.subtitle);
             let label_lower = label.to_lowercase();
             let subtitle_lower = subtitle.to_lowercase();
-            let score = match_score(&needle_lower, &label_lower, &subtitle_lower, action.id);
-            if let Some(score) = score {
+            candidates.record(&label_lower, &subtitle_lower, action.id);
+            {
+                let score = 0;
                 let apply = action.apply;
                 let (on_open, on_begin_invoke) = if action.id == "record.bring" {
                     let on_open = Rc::new(
@@ -3080,14 +3090,12 @@ impl SearchProvider for ActionsProvider {
         );
         let view_keywords = t("search-action-workspace-view-keywords").to_lowercase();
         for descriptor in descriptors {
-            let Some(score) = match_score(
-                &needle_lower,
+            candidates.record(
                 &descriptor.label.to_lowercase(),
                 &view_keywords,
                 &descriptor.id,
-            ) else {
-                continue;
-            };
+            );
+            let score = 0;
             let request = descriptor.request;
             out.push(SearchResult {
                 kind: ResourceKind::Action,
@@ -3113,14 +3121,8 @@ impl SearchProvider for ActionsProvider {
         for &(id, label_key, subtitle_key) in QUICK_SETTINGS_ACTIONS {
             let label = t(label_key);
             let subtitle = t(subtitle_key);
-            let Some(score) = match_score(
-                &needle_lower,
-                &label.to_lowercase(),
-                &subtitle.to_lowercase(),
-                id,
-            ) else {
-                continue;
-            };
+            candidates.record(&label.to_lowercase(), &subtitle.to_lowercase(), id);
+            let score = 0;
             let actions = self.qs_actions.actions.borrow().clone();
             let available = self.qs_actions.action_available(id);
             let host_managed = self.qs_actions.host_managed();
@@ -3204,7 +3206,7 @@ impl SearchProvider for ActionsProvider {
         let ownership_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                crate::shell::workspace_settings::ownership_transfer_resource(workspace, &actor)
+                tilo_desktop::workspace_settings::ownership_transfer_resource(workspace, &actor)
             })
         };
         if let Some(resource) = ownership_resource {
@@ -3213,12 +3215,13 @@ impl SearchProvider for ActionsProvider {
                     .description
                     .clone()
                     .unwrap_or_else(|| t("search-action-governance-subtitle"));
-                if let Some(score) = match_score(
-                    &needle_lower,
-                    &action.label.to_lowercase(),
-                    &subtitle.to_lowercase(),
-                    &action.id,
-                ) {
+                {
+                    candidates.record(
+                        &action.label.to_lowercase(),
+                        &subtitle.to_lowercase(),
+                        &action.id,
+                    );
+                    let score = 0;
                     let action_id = action.id.clone();
                     let params = action.params().to_vec();
                     out.push(SearchResult {
@@ -3247,7 +3250,7 @@ impl SearchProvider for ActionsProvider {
         let profile_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                crate::shell::workspace_settings::permission_profile_resource(workspace, &actor)
+                tilo_desktop::workspace_settings::permission_profile_resource(workspace, &actor)
             })
         };
         if let Some(resource) = profile_resource {
@@ -3264,14 +3267,12 @@ impl SearchProvider for ActionsProvider {
                         .description
                         .clone()
                         .unwrap_or_else(|| t("search-action-permission-roles-subtitle"));
-                    let Some(score) = match_score(
-                        &needle_lower,
+                    candidates.record(
                         &action.label.to_lowercase(),
                         &subtitle.to_lowercase(),
                         &action.id,
-                    ) else {
-                        continue;
-                    };
+                    );
+                    let score = 0;
                     let action_id = action.id.clone();
                     let params = action.params().to_vec();
                     out.push(SearchResult {
@@ -3301,12 +3302,9 @@ impl SearchProvider for ActionsProvider {
             let id = "search.provider.set";
             let label = t("search-action-search-provider-set");
             let subtitle = t("search-action-search-provider-set-subtitle");
-            if let Some(score) = match_score(
-                &needle_lower,
-                &label.to_lowercase(),
-                &subtitle.to_lowercase(),
-                id,
-            ) {
+            {
+                candidates.record(&label.to_lowercase(), &subtitle.to_lowercase(), id);
+                let score = 0;
                 let preferences = Rc::clone(preferences);
                 out.push(SearchResult {
                     kind: ResourceKind::Action,
@@ -3368,14 +3366,12 @@ impl SearchProvider for ActionsProvider {
                             t_args("search-action-provider-enable-subtitle", source),
                         )
                     };
-                    let Some(score) = match_score(
-                        &needle_lower,
+                    candidates.record(
                         &label.to_lowercase(),
                         &subtitle.to_lowercase(),
                         "search.provider.toggle",
-                    ) else {
-                        continue;
-                    };
+                    );
+                    let score = 0;
                     let preferences = Rc::clone(preferences);
                     let provider_id = provider_id.clone();
                     out.push(SearchResult {
@@ -3415,7 +3411,7 @@ impl SearchProvider for ActionsProvider {
         let ownership_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                crate::shell::workspace_settings::ownership_transfer_resource(workspace, &actor)
+                tilo_desktop::workspace_settings::ownership_transfer_resource(workspace, &actor)
             })
         };
         if let Some(resource) = ownership_resource {
@@ -3424,12 +3420,13 @@ impl SearchProvider for ActionsProvider {
                     .description
                     .clone()
                     .unwrap_or_else(|| t("search-action-governance-subtitle"));
-                if let Some(score) = match_score(
-                    &needle_lower,
-                    &action.label.to_lowercase(),
-                    &subtitle.to_lowercase(),
-                    &action.id,
-                ) {
+                {
+                    candidates.record(
+                        &action.label.to_lowercase(),
+                        &subtitle.to_lowercase(),
+                        &action.id,
+                    );
+                    let score = 0;
                     let action_id = action.id.clone();
                     let params = action.params().to_vec();
                     out.push(SearchResult {
@@ -3458,7 +3455,7 @@ impl SearchProvider for ActionsProvider {
         let profile_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                crate::shell::workspace_settings::permission_profile_resource(workspace, &actor)
+                tilo_desktop::workspace_settings::permission_profile_resource(workspace, &actor)
             })
         };
         if let Some(resource) = profile_resource {
@@ -3475,14 +3472,12 @@ impl SearchProvider for ActionsProvider {
                         .description
                         .clone()
                         .unwrap_or_else(|| t("search-action-permission-roles-subtitle"));
-                    let Some(score) = match_score(
-                        &needle_lower,
+                    candidates.record(
                         &action.label.to_lowercase(),
                         &subtitle.to_lowercase(),
                         &action.id,
-                    ) else {
-                        continue;
-                    };
+                    );
+                    let score = 0;
                     let action_id = action.id.clone();
                     let params = action.params().to_vec();
                     out.push(SearchResult {
@@ -3508,7 +3503,7 @@ impl SearchProvider for ActionsProvider {
                 }
             }
         }
-        out
+        crate::shell::search::rank_rows(&self.ranker, ctx.needle, out, &candidates.0)
     }
 }
 
@@ -3516,17 +3511,19 @@ impl SearchProvider for ActionsProvider {
 /// actions by it — so it weighs close to the label.
 pub(super) const ACTION_ID_WEIGHT: FieldWeight = FieldWeight::new(90);
 
-/// The shared ranker over an action's label, id and subtitle. An empty
-/// needle ranks everything `0`, so rows sort by kind order.
-fn match_score(needle: &str, label: &str, subtitle: &str, id: &str) -> Option<i32> {
-    crate::shell::search::rank_fields(
-        needle,
-        &[
-            RankField::new(label, FieldWeight::TITLE),
-            RankField::new(id, ACTION_ID_WEIGHT),
-            RankField::new(subtitle, FieldWeight::SUBTITLE),
-        ],
-    )
+/// Each action row's label, id and subtitle, in row order.
+#[derive(Default)]
+struct ActionCandidates(Vec<Vec<(String, FieldWeight)>>);
+
+impl ActionCandidates {
+    /// Record the searchable text of the row pushed next.
+    fn record(&mut self, label: &str, subtitle: &str, id: &str) {
+        self.0.push(vec![
+            (label.to_owned(), FieldWeight::TITLE),
+            (id.to_owned(), ACTION_ID_WEIGHT),
+            (subtitle.to_owned(), FieldWeight::SUBTITLE),
+        ]);
+    }
 }
 
 #[allow(
@@ -3785,7 +3782,7 @@ mod tests {
                 matches!(error, ActionError::Refused(message) if message.contains("no tab") || message.contains("No tab"))
             );
             assert!(
-                !chrome.borrow().notifications.is_empty(),
+                !chrome.borrow().notifications().is_empty(),
                 "the person still receives useful visible feedback"
             );
         }
@@ -3865,24 +3862,27 @@ mod tests {
 
         // Phase `action_ids_and_out_of_order_terms_are_searchable`.
         {
+            let p = ActionsProvider::new();
+            let c = chrome_rc();
+            let cs = c.borrow();
+            let doc = AutoCommit::new();
+            let score = |needle: &str| {
+                p.query(SearchContext {
+                    needle,
+                    wanted: &[ResourceKind::Action],
+                    chrome: &cs,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                })
+                .into_iter()
+                .find(|row| row.id == "settings.privacy.open")
+                .map(|row| row.score)
+            };
+            assert_eq!(score("settings.privacy.open"), Some(100));
             assert_eq!(
-                match_score(
-                    "settings.privacy.open",
-                    "open workspace privacy & security",
-                    "app grants and enforced access for this workspace",
-                    "settings.privacy.open",
-                ),
-                Some(100),
-            );
-            assert_eq!(
-                match_score(
-                    "security workspace",
-                    "open workspace privacy & security",
-                    "app grants and enforced access for this workspace",
-                    "settings.privacy.open",
-                ),
+                score("security workspace"),
                 Some(crate::shell::search::provider_score(
-                    ui::search::rank::SPANNING_RANK
+                    ui::search::MatchTier::Spanning.percent()
                 )),
             );
         }
@@ -3937,14 +3937,14 @@ mod tests {
             assert!(out.is_empty());
         }
 
-        // Phase `fuzzy_subsequence_matches`.
+        // Phase `a_typo_still_matches`.
         {
             let p = ActionsProvider::new();
             let c = chrome_rc();
             let cs = c.borrow();
             let doc = AutoCommit::new();
             let out = p.query(SearchContext {
-                needle: "wksttngs",
+                needle: "workspace setings",
                 wanted: &[ResourceKind::Action],
                 chrome: &cs,
                 doc: &doc,
@@ -4132,7 +4132,7 @@ mod tests {
             assert!(state.overlays.ws_settings);
             assert_eq!(
                 state.ws_settings_tab,
-                crate::shell::workspace_settings::WsTab::Permissions
+                tilo_desktop::workspace_settings::WsTab::Permissions
             );
         }
 

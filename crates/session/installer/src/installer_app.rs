@@ -4236,6 +4236,24 @@ impl Widget for InstallerApp {
 
     /// The host door (Ctrl+K palette, broker) admits an installer operation
     /// here, after its own resolution, permission and confirmation checks.
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped().filter(|r| r.type_id == op::OPERATION_TYPE) else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        let encoded = tilo_actions::EncodedAction {
+            type_id: request.type_id.to_owned(),
+            payload: request.payload.to_vec(),
+        };
+        self.apply_encoded(&encoded, doc, path)
+            .map(|output| Some(ui::widget::ResourceOperationStart::Completed(output)))
+    }
+
+    /// Legacy adapter: offered through [`Widget::start_operation`].
     fn start_resource_operation_with_document(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -4245,15 +4263,11 @@ impl Widget for InstallerApp {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if type_id != op::OPERATION_TYPE {
-            return self.start_resource_operation(invocation, kind, type_id, payload, doc, path);
-        }
-        let encoded = tilo_actions::EncodedAction {
-            type_id: type_id.to_owned(),
-            payload: payload.to_vec(),
-        };
-        self.apply_encoded(&encoded, doc, path)
-            .map(|output| Some(ui::widget::ResourceOperationStart::Completed(output)))
+        self.start_operation(
+            &ui::widget::ResourceOperation::local(invocation, kind, type_id, payload),
+            doc,
+            path,
+        )
     }
 
     fn take_focus_reset(&mut self) -> bool {

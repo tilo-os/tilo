@@ -129,12 +129,24 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // The same broker wiring the native compositor installs: recorder,
     // follow, the live action directory and realtime continuity.
     if let Some(broker) = collab_broker.as_ref() {
+        chrome
+            .borrow_mut()
+            .window_transfers
+            .set_handoff_link(Box::new(crate::shell::window_transfer::BrokerHandoff::new(
+                broker.follow_dispatcher(),
+            )));
         host.attach_collab_broker(broker);
         if let Some(network) = peer_sync.as_ref() {
             host.set_record_signer(Arc::clone(network) as _);
         }
     }
     if let Some(network) = peer_sync.as_ref() {
+        chrome
+            .borrow_mut()
+            .window_transfers
+            .set_hosted_rooms(Box::new(crate::shell::document_import::NativeHostedRooms(
+                Arc::clone(network),
+            )));
         let follow_network = Arc::clone(network);
         let status_network = Arc::clone(network);
         host.set_follow_presence_bridge(std::rc::Rc::new(move |room, target| {

@@ -6,10 +6,12 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+fnv.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 blake3.workspace = true
+hex.workspace = true
 taffy.workspace = true
 vello.workspace = true
 winit.workspace = true
@@ -20,8 +22,13 @@ uuid.workspace = true
 collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-desktop-model = { path = "../desktop-model" }
+desktop-policy = { path = "../../system/desktop-policy", default-features = false }
+tilo-clock = { path = "../../system/tilo-clock" }
+# The emoji picker's catalogue, search, skin tones and recents.
+emoji = { path = "../../text/emoji" }
 
 [dev-dependencies]
+ed25519-dalek.workspace = true
 fluent.workspace = true
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 word-processor = { path = "../../../apps/word-processor" }

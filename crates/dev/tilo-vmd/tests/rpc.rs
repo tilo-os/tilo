@@ -535,46 +535,14 @@ fn rpc_requests_are_validated_and_routed_per_slot() {
             .call(AppInstall {
                 slot: "b".into(),
                 source: LayerSource::Upload(upload),
-                runtime: None,
             })
             .unwrap();
         assert_eq!(installed.slot, "b");
         assert!(installed.id.is_some_and(|id| id.starts_with("so.tilo.")));
-
-        // A thin app brings the runtime it links: a tar of the bundle directory.
-        let mut runtime = tar::Builder::new(Vec::new());
-        let manifest = b"version = \"0.0.0-local+ab12\"\narch = \"x86_64\"\n";
-        let mut header = tar::Header::new_gnu();
-        header.set_size(manifest.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        runtime
-            .append_data(&mut header, "bundle.toml", &manifest[..])
-            .unwrap();
-        let runtime = runtime.into_inner().unwrap();
-        let upload = client.upload(&b"tapp bytes"[..]).unwrap();
-        let runtime = client.upload(&runtime[..]).unwrap();
-        let installed = client
-            .call(AppInstall {
-                slot: "b".into(),
-                source: LayerSource::Upload(upload),
-                runtime: Some(LayerSource::Upload(runtime)),
-            })
-            .unwrap();
-        assert!(
-            installed
-                .output
-                .starts_with("installed runtime bundle: tilo-runtime/0.0.0-local+ab12\n"),
-            "{}",
-            installed.output
-        );
-        assert!(installed.id.is_some_and(|id| id.starts_with("so.tilo.")));
-
         let upload = client.upload(&b"tapp bytes"[..]).unwrap();
         let error = rpc_error(client.call(AppInstall {
             slot: "vm".into(),
             source: LayerSource::Upload(upload),
-            runtime: None,
         }));
         assert!(error.hint.contains("headful or headless"), "{}", error.hint);
     }

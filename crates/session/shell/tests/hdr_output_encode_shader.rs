@@ -5,7 +5,7 @@
 //! SDR UI composits correctly alongside HDR video. Two tracks: the CPU
 //! reference (`map_sdr_pixel_to_pq_bt2020` places sRGB white at the
 //! BT.2408 reference-white level, black at PQ zero) and the GPU shader
-//! (the WGSL kernel parses + validates through naga so an edit can't
+//! (the WGSL render pass parses + validates through naga so an edit can't
 //! silently break the production encode path) — both use the same maths
 //! (203-nit white, BT.709->2020, PQ inverse EOTF).
 
@@ -70,14 +70,25 @@ fn pq_output_encode_maps_black_gray_and_white_and_its_wgsl_validates() {
             .expect("output-encode WGSL validates");
     }
 
-    // Phase `wgsl_output_encode_has_compute_entry_point`.
+    // Phase `wgsl_output_encode_has_render_pass_entry_points`.
     {
+        // A render pass, not compute: the scanout target is an imported
+        // dma-buf with colour-attachment usage only.
         let module = naga::front::wgsl::parse_str(OUTPUT_ENCODE_SHADER_SOURCE)
             .expect("output-encode WGSL parses");
-        let has_entry = module
-            .entry_points
-            .iter()
-            .any(|ep| ep.name == "encode_main" && matches!(ep.stage, naga::ShaderStage::Compute));
-        assert!(has_entry, "WGSL missing compute entry point `encode_main`");
+        let has = |name: &str, stage: naga::ShaderStage| {
+            module
+                .entry_points
+                .iter()
+                .any(|ep| ep.name == name && ep.stage == stage)
+        };
+        assert!(
+            has("vs_main", naga::ShaderStage::Vertex),
+            "WGSL missing `vs_main`"
+        );
+        assert!(
+            has("fs_main", naga::ShaderStage::Fragment),
+            "WGSL missing `fs_main`"
+        );
     }
 }

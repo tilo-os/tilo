@@ -17,6 +17,7 @@ REBUILD_PATHS = {
     "os/dev/promote-native-index.py",
     "rust-toolchain.toml",
     "tools/ci/check-build-env.sh",
+    "tools/ci/install-android-ndk.sh",
     "tools/ci/install-pdfium.sh",
     "tools/ci/native-mold-linker.sh",
     "tools/ci/verify-native-mold.sh",

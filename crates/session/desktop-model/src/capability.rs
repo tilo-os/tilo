@@ -25,6 +25,45 @@ pub const GRANT_SESSION: Expiry = Expiry::EndOfSession;
 /// "Always" — survives a restart.
 pub const GRANT_ALWAYS: Expiry = Expiry::Never;
 
+/// Id prefix of the membership a host-delegated admission grants in a public
+/// room. Such a grant is its own signed record (`HostAdmissionV1`), delivered
+/// and verified independently of the room's governance: the authority never
+/// projects it into governance, and a governance sync never removes it.
+pub const DELEGATED_ADMISSION_CAP_PREFIX: &str = "host-admission-";
+
+/// Id prefix of the membership a person gives an agent acting for them on
+/// their own device, such as the session recorder. It needs no room
+/// administrator, because it grants nothing the person cannot already do:
+/// its verb is bounded by the person's own role, and it stands only while
+/// that person still holds the role. Like a delegated admission it is held
+/// outside governance, and a governance sync never removes it.
+///
+/// The device the agent runs on holds `delegate-<person>:<admission id>` and
+/// announces it to the room as a signed delegation; every other member lists
+/// it, once verified, as `delegate-<person>:device-<device>:<agent>`. A room
+/// whose administrators turned off recording delegates
+/// ([`Workspace::recording_delegates_forbidden`](crate::workspace::Workspace::recording_delegates_forbidden))
+/// holds neither.
+pub const DEVICE_DELEGATE_CAP_PREFIX: &str = "delegate-";
+
+/// Marks the device-delegate memberships another member's device announced.
+pub const REMOTE_DELEGATE_MARK: &str = "device-";
+
+/// Id under which a member lists `person`'s `agent` on `device`.
+pub fn remote_device_delegate_id(person: &str, device: &[u8; 32], agent: &str) -> String {
+    format!(
+        "{DEVICE_DELEGATE_CAP_PREFIX}{person}:{REMOTE_DELEGATE_MARK}{}:{agent}",
+        hex::encode(device)
+    )
+}
+
+/// Whether `cap` is an admission governance never carries: a host-delegated
+/// admission or a person's device delegate.
+pub fn held_outside_governance(cap: &CapOverride) -> bool {
+    cap.id.starts_with(DELEGATED_ADMISSION_CAP_PREFIX)
+        || cap.id.starts_with(DEVICE_DELEGATE_CAP_PREFIX)
+}
+
 /// Per-app capability grant stored on a [`Workspace`](crate::workspace::Workspace). Each variant maps
 /// to its own enforcement layer: Bubblewrap allowlist for filesystem,
 /// Pipewire ACL for camera/mic, nftables for network.

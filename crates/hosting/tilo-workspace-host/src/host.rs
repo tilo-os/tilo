@@ -951,6 +951,10 @@ fn console_lines() -> Result<tokio::sync::mpsc::Receiver<std::io::Result<String>
     Ok(receiver)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "session and replaying are the live native-drain pair required for membership reconciliation"
+)]
 async fn handle_collaboration_exchange(
     owner: &mut SessionOwner,
     committed: &crate::committed_authority::CommittedAuthority,
@@ -958,6 +962,8 @@ async fn handle_collaboration_exchange(
     service: &crate::collaboration::CollaborationService,
     remote_endpoint: [u8; 32],
     request: tilo_peer_state::join::JoinTransportRequest,
+    session: &mut Option<NativeSubscription>,
+    replaying: &mut bool,
 ) -> tilo_peer_state::join::JoinTransportResponse {
     use tilo_peer_state::join::{JoinInspection, JoinTransportRequest, JoinTransportResponse};
 
@@ -1018,7 +1024,7 @@ async fn handle_collaboration_exchange(
             ))
         });
     let result = if reconcile {
-        match host.update_membership(owner).await {
+        match update_membership_draining(host, owner, session, replaying, committed).await {
             Ok(()) => result,
             Err(error) => Err((
                 503,
@@ -1055,6 +1061,8 @@ async fn handle_collaboration_admin(
     host: &LocalHost,
     service: &crate::collaboration::CollaborationService,
     request: tilo_action_broker::collaboration_admin::CollaborationAdminRequest,
+    session: &mut Option<NativeSubscription>,
+    replaying: &mut bool,
 ) -> Result<serde_json::Value, tilo_action_broker::collaboration_admin::CollaborationAdminError> {
     use tilo_action_broker::collaboration_admin::{
         CollaborationAdminError, CollaborationAdminOperation, CollaborationRole,
@@ -1172,11 +1180,164 @@ async fn handle_collaboration_admin(
     Ok::<_, CollaborationAdminError>(result)
     }).map_err(|error| CollaborationAdminError::Uncertain(error.to_string()))??;
     if reconcile {
-        host.update_membership(owner)
+        update_membership_draining(host, owner, session, replaying, committed)
             .await
             .map_err(|error| CollaborationAdminError::Uncertain(error.to_string()))?;
     }
     Ok(result)
+}
+
+/// Await `work` while continuing to drain and apply the native subscription.
+///
+/// The owner select loop must not stall `session.recv` across relay membership
+/// I/O: the in-process relay drops a subscriber that exceeds outbound
+/// backpressure, after which enrollment answers 503 "native peer is reconnecting".
+async fn await_while_draining_native<F, T>(
+    work: F,
+    owner: &mut SessionOwner,
+    session: &mut Option<NativeSubscription>,
+    replaying: &mut bool,
+    committed: &crate::committed_authority::CommittedAuthority,
+) -> Result<(T, usize, bool)>
+where
+    F: Future<Output = Result<T>>,
+{
+    let mut work = std::pin::pin!(work);
+    let mut drained = 0usize;
+    let mut applied_receipt = false;
+    let value = loop {
+        tokio::select! {
+            biased;
+            result = &mut work => break result?,
+            inbound = async {
+                match session.as_mut() {
+                    Some(current) => current.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match inbound {
+                    None => {
+                        if let Some(old) = session.take() {
+                            close_session(
+                                old,
+                                "relay stream ended during membership reconciliation",
+                            )
+                            .await;
+                        }
+                    }
+                    Some(Inbound::Ready { .. }) => {
+                        *replaying = false;
+                        committed.mark_governance_reconciled();
+                        drained = drained.saturating_add(1);
+                    }
+                    Some(Inbound::RemoteAction { .. } | Inbound::Replayed { .. }) => {
+                        drained = drained.saturating_add(1);
+                    }
+                    Some(Inbound::Refused { refusal, reason }) => {
+                        drained = drained.saturating_add(1);
+                        tracing::warn!(?refusal, %reason, "relay refused during membership reconciliation");
+                    }
+                    Some(message) => {
+                        drained = drained.saturating_add(1);
+                        let (origin, bytes) = match message {
+                            Inbound::Delta { author, data } => (
+                                if *replaying {
+                                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(author)
+                                } else {
+                                    tilo_peer_state::TransportOrigin::RelayDelta(author)
+                                },
+                                data,
+                            ),
+                            Inbound::Presence { author, payload } => (
+                                tilo_peer_state::TransportOrigin::UntrustedPresence(author),
+                                payload,
+                            ),
+                            Inbound::Ready { .. }
+                            | Inbound::RemoteAction { .. }
+                            | Inbound::Replayed { .. }
+                            | Inbound::Refused { .. } => unreachable!(),
+                        };
+                        let decoded = postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(&bytes)
+                            .map_err(anyhow::Error::from);
+                        let update = committed.begin(owner)?;
+                        let received = decoded.and_then(|message| owner.receive(origin, message));
+                        if !publish_owner_authority(update, owner)? {
+                            continue;
+                        }
+                        match &received {
+                            Ok(receipt) => {
+                                if receipt.is_some() {
+                                    applied_receipt = true;
+                                }
+                            }
+                            Err(problem) => {
+                                tracing::warn!(
+                                    %problem,
+                                    "inbound rejected during membership reconciliation"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+    Ok((value, drained, applied_receipt))
+}
+
+/// Project governed access onto the in-process relay without stalling the native
+/// subscription. Use this from the owner loop whenever a subscription may be live.
+async fn update_membership_draining(
+    host: &LocalHost,
+    owner: &mut SessionOwner,
+    session: &mut Option<NativeSubscription>,
+    replaying: &mut bool,
+    committed: &crate::committed_authority::CommittedAuthority,
+) -> Result<()> {
+    // One follow-up covers membership changes applied from inbound while the
+    // first projection ran; avoid nested update_membership (same relay lock).
+    let mut follow_up = false;
+    loop {
+        let devices_before = owner
+            .peer()
+            .governed_access(web_time::SystemTime::now())
+            .map_err(anyhow::Error::msg)?
+            .member_devices;
+        // Snapshot membership inputs so the relay await does not borrow `owner`
+        // while the drain path needs `&mut owner` for inbound apply.
+        let workspace = owner.workspace_id();
+        let access = owner
+            .peer()
+            .governed_access(web_time::SystemTime::now())
+            .map_err(anyhow::Error::msg)?;
+        let relay_root = owner.root().join("relay");
+        let (_, _drained, applied_receipt) = await_while_draining_native(
+            async {
+                host.relay
+                    .replace_governed_workspace_access(workspace, true, access, relay_root)
+                    .await
+                    .map_err(anyhow::Error::from)
+            },
+            owner,
+            session,
+            replaying,
+            committed,
+        )
+        .await?;
+        if !applied_receipt || follow_up {
+            break;
+        }
+        let devices_after = owner
+            .peer()
+            .governed_access(web_time::SystemTime::now())
+            .map_err(anyhow::Error::msg)?
+            .member_devices;
+        if devices_after == devices_before {
+            break;
+        }
+        follow_up = true;
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -1185,25 +1346,36 @@ struct InboundPostCommit {
     relay_error: Option<String>,
 }
 async fn post_inbound_commit(
-    owner: &SessionOwner,
+    owner: &mut SessionOwner,
     runtime: Option<&crate::action_host::ActionHost>,
     host: &LocalHost,
+    session: &mut Option<NativeSubscription>,
+    replaying: &mut bool,
+    committed: &crate::committed_authority::CommittedAuthority,
 ) -> Result<InboundPostCommit> {
     if !owner.durability_healthy() {
         bail!("native owner durability unavailable");
     }
     // Authority was already published at the owner's durable barrier. Action
     // fanout and relay projection failures are secondary service failures.
-    let action_error = if owner.permits_publication() {
+    let mut action_error = if owner.permits_publication() {
         runtime.and_then(|runtime| runtime.committed(owner).err())
     } else {
         None
     };
-    let relay_error = host
-        .update_membership(owner)
-        .await
-        .err()
-        .map(|error| error.to_string());
+    let relay_error =
+        match update_membership_draining(host, owner, session, replaying, committed).await {
+            Ok(()) => None,
+            Err(error) => Some(error.to_string()),
+        };
+    // Inbound applied while membership ran may have committed further authority.
+    if action_error.is_none()
+        && owner.permits_publication()
+        && let Some(runtime) = runtime
+        && let Err(problem) = runtime.committed(owner)
+    {
+        action_error = Some(problem);
+    }
     Ok(InboundPostCommit {
         action_error,
         relay_error,
@@ -1806,7 +1978,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                     // Even a source closing during the barrier cannot discard a
                     // completed owner generation. It grants that old source no reply.
                     if owner.committed_generation() != before && owner.permits_publication() {
-                        let followup = post_inbound_commit(&owner, action_runtime.current_actions(), &host).await?;
+                        let followup = post_inbound_commit(&mut owner, action_runtime.current_actions(), &host, &mut session, &mut replaying, &committed).await?;
                         if let Some(problem) = followup.action_error {
                             action_error = Some(action_runtime.signing.fail(problem));
                             action_runtime.authority.set_ready(false);
@@ -1835,6 +2007,8 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         &collaboration,
                         command.remote_endpoint,
                         command.request,
+                        &mut session,
+                        &mut replaying,
                     ).await;
                     if owner.committed_generation() != before && owner.permits_publication() {
                         if let Some(runtime) = action_runtime.current_actions()
@@ -1858,6 +2032,8 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         &host,
                         &collaboration,
                         command.request,
+                        &mut session,
+                        &mut replaying,
                     ).await;
                     if owner.committed_generation() != before && owner.permits_publication() {
                         if let Some(runtime) = action_runtime.current_actions()
@@ -2135,7 +2311,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                             Err(problem) => tracing::warn!(kind, bytes = inbound_bytes, %problem, "inbound rejected"),
                         }
                         if received.as_ref().is_ok_and(|receipt| receipt.is_some()) {
-                            let followup = post_inbound_commit(&owner, action_runtime.current_actions(), &host).await?;
+                            let followup = post_inbound_commit(&mut owner, action_runtime.current_actions(), &host, &mut session, &mut replaying, &committed).await?;
                             if let Some(problem) = followup.action_error { action_error = Some(action_runtime.signing.fail(problem)); action_runtime.authority.set_ready(false); }
                             if let Some(problem) = followup.relay_error { error = Some(problem); }
                         }
@@ -2211,7 +2387,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                                         // no additional revision and clears it only after success.
                                         let publication_after = owner.publication_revision();
                                         let _ = cadence.publication_due(owner.publication_advance(publication_before),std::time::Instant::now(),false,false);
-                                        match host.update_membership(&owner).await {
+                                        match update_membership_draining(&host, &mut owner, &mut session, &mut replaying, &committed).await {
                                         Err(error)=>Err(crate::enrollment::EnrollmentError::new(503,format!("committed enrollment awaits relay membership reconciliation: {error}"))),
                                         Ok(())=>{
                                             let published=dispatch_committed_publication(&mut cadence,&owner,publication_after,std::time::Instant::now(),false,true,||session.as_ref().filter(|current|current.is_ready()).ok_or_else(||anyhow::anyhow!("native subscription unavailable")).and_then(|current|publish(&owner,current)));
@@ -2297,7 +2473,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                                     caller: owner.peer().authority().clone(),
                                     operation,
                                 };
-                                let response = handle_collaboration_admin(&mut owner, &committed, &host, &collaboration, request).await;
+                                let response = handle_collaboration_admin(&mut owner, &committed, &host, &collaboration, request, &mut session, &mut replaying).await;
                                 if owner.committed_generation() != before && owner.permits_publication() {
                                     if let Some(runtime) = action_runtime.current_actions()
                                         && let Err(problem) = runtime.committed(&owner) { action_error = Some(action_runtime.signing.fail(problem)); }
@@ -2419,8 +2595,16 @@ mod tests {
         std::fs::remove_file(&relay_access).unwrap();
         std::fs::create_dir(&relay_access).unwrap();
         let before = owner.committed_generation();
+        let mut session = None;
+        let mut replaying = false;
         let mut operation = Box::pin(handle_collaboration_admin(
-            &mut owner, &committed, &host, &service, request,
+            &mut owner,
+            &committed,
+            &host,
+            &service,
+            request,
+            &mut session,
+            &mut replaying,
         ));
         let first = std::future::poll_fn(|cx| Poll::Ready(operation.as_mut().poll(cx))).await;
         let published_before_completion = match committed.observe() {
@@ -2519,7 +2703,17 @@ mod tests {
             std::fs::remove_file(&path).unwrap();
             std::fs::create_dir(path).unwrap();
         }
-        let followup = post_inbound_commit(&owner, Some(&runtime), &host).await;
+        let mut session: Option<NativeSubscription> = None;
+        let mut replaying = false;
+        let followup = post_inbound_commit(
+            &mut owner,
+            Some(&runtime),
+            &host,
+            &mut session,
+            &mut replaying,
+            &committed,
+        )
+        .await;
         let ready = prepare_ready_publication(&owner);
         let tick = if incomplete {
             Some(pump_ready_actions(&owner, &mut runtime))
@@ -2595,6 +2789,147 @@ mod tests {
     #[tokio::test]
     async fn committed_authority_inbound_relay_failure_preserves_healthy_owner() {
         inbound_followup_case(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn membership_work_keeps_draining_native_subscription_inbound() {
+        use crate::committed_authority::CommittedAuthority;
+        use crate::enrollment::EnrollmentAuthority;
+        use ed25519_dalek::SigningKey;
+        use tilo_peer_state::enrollment::{self, ChallengeRequest};
+        let temp = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
+        let host = LocalHost::start(&owner).await.unwrap();
+        let committed = CommittedAuthority::new(&owner);
+        let mut session = Some(host.connect(&owner).await.unwrap());
+        let mut replaying = false;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match session.as_mut().unwrap().recv().await {
+                    Some(Inbound::Ready { .. }) => break,
+                    Some(_) => {}
+                    None => panic!("native subscription closed before Ready"),
+                }
+            }
+        })
+        .await
+        .expect("native subscription ready");
+        committed.mark_governance_reconciled();
+        publish(&owner, session.as_ref().unwrap()).unwrap();
+
+        let peer_key = SigningKey::from_bytes(&[7; 32]);
+        let mut enrollment = EnrollmentAuthority::default();
+        let challenge = enrollment
+            .challenge(
+                &owner,
+                ChallengeRequest {
+                    device_public_key: hex::encode(peer_key.verifying_key().to_bytes()),
+                    request_id: hex::encode([7; 32]),
+                },
+                tilo_delivery_protocol::clock::now_ns(),
+            )
+            .unwrap();
+        let complete = enrollment::sign(
+            &enrollment::decode(&challenge.challenge).unwrap(),
+            &peer_key,
+        )
+        .unwrap();
+        let peer_certificate = {
+            let update = committed.begin(&owner).unwrap();
+            let certificate = enrollment
+                .complete(
+                    &mut owner,
+                    complete,
+                    tilo_delivery_protocol::clock::now_ns(),
+                )
+                .unwrap();
+            assert!(publish_owner_authority(update, &owner).unwrap());
+            certificate
+        };
+        update_membership_draining(&host, &mut owner, &mut session, &mut replaying, &committed)
+            .await
+            .unwrap();
+        assert!(
+            session.as_ref().is_some_and(NativeSubscription::is_ready),
+            "host subscription must remain ready after peer enrollment"
+        );
+
+        let peer = {
+            let endpoint = Endpoint::builder(presets::Minimal)
+                .relay_mode(host.relay_mode())
+                .bind_addr((Ipv4Addr::LOCALHOST, 0))
+                .expect("ephemeral bind address")
+                .bind()
+                .await
+                .unwrap();
+            endpoint.online().await;
+            let client = RelayClient::connect_v2_to_enrolled_home_peer(
+                endpoint,
+                host.address.clone(),
+                owner.identity.root.verifying_key().to_bytes(),
+                owner.identity.host_cert.device_public_key,
+                peer_certificate,
+                peer_key.clone(),
+                RevocationList::new(),
+            )
+            .await
+            .expect("peer connect");
+            RelayCoeditSession::join(
+                client,
+                owner.workspace_id(),
+                peer_key.verifying_key().to_bytes(),
+            )
+            .unwrap()
+        };
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                match peer.recv().await {
+                    Some(Inbound::Ready { .. }) => break,
+                    Some(_) => {}
+                    None => panic!("peer subscription closed before Ready"),
+                }
+            }
+        })
+        .await
+        .expect("peer ready");
+
+        let flood = tokio::spawn({
+            let peer = peer;
+            async move {
+                for n in 0..48u8 {
+                    peer.publish_presence(vec![0xA5, n, 0x5A]).unwrap();
+                    tokio::task::yield_now().await;
+                }
+                peer
+            }
+        });
+
+        let (_, drained, _) = await_while_draining_native(
+            async {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                Ok::<(), anyhow::Error>(())
+            },
+            &mut owner,
+            &mut session,
+            &mut replaying,
+            &committed,
+        )
+        .await
+        .unwrap();
+        let peer = flood.await.unwrap();
+        peer.close().await;
+        assert!(
+            drained > 0,
+            "production drain path must apply or consume relay inbound while membership-like work runs"
+        );
+        assert!(
+            session.as_ref().is_some_and(NativeSubscription::is_ready),
+            "native subscription must stay ready; drained={drained}"
+        );
+        if let Some(current) = session.take() {
+            current.close().await;
+        }
+        host.shutdown().await.unwrap();
     }
 
     #[tokio::test]

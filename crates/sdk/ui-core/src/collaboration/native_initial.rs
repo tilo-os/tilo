@@ -94,7 +94,7 @@ impl NativeConstruction {
             };
         };
         let requested = binding
-            .broker_route()
+            .admission_route()
             .ok_or("component record route is not valid")?;
         if requested.app_id != current.route.app_id
             || requested.cluster_id != current.route.cluster_id
@@ -119,8 +119,11 @@ impl NativeConstruction {
                 std::thread::sleep(crate::time::Duration::from_millis(10));
             }
         }
-        manager.switch_native_record(&binding.checkout.id)?;
-        if !binding.matches_broker_route(manager.primary_route()) {
+        manager.switch_native_record(&binding.checkout)?;
+        if manager
+            .primary_route()
+            .is_none_or(|witness| binding.admission_route().as_ref() != Some(&witness.route))
+        {
             return Err("component route changed during native admission".into());
         }
         Ok(())
@@ -317,33 +320,37 @@ impl InitialReadBridge {
         &self,
         app: &str,
         room: &str,
-        record: &crate::record::RecordId,
+        checkout: &crate::record::RecordCheckout,
     ) -> Result<CommittedDocument, String> {
         self.check_scope(app, Some(room))?;
-        if record.is_package_primary() {
+        if checkout.id.is_package_primary() {
             if let Some(initial) = primary(app, Some(room)) {
                 return initial.map(|(_, read)| read);
             }
             return self.read(None);
         }
-        self.read(Some(record))
+        self.read(Some(checkout))
     }
-    fn read(&self, record: Option<&crate::record::RecordId>) -> Result<CommittedDocument, String> {
+    fn read(
+        &self,
+        checkout: Option<&crate::record::RecordCheckout>,
+    ) -> Result<CommittedDocument, String> {
         self.check()?;
-        let route = record.map_or_else(
+        let route = checkout.map_or_else(
             || self.route.clone(),
-            |record| {
+            |checkout| {
                 RouteSpec::record(
                     self.route.app_id.clone(),
                     self.route.cluster_id,
-                    record.as_str(),
+                    checkout.id.as_str(),
                 )
             },
         );
+        let record_kind = checkout.map(|checkout| checkout.kind.as_str().to_owned());
         let key = route.channel_id();
         if self.state.document_reads.joining(&key) {
             let tx = self.commands.upgrade().ok_or("native read worker ended")?;
-            if !enqueue_sdk_command(&tx, SdkCommand::Join(route), &self.state) {
+            if !enqueue_sdk_command(&tx, SdkCommand::Join(route, record_kind), &self.state) {
                 return Err("native initial read queue unavailable".into());
             }
         }
@@ -394,7 +401,7 @@ impl InitialReadBridge {
         &self,
         _app: &str,
         _room: &str,
-        _record: &crate::record::RecordId,
+        _checkout: &crate::record::RecordCheckout,
     ) -> Result<CommittedDocument, String> {
         match self.never {}
     }

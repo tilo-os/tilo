@@ -37,6 +37,12 @@ pub struct Manifest {
     /// under its own identity, beyond the actions it publishes itself.
     #[serde(default, skip_serializing_if = "ActionAccess::is_empty")]
     pub actions: ActionAccess,
+    /// `[resources]` block — the resource kinds this app's records hold,
+    /// written by `tilo-app package` from its `#[resource(kind)]`
+    /// declarations. A host creates a missing record for the app only in a
+    /// kind listed here; a manifest without the block declares none.
+    #[serde(default, skip_serializing_if = "Resources::is_empty")]
+    pub resources: Resources,
     /// `[sandbox]` block — the security profile applied at load.
     pub sandbox: Sandbox,
     /// `[entrypoint]` block — what to launch. Required for `app`; optional/unset for other kinds.
@@ -89,7 +95,11 @@ impl Platform {
     }
 }
 
-/// `[target]` — a WebAssembly build of the package.
+/// `[target]` — a WebAssembly, Windows or macOS build of the package.
+///
+/// For `windows` and `macos`, `architecture` is `x86_64` or `aarch64`,
+/// `module` is the executable the GUI entrypoint names, and `runtime` is the
+/// toolkit release linked into it (`[package].runtime`).
 ///
 /// The first four fields are exactly the registry's signed `RegistryTarget`
 /// (see `registry_types::target` for the canonical spellings):
@@ -922,6 +932,20 @@ impl serde::Serialize for SplashSegment {
     }
 }
 
+/// `[resources]` — the resource kinds an app's records hold, such as
+/// `example.note`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Resources {
+    #[serde(default)]
+    pub kinds: Vec<String>,
+}
+
+impl Resources {
+    fn is_empty(&self) -> bool {
+        self.kinds.is_empty()
+    }
+}
+
 /// `[providers]` — normalized resources an app can open, or codec MIME scope
 /// for `kind = "format-provider"`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1072,6 +1096,42 @@ mode = "off"
         );
         let recovered = Manifest::from_toml_str(&declared.to_toml_string().unwrap()).unwrap();
         assert_eq!(recovered.actions, declared.actions);
+    }
+
+    #[test]
+    fn declared_resource_kinds_survive_the_signed_manifest_round_trip() {
+        let bare = r#"
+[package]
+id = "so.tilo.example"
+version = "0.1.0"
+kind = "app"
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+"#;
+        // A manifest from before the field declares no kinds and encodes,
+        // so signs, exactly as it did.
+        let undeclared = Manifest::from_toml_str(bare).unwrap();
+        assert!(undeclared.resources.kinds.is_empty());
+        let encoded = undeclared.to_toml_string().unwrap();
+        assert!(!encoded.contains("[resources]"));
+
+        let declared = Manifest::from_toml_str(&format!(
+            "{bare}\n[resources]\nkinds = [\"example.note\", \"example.todo\"]\n"
+        ))
+        .unwrap();
+        assert_eq!(declared.resources.kinds, ["example.note", "example.todo"]);
+        let recovered = Manifest::from_toml_str(&declared.to_toml_string().unwrap()).unwrap();
+        assert_eq!(recovered.resources, declared.resources);
     }
 }
 

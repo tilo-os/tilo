@@ -77,6 +77,27 @@ mount.actions(book).filter(a => a.address.action === 'open' && a.address.resourc
   .map(a => ({kind: a.resource_kind, text: a.resource_label}));
 ```
 
+### Opening a file
+
+`open` hands the app a file as it would get one the user chose; the app lists
+what it opens as `application.opens`. Books shelves an EPUB in the record's
+library and opens it, and reports its resource, so a page never computes a
+content id. Another mount of the record needs no `open`: it shows the book
+last opened, with the same annotations.
+
+```js
+const phone = await mountDesktop(phoneEl, {app: 'so.tilo.ebook', newDocument: true,
+  open: {url: '/books/the-odyssey.epub'}, ...shared});
+const book = phone.opened.resource;   // 'ebook.book:book:<32 hex>'
+const laptop = await mountDesktop(laptopEl, {app: 'so.tilo.ebook', record: phone.record, ...shared});
+// Each mount reads at its own position: open both at Book I without selecting.
+for (const mount of [phone, laptop]) mount.invokeAction(book, 'go-to', {chapter: 4, block: 3});
+phone.invokeAction(book, 'select-passage', {chapter: 4, start_block: 3, end_block: 3});
+```
+
+Refusals reject the mount with `code` `TILO_OPEN_INVALID`,
+`TILO_OPEN_UNSUPPORTED` or `TILO_OPEN_UNAVAILABLE` (WEB_RUNTIME.md).
+
 ## Lifetime and persistence
 
 `mountDesktop(element, options)` resolves after the first presentation. Supply an
@@ -120,6 +141,7 @@ GPU presentation are separate flags, so a drawn widget still presents its Scene.
 
 ```sh
 node --test crates/browser/tilo-browser-runtime/web/host.test.mjs
+node --test crates/browser/tilo-browser-runtime/web/open-file.test.mjs
 cargo test --locked -j2 -p tilo-browser-runtime --lib catalog::
 cargo test --locked -j2 -p ebook --lib component::
 cargo test --locked -j2 -p ui --test it package_primary

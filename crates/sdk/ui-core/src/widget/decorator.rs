@@ -149,6 +149,10 @@ pub trait Decorator {
         self.inner().document_history_definition()
     }
 
+    fn provides_document_history(&self) -> bool {
+        self.inner().provides_document_history()
+    }
+
     #[doc(hidden)]
     fn visit_framework_history(
         &self,
@@ -820,6 +824,15 @@ pub trait Decorator {
         self.inner_mut().apply_room_action(doc, type_id, payload)
     }
 
+    fn start_operation(
+        &mut self,
+        op: &super::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        self.inner_mut().start_operation(op, doc, path)
+    }
+
     fn invoke_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
@@ -1088,19 +1101,6 @@ pub trait Decorator {
         self.inner_mut().set_participant_label(participant, label)
     }
 
-    fn start_resource_operation_scoped(
-        &mut self,
-        scope: &crate::invocation_scope::ResourceInvocationScope,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        self.inner_mut()
-            .start_resource_operation_scoped(scope, kind, type_id, payload, doc, path)
-    }
-
     fn unmount_native_views(&mut self) {
         self.inner_mut().unmount_native_views()
     }
@@ -1161,6 +1161,10 @@ impl<T: Decorator> Widget for T {
         &self,
     ) -> Option<&'static crate::history_mode::HistoryDefinition> {
         Decorator::document_history_definition(self)
+    }
+
+    fn provides_document_history(&self) -> bool {
+        Decorator::provides_document_history(self)
     }
 
     #[doc(hidden)]
@@ -1813,6 +1817,15 @@ impl<T: Decorator> Widget for T {
         Decorator::apply_room_action(self, doc, type_id, payload)
     }
 
+    fn start_operation(
+        &mut self,
+        op: &super::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        Decorator::start_operation(self, op, doc, path)
+    }
+
     fn invoke_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
@@ -2065,18 +2078,6 @@ impl<T: Decorator> Widget for T {
 
     fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
         Decorator::set_participant_label(self, participant, label)
-    }
-
-    fn start_resource_operation_scoped(
-        &mut self,
-        scope: &crate::invocation_scope::ResourceInvocationScope,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        Decorator::start_resource_operation_scoped(self, scope, kind, type_id, payload, doc, path)
     }
 
     fn unmount_native_views(&mut self) {

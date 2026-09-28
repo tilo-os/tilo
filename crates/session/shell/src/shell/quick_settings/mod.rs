@@ -5,7 +5,6 @@
 
 pub mod actions;
 pub(crate) mod bluetooth;
-pub(crate) mod drill_in;
 pub mod now_playing;
 pub mod refresh;
 pub(crate) mod root;

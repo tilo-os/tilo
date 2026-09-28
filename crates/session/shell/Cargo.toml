@@ -40,6 +40,7 @@ dev-session = []
 dev-overrides = []
 
 [dependencies]
+fnv.workspace = true
 advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../system/tilo-clock" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
@@ -109,6 +110,11 @@ blake3.workspace = true
 # panicking — the host machine (Gnome already holds the seat) needs the
 # `--backend drm` path to fail cleanly with a useful diagnostic.
 thiserror.workspace = true
+# File URIs and percent-encoded URI parts.
+url.workspace = true
+percent-encoding.workspace = true
+# XML escaping for the recent-files bookmarks.
+quick-xml.workspace = true
 
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"] }
 
@@ -132,7 +138,7 @@ qdoc = { path = "../../doc/qdoc" }
 tilo-content = { path = "../../system/content" }
 qdoc-codecs = { path = "../../doc/qdoc-codecs", default-features = false }
 tilo-resource = { path = "../../sdk/tilo-resource" }
-mime_guess = "2.0.5"
+mime_guess.workspace = true
 # Shared OS-action shell-outs (brightnessctl/wpctl/nmcli/bluetoothctl/
 # powerprofilesctl). Kept outside `shell::shell::quick_settings::actions` so the
 # Settings app can call the same bindings without depending on the
@@ -191,9 +197,6 @@ session-trace = { path = "../../collab/session-trace" }
 tilo-reference = { path = "../../collab/reference" }
 # The on-device review contract a recording passes before it leaves.
 tilo-feedback-review = { path = "../../collab/feedback-review", features = ["trace"] }
-# A remark about a control names it by the same `ui:` id the semantic tree
-# publishes, percent-encoded exactly as `ui-core` encodes it.
-percent-encoding = "2"
 # Review asks the device-local review model through the gateway's session
 # verb, off the frame loop.
 tilo-model-gateway = { path = "../../agent/model-gateway" }
@@ -228,17 +231,18 @@ runtime-collab = { path = "../../runtime/runtime-collab" }
 # Document media: content an app asks the shell to open in another app is read
 # from the filesystem daemon's content store through that app's scope.
 runtime-fs = { path = "../../runtime/runtime-fs" }
-# The compositor-free runtime host serves its apps' document media from the
-# same content store and capability implementation as the filesystem daemon.
-tilo-fs = { package = "fs", path = "../../system/fs", default-features = false, features = ["document-media"] }
+# The shared runtime daemon; `runtime_host::Session` supplies its services.
+tilo-runtime = { path = "../../runtime/tilo-runtime" }
+# The app identity service: broker, registry, device fleet, provisioning.
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 # Launching installed applications: the shell reads the app registry and
 # package manifests through this crate's types, then execs its
 # `tilo-launcher` binary to build the actual bwrap + seccomp + Landlock
 # sandbox. Library-only use here — see `shell::shell::launcher` for why
 # the sandbox itself is built by the binary rather than in-process.
 launcher = { path = "../../packaging/launcher" }
-tilo-app-package = { path = "../../packaging/tilo-app-package" }
 package-store = { path = "../../packaging/package-store" }
+tilo-installed-apps = { path = "../../packaging/installed-apps" }
 
 # The host's own applications: `.desktop` entries the compositor reads
 # so a Flatpak or a distribution binary is launchable and searchable.
@@ -274,16 +278,13 @@ futures-util = { workspace = true, features = ["io"] }
 postcard = { workspace = true, features = ["alloc"] }
 
 # Search infrastructure.
-# `walkdir` powers the files provider's name-index walker + the tantivy
-# content indexer.
+# `walkdir` powers the files provider's name-index walker + the content
+# indexer.
 walkdir.workspace = true
 tar.workspace = true
-# tantivy is the BM25 content index behind the files provider's
-# full-text search. `mmap` avoids reading the whole segment file into
-# RAM for each query; disabling default features drops the parquet
-# writer, ICU tokenizer, and other extras we don't need for a
-# home-directory index.
-tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
+# Tilo's search layer: the providers' retained indexes, and the files
+# provider's on-disk content index.
+tilo-search = { path = "../../sdk/search", features = ["disk"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
@@ -382,7 +383,7 @@ reis = { version = "0.7.1", features = ["calloop"] }
 # Session-lock unlock reuses the greeter's greetd/PAM conversation
 # (`greetd_client::verify_password` — verify credentials without starting a
 # session) so login and unlock share one non-leaky auth path.
-greeter = { path = "../greeter" }
+greetd-client = { path = "../greetd-client" }
 # Session-owned Windows compatibility broker. The shell supplies the trusted
 # launcher registry and fresh workspace capability authority.
 compat-service = { path = "../../windows/compat-service" }

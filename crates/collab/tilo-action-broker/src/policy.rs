@@ -223,6 +223,9 @@ fn bounded_receipt_text(value: &str, max: usize) -> String {
 }
 
 fn redact_receipt_context(context: &mut tilo_actions::ActionContext) {
+    // A receipt is written into the workspace document every member syncs,
+    // so the resource is recorded as it may travel beyond this device.
+    *context = std::mem::take(context).redacted_for(tilo_actions::Audience::BeyondDevice);
     context.action_label = bounded_receipt_text(&context.action_label, 200);
     if let Some(app) = &mut context.app {
         app.id = bounded_receipt_text(&app.id, 160);

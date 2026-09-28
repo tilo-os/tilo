@@ -31,8 +31,12 @@ interface CollabService {
   # because the identity format is collab-types' domain and we
   # don't want this schema to drift every time that crate adds a
   # field.
+  #
+  # `recordKind` names the resource kind of the record the channel carries,
+  # empty when the app names none. A host that creates a missing record on
+  # the app's first write creates it in this kind, if the app declares it.
   joinChannel @0 (channelId :Text, identity :Data, participantHandle :Text,
-                  participantKind :Text) -> (handle :ChannelHandle);
+                  participantKind :Text, recordKind :Text) -> (handle :ChannelHandle);
 }
 
 interface ChannelHandle {
@@ -236,6 +240,12 @@ interface ChannelHandle {
   # private metadata is not retained after serialization or policy changes.
   clearContinuation @26 (appId :Text) -> ();
 
+  # The application's answer to a `ChannelContext.handoff` request, or its
+  # report that the document it shows arrived retired. Bound to this
+  # certified primary route like reportContinuation, and never relayed to
+  # peers. The JSON vocabulary is `ui::collaboration::handoff`.
+  handoff @53 (appId :Text, message :Data) -> ();
+
   # Open a session-local bridge to the shell's existing authenticated surface
   # stream and input firewall. The target is the exact 32-byte certified Iroh
   # endpoint identity. Opening never grants control; the returned stream stays
@@ -386,20 +396,20 @@ interface ChannelHandle {
   # serialized `tilo_reference::inspect::InspectRequest`; its `audience` was set by the
   # session from the caller, so the app redacts for it rather than for
   # whoever it thinks is asking.
-  subscribeInspections @53 () -> (stream :InspectionStream);
+  subscribeInspections @54 () -> (stream :InspectionStream);
 
   # Answer one inspection request. `id` echoes `InspectionStream.read`'s;
   # `replyJson` is a serialized `tilo_reference::inspect::InspectReply`, already
   # redacted for the request's audience. The session redacts it again
   # before handing it on.
-  completeInspection @54 (id :UInt64, replyJson :Text) -> ();
+  completeInspection @55 (id :UInt64, replyJson :Text) -> ();
 
   # Tell the session this application's semantic tree changed, so a watcher
   # (the session recorder, pick mode) inspects again instead of polling.
   # `generation` increases with every report from this connection; the
   # application debounces, and reports only a tree that actually changed.
   # Carries no content: whoever wants it inspects, checked as usual.
-  reportSemanticChange @55 (generation :UInt64) -> ();
+  reportSemanticChange @56 (generation :UInt64) -> ();
 
 }
 
@@ -830,12 +840,18 @@ struct ChannelContext {
   # Directed control frame for one selected document holder. Ordinary context
   # snapshots and follow controls leave this false.
   snapshotRequested @4 :Bool;
+  # Session-local handoff control for exactly one application instance,
+  # addressed by its primary route: the shell asking it to make its document
+  # durable, or to record that its window moved to another workspace. The
+  # JSON vocabulary is `ui::collaboration::handoff`. Empty on every other
+  # frame; never relayed to peers.
+  handoff @5 :Data;
   # With `followChanged`: the followed participant is a replay of a recorded
   # session, so its overlays are restored as the app's own and the viewer's
   # input does not end the follow. False is a live follow.
-  followReplay @5 :Bool;
+  followReplay @6 :Bool;
   # This frame carries `grant` alone.
-  grantChanged @6 :Bool;
+  grantChanged @7 :Bool;
 }
 
 # A single collaborator in a `ChannelContext`. `color` is packed as

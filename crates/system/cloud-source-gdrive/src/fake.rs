@@ -46,7 +46,6 @@
 )]
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
 
@@ -1740,43 +1739,12 @@ fn parse_unary(tokens: &[Token], at: &mut usize) -> Result<Query, ()> {
 // --- helpers -------------------------------------------------------------
 
 fn hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
+    hex::encode(bytes)
 }
 
 /// `2024-05-01T12:30:45.123Z`.
 fn format_rfc3339(time: SystemTime) -> String {
-    let since = time
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = since.as_secs() as i64;
-    let days = secs.div_euclid(86_400);
-    let rem = secs.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
-        rem / 3600,
-        rem % 3600 / 60,
-        rem % 60,
-        since.subsec_millis()
-    )
-}
-
-/// Inverse of [`api::days_from_civil`].
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (if m <= 2 { y + 1 } else { y }, m, d)
+    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 #[cfg(test)]
@@ -1790,10 +1758,6 @@ mod tests {
         let parsed = api::parse_rfc3339(&text).unwrap();
         let diff = now.duration_since(parsed).unwrap();
         assert!(diff.as_millis() < 1, "{text}");
-        assert_eq!(
-            civil_from_days(api::days_from_civil(2024, 2, 29)),
-            (2024, 2, 29)
-        );
     }
 
     #[test]

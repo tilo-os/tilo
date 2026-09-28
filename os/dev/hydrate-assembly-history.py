@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 
-PATHS = {'os/Containerfile', 'os/dev/build-wpe.sh', 'os/dev/build-image.sh',
+PATHS = {'os/Containerfile', 'os/Containerfile.wpe', 'os/dev/build-wpe.sh', 'os/dev/build-image.sh',
          'os/dev/windows_provider.py', 'os/tests/test_windows_provider.py',
          'docs/security/boot-chain.md', 'os/scripts/verify-runtime-crypto-packages.sh',
          'os/usr/libexec/tilo-security-audit'}
@@ -46,7 +46,7 @@ def hydrate(repo, raw, digest, source, environment):
             extra_revisions.add(DRACUT_SOURCE)
             extra_paths.update(DRACUT_PATHS)
             allowed_paths = PATHS | set(DRACUT_PATHS)
-    paths = set(approval['changes']) | {'os/dev/build-wpe.sh'} | extra_paths
+    paths = set(approval['changes']) | {'os/Containerfile.wpe', 'os/dev/build-wpe.sh'} | extra_paths
     if not paths <= allowed_paths:
         raise ValueError('unexpected historical source path')
     revisions = {approval[key] for key in REVISION_FIELDS if key in approval} | extra_revisions

@@ -6,8 +6,8 @@
 //! Granted only to the surface holding keyboard focus while chrome is not
 //! taking input and the session is unlocked; it follows focus. It suspends
 //! only the shell's own shortcuts: the VT switch, the remote-input kill
-//! switch, the lock chord, hardware media keys and
-//! [`crate::compositor::pointer_lock::RELEASE_CHORD_LABEL`] are handled
+//! switch, the lock chord, hardware media keys and the pointer release chord
+//! ([`crate::compositor::pointer_lock::release_chord_label`]) are handled
 //! before any client sees a key and stay with the compositor. The release
 //! chord also hands the shortcuts back until focus moves on.
 

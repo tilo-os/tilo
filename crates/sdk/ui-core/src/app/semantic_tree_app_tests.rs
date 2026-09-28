@@ -481,38 +481,35 @@ impl Widget for CounterCard {
         &[COUNTER_TYPE, ASYNC_COUNTER_TYPE]
     }
 
-    fn start_resource_operation_scoped(
+    fn start_operation(
         &mut self,
-        scope: &crate::invocation_scope::ResourceInvocationScope,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         doc: &mut automerge::AutoCommit,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        scope.check()?;
-        if self.async_bump && type_id == ASYNC_COUNTER_TYPE {
-            self.scoped_jobs.push(scope.clone());
+        let (request, scope) = op.with_custody();
+        if scope.is_none()
+            && let Some(started) = crate::widget::start_in_children(self, op, doc, path)?
+        {
+            return Ok(Some(started));
+        }
+        op.check()?;
+        if self.async_bump && request.type_id == ASYNC_COUNTER_TYPE {
+            match scope {
+                Some(scope) => self.scoped_jobs.push(scope.clone()),
+                None => self.pending_bump = Some(request.invocation),
+            }
             return Ok(Some(crate::widget::ResourceOperationStart::Accepted));
         }
-        self.invoke_resource_operation_v2(kind, type_id, payload, doc, path)
-            .map(|output| output.map(crate::widget::ResourceOperationStart::Completed))
-    }
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &automerge::AutoCommit,
-        path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if self.async_bump && type_id == ASYNC_COUNTER_TYPE {
-            self.pending_bump = Some(invocation);
-            return Ok(Some(crate::widget::ResourceOperationStart::Accepted));
-        }
-        self.invoke_resource_operation_v2(kind, type_id, payload, doc, path)
-            .map(|output| output.map(crate::widget::ResourceOperationStart::Completed))
+        Ok(
+            (request.kind == tilo_actions::OperationKind::Effect
+                && request.type_id == COUNTER_TYPE)
+                .then(|| {
+                    crate::widget::ResourceOperationStart::Completed(
+                        tilo_actions::ActionOutput::default(),
+                    )
+                }),
+        )
     }
     fn poll_resource_operation(
         &mut self,
@@ -537,19 +534,6 @@ impl Widget for CounterCard {
         } else {
             None
         }
-    }
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        _payload: &[u8],
-        _doc: &automerge::AutoCommit,
-        _path: &automerge::ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        Ok(
-            (kind == tilo_actions::OperationKind::Effect && type_id == COUNTER_TYPE)
-                .then(tilo_actions::ActionOutput::default),
-        )
     }
 }
 
@@ -2018,14 +2002,10 @@ fn directory_finds_a_100k_tail_without_scanning_the_corpus() {
     });
     assert_eq!(page.rows.len(), 1);
     assert_eq!(page.rows[0].resource, "test.item:99999");
-    // The word posting yields the hit on the first call; one more
-    // bounded call starts looking for the needle inside longer words,
-    // which a word posting cannot rule out.
-    assert!(calls.load(std::sync::atomic::Ordering::Relaxed) <= 2);
-    assert!(
-        !page.exhausted,
-        "substrings inside longer words remain to check"
-    );
+    // One bounded call finds the only record holding the needle, and the
+    // index knows nothing else matches.
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert!(page.exhausted);
     assert!(
         largest_budget.load(std::sync::atomic::Ordering::Relaxed) <= 8,
         "the adapter passed the caller's bounded work budget to the retained index"

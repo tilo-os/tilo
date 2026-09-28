@@ -458,6 +458,10 @@ fn launch_resolved(
         command.args.push("--open-url".to_string());
         command.args.push(url.to_string());
     }
+    // Selecting an app asks for a window. A singleton may remain alive after
+    // its last surface closes, so prefer an explicit desktop New Window
+    // action when the entry offers one.
+    command.args.push("--new-window".to_string());
 
     launcher::remember_launch_named(&app.desktop_id, &app.window_identities, &app.name);
     let _ = launcher::spawn_launch(app.desktop_id.clone(), app.name.clone(), command);

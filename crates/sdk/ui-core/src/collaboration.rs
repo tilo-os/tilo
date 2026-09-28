@@ -29,6 +29,7 @@ pub use transport::{
 
 #[cfg(feature = "broker-transport")]
 mod broker;
+pub mod handoff;
 mod history;
 #[cfg(feature = "broker-transport")]
 mod route_keys;
@@ -89,8 +90,8 @@ use collab_types::SignedOp;
 pub use runtime_collab::{
     CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationPhaseInfo,
     MAX_SPEAKER_NAME_CHARS, SpeakerCommand, SpeakerDeviceInfo, SpeakerEndpointInfo,
-    SpeakerGroupInfo, SpeakerMemberInfo, SpeakerMemberSpec, SpeakerMemberStatus, SpeakerReply,
-    SpeakerRoleSpec, SpeakerSnapshot, SpeakerTrimInfo,
+    SpeakerGroupInfo, SpeakerMemberInfo, SpeakerMemberSpec, SpeakerMemberStatus,
+    SpeakerPlaybackInfo, SpeakerReply, SpeakerRoleSpec, SpeakerSnapshot, SpeakerTrimInfo,
 };
 pub use runtime_collab::{
     NearbyDestinationHandle, NearbyTargetHandle, NearbyTransferCommand, NearbyTransferDestination,
@@ -184,6 +185,9 @@ pub enum CollabRequest {
         /// files in one room don't merge each other's state; `None` means
         /// one document per `(app, room)`.
         record: Option<String>,
+        /// The resource kind of `record`, named so a host that creates a
+        /// missing record on the app's first write knows what it holds.
+        record_kind: Option<String>,
         /// Name on the caret pill; `None` gets a synthetic `peer-<n>`.
         /// Informational only — never used for routing or grants.
         handle: Option<String>,
@@ -255,6 +259,13 @@ pub enum CollabRequest {
     /// produce a safe projection.
     ClearContinuation {
         app_id: String,
+    },
+    /// Answer a handoff request, or report a retirement
+    /// ([`handoff::HandoffReport`], encoded). Session-local, on the primary
+    /// route; never relayed to peers.
+    ReportHandoff {
+        app_id: String,
+        message: Vec<u8>,
     },
     /// Private, level-triggered playback descriptors for shell-mediated
     /// same-person handoff. Never part of the room CRDT or peer fan-out.
@@ -630,6 +641,11 @@ pub enum CollabEvent {
     /// a late joiner on the same document route.
     DocumentSnapshotRequested {
         route: RouteSpec,
+    },
+    /// The shell asked this instance for a step of moving its window to
+    /// another workspace. Session-local control; never from a peer.
+    Handoff {
+        request: handoff::HandoffRequest,
     },
     RemoteCursorMoved {
         user_id: String,
@@ -1112,6 +1128,7 @@ impl CollaborationManager {
     pub fn new() -> Self {
         Self::new_scoped(
             continuation_instance_env().map(|instance| format!("continuation:{instance}")),
+            None,
         )
     }
 
@@ -1124,7 +1141,7 @@ impl CollaborationManager {
     )]
     pub(crate) fn switch_native_record(
         &mut self,
-        _record: &crate::record::RecordId,
+        _checkout: &crate::record::RecordCheckout,
     ) -> Result<(), String> {
         Err("native document routes need the broker transport".into())
     }
@@ -1141,18 +1158,18 @@ impl CollaborationManager {
     /// Join through the existing worker; never take the inherited RPC fd twice.
     pub(crate) fn prepare_native_record(
         &mut self,
-        record: &crate::record::RecordId,
+        checkout: &crate::record::RecordCheckout,
     ) -> Option<CommittedDocument> {
         let primary = self.primary_route.accepted.as_ref()?;
         let route = RouteSpec::record(
             primary.route.app_id.clone(),
             primary.route.cluster_id,
-            record.as_str(),
+            checkout.id.as_str(),
         );
         let Backend::Transport(transport) = &mut self.backend else {
             return None;
         };
-        transport.prepare_committed_document(route)
+        transport.prepare_committed_document(route, checkout.kind.as_str())
     }
 }
 
@@ -1179,11 +1196,14 @@ impl CollaborationManager {
     /// don't get handed each other's state. A process with several records
     /// open holds several managers; `tilo_ui::App` swaps its manager on checkout
     /// change.
-    pub fn for_record(record: &crate::record::RecordId) -> Self {
-        Self::new_scoped(Some(record.as_str().to_string()))
+    pub fn for_record(checkout: &crate::record::RecordCheckout) -> Self {
+        Self::new_scoped(
+            Some(checkout.id.as_str().to_string()),
+            Some(checkout.kind.as_str().to_string()),
+        )
     }
 
-    /// Move this connection's primary route to `record` in the same app and
+    /// Move this connection's primary route to `checkout`'s record in the same app and
     /// room, keeping the room's unqualified route joined — one process, one
     /// transport, its routes multiplexed. Returns that route (it carries the
     /// room's record index), or `None` when there is no connection or no
@@ -1194,7 +1214,7 @@ impl CollaborationManager {
     /// unqualified sibling, never simply the route left.
     pub fn move_primary_to_record(
         &mut self,
-        record: &crate::record::RecordId,
+        checkout: &crate::record::RecordCheckout,
     ) -> Option<RouteSpec> {
         if matches!(self.backend, Backend::Disabled(_)) {
             return None;
@@ -1206,7 +1226,8 @@ impl CollaborationManager {
         let hello = CollabRequest::Hello {
             app_id: room.app_id.clone(),
             cluster_id: room.cluster_id,
-            record: Some(record.as_str().to_string()),
+            record: Some(checkout.id.as_str().to_string()),
+            record_kind: Some(checkout.kind.as_str().to_string()),
             handle: self.hello_handle.clone(),
         };
         if self.try_send(hello).is_err() {
@@ -1316,7 +1337,7 @@ impl CollaborationManager {
 
     /// Without a built-in transport there is nothing to discover.
     #[cfg(not(feature = "broker-transport"))]
-    fn new_scoped(_record: Option<String>) -> Self {
+    fn new_scoped(_record: Option<String>, _record_kind: Option<String>) -> Self {
         Self::disabled()
     }
 

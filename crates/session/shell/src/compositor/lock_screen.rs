@@ -1265,7 +1265,7 @@ fn lock_error_status(error: &str) -> String {
 /// shell's redaction helper so the lock screen and toast stack agree on
 /// wording.
 fn count_label(count: usize) -> String {
-    crate::shell::notification::lock_suppressed_label(count)
+    tilo_desktop::notifications::lock_suppressed_label(count)
 }
 
 #[cfg(test)]

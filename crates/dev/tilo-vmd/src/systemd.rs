@@ -4,7 +4,6 @@
 //! (`useradd`, `systemctl`, `systemd-sysext`, `loginctl`, `journalctl`), so
 //! what tilo-vmd does can be reproduced and inspected by hand.
 
-use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -514,98 +513,6 @@ impl Apply for SystemdApply {
         let _ = fs::remove_dir_all(&dir);
         result
     }
-
-    fn has_runtime(&mut self, user: &str, version: &str) -> bool {
-        // tilo-install's per-user root: `$XDG_DATA_HOME/tilo-runtime`, and
-        // `runuser` starts the user without an XDG_DATA_HOME.
-        let home = home_of(user).unwrap_or_else(|| format!("/home/{user}"));
-        Path::new(&home)
-            .join(".local/share/tilo-runtime")
-            .join(version)
-            .join("bundle.toml")
-            .is_file()
-    }
-
-    fn install_runtime(&mut self, user: &str, bundle: &Path) -> Result<String, DaemonError> {
-        let version = crate::runtime::bundle_field(bundle, "version")?;
-        let publisher = crate::runtime::bundle_field(bundle, "publisher_hex").ok();
-        let uid = uid_of(user).ok_or_else(|| DaemonError::Apply {
-            step: "tilo-install runtime install".into(),
-            detail: format!("no user {user}"),
-        })?;
-        let home = home_of(user).unwrap_or_else(|| format!("/home/{user}"));
-        let mut report = String::new();
-        // Thin apps name their runtime by content, so an installed version is
-        // the same runtime and is left as it is.
-        if self.has_runtime(user, &version) {
-            let _ = writeln!(report, "runtime tilo-runtime/{version} already installed");
-        } else {
-            let dir = Path::new("/var/tmp")
-                .join(format!("tilo-vm-runtime-{}", uuid::Uuid::new_v4().simple()));
-            let staged = dir.join("bundle");
-            let result = fs::create_dir_all(&staged)
-                .and_then(|()| crate::fsutil::copy_tree(bundle, &staged))
-                .map_err(DaemonError::io("stage the runtime bundle"))
-                .and_then(|()| make_tree_readable(&dir))
-                .and_then(|()| {
-                    run(
-                        "tilo-install runtime install --bundle",
-                        Command::new("runuser")
-                            .args(["-u", user, "--", "env"])
-                            .arg(format!("HOME={home}"))
-                            .arg(format!("USER={user}"))
-                            .arg(format!("XDG_RUNTIME_DIR=/run/user/{uid}"))
-                            .args(["tilo-install", "runtime", "install", "--bundle"])
-                            .arg(&staged),
-                    )
-                });
-            let _ = fs::remove_dir_all(&dir);
-            report.push_str(&result?);
-        }
-        if let Some(publisher) = publisher
-            && crate::runtime::trust_publisher(
-                Path::new(crate::runtime::TRUSTED_PUBLISHERS),
-                &publisher,
-            )?
-        {
-            let _ = writeln!(
-                report,
-                "trusted runtime publisher ed25519:{publisher} in {}",
-                crate::runtime::TRUSTED_PUBLISHERS
-            );
-        }
-        Ok(report)
-    }
-}
-
-/// Let every user read (and traverse) a staged tree root owns.
-#[cfg(unix)]
-fn make_tree_readable(dir: &Path) -> Result<(), DaemonError> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let metadata =
-        fs::symlink_metadata(dir).map_err(DaemonError::io("stage the runtime bundle"))?;
-    if metadata.file_type().is_symlink() {
-        return Ok(());
-    }
-    let mode = if metadata.is_dir() {
-        0o755
-    } else {
-        metadata.permissions().mode() | 0o444
-    };
-    fs::set_permissions(dir, fs::Permissions::from_mode(mode))
-        .map_err(DaemonError::io("stage the runtime bundle"))?;
-    if metadata.is_dir() {
-        for entry in fs::read_dir(dir).map_err(DaemonError::io("stage the runtime bundle"))? {
-            let entry = entry.map_err(DaemonError::io("stage the runtime bundle"))?;
-            make_tree_readable(&entry.path())?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn make_tree_readable(_dir: &Path) -> Result<(), DaemonError> {
-    Ok(())
 }
 
 /// Start `tilo-vmd input-serve` for `slot` as a transient unit and wait

@@ -13,7 +13,7 @@ use std::time::Duration;
 use os_actions::{TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest};
 
 use crate::shell::chrome_state::Chrome;
-use crate::shell::workspace_settings::WsTab;
+use tilo_desktop::workspace_settings::WsTab;
 
 pub const TOOL_SERVICE: &str = "tools";
 const MAX_WIRE_BYTES: u64 = 4 * 1024;

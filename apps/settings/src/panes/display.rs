@@ -206,14 +206,67 @@ pub struct DisplayOutput {
     pub current_mode: Option<OutputMode>,
     pub hdr: bool,
     pub sink_hdr: bool,
-    pub hdr_unavailable_reason: Option<String>,
+    pub hdr_unavailable_reason: Option<settings_store::hardware::HdrUnavailable>,
     pub vrr: bool,
     pub sink_vrr: bool,
-    pub vrr_unavailable_reason: Option<String>,
+    pub vrr_unavailable_reason: Option<settings_store::hardware::AdaptiveSyncUnavailable>,
     pub color_profiles: Vec<String>,
     pub color_profile_labels: BTreeMap<String, String>,
     /// EDID identity; decides which saved arrangement applies.
     pub monitor: Option<MonitorIdentity>,
+}
+
+/// The Fluent key explaining why HDR cannot be used.
+fn hdr_unavailable_key(
+    sink_hdr: bool,
+    reason: Option<settings_store::hardware::HdrUnavailable>,
+) -> &'static str {
+    use settings_store::hardware::HdrUnavailable;
+    match reason {
+        Some(HdrUnavailable::DriverUnsupported) => "display-hdr-driver-unsupported",
+        Some(HdrUnavailable::FormatUnsupported) => "display-hdr-format-unsupported",
+        Some(HdrUnavailable::DriverRejected) => "display-hdr-driver-rejected",
+        None if sink_hdr => "display-hdr-driver-unsupported",
+        None => "display-hdr-unsupported",
+    }
+}
+
+/// SDR brightness in cd/m² as the slider's `0.0..=1.0` position.
+fn sdr_brightness_fraction(nits: u16) -> f64 {
+    let range = settings_store::hardware::SDR_BRIGHTNESS_NITS_RANGE;
+    let (low, high) = (f64::from(*range.start()), f64::from(*range.end()));
+    ((f64::from(nits) - low) / (high - low)).clamp(0.0, 1.0)
+}
+
+/// The slider's `0.0..=1.0` position as SDR brightness in whole cd/m².
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is clamped into the u16 brightness range before the cast"
+)]
+fn sdr_brightness_nits(fraction: f64) -> u16 {
+    let range = settings_store::hardware::SDR_BRIGHTNESS_NITS_RANGE;
+    let (low, high) = (f64::from(*range.start()), f64::from(*range.end()));
+    let fraction = if fraction.is_finite() {
+        fraction.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    fraction.mul_add(high - low, low).round().clamp(low, high) as u16
+}
+
+/// The Fluent key explaining why variable refresh rate cannot be used.
+fn adaptive_sync_unavailable_key(
+    sink_vrr: bool,
+    reason: Option<settings_store::hardware::AdaptiveSyncUnavailable>,
+) -> &'static str {
+    use settings_store::hardware::AdaptiveSyncUnavailable;
+    match reason {
+        Some(AdaptiveSyncUnavailable::DriverUnsupported) => "display-vrr-driver-unsupported",
+        Some(AdaptiveSyncUnavailable::DriverRejected) => "display-vrr-driver-rejected",
+        None if sink_vrr => "display-vrr-driver-unsupported",
+        None => "display-vrr-unsupported",
+    }
 }
 
 /// Map a raw DRM connector directory name + its `status` file contents to a
@@ -393,6 +446,9 @@ pub struct DisplayPane {
     /// composition is rebuilt between frames.
     arrangement_drag: ui::LocalState<Option<super::display_arrangement::ArrangementDrag>>,
     composed: Option<Box<dyn Widget>>,
+    /// Hardware facts changed under the retained composition. The host holds
+    /// raw pointers into it until the next build, so it must not be dropped.
+    structure_dirty: bool,
     rect: Rect,
 }
 
@@ -460,6 +516,7 @@ impl DisplayPane {
             needs_seed: true,
             arrangement_drag: ui::LocalState::new(None),
             composed: None,
+            structure_dirty: false,
             rect: Rect::ZERO,
         }
     }
@@ -522,6 +579,7 @@ impl DisplayPane {
             needs_seed: true,
             arrangement_drag: ui::LocalState::new(None),
             composed: None,
+            structure_dirty: false,
             rect: Rect::ZERO,
         }
     }
@@ -716,6 +774,9 @@ impl DisplayPane {
             Op::SetHdr { connector, enabled } => {
                 let _ = state.put(root, output_key(connector, "hdr"), *enabled);
             }
+            Op::SetSdrBrightness { connector, value } => {
+                let _ = state.put(root, output_key(connector, "sdr_brightness"), *value);
+            }
             Op::SetVrr { connector, enabled } => {
                 let _ = state.put(root, output_key(connector, "vrr"), *enabled);
             }
@@ -860,13 +921,9 @@ impl DisplayPane {
             if !resolved.enabled {
                 continue;
             }
-            let mode = resolved.mode.or(output.current_mode).unwrap_or(OutputMode {
-                width: 1920,
-                height: 1080,
-                refresh_mhz: 60_000,
-            });
-            let (width, height) =
-                settings_store::display_mode::output_extent(mode, resolved.transform);
+            // Drawn at the logical size the pointer moves through, so a
+            // 2x panel beside a 1x monitor looks, and snaps, as it behaves.
+            let (width, height) = logical_extent_of(output, &resolved);
             // An output with no saved position has never been arranged: put
             // it after the others rather than on top of them.
             let (x, y) = if entry.is_some() {
@@ -1239,8 +1296,9 @@ impl DisplayPane {
         let mut out_rows = Vec::new();
 
         if output.hdr {
-            out_rows.push(setting_row(
-                "HDR",
+            out_rows.push(setting_row_described(
+                &crate::i18n::t("display-hdr"),
+                &crate::i18n::t("display-hdr-description"),
                 Box::new(
                     Toggle::new(
                         &format!("settings.display.{}.hdr", output.connector),
@@ -1256,22 +1314,37 @@ impl DisplayPane {
                     ),
                 ),
             ));
+            let sdr_key = output_key(&output.connector, "sdr_brightness");
+            out_rows.push(setting_row_described(
+                &crate::i18n::t("display-hdr-sdr-brightness"),
+                &crate::i18n::t("display-hdr-sdr-brightness-description"),
+                Box::new(
+                    Slider::new(
+                        &format!("settings.display.{}.sdr_brightness", output.connector),
+                        &sdr_key,
+                    )
+                    .with_id(&sdr_key)
+                    .on_action(
+                        crate::actions::display_output_sdr_brightness_binding(
+                            output.connector.clone(),
+                        )
+                        .expect("SDR brightness is part of the resource contract"),
+                    ),
+                ),
+            ));
         } else {
             out_rows.push(value_row(
-                "HDR",
-                output
-                    .hdr_unavailable_reason
-                    .as_deref()
-                    .unwrap_or(if output.sink_hdr {
-                        "Display support detected; compositor output support unavailable"
-                    } else {
-                        "Not supported by this display"
-                    }),
+                &crate::i18n::t("display-hdr"),
+                &crate::i18n::t(hdr_unavailable_key(
+                    output.sink_hdr,
+                    output.hdr_unavailable_reason,
+                )),
             ));
         }
         if output.vrr {
-            out_rows.push(setting_row(
-                "Variable refresh rate",
+            out_rows.push(setting_row_described(
+                &crate::i18n::t("display-vrr"),
+                &crate::i18n::t("display-vrr-description"),
                 Box::new(
                     Toggle::new(
                         &format!("settings.display.{}.vrr", output.connector),
@@ -1289,15 +1362,11 @@ impl DisplayPane {
             ));
         } else {
             out_rows.push(value_row(
-                "Variable refresh rate",
-                output
-                    .vrr_unavailable_reason
-                    .as_deref()
-                    .unwrap_or(if output.sink_vrr {
-                        "Display support detected; compositor output support unavailable"
-                    } else {
-                        "Not supported by this display"
-                    }),
+                &crate::i18n::t("display-vrr"),
+                &crate::i18n::t(adaptive_sync_unavailable_key(
+                    output.sink_vrr,
+                    output.vrr_unavailable_reason,
+                )),
             ));
         }
         if output.color_profiles.is_empty() {
@@ -1508,6 +1577,11 @@ impl DisplayPane {
                 transform_label(cfg.transform),
             );
             let _ = state.put(root, output_key(&output.connector, "hdr"), cfg.hdr);
+            let _ = state.put(
+                root,
+                output_key(&output.connector, "sdr_brightness"),
+                sdr_brightness_fraction(cfg.sdr_brightness_nits),
+            );
             let _ = state.put(root, output_key(&output.connector, "vrr"), cfg.vrr);
             let profile = cfg
                 .color_profile
@@ -1709,6 +1783,14 @@ impl Widget for DisplayPane {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.structure_dirty)
+            || self
+                .composed
+                .as_mut()
+                .is_some_and(|c| c.take_structure_dirty())
+    }
 }
 
 /// `sync` helper methods, split out of the trait method above (which must
@@ -1731,7 +1813,7 @@ impl DisplayPane {
                     automerge::ScalarValue::F64(f64::from(brightness)),
                 );
                 self.hardware_probe = None;
-                self.composed = None;
+                self.structure_dirty = true;
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.hardware_probe = None;
@@ -1754,7 +1836,7 @@ impl DisplayPane {
             self.outputs = read_outputs();
             self.output_config = DisplayConfig::load_for(&self.display_set());
             self.needs_seed = true;
-            self.composed = None;
+            self.structure_dirty = true;
         }
         // Monitor probing finishes in the background; a monitor that turns
         // out to speak DDC/CI gains its slider once the probe lands.
@@ -1762,7 +1844,7 @@ impl DisplayPane {
         if controllable.keys().ne(self.output_brightness.keys()) {
             self.output_brightness = controllable;
             self.needs_seed = true;
-            self.composed = None;
+            self.structure_dirty = true;
         }
     }
 
@@ -2175,6 +2257,14 @@ impl DisplayPane {
             cfg.hdr = enabled;
             changed = true;
         }
+        if output.hdr
+            && let Some(fraction) =
+                ui::doc::read_f64(state, root, output_key(&output.connector, "sdr_brightness"))
+            && sdr_brightness_nits(fraction) != cfg.sdr_brightness_nits
+        {
+            cfg.sdr_brightness_nits = sdr_brightness_nits(fraction);
+            changed = true;
+        }
         if output.vrr
             && let Some(enabled) = read_bool(state, root, output_key(&output.connector, "vrr"))
             && enabled != cfg.vrr
@@ -2511,6 +2601,95 @@ impl DisplayPane {
 mod tests {
     use super::*;
     use crate::dispatcher::testing::RecordingDispatcher;
+
+    fn probed_pane() -> (DisplayPane, std::sync::mpsc::Sender<(f32, bool)>) {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
+        let (probe_tx, probe_rx) = std::sync::mpsc::channel();
+        pane.hardware_probe = Some(probe_rx);
+        (pane, probe_tx)
+    }
+
+    /// A brightness probe that lands after the pane was composed keeps the
+    /// widgets the host's layout tree points into, and asks for a rebuild.
+    #[test]
+    fn late_hardware_probe_keeps_the_retained_tree_and_requests_a_rebuild() {
+        let (mut pane, probe_tx) = probed_pane();
+        let mut taffy = TaffyTree::new();
+        let mut node_map = HashMap::new();
+        pane.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let composed = |pane: &DisplayPane| {
+            pane.children()
+                .first()
+                .map(|c| std::ptr::from_ref(*c).cast::<()>())
+        };
+        let before = composed(&pane);
+        assert!(before.is_some(), "build_layout composes the pane");
+
+        probe_tx
+            .send((0.8, false))
+            .expect("probe receiver is alive");
+        let mut doc = AutoCommit::new();
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            composed(&pane),
+            before,
+            "the host still holds layout pointers into this composition"
+        );
+        assert!(
+            pane.take_structure_dirty(),
+            "the landed probe requests a rebuild"
+        );
+        assert!(!pane.take_structure_dirty(), "and reports it once");
+        let brightness = doc
+            .get(&automerge::ROOT, BRIGHTNESS_KEY)
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| value.as_f64());
+        assert_eq!(brightness, Some(f64::from(0.8_f32)));
+
+        let (pane, probe_tx) = probed_pane();
+        let mut harness =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(pane), (900, 700));
+        probe_tx
+            .send((0.8, false))
+            .expect("probe receiver is alive");
+        harness.relayout();
+        assert!(
+            harness.last_relayout().rebuilt,
+            "the headless host recomposes the pane after the probe lands"
+        );
+    }
+
+    #[test]
+    fn sdr_brightness_slider_round_trips_whole_nits_and_reasons_have_copy() {
+        use settings_store::hardware::{AdaptiveSyncUnavailable, HdrUnavailable};
+        for nits in [80, 203, 300, 480] {
+            assert_eq!(sdr_brightness_nits(sdr_brightness_fraction(nits)), nits);
+        }
+        assert!((sdr_brightness_fraction(80) - 0.0).abs() < f64::EPSILON);
+        assert!((sdr_brightness_fraction(480) - 1.0).abs() < f64::EPSILON);
+        assert_eq!(
+            sdr_brightness_nits(f64::NAN),
+            80,
+            "garbage lands on the dim end"
+        );
+        assert_eq!(sdr_brightness_nits(7.0), 480);
+        let keys = [
+            hdr_unavailable_key(false, None),
+            hdr_unavailable_key(true, None),
+            hdr_unavailable_key(true, Some(HdrUnavailable::DriverUnsupported)),
+            hdr_unavailable_key(true, Some(HdrUnavailable::FormatUnsupported)),
+            hdr_unavailable_key(true, Some(HdrUnavailable::DriverRejected)),
+            adaptive_sync_unavailable_key(false, None),
+            adaptive_sync_unavailable_key(true, Some(AdaptiveSyncUnavailable::DriverUnsupported)),
+            adaptive_sync_unavailable_key(true, Some(AdaptiveSyncUnavailable::DriverRejected)),
+        ];
+        for key in keys {
+            let copy = crate::i18n::t(key);
+            assert_ne!(copy, key, "{key} has no en-US copy");
+        }
+    }
 
     #[test]
     fn relative_positions_use_the_neighbour_s_logical_extent() {
@@ -3170,6 +3349,58 @@ mod tests {
             monitor.placement,
             super::super::display_arrangement::placement::Placement::new(1920, 0, 2560, 1440)
         );
+    }
+
+    #[test]
+    fn the_arrangement_draws_mixed_dpi_displays_at_their_logical_size() {
+        use super::super::display_arrangement::placement::{Placement, settle};
+        // A 2x panel of 2560x1600 is 1280x800 on the desktop the pointer
+        // moves through; a 1x monitor beside it starts at x = 1280.
+        let panel_mode = OutputMode {
+            width: 2560,
+            height: 1600,
+            refresh_mhz: 60_000,
+        };
+        let monitor_mode = OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        };
+        let rec = Arc::new(RecordingDispatcher::default());
+        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+            .with_outputs(vec![
+                display_with_modes("eDP-1", "Built-in display", true, vec![panel_mode]),
+                display_with_modes("HDMI-A-1", "Desk monitor", false, vec![monitor_mode]),
+            ]);
+        pane.output_config.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                primary: true,
+                scale: 2.0,
+                ..Default::default()
+            },
+        );
+        pane.output_config.outputs.insert(
+            "HDMI-A-1".into(),
+            OutputConfig {
+                x: 1280,
+                ..Default::default()
+            },
+        );
+        let connected = pane.connected_outputs();
+        let displays = pane.arranged_displays(&connected);
+        let panel = displays.iter().find(|d| d.connector == "eDP-1").unwrap();
+        let monitor = displays.iter().find(|d| d.connector == "HDMI-A-1").unwrap();
+        assert_eq!(panel.placement, Placement::new(0, 0, 1280, 800));
+        assert_eq!(monitor.placement, Placement::new(1280, 0, 1920, 1080));
+        assert!(
+            panel.placement.touches(monitor.placement),
+            "the canvas shows the edge the pointer crosses"
+        );
+        // Dropping the monitor near the panel's right edge snaps it onto
+        // that logical edge, never onto the panel's mode width.
+        let dropped = settle(monitor.placement.at(1300, 12), &[panel.placement], 24);
+        assert_eq!((dropped.x, dropped.y), (1280, 0));
     }
 
     #[test]

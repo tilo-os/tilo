@@ -185,6 +185,10 @@ pub async fn handle(
             })
             .await
         }
+        (Method::PUT, p) if p.starts_with("/uploads/") => {
+            let name = p.trim_start_matches("/uploads/").to_owned();
+            handle_put_upload(&state, &name, req).await
+        }
         (Method::POST, "/moderation/mutations") => handle_post_moderation(&state, req).await,
         (Method::GET, p) if p.starts_with("/moderation/cases/") => {
             let case_id = p.trim_start_matches("/moderation/cases/").to_owned();
@@ -556,10 +560,24 @@ fn apply_change(
     state: &AppState,
     change: EntryChangeRequest,
 ) -> Result<Response<Full<Bytes>>, HandlerError> {
-    if change.action == EntryAction::Add && !publisher_may_add_new(state, &change.entry) {
+    let publisher = publisher_row(state, &change.entry);
+    if change.action == EntryAction::Add && !publisher.as_ref().is_some_and(|row| row.can_add_new) {
         return Ok(text_response(
             StatusCode::FORBIDDEN,
             "publisher not allowed to submit new entries",
+        ));
+    }
+    if change.action != EntryAction::Delete
+        && !publisher
+            .as_ref()
+            .is_some_and(|row| row.owns_package_id(&change.entry.package_id))
+    {
+        return Ok(text_response(
+            StatusCode::FORBIDDEN,
+            &format!(
+                "package id {} is outside this publisher's verified namespaces",
+                change.entry.package_id
+            ),
         ));
     }
     let submitted_at = SystemTime::now()
@@ -598,24 +616,129 @@ fn moderation_status(error: &ModerationError) -> Option<StatusCode> {
     }
 }
 
-/// Cheap async lookup: is this publisher allowed to POST a new
-/// entry (rather than only editing an existing one)?
-fn publisher_may_add_new(state: &AppState, entry: &RegistryEntry) -> bool {
-    let Ok(bytes) = hex::decode(&entry.publisher_pubkey_hex) else {
-        return false;
+/// `PUT /uploads/<blake3>.tapp`: an allowlisted publisher's signed upload of
+/// a package it signed, kept privately for review
+/// (`registry_types::upload`). Answers `201` with the artifact URL a version
+/// binding these bytes names.
+async fn handle_put_upload(
+    state: &AppState,
+    name: &str,
+    req: Request<Incoming>,
+) -> Result<Response<Full<Bytes>>, HandlerError> {
+    let Some(digest) = name
+        .strip_suffix(".tapp")
+        .filter(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase)
+    else {
+        return Ok(empty_response(StatusCode::NOT_FOUND));
     };
-    if bytes.len() != 32 {
-        return false;
+    let publisher = header_text(
+        &req,
+        header::HeaderName::from_static(registry_types::upload::UPLOAD_PUBLISHER_HEADER),
+    );
+    let signature = header_text(
+        &req,
+        header::HeaderName::from_static(registry_types::upload::UPLOAD_SIGNATURE_HEADER),
+    );
+    let Some(publisher) = publisher
+        .and_then(|hex_key| hex::decode(hex_key).ok())
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+    else {
+        return Ok(text_response(
+            StatusCode::UNAUTHORIZED,
+            "an upload names its publisher key",
+        ));
+    };
+    if !signature.is_some_and(|signature| {
+        registry_types::upload::verify_upload(&publisher, &digest, &signature)
+    }) {
+        return Ok(text_response(
+            StatusCode::FORBIDDEN,
+            "upload signature does not verify",
+        ));
     }
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&bytes);
+    let allowlisted = state
+        .inner
+        .storage
+        .load_allowlist()
+        .map_err(HandlerError::Storage)?
+        .get(&publisher)
+        .is_some();
+    if !allowlisted {
+        return Ok(text_response(
+            StatusCode::FORBIDDEN,
+            "publisher not in allowlist",
+        ));
+    }
+    let limit = usize::try_from(
+        tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES.max(tilo_app_package::MAX_APP_TAPP_BYTES),
+    )
+    .unwrap_or(usize::MAX);
+    let body = match Limited::new(req.into_body(), limit).collect().await {
+        Ok(body) => body.to_bytes(),
+        Err(error) if error.downcast_ref::<LengthLimitError>().is_some() => {
+            return Ok(text_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "upload is too large",
+            ));
+        }
+        Err(error) => return Err(HandlerError::Body(error.to_string())),
+    };
+    blocking(state, move |state| {
+        store_upload(state, &publisher, &digest, &body)
+    })
+    .await
+}
+
+fn store_upload(
+    state: &AppState,
+    publisher: &[u8; 32],
+    digest: &str,
+    body: &[u8],
+) -> Result<Response<Full<Bytes>>, HandlerError> {
+    if !blake3::hash(body).to_hex().eq_ignore_ascii_case(digest) {
+        return Ok(text_response(
+            StatusCode::BAD_REQUEST,
+            "upload does not hash to its name",
+        ));
+    }
+    let signed_by_publisher = app_registry::tapp::load(body).is_ok_and(|meta| {
+        app_registry::verify_bytes(body, meta.package_id, *publisher).is_ok()
+            && tilo_app_package::app_size_limit(&meta.manifest)
+                .is_none_or(|limit| body.len() as u64 <= limit)
+    });
+    if !signed_by_publisher {
+        return Ok(text_response(
+            StatusCode::BAD_REQUEST,
+            "upload is not a package this publisher signed, within its size limit",
+        ));
+    }
+    state
+        .inner
+        .storage
+        .save_upload(body)
+        .map_err(HandlerError::Storage)?;
+    Ok(json_response(
+        StatusCode::CREATED,
+        &serde_json::json!({
+            "blake3": digest,
+            "url": crate::moderation::artifact_url(&state.inner.identity.base_url, digest),
+        }),
+    ))
+}
+
+/// The allowlist row of the entry's publisher, if it has one.
+fn publisher_row(state: &AppState, entry: &RegistryEntry) -> Option<crate::PublisherRow> {
+    let key: [u8; 32] = hex::decode(&entry.publisher_pubkey_hex)
+        .ok()?
+        .try_into()
+        .ok()?;
     state
         .inner
         .storage
         .load_allowlist()
         .ok()
         .and_then(|allowlist| allowlist.get(&key).cloned())
-        .is_some_and(|row| row.can_add_new)
 }
 
 // ---- response helpers ------------------------------------------

@@ -40,7 +40,7 @@ use tilo_agent::triage::{self, forge::Forge, think::NoModel};
 
 const ROOM: uuid::Uuid = uuid::Uuid::from_u128(0x7a1a_9e00_0000_4c0d_9a11_0000_0000_0077);
 const APP: &str = "so.tilo.chat";
-const AGENT: &str = shell::shell::workspace_settings::TRIAGE_AGENT;
+const AGENT: &str = tilo_desktop::workspace_settings::TRIAGE_AGENT;
 const FORGE_ACCOUNT: &str = "tilo-forge";
 /// The lease, timed for a test: a session claims within a fraction of a
 /// second and a vanished holder's claim expires in two.
@@ -487,7 +487,7 @@ fn the_triage_agent_links_a_repeat_files_only_what_an_editor_approved_and_stops_
         collab_types::Verb::Comment,
     ));
     // The triage agent's Contributor grants, as Workspace Settings adds them.
-    for cap in shell::shell::workspace_settings::triage_agent_grants(&ROOM.to_string(), AGENT) {
+    for cap in tilo_desktop::workspace_settings::triage_agent_grants(&ROOM.to_string(), AGENT) {
         workspace.grant_capability(cap);
     }
     let mut tree = WorkspaceTree::default();
@@ -846,7 +846,7 @@ fn the_triage_agent_answers_a_private_report_in_a_direct_room() {
         ROOM.to_string(),
         collab_types::Verb::Write,
     ));
-    for cap in shell::shell::workspace_settings::triage_agent_grants(&ROOM.to_string(), AGENT) {
+    for cap in tilo_desktop::workspace_settings::triage_agent_grants(&ROOM.to_string(), AGENT) {
         workspace.grant_capability(cap);
     }
     let mut tree = WorkspaceTree::default();
@@ -993,7 +993,7 @@ fn two_team_devices_run_one_triage_session_and_fail_over() {
         ROOM.to_string(),
         collab_types::Verb::Comment,
     ));
-    for cap in shell::shell::workspace_settings::triage_agent_grants(&ROOM.to_string(), AGENT) {
+    for cap in tilo_desktop::workspace_settings::triage_agent_grants(&ROOM.to_string(), AGENT) {
         workspace.grant_capability(cap);
     }
     let mut tree = WorkspaceTree::default();

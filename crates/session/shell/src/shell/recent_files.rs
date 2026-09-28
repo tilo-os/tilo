@@ -15,7 +15,6 @@
 //! way — `~/.ssh`, `~/.gnupg`, `~/.password-store` and every dot-directory
 //! of application secrets are never named.
 
-use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
@@ -52,43 +51,10 @@ pub fn is_publishable(path: &Path, home: &Path) -> bool {
         && std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file())
 }
 
-/// `file://` URI for an absolute path, percent-encoding everything but the
-/// unreserved characters and `/`.
+/// `file://` URI for an absolute path.
 pub fn file_uri(path: &Path) -> String {
-    use std::os::unix::ffi::OsStrExt;
-    let mut uri = String::from("file://");
-    for &byte in path.as_os_str().as_bytes() {
-        if byte.is_ascii_alphanumeric() || b"-._~/".contains(&byte) {
-            uri.push(char::from(byte));
-        } else {
-            let _ = write!(uri, "%{byte:02X}");
-        }
-    }
-    uri
-}
-
-fn escape_attr(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(ch),
-        }
-    }
-    out
-}
-
-fn unescape_attr(value: &str) -> String {
-    value
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&amp;", "&")
+    url::Url::from_file_path(path)
+        .map_or_else(|()| path.to_string_lossy().into_owned(), String::from)
 }
 
 /// The value of attribute `name` in the start tag at the head of `element`.
@@ -101,7 +67,11 @@ fn attribute(element: &str, name: &str) -> Option<String> {
     let quote = rest.chars().next().filter(|q| *q == '"' || *q == '\'')?;
     let body = rest.get(1..)?;
     let end = body.find(quote)?;
-    Some(unescape_attr(body.get(..end)?))
+    let raw = body.get(..end)?;
+    Some(
+        quick_xml::escape::unescape(raw)
+            .map_or_else(|_| raw.to_owned(), std::borrow::Cow::into_owned),
+    )
 }
 
 /// Every `<bookmark>` element of an XBEL document, in order. Malformed
@@ -136,7 +106,11 @@ pub fn parse(document: &str) -> Vec<Bookmark> {
 /// Tilo's bookmark for `path`, opened at `now` (RFC 3339, UTC).
 pub fn bookmark(path: &Path, mime: &str, now: &str) -> Bookmark {
     let href = file_uri(path);
-    let (h, t, m) = (escape_attr(&href), escape_attr(now), escape_attr(mime));
+    let (h, t, m) = (
+        quick_xml::escape::escape(&href),
+        quick_xml::escape::escape(now),
+        quick_xml::escape::escape(mime),
+    );
     let xml = format!(
         "<bookmark href=\"{h}\" added=\"{t}\" modified=\"{t}\" visited=\"{t}\">\n    \
          <info>\n      <metadata owner=\"http://freedesktop.org\">\n        \
@@ -287,7 +261,7 @@ mod tests {
         let ours = &back[0];
         assert_eq!(ours.href, file_uri(&doc));
         assert!(
-            ours.href.ends_with("/Documents/report%201%262.pdf"),
+            ours.href.ends_with("/Documents/report%201&2.pdf"),
             "{}",
             ours.href
         );

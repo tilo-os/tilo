@@ -383,6 +383,7 @@ mod tests {
             author: "u".into(),
             ts: id as i64,
             text: text.into(),
+            body: Vec::new(),
             edited: false,
             history: Vec::new(),
             parent: None,

@@ -721,6 +721,37 @@ impl ToggleGroup {
     }
 }
 
+impl ToggleGroup {
+    /// Apply a `tilo.ui.segmented.select` addressed to this control.
+    /// `Ok(false)` when the operation is not this control's.
+    fn select_segment_operation(
+        &mut self,
+        kind: crate::tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<bool, String> {
+        if kind != crate::tilo_actions::OperationKind::View
+            || type_id != "tilo.ui.segmented.select"
+            || self.action.is_none()
+        {
+            return Ok(false);
+        }
+        let value: serde_json::Value =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        if value.get("control").and_then(serde_json::Value::as_str) != self.id.as_deref() {
+            return Ok(false);
+        }
+        let index = value
+            .get("index")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|index| *index < self.segments.len())
+            .ok_or_else(|| "segmented action index is out of range".to_owned())?;
+        self.apply_selection(index);
+        Ok(true)
+    }
+}
+
 impl Widget for ToggleGroup {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
@@ -947,6 +978,26 @@ impl Widget for ToggleGroup {
             .collect()
     }
 
+    fn start_operation(
+        &mut self,
+        op: &super::ResourceOperation<'_>,
+        _doc: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<super::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .select_segment_operation(request.kind, request.type_id, request.payload)?
+            .then(|| {
+                super::ResourceOperationStart::Completed(
+                    crate::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
+
+    /// Legacy adapter: apps not yet on [`Widget::start_operation`] still reach
+    /// a shared segmented control through their read-only routing.
     fn invoke_resource_operation_v2(
         &mut self,
         kind: crate::tilo_actions::OperationKind,
@@ -955,25 +1006,9 @@ impl Widget for ToggleGroup {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<Option<crate::tilo_actions::ActionOutput>, String> {
-        if kind != crate::tilo_actions::OperationKind::View
-            || type_id != "tilo.ui.segmented.select"
-            || self.action.is_none()
-        {
-            return Ok(None);
-        }
-        let value: serde_json::Value =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        if value.get("control").and_then(serde_json::Value::as_str) != self.id.as_deref() {
-            return Ok(None);
-        }
-        let index = value
-            .get("index")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|value| usize::try_from(value).ok())
-            .filter(|index| *index < self.segments.len())
-            .ok_or_else(|| "segmented action index is out of range".to_owned())?;
-        self.apply_selection(index);
-        Ok(Some(crate::tilo_actions::ActionOutput::default()))
+        Ok(self
+            .select_segment_operation(kind, type_id, payload)?
+            .then(crate::tilo_actions::ActionOutput::default))
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -1604,14 +1639,18 @@ mod tests {
             assert_eq!(invocation.arguments["index"], 1);
             let encoded = spec.build_json(&invocation.arguments).unwrap();
             assert_eq!(encoded.type_id, "tilo.ui.segmented.select");
-            let output = Widget::invoke_resource_operation_v2(
+            let output = Widget::start_operation(
                 &mut group,
-                crate::tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &AutoCommit::new(),
+                &crate::widget::ResourceOperation::local(
+                    crate::tilo_actions::InvocationId::new(),
+                    crate::tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut AutoCommit::new(),
                 &automerge::ROOT,
             )
+            .map(|started| started.and_then(crate::widget::ResourceOperationStart::completed))
             .unwrap();
             assert!(output.is_some());
             assert_eq!(group.selected(), 1);

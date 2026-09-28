@@ -3,6 +3,7 @@
 //! Direct paths, NAT traversal and stateless relay fallback are selected by
 //! iroh. Tilo only names authenticated endpoint ids and workspace topics.
 
+pub(crate) mod governor_lane;
 pub(crate) mod native_ingress;
 mod native_publication;
 
@@ -273,6 +274,12 @@ impl HostIdentity {
 #[derive(Debug)]
 pub enum NetCmd {
     NativeConnect(native_ingress::Connect),
+    /// Ask a governed room's governor, on its room's native relay session.
+    GovernorAction {
+        ws: u64,
+        room: uuid::Uuid,
+        request: Box<governor_lane::Request>,
+    },
     NativePublish {
         ws: u64,
     },
@@ -626,6 +633,8 @@ struct TopicRuntime {
 
 struct HostRuntime {
     native_scope: Option<Arc<native_ingress::Scope>>,
+    /// The private lane to a governed room's governor, opened on first use.
+    governor: Option<governor_lane::Lane>,
     actions: Option<tokio::task::JoinHandle<()>>,
     session: Arc<RelayCoeditSession>,
     pump: tokio::task::JoinHandle<()>,
@@ -669,6 +678,7 @@ impl HostRuntime {
     ) -> Self {
         Self {
             native_scope,
+            governor: None,
             actions,
             session,
             pump,
@@ -1142,6 +1152,9 @@ impl ActorState {
                 .native_media
                 .handle(command, self.host_identity.as_ref()),
             Some(NetCmd::NativeConnect(connect)) => self.native_connect(connect),
+            Some(NetCmd::GovernorAction { ws, room, request }) => {
+                self.governor_action(ws, room, request);
+            }
             Some(NetCmd::NativePublish { ws }) => self.drive_native_publication(ws),
             Some(NetCmd::NativeEnrollment(command)) => self.native_enrollment.handle(
                 command,

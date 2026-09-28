@@ -39,9 +39,10 @@ struct Pending {
 /// launch with its window by app id, so two in flight would have the
 /// second displace the first.
 pub fn examine(tree: &mut WorkspaceTree) -> bool {
+    let released = release_brought_over(tree);
     let todo = pending(tree);
     if todo.is_empty() {
-        return false;
+        return released;
     }
     let mut started: Vec<String> = Vec::new();
     let mut decided = false;
@@ -191,6 +192,11 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), String> {
     let Some(ws) = tree.desktop.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string());
     };
+    // A window continuing from another device opens the record it showed
+    // there; bring that record here first when this device lacks it.
+    if !item.local {
+        bring_over_continued_record(item, ws.room)?;
+    }
     stage_continuation_for_tab(tree, item);
     let launched = launcher::launch_in_workspace(&item.app_id, ws)
         .map(|_| ())
@@ -285,6 +291,108 @@ fn stage_continuation_for_tab(tree: &WorkspaceTree, item: &Pending) {
     } else {
         launcher::stage_continuation_record(ws.room, item.tab, record_instance.0);
     }
+}
+
+/// The record a window continuing from another device showed there, and
+/// the continuity instance it runs as, when its offer names one.
+fn continued_record(
+    item: &Pending,
+    room: crate::shell::state::RoomId,
+) -> Option<(crate::shell::record_hydration::RecordAddress, u64)> {
+    let launch = crate::shell::personal_continuity::LaunchIntent::app(item.app_id.clone()).ok()?;
+    let tab = crate::shell::personal_continuity::AppInstanceId(item.tab);
+    let continuation = crate::shell::personal_continuity_registry::global_registry()
+        .lock()
+        .ok()?
+        .continuation_for_tab(room, tab, &launch)?;
+    let record = ui::app::structural_continuation_record(continuation.resume.bytes())?;
+    Some((
+        crate::shell::record_hydration::RecordAddress {
+            room,
+            app_id: item.app_id.clone(),
+            record,
+        },
+        continuation.record_instance.0,
+    ))
+}
+
+/// What a card says while its record is being brought from another device.
+fn bringing_note() -> String {
+    crate::shell::i18n::t("continuity-bringing-record")
+}
+
+/// Make sure the record a continuing window showed is kept here, and that
+/// its instance reopens on it. `Err` is the card's note while the record is
+/// still on its way; a record no device could give leaves the window to
+/// open as it would have.
+fn bring_over_continued_record(
+    item: &Pending,
+    room: crate::shell::state::RoomId,
+) -> Result<(), String> {
+    use crate::shell::record_hydration::{Hydration, hydrate, kept_here};
+    let Some((address, instance)) = continued_record(item, room) else {
+        return Ok(());
+    };
+    let Some(data_home) = ::launcher::appdir::host_data_home() else {
+        return Ok(());
+    };
+    let record = if kept_here(&address, &data_home) {
+        None
+    } else {
+        match hydrate(&address, &data_home) {
+            Hydration::Waiting => return Err(bringing_note()),
+            Hydration::Kept(record) => Some(record),
+            Hydration::Failed(reason) => {
+                tracing::warn!(%reason, app = %item.app_id, "a continued record could not be brought over");
+                return Ok(());
+            }
+        }
+    };
+    crate::shell::record_hydration::reopen_on(&address, &data_home, instance, record.as_ref());
+    Ok(())
+}
+
+/// Clear the note of every card whose record has stopped being on its way,
+/// so the next pass opens it. Returns whether any was released.
+fn release_brought_over(tree: &mut WorkspaceTree) -> bool {
+    let note = &bringing_note();
+    let waiting: Vec<(TabId, String, crate::shell::state::RoomId)> = tree
+        .desktop
+        .workspaces
+        .iter()
+        .flat_map(|ws| {
+            ws.strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .filter_map(move |tab| match &tab.tile {
+                    TileContent::PeerWindow {
+                        app_id, note: slot, ..
+                    } if slot == note => Some((tab.id, app_id.clone(), ws.room)),
+                    _ => None,
+                })
+        })
+        .collect();
+    let Some(data_home) = ::launcher::appdir::host_data_home() else {
+        return false;
+    };
+    let mut released = false;
+    for (tab, app_id, room) in waiting {
+        let item = Pending {
+            tab,
+            app_id,
+            workspace: 0,
+            local: false,
+        };
+        let still_waiting = continued_record(&item, room).is_some_and(|(address, _)| {
+            crate::shell::record_hydration::hydrate(&address, &data_home)
+                == crate::shell::record_hydration::Hydration::Waiting
+        });
+        if !still_waiting {
+            released |= set_note(tree, tab, String::new());
+        }
+    }
+    released
 }
 
 /// Whether `ws`'s room authorises starting `app_id` here. See the module
@@ -795,3 +903,7 @@ mod tests {
 #[cfg(test)]
 #[path = "peer_windows_local_record_tests.rs"]
 mod local_record_restart_tests;
+
+#[cfg(test)]
+#[path = "peer_windows_hydration_tests.rs"]
+mod hydration_tests;

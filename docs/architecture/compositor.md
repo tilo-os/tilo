@@ -303,14 +303,22 @@ When the env var is set, the compositor binds an additional unix socket alongsid
 
 ### Keyboard shortcuts (host-only)
 
-| Shortcut       | Action                                            |
-|----------------|---------------------------------------------------|
-| Ctrl+K         | Toggle command palette                            |
-| Super+1..9     | Switch active workspace                           |
-| Ctrl+Tab       | Switch active strip                               |
-| Ctrl+T         | New tab in active group                           |
-| Ctrl+W         | Close active tab                                  |
-| Super+Esc      | Kill switch — drop peers, revoke caps, lock      |
+| Shortcut                  | Action                                         |
+|---------------------------|------------------------------------------------|
+| Ctrl+K                    | Search the focused app                         |
+| Super+K / Super+Space     | Search all of Tilo                             |
+| Super+Page Up / Page Down | Previous / next workspace                      |
+| Super+Shift+Up / Down     | Previous / next strip                          |
+| Super+Left / Right        | Previous / next window in the strip            |
+| Super+1..9                | Focus the Nth window group of the strip        |
+| Alt+Tab                   | Most recently used window of the workspace     |
+| Ctrl+Tab                  | Next tab in the focused window group           |
+| Super+T                   | New tab in the focused window group            |
+| Super+W                   | Close the focused tab                          |
+| Super+Esc                 | Stop all remote input and end every share      |
+
+The complete map, including the rebindable defaults and the chords Settings
+cannot rebind, is `docs/shell-navigation-keyboard-map.md`.
 
 (Remote-injected keystrokes go through a scrubber that denies system shortcuts. See `docs/architecture/security.md`.)
 

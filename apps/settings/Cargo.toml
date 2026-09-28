@@ -140,19 +140,11 @@ name = "it"
 path = "tests/it.rs"
 
 # These suites deliberately redirect the process-global XDG config root.
-# Keep each in its own test process instead of cohabiting the UI interaction
-# suite, whose parallel tests may legitimately construct settings panes.
+# Keep them out of `it` so they never share a process with the UI interaction
+# suite; one binary is enough — nextest isolates each test in its own process.
 [[test]]
-name = "prefs_persistence"
-path = "tests/prefs_persistence.rs"
-
-[[test]]
-name = "accounts_mail_loop"
-path = "tests/accounts_mail_loop.rs"
-
-[[test]]
-name = "cloud_storage"
-path = "tests/cloud_storage.rs"
+name = "xdg"
+path = "tests/xdg.rs"
 
 [lints]
 workspace = true

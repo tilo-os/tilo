@@ -15,7 +15,7 @@ function fixture({realMedia=false}={}){
   async invited_reconnect(_attempt,_material,peer){assert.equal(peer,7);calls.push('reconnect');},
   invited_cancel(){calls.push('cancel');},peer_bind_storage_epoch(){calls.push('bind-storage');},
   peer_media_bootstrap(){},invited_refresh_media(_attempt,_material,peer){assert.equal(peer,7);calls.push('refresh-media');},
-  refresh_storage_lease(){},peer_pending_writes:()=> '[]',peer_committed(){},
+  refresh_storage_lease(){},peer_pending_batch_bytes:()=>({id:'0',writes:[],records:[]}),acknowledge_peer_storage_batch(){},peer_committed(){},
   async close_peer(){calls.push('close-peer');},async disconnect_peer(){calls.push('disconnect-peer');},
  };
  const connect=createConnectPeer({init:async()=>{},runtime,acquireIdentity:async()=>{throw Error('owner enrollment forbidden');},acquireInvitedIdentity:async()=>{calls.push('acquire-invited');return lease;},

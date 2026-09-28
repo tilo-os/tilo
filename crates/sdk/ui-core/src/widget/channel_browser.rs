@@ -8,9 +8,10 @@
 //! both `entry.name` and `entry.space_name` so typing a space prefix
 //! narrows the list.
 
-use crate::search::fuzzy_score;
+use crate::search::ListIndex;
 use crate::time::SystemTime;
 use std::collections::HashMap;
+use tilo_search::FieldWeight;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -107,6 +108,9 @@ pub type DismissCallback = Box<dyn FnMut()>;
 
 pub struct ChannelBrowser {
     entries: Vec<ChannelEntry>,
+    /// Names and space names of `entries`, indexed while they stay the
+    /// same.
+    entry_index: ListIndex,
     query: String,
     /// Mirrors the command-palette model so the same keyboard contract
     /// (arrow, shift+arrow, Ctrl+A/C/V/X) works inside the search input.
@@ -144,6 +148,7 @@ impl ChannelBrowser {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
+            entry_index: ListIndex::default(),
             query: String::new(),
             query_selection: crate::text_selection::Selection::collapsed(0),
             query_composition: QueryComposition::new(),
@@ -273,17 +278,24 @@ impl ChannelBrowser {
     /// Sort key: (`space_name` asc, !`is_pinned`, `last_activity` desc).
     fn rebuild(&mut self) {
         self.visible.clear();
+        // A hit on the channel name or the parent space name, so typing a
+        // space prefix drills in.
+        let ranks = self.entry_index.ranks(
+            &self.query,
+            self.entries.iter().map(|entry| {
+                [
+                    (entry.name.as_str(), FieldWeight::TITLE),
+                    (entry.space_name.as_str(), FieldWeight::SUBTITLE),
+                ]
+            }),
+        );
         for (i, e) in self.entries.iter().enumerate() {
             if let Some(filter) = &self.space_filter
                 && &e.space_name != filter
             {
                 continue;
             }
-            // Either-match: a hit on the channel name OR the parent
-            // space name, so typing a space prefix drills in.
-            if fuzzy_score(&self.query, &e.name).is_none()
-                && fuzzy_score(&self.query, &e.space_name).is_none()
-            {
+            if ranks.get(i).is_none_or(Option::is_none) {
                 continue;
             }
             self.visible.push(i);

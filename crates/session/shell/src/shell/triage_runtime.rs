@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use crate::shell::launcher::{LaunchEvent, LaunchEventKind};
 use crate::shell::state::{RoomId, WorkspaceTree};
-use crate::shell::workspace_settings::{TRIAGE_AGENT, triage_agent_admitted};
+use tilo_desktop::workspace_settings::{TRIAGE_AGENT, triage_agent_admitted};
 
 /// How long after a session ended before it is started again in a room that
 /// still wants it.
@@ -201,7 +201,7 @@ mod tests {
                 .iter_mut()
                 .find(|ws| ws.room == room)
                 .expect("the room");
-            crate::shell::workspace_settings::remove_agent(ws, &reporter, TRIAGE_AGENT);
+            tilo_desktop::workspace_settings::remove_agent(ws, &reporter, TRIAGE_AGENT);
         }
         runtime.observe(
             &LaunchEvent {

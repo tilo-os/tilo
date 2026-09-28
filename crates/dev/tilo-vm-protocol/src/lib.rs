@@ -141,8 +141,6 @@ pub enum Request {
     Input(Input),
     #[serde(rename = "app.install")]
     AppInstall(AppInstall),
-    #[serde(rename = "app.runtime")]
-    AppRuntime(AppRuntime),
     #[serde(rename = "boot.confirm")]
     BootConfirm(BootConfirm),
 }
@@ -171,7 +169,6 @@ impl Request {
             Self::Gc(_) => "gc",
             Self::Input(_) => "input",
             Self::AppInstall(_) => "app.install",
-            Self::AppRuntime(_) => "app.runtime",
             Self::BootConfirm(_) => "boot.confirm",
         }
     }
@@ -217,7 +214,6 @@ call! {
     Gc => GcResult,
     Input => InputResult,
     AppInstall => AppInstallResult,
-    AppRuntime => AppRuntimeResult,
     BootConfirm => BootConfirmResult,
 }
 
@@ -385,20 +381,6 @@ pub struct AppInstall {
     pub slot: String,
     /// An upload of the `.tapp` file, or a path to one inside the VM.
     pub source: LayerSource,
-    /// The runtime bundle a thin app was linked against, installed for the
-    /// slot user first when they lack its version: an upload of a tar of the
-    /// bundle directory's contents, or the bundle directory inside the VM.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime: Option<LayerSource>,
-}
-
-/// Whether the slot user already has runtime bundle `version`, so a thin
-/// app's runtime (hundreds of MB) is uploaded only when it is missing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AppRuntime {
-    pub slot: String,
-    /// The bundle version, as in `tilo-runtime/<version>`.
-    pub version: String,
 }
 
 /// After a reboot onto a newly installed kernel: report the running kernel
@@ -911,14 +893,6 @@ pub struct AppInstallResult {
     pub version: Option<String>,
     /// What tilo-install printed.
     pub output: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AppRuntimeResult {
-    pub slot: String,
-    pub version: String,
-    /// The slot user has `tilo-runtime/<version>` installed.
-    pub installed: bool,
 }
 
 // ---- streaming jobs ---------------------------------------------------------

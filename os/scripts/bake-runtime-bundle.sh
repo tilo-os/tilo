@@ -62,7 +62,7 @@ die() { printf '[bake-runtime-bundle] ERROR: %s\n' "$*" >&2; exit 1; }
 # 1. Locate the tilo-runtime-bundle binary.
 if [ -z "$BUNDLE_BIN" ]; then
     msg "building tilo-runtime-bundle (release)"
-    (cd "$REPO_DIR" && "${CARGO:-cargo}" build --release -p runtime-bundle)
+    (cd "$REPO_DIR" && cargo build --release -p runtime-bundle)
     BUNDLE_BIN="$REPO_DIR/target/release/tilo-runtime-bundle"
 fi
 if [ ! -x "$BUNDLE_BIN" ]; then

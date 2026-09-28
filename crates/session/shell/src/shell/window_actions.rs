@@ -348,6 +348,14 @@ pub enum MoveTabError {
     Pinned,
     /// The replicated document refused the mutation; nothing changed.
     DocumentRefused,
+    /// A room owner keeps that workspace's records, not this device.
+    HostedWorkspace,
+    /// The destination workspace does not let this app be opened there.
+    NotPermitted,
+    /// The window is already on its way somewhere.
+    AlreadyMoving,
+    /// Nobody is at this desktop to agree to what crosses.
+    NobodyToConfirm,
 }
 
 impl MoveTabError {
@@ -358,21 +366,55 @@ impl MoveTabError {
             MoveTabError::SameWorkspace => "window-move-same-workspace",
             MoveTabError::Pinned => "window-move-pinned",
             MoveTabError::DocumentRefused => "window-move-document-refused",
+            MoveTabError::HostedWorkspace => "window-move-hosted-workspace",
+            MoveTabError::NotPermitted => "window-move-not-permitted",
+            MoveTabError::AlreadyMoving => "window-move-already-moving",
+            MoveTabError::NobodyToConfirm => "window-move-nobody-to-confirm",
         })
     }
 }
 
-/// Move `tab_id` into workspace `target`, as a new window at the end of
-/// that workspace's current strip, tree first
-/// ([`crate::shell::state::WorkspaceTree::move_tab_across_strips`]) so the
-/// next resync takes it out of the strip it left.
+/// What asking to move a window did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoveOutcome {
+    /// A window the shell draws itself moved as it is.
+    Moved,
+    /// A client window crosses a sandbox boundary: the sheet asking what
+    /// crosses is up, and nothing has changed yet
+    /// ([`crate::shell::window_transfer`]).
+    AwaitingConsent,
+}
+
+/// Move `tab_id` into workspace `target`, preferring to move its document
+/// rather than copy it. See [`transfer_tab_to_workspace`].
+///
+/// # Errors
+///
+/// As [`transfer_tab_to_workspace`].
+pub fn move_tab_to_workspace(
+    st: &mut ChromeState,
+    tab_id: TabId,
+    target: crate::shell::state::WorkspaceId,
+) -> Result<MoveOutcome, MoveTabError> {
+    transfer_tab_to_workspace(
+        st,
+        tab_id,
+        target,
+        crate::shell::window_transfer::TransferMode::Move,
+    )
+}
+
+/// Take `tab_id` into workspace `target`.
+///
+/// A window the shell draws itself moves as it is, as a new window at the
+/// end of the destination's current strip, tree first
+/// ([`crate::shell::state::WorkspaceTree::move_tab_across_strips`]).
 ///
 /// The workspace is the sandbox boundary: a running client stays inside the
-/// sandbox, grants and collaborators of the workspace it was launched in. So
-/// a client window does not carry its process across. It lands as the app's
-/// durable record, which the launcher opens inside the destination's own
-/// sandbox and binds back into the same tab, and the old instance is asked
-/// to close. A window the shell draws itself moves as it is.
+/// sandbox, grants and collaborators of the workspace it was launched in, so
+/// a client window never crosses by itself. Its record and state are carried
+/// by [`crate::shell::window_transfer`] once the person agrees on the sheet
+/// this puts up, `preferred` being the answer it offers first.
 ///
 /// # Errors
 ///
@@ -380,14 +422,33 @@ impl MoveTabError {
 /// [`MoveTabError::UnknownWorkspace`] when `target` is gone or has no strip,
 /// [`MoveTabError::SameWorkspace`] when the tab is already there,
 /// [`MoveTabError::Pinned`] for a workspace's own history or a peer's
-/// window, and [`MoveTabError::DocumentRefused`] when the document refuses
-/// (nothing changed).
-pub fn move_tab_to_workspace(
+/// window, [`MoveTabError::DocumentRefused`] when the document refuses
+/// (nothing changed), and the transfer's own refusals for a client window.
+pub fn transfer_tab_to_workspace(
     st: &mut ChromeState,
     tab_id: TabId,
     target: crate::shell::state::WorkspaceId,
-) -> Result<(), MoveTabError> {
-    let surface = {
+    preferred: crate::shell::window_transfer::TransferMode,
+) -> Result<MoveOutcome, MoveTabError> {
+    let tile = st
+        .tree()
+        .desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .find(|tab| tab.id == tab_id)
+        .map(|tab| tab.tile.clone())
+        .ok_or(MoveTabError::UnknownTab)?;
+    if matches!(
+        tile,
+        TileContent::Foreign { .. } | TileContent::LocalApp { .. }
+    ) {
+        crate::shell::window_transfer::request(st, tab_id, target, preferred)?;
+        return Ok(MoveOutcome::AwaitingConsent);
+    }
+    {
         let mut tree = st.tree_mut();
         let (source, src_strip, tile) = tree
             .desktop
@@ -430,29 +491,6 @@ pub fn move_tab_to_workspace(
         let Some((dst_strip, gap_index)) = destination else {
             return Err(MoveTabError::UnknownWorkspace);
         };
-        let before = tree.desktop.workspaces.clone();
-        let surface = match tile {
-            TileContent::Foreign { app_id, surface_id } => {
-                let durable = crate::shell::persist::durable_app_id(surface_id, &app_id);
-                if let Some(tab) = tree
-                    .desktop
-                    .workspaces
-                    .iter_mut()
-                    .flat_map(|workspace| workspace.strips.iter_mut())
-                    .flat_map(|strip| strip.window_groups.iter_mut())
-                    .flat_map(|group| group.tabs.iter_mut())
-                    .find(|tab| tab.id == tab_id)
-                {
-                    tab.tile = TileContent::LocalApp {
-                        app_id: durable,
-                        label: tab.title.clone(),
-                        note: String::new(),
-                    };
-                }
-                Some(surface_id)
-            }
-            _ => None,
-        };
         if !tree.move_tab_across_strips(
             src_strip,
             dst_strip,
@@ -460,17 +498,11 @@ pub fn move_tab_to_workspace(
             crate::shell::state::next_id(),
             crate::shell::state::DropTarget::GroupGap { gap_index },
         ) {
-            tree.desktop.workspaces = before;
             return Err(MoveTabError::DocumentRefused);
         }
-        drop(tree);
-        surface
-    };
-    if let Some(surface_id) = surface {
-        st.request_surface_close(surface_id);
     }
     st.bump();
-    Ok(())
+    Ok(MoveOutcome::Moved)
 }
 
 /// Split `tab_id` into a new single-tab group in its own strip, tree first

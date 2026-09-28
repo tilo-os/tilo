@@ -279,6 +279,7 @@ impl NativeWorkspaceOwner {
         tree.native_runtime
             .publish(path, &tree.native_authority, &next.native_authority, &bytes)
             .map_err(|e| e.to_string())?;
+        persist::save_doc_for(&next, path, &bytes);
         *tree = next;
         Ok(())
     }
@@ -414,29 +415,9 @@ impl NativeWorkspaceOwner {
             });
         }
         publication::reserve(&candidate, &outgoing)?;
-        let before = candidate.peer.clone();
-        let outcome = candidate
+        candidate
             .peer
-            .admit_local_app_document(&app, &record, *envelope, now)?;
-        if outcome.deferred
-            || outcome.incomplete.is_some()
-            || outcome.rejected != 0
-            || outcome.duplicate
-        {
-            return Err("native local document lacks a newly admitted exact receipt".into());
-        }
-        let admissions = candidate
-            .peer
-            .admissions_since(&before)
-            .map_err(|e| e.to_string())?;
-        if !admissions.iter().any(|entry| {
-            entry.room() == room.to_string()
-                && entry.app() == app
-                && entry.record() == record
-                && entry.author() == device
-        }) {
-            return Err("native local document has no exact admission evidence".into());
-        }
+            .admit_new_local_document(&app, &record, *envelope, now)?;
         publication::append_local(&mut candidate, outgoing)?;
         candidate.record.peer = candidate.peer.durable()?;
         candidate.record.generation = candidate

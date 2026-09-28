@@ -444,3 +444,135 @@ fn temporary_profiles_outlive_hosts_until_the_last_writer_is_released() {
         );
     }
 }
+
+/// Notes in one workspace's profile, as the launcher gives it that room.
+fn room_host(f: &LegacyFixture, profile: &ui::application::NativeProfile) -> ApplicationHost {
+    ApplicationHost::new(
+        f.state_root.clone(),
+        profile.device_id().into(),
+        profile.workspace_id(),
+        f.author.clone(),
+        f.authority.clone(),
+        tilo_actions::ActionContext::default(),
+    )
+    .unwrap()
+}
+
+/// Notes as launched in `host`'s room, and the existing record it opened
+/// (`None` when it started a new one).
+fn driver(
+    host: &mut ApplicationHost,
+    instance: u64,
+) -> (Driver, RecordStore, Option<ui::record::RecordCheckout>) {
+    let prepared = hosting::prepare_default(host, instance, None, runner_inputs()).unwrap();
+    let target = match &prepared.target {
+        LaunchTarget::Record { checkout, .. } => Some(checkout.clone()),
+        _ => None,
+    };
+    let records = host.records_for(notes::definition()).unwrap();
+    let component = notes::definition()
+        .instantiate(prepared.context, prepared.target, prepared.restore)
+        .unwrap();
+    (
+        Driver::from_component(component, (1000, 700), prepared.runner_inputs).unwrap(),
+        records,
+        target,
+    )
+}
+
+#[test]
+fn a_notebook_carried_to_another_workspace_opens_there_and_its_old_room_starts_fresh() {
+    use ui::record::transfer;
+    const HOME: &str = "3f2b1c00-0000-4000-8000-0000000000a1";
+    const ELSEWHERE: &str = "3f2b1c00-0000-4000-8000-0000000000b2";
+    const INSTANCE: u64 = 301;
+    let f = LegacyFixture::rich();
+    let checkout = hosting::default_notebook();
+    let home = ui::application::NativeProfile::open(&f.state_root, Some(HOME)).unwrap();
+    let elsewhere = ui::application::NativeProfile::open(&f.state_root, Some(ELSEWHERE)).unwrap();
+
+    let mut owner = room_host(&f, &home);
+    let (mut live, records, _) = driver(&mut owner, INSTANCE);
+    invoke(
+        &mut live,
+        INSTANCE,
+        "notes.notebook",
+        "new-page",
+        Some("Carried"),
+    );
+    live.type_text("Across the boundary");
+    let page = records
+        .read(&checkout.id, |doc| {
+            notes::notebook::project(doc, None).unwrap().pages()[0].id
+        })
+        .unwrap();
+    close_driver(&mut live);
+    drop((live, records, owner));
+
+    // What the shell does when the window moves: the notebook and its
+    // history cross under a fresh id, the presentation follows, and the
+    // source is retired.
+    let origin = transfer::Origin::Record(checkout.clone());
+    let snapshot = transfer::read(
+        home.store(),
+        notes::definition().app_id,
+        home.workspace_id(),
+        &origin,
+    )
+    .unwrap();
+    let mut arrived = transfer::rehome(
+        &snapshot,
+        &origin,
+        home.workspace_id(),
+        elsewhere.workspace_id(),
+        &ui::record::RecordId::minted(),
+    )
+    .unwrap();
+    let carried = transfer::install(
+        elsewhere.store(),
+        notes::definition().app_id,
+        elsewhere.workspace_id(),
+        &mut arrived,
+    )
+    .unwrap();
+    let view = home
+        .saved_view(INSTANCE)
+        .unwrap()
+        .expect("Notes saved where it was");
+    elsewhere.adopt_view(&view, INSTANCE, &carried).unwrap();
+    transfer::retire(
+        home.store(),
+        notes::definition().app_id,
+        home.workspace_id(),
+        &origin,
+        &transfer::Retirement::Moved(None),
+    )
+    .unwrap();
+
+    let mut there = room_host(&f, &elsewhere);
+    let (mut moved, records, target) = driver(&mut there, INSTANCE);
+    assert_eq!(
+        target.as_ref(),
+        Some(&carried),
+        "the moved window opens the notebook it brought"
+    );
+    moved
+        .expect(&SemanticExpectation::named("note_title").value("Carried"))
+        .unwrap();
+    let blocks = records
+        .read(&carried.id, |doc| NotesDoc::page_block_snapshots(doc, page))
+        .unwrap();
+    assert_eq!(blocks[0].1, "Across the boundary");
+    close_driver(&mut moved);
+    drop((moved, records, there));
+
+    // The old workspace's Notes never reopens the notebook that left.
+    let mut back = room_host(&f, &home);
+    let (mut fresh, records, target) = driver(&mut back, INSTANCE + 1);
+    assert_eq!(target, None, "a new notebook starts in its place");
+    assert!(matches!(
+        records.try_open_record(&checkout),
+        Err(RecordOpenError::Retired)
+    ));
+    close_driver(&mut fresh);
+}

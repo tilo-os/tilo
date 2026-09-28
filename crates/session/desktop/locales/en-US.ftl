@@ -389,7 +389,7 @@ activity-capability-every-type = every { $kind }
 activity-capability-one-artifact = one artifact
 activity-capability-one-shared-file = one shared file
 activity-capability-network = network { $host }
-activity-capability-agent = operating the agent { $agent }
+activity-capability-scope-agent = operating the agent { $agent }
 activity-capability-role = { $role ->
         [owner] owners
         [editor] editors
@@ -412,13 +412,13 @@ desktop-view-review-activity = Review workspace activity
 desktop-view-explore-activity = Explore workspace activity
 desktop-view-replay-activity = Replay workspace activity
 
-
 ## Desktop window search
 search-provider-desktop-windows = Desktop windows
 search-badge-tab = Tab
 search-badge-window-group = Window group
 search-window-move-tab = Move tab “{ $tab }” to workspace “{ $workspace }”
 search-window-move-tab-detail = App { $app } · from workspace “{ $workspace }” · group { $group } · tab { $tab }
+search-window-copy-tab = Copy tab “{ $tab }” to workspace “{ $workspace }”
 search-window-group-untitled = Window group { $group }
 search-window-close-group = Close window group “{ $group }”
 search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ $strip }” · group { $group } · { $count ->
@@ -427,3 +427,467 @@ search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ 
 }
 search-window-close-tab = Close tab “{ $tab }”
 search-window-close-tab-detail = App { $app } · workspace “{ $workspace }” · strip “{ $strip }” · group { $group } · tab { $tab }
+
+# Notifications: banner stack and notification centre
+drill-in-back = Back
+a11y-notifications-none = No retained notifications.
+a11y-notifications-description = Showing newest rows { $first } through { $last } of { $total }, grouped by app. Use Up and Down to select a notification, Page Up and Page Down to move a screen, and Home or End to jump to the newest or oldest retained notification. Enter opens the selected notification or folds its app group, and Delete dismisses it.
+a11y-notifications-list = Retained notifications
+a11y-notifications-clear = Clear all notifications
+a11y-notifications-clear-description = Delete this session's retained notification history. An Undo action remains available for eight seconds.
+a11y-notifications-cleared = Notifications cleared
+a11y-notifications-undo = Undo clear notifications
+a11y-notifications-undo-description = Restore the cleared notifications in their original order. Press Enter or Space.
+a11y-notifications = Notifications
+notification-center-title = Notifications
+notification-center-empty = No recent notifications
+notification-center-cleared = Notifications cleared
+notification-center-clear-all = Clear all
+notification-center-position = Newest { $first }–{ $last } of { $total }
+notification-center-count = { $count ->
+        [one] { $count } notification
+       *[other] { $count } notifications
+    }
+notification-center-newer = ↑ Newer
+notification-center-at-newest = At newest
+notification-center-older = ↓ Older
+notification-center-at-oldest = At oldest
+history-severity-info = Information
+history-severity-warning = Warning
+history-severity-error = Error
+history-source-system = System
+history-notification-description = { $severity }. From { $source }. { $time }
+history-notification-description-body = { $severity }. From { $source }. { $time }. { $body }
+notification-center-group-description = { $count } notifications. Press Enter to { $expanded ->
+        [yes] collapse
+       *[no] expand
+    }, Delete to dismiss them all.
+notification-center-dismiss-all = Dismiss all from { $app }
+notification-center-dismiss = Dismiss
+notification-center-hand-to = Hand to { $agent }
+notification-center-hand-to-description = Give this notification to the workspace agent as a task.
+notification-center-group-count = { $count ->
+        [one] { $count } notification
+       *[other] { $count } notifications
+    }
+notification-lock-count = { $count ->
+    [one] 1 notification
+   *[other] { $count } notifications
+}
+notification-dnd-held = { $status } · { $count } held
+notification-stack-a11y = Notifications
+notification-group-system = System
+notification-center-undo = Undo
+notification-app-failed-title = Couldn't open an app
+notification-service-unavailable = This isn't available on this desktop yet
+
+# Workspace settings
+workspace-settings-roles-resource = { $workspace } permission roles
+workspace-settings-role-save = Create or update permission role
+workspace-settings-role-save-placeholder = Role name
+workspace-settings-role-save-description = Save a reusable least-privilege role made from app, action, file, resource, or workspace capability rules.
+workspace-settings-role-assign = Assign permission role
+workspace-settings-role-assign-placeholder = Role and collaborator
+workspace-settings-role-assign-description = Assign a saved least-privilege role to a person, application, or agent.
+workspace-settings-role-assign-named = Assign { $role }
+workspace-settings-role-assign-named-placeholder = Collaborator identity
+workspace-settings-app-action-placeholder = App and action
+workspace-settings-app-action-grant = Let an app use another app's action
+workspace-settings-app-action-grant-description = Grant one application the use of one action another application publishes, in this workspace.
+workspace-settings-app-action-revoke = Stop an app using another app's action
+workspace-settings-app-action-revoke-description = Take back every grant letting one application use another application's action in this workspace.
+workspace-settings-ownership-resource = { $workspace } ownership
+workspace-settings-ownership-propose = Propose ownership transfer
+workspace-settings-ownership-propose-placeholder = Recipient identity
+workspace-settings-ownership-propose-description = Your signature authorizes ownership to transfer immediately if this exact administrator accepts before expiry.
+workspace-settings-ownership-accept = Accept workspace ownership
+workspace-settings-ownership-accept-description = Acceptance immediately transfers ownership; generic role controls cannot perform this action.
+workspace-settings-ownership-accept-phrase = Accept ownership
+workspace-settings-ownership-cancel = Cancel ownership transfer
+workspace-settings-ownership-cancel-description = Cancel the pending offer before the recipient accepts it.
+workspace-settings-title = Workspace Settings
+workspace-settings-close = Close Settings
+workspace-settings-tab-general = General
+workspace-settings-tab-people = People
+workspace-settings-tab-agents = Agents
+workspace-settings-tab-privacy-security = Privacy & Security
+workspace-settings-tab-privacy = Privacy
+workspace-settings-tab-apps-files = Apps & Files
+workspace-settings-tab-apps = Apps
+workspace-settings-close-hint = Press Esc to close
+workspace-settings-edit-hint = Enter to save · Esc to cancel
+workspace-settings-role-owner = Owner
+workspace-settings-role-editor = Editor
+workspace-settings-role-commenter = Commenter
+workspace-settings-role-viewer = Viewer
+workspace-settings-role-blocked = Blocked
+workspace-settings-role-admin = Admin
+workspace-settings-role-guest = Guest
+workspace-settings-role-owner-preview = Can manage people, permissions, and workspace settings.
+workspace-settings-role-editor-preview = Can view, comment on, and edit shared work.
+workspace-settings-role-commenter-preview = Can view shared work and add comments, but cannot edit it.
+workspace-settings-role-viewer-preview = Can view shared work, but cannot comment or edit it.
+workspace-settings-role-blocked-preview = Cannot access this workspace.
+workspace-settings-scope-workspace = this workspace
+workspace-settings-scope-app = the { $app } app
+workspace-settings-scope-workspace-files = workspace files
+workspace-settings-scope-workspace-folder = “{ $folder }” in this workspace
+workspace-settings-scope-path = files under { $path }
+workspace-settings-scope-record = one shared file ({ $id })
+workspace-settings-scope-agent = operating the agent { $agent }
+workspace-settings-scope-camera = the camera
+workspace-settings-scope-microphone = the microphone
+workspace-settings-scope-screencast = screen capture
+workspace-settings-scope-remote-desktop = remote pointer + keyboard
+workspace-settings-scope-any-host = any network host
+workspace-settings-scope-host = network host { $host }
+workspace-settings-scope-action = “{ $action }” in { $app }
+workspace-settings-scope-resource-type = { $kind ->
+    [note] every note
+    [file] every file
+    [cluster] every saved cluster
+    [kanban] every board
+   *[chat-log] every chat log
+}
+workspace-settings-scope-resource-instance = one document ({ $id })
+workspace-settings-scope-workspace-object = this workspace
+workspace-settings-scope-app-object = the { $app } app
+workspace-settings-scope-workspace-files-object = workspace files
+workspace-settings-scope-workspace-folder-object = “{ $folder }” in this workspace
+workspace-settings-scope-path-object = files under { $path }
+workspace-settings-scope-record-object = one shared file ({ $id })
+workspace-settings-scope-agent-object = operating the agent { $agent }
+workspace-settings-scope-camera-object = the camera
+workspace-settings-scope-microphone-object = the microphone
+workspace-settings-scope-screencast-object = screen capture
+workspace-settings-scope-remote-desktop-object = remote pointer + keyboard
+workspace-settings-scope-any-host-object = any network host
+workspace-settings-scope-host-object = network host { $host }
+workspace-settings-scope-action-object = “{ $action }” in { $app }
+workspace-settings-scope-resource-type-object = { $kind ->
+    [note] every note
+    [file] every file
+    [cluster] every saved cluster
+    [kanban] every board
+   *[chat-log] every chat log
+}
+workspace-settings-scope-resource-instance-object = one document ({ $id })
+workspace-settings-allows-control = Control { $what }
+workspace-settings-allows-use = Use { $what }
+workspace-settings-allows-reach = Reach { $what }
+workspace-settings-allows-run = Run { $what }
+workspace-settings-allows-administer = Administer { $what }
+workspace-settings-allows-edit = Edit { $what }
+workspace-settings-allows-comment = Comment on { $what }
+workspace-settings-allows-invite = Invite others to { $what }
+workspace-settings-allows-view = View { $what }
+workspace-settings-expiry-once = Once
+workspace-settings-expiry-session = Session
+workspace-settings-expiry-until = Until
+workspace-settings-expiry-always = Always
+workspace-settings-granted-by-person = granted by { $id }
+workspace-settings-granted-by-app = granted by the { $app } app
+workspace-settings-granted-by-agent = granted by agent { $id }
+workspace-settings-granted-by-token = granted by token { $id }
+workspace-settings-granted-by-workspace = granted by workspace { $id }
+workspace-settings-permission-detail = { $allows } · { $grantor }
+workspace-settings-section-apps = Apps
+workspace-settings-section-app-actions = App actions
+workspace-settings-section-people = People
+workspace-settings-section-agents = Agents
+workspace-settings-section-roles = Roles
+workspace-settings-section-other = Other
+workspace-settings-subject-role = everyone with { $role }
+workspace-settings-subject-token = token { $id }
+workspace-settings-subject-workspace = workspace { $id }
+workspace-settings-grant-camera = Camera
+workspace-settings-grant-microphone = Microphone
+workspace-settings-grant-screencast = Screen capture
+workspace-settings-grant-remote-control = Remote control
+workspace-settings-grant-network = Network access
+workspace-settings-grant-read-files = Read workspace files
+workspace-settings-grant-edit-files = Edit workspace files
+workspace-settings-grant-create-roles = Create permission roles
+workspace-settings-grant-assign-roles = Assign permission roles
+workspace-settings-preset-observer = Observer
+workspace-settings-preset-contributor = Contributor
+workspace-settings-preset-operator = Operator
+workspace-settings-preset-custom = Custom
+workspace-settings-preset-observer-hint = Read only on surfaces you select
+workspace-settings-preset-contributor-hint = Read/write only on surfaces you select
+workspace-settings-preset-operator-hint = Run only approved app actions
+workspace-settings-preset-custom-hint = Review every scoped permission
+workspace-settings-members-count = { $count ->
+    [one] 1 person shares this workspace
+   *[other] { $count } people share this workspace
+}
+workspace-settings-members-help = Removing someone blocks future sync and edits; copies already downloaded stay with them.
+workspace-settings-ownership = Ownership
+workspace-settings-you-manage = You manage
+workspace-settings-view-only = View only
+workspace-settings-members-empty-title = No one else is in this workspace
+workspace-settings-members-empty-detail = Create a signed invite from the General tab to add someone.
+workspace-settings-people-header = PEOPLE
+workspace-settings-ownership-offered = { $owner } offered you ownership. Review the workspace and explicitly accept before the offer expires.
+workspace-settings-ownership-waiting = Waiting for { $recipient } to explicitly accept ownership. You can cancel until acceptance.
+workspace-settings-ownership-pending = Ownership transfer to { $recipient } is awaiting that person's acceptance.
+workspace-settings-you = You
+workspace-settings-member-detail = { $count ->
+    [0] { $role } · no extra permissions
+    [one] { $role } · 1 extra permission
+   *[other] { $role } · { $count } extra permissions
+}
+workspace-settings-remove = Remove
+workspace-settings-owner-only = Only the workspace owner can change permissions.
+workspace-settings-agents-count = { $count ->
+    [one] 1 agent collaborator
+   *[other] { $count } agent collaborators
+}
+workspace-settings-agents-help = Agents are visibly non-human collaborators. Admission grants no ambient workspace power.
+workspace-settings-add-agent = Add agent
+workspace-settings-recording-toggle = Members may record
+workspace-settings-agent-delegated = Records for a member · controlled by “Members may record”
+workspace-settings-add-triage-agent = Add the triage agent
+workspace-settings-agent-triage-note = The Tilo team’s triage agent helps sort reports here
+workspace-settings-triage-direct-rooms = Triage in direct rooms
+workspace-settings-agents-empty-title = No agents have access
+workspace-settings-agents-empty-detail = Start with a safe profile, then review each exact surface.
+workspace-settings-agents-header = AGENTS
+workspace-settings-service-member = Service member · { $access ->
+    [admin] administers
+    [write] reads and edits
+    [comment] reads and comments
+   *[read] reads
+} end-to-end encrypted content · { $until } · device { $device }
+workspace-settings-service-until-removed = until removed
+workspace-settings-service-ends-soon = access ends within a minute
+workspace-settings-service-ends-minutes = access ends in { $minutes } min
+workspace-settings-service-ends-hours = access ends in { $hours } h
+workspace-settings-badge-service = SERVICE
+workspace-settings-badge-agent = AGENT
+workspace-settings-agent-detail = { $count ->
+    [0] { $admission } · no scoped permissions — review required
+    [one] { $admission } · { $profile } profile · 1 scoped permission
+   *[other] { $admission } · { $profile } profile · { $count } scoped permissions
+}
+workspace-settings-admitted = Admitted
+workspace-settings-review-access = Review access
+workspace-settings-revoke = Revoke
+workspace-settings-admission-admin = Admin admission
+workspace-settings-admission-write = Write admission
+workspace-settings-admission-comment = Comment admission
+workspace-settings-admission-read = Read admission
+workspace-settings-unavailable-app = Unavailable app
+workspace-settings-apps-empty-title = No file handlers installed
+workspace-settings-apps-empty-detail = Apps appear here after they declare supported file types.
+workspace-settings-apps-intro-title = Defaults without lock-in
+workspace-settings-apps-intro-detail = The workspace supplies a baseline; each person can explicitly choose something else.
+workspace-settings-apps-header = DEFAULT APPLICATIONS
+workspace-settings-workspace-choice = Workspace choice
+workspace-settings-your-choice = Your choice
+workspace-settings-follow-personal = Follow personal defaults
+workspace-settings-use-workspace-choice = Use workspace choice
+workspace-settings-use-personal-default = Use my personal default
+workspace-settings-apps-file-types = { $count ->
+    [one] 1 file type
+   *[other] { $count } file types
+}
+workspace-settings-apps-custom-rules = { $count ->
+    [one] 1 custom rule
+   *[other] { $count } custom rules
+}
+workspace-settings-permissions-intro-title = Access is explicit and revocable
+workspace-settings-permissions-intro-detail = Grants are enforced by the app sandbox and stay scoped to this workspace.
+workspace-settings-active-grants = { $count ->
+    [one] 1 active grant
+   *[other] { $count } active grants
+}
+workspace-settings-permissions-empty-title = No permissions granted
+workspace-settings-permissions-empty-detail = Apps get nothing until it is granted here or approved in a prompt.
+workspace-settings-more = +{ $count } more
+workspace-settings-who = Who
+workspace-settings-who-agent = Who · AGENT (only this surface; no ambient workspace access)
+workspace-settings-nobody-to-grant = Nobody to grant to yet — invite someone, or open an app here.
+workspace-settings-what-it-allows = What it allows
+workspace-settings-grant-header = GRANT A PERMISSION
+workspace-settings-saved-roles = { $count ->
+    [one] 1 SAVED ROLE · MANAGE
+   *[other] { $count } SAVED ROLES · MANAGE
+}
+workspace-settings-expiry-caption = Until
+workspace-settings-grant = Grant
+workspace-settings-role-sheet-title = Choose workspace access
+workspace-settings-role-sheet-description = { $person } is currently { $role }. Choose exactly what they can do.
+workspace-settings-remove-sheet-title = Remove this person?
+workspace-settings-remove-sheet-description = They will stop receiving future sync and edits. Downloaded copies remain on their devices.
+workspace-settings-revoke-sheet-title = Revoke this permission?
+workspace-settings-revoke-sheet-description = The selected capability will stop applying immediately. Review its activity first if you are unsure.
+workspace-settings-keep-access = Keep access
+workspace-settings-review-activity = Review activity first
+workspace-settings-remove-person = Remove person
+workspace-settings-no-changes = No changes are made.
+workspace-settings-open-history = Open workspace history before deciding.
+workspace-settings-remove-person-detail = This removes their workspace capabilities.
+workspace-settings-keep-permission = Keep permission
+workspace-settings-revoke-permission = Revoke permission
+workspace-settings-revoke-permission-detail = This removes the selected capability immediately.
+workspace-settings-workspace-fallback = Workspace
+workspace-settings-identity-caption = Workspace · { $role }
+workspace-settings-current-workspace = CURRENT WORKSPACE
+workspace-settings-role-policy-line = { $role } · Settings and policy stay with this workspace
+workspace-settings-identity-title = Workspace identity
+workspace-settings-identity-description = This name appears in the top bar, invites, and shared activity.
+workspace-settings-rename-admin-only = Only a workspace administrator can rename this workspace.
+workspace-settings-invite-hint = Choose a person and role; Tilo signs a one-hour invite.
+workspace-settings-invite-admin-only = Only a governing administrator can create workspace invites.
+workspace-settings-invite-create = Create
+workspace-settings-invite-title = Invite people
+workspace-settings-invite-description = Invites bind the workspace, recipient role, expiry and this device's identity.
+workspace-settings-glance-title = At a glance
+workspace-settings-stat-members = { $count ->
+    [one] member
+   *[other] members
+}
+workspace-settings-stat-grants = { $count ->
+    [one] specific grant
+   *[other] specific grants
+}
+workspace-settings-stat-app-rules = { $count ->
+    [one] app rule
+   *[other] app rules
+}
+
+# People popover
+a11y-shell-people = People
+a11y-shell-people-description = Live workspace presence, current activity, intent, and status privacy controls
+a11y-shell-people-screen-visible = Screen visible now: { $exposure }
+a11y-shell-people-here-now = People here now
+a11y-shell-people-agent = Agent
+a11y-shell-people-invited = Invited, not currently present
+a11y-shell-people-present = Present now
+a11y-shell-people-now = Now: { $activity }
+a11y-shell-people-intent = Intent: { $status }
+a11y-shell-people-intent-inferred = Intent, inferred: { $status }
+a11y-shell-status-name = Your collaboration status
+a11y-shell-status-inferred = Inferred on this device from recent semantic actions
+a11y-shell-status-set = Set what you are trying to accomplish
+a11y-shell-status-automatic = Automatic status
+a11y-shell-status-manual = Manual status only
+a11y-shell-status-off = Hide status
+a11y-shell-status-automatic-description = Infer a short status locally from recent workspace actions
+a11y-shell-status-manual-description = Share only text you enter yourself
+a11y-shell-status-off-description = Publish no status to this workspace
+a11y-shell-follow-collaborator = Follow collaborator
+a11y-shell-follow = Follow { $name }
+a11y-shell-follow-description = Mirror this participant's live workspace view
+a11y-shell-people-previous = Previous people
+a11y-shell-people-previous-description = Show the previous people in this workspace
+a11y-shell-people-next = Next people
+a11y-shell-people-next-description = Show the next people in this workspace
+a11y-shell-invite = Invite people
+a11y-shell-invite-description = Create an authenticated workspace invitation
+a11y-shell-join = Join workspace
+a11y-shell-join-description = Connect using an authenticated invitation
+a11y-shell-workspace-activity-description = Review grouped outcomes and what happened while you were away
+
+# Empty-workspace launchpad
+launchpad-title = Make something together
+launchpad-description = Choose a shared conversation, notes, tasks, meeting, invitation, or workspace activity.
+launchpad-open-app = Open an app
+launchpad-discuss = Discuss
+launchpad-notes = Notes
+launchpad-tasks = Tasks
+launchpad-meet = Plan a meeting
+launchpad-invite = Invite people
+launchpad-activity = Catch up
+launchpad-discuss-detail = Open the shared conversation
+launchpad-notes-detail = Write ideas together
+launchpad-tasks-detail = Plan work in Calendar
+launchpad-meet-detail = Open Chat, then start a voice or video call
+launchpad-invite-detail = Bring someone into this workspace
+launchpad-activity-detail = See what changed and why
+
+# Empty-workspace launchpad: the keyboard hint under the cards
+launchpad-keyboard-hint = Arrow keys move  ·  Enter opens  ·  Super+N shows every app
+
+# Peers arriving in and leaving a workspace, batched into one toast
+peer-toast-joined-one = { $name } joined
+peer-toast-left-one = { $name } left
+peer-toast-joined-many = { $count } peers joined
+peer-toast-left-many = { $count } peers left
+peer-toast-overflow = { $first }, { $second }, { $third }, +{ $rest } more
+
+# Moved from the shell catalogue with the code that uses them
+people-panel-here-now = { $count } here now
+people-panel-screen-visible = Screen visible now
+people-panel-only-you = Only you are here
+people-panel-status-typing = Type a status, then press Enter
+people-panel-status-empty = Set what you're working toward…
+people-panel-own-status = You · { $status }
+people-panel-sharing-auto = ✦ Auto
+people-panel-sharing-manual = Manual
+people-panel-sharing-hidden = Hidden
+people-panel-agent-tag = agent
+people-panel-invited-tag = invited
+people-panel-following = Following
+people-panel-following-activity = Following · { $activity }
+people-panel-viewing = Viewing { $title }
+people-panel-follow = Follow
+people-panel-stop-following = Stop
+people-panel-invite = Invite
+people-panel-join = Join
+launchpad-subtitle = Choose how to begin. Workspace content syncs; your layout and controls stay local.
+workspace-settings-sheet-keyboard-hint = ↑ ↓ to choose · Enter to confirm · Esc to cancel
+
+# The emoji picker (Super+. by default)
+emoji-picker-title = Emoji
+emoji-picker-search = Search emoji
+emoji-picker-groups = Emoji categories
+emoji-picker-recent = Recently used
+emoji-picker-results = Matching emoji
+emoji-picker-no-results = No emoji found
+emoji-picker-hint = Enter inserts · Esc closes
+emoji-picker-hint-tones = Enter inserts · Shift+Enter picks a skin tone
+emoji-picker-tones = Skin tones
+emoji-picker-tones-hint = Right-click, long-press or Shift+Enter for skin tones
+emoji-picker-a11y-description = Type to search. The arrow keys move between emoji, Tab changes the category, Enter inserts the highlighted emoji into the text field you were typing in, Shift+Enter picks a skin tone, Escape closes.
+
+# An emoji in a skin tone: "thumbs up, medium skin tone".
+emoji-picker-toned = { $name }, { $tone }
+emoji-picker-tone-light = light skin tone
+emoji-picker-tone-medium-light = medium-light skin tone
+emoji-picker-tone-medium = medium skin tone
+emoji-picker-tone-medium-dark = medium-dark skin tone
+emoji-picker-tone-dark = dark skin tone
+
+# The Alt+Tab window switcher.
+window-switcher-title = Switch windows
+window-switcher-description = Windows in this workspace, most recently used first. Hold Alt and press Tab or the arrow keys to move, release Alt to switch, or press Escape to stay.
+window-switcher-app-title = Switch windows of this app
+window-switcher-app-description = This app's windows in this workspace, most recently used first. Hold Alt and press ` to move, release Alt to switch, or press Escape to stay.
+window-switcher-untitled = Untitled window
+window-switcher-caption-paged = { $title } ({ $position } of { $count })
+
+# Workspace wheel
+a11y-shell-wheel = Workspace wheel
+a11y-shell-wheel-switch = Switch to { $workspace }
+a11y-shell-wheel-add = Add a workspace
+
+# Workspace overview
+overview-empty-window = Empty window
+overview-untitled = Untitled
+overview-access-nobody = No one has access
+overview-access-private = Private to you
+overview-access-one = Shared with { $name }
+overview-access-two = Shared with { $name } and { $other }
+overview-access-many = Shared with { $name } and { $count } others
+overview-shares = { $count ->
+        [one] 1 item shared
+       *[other] { $count } items shared
+    }
+overview-presence-you = You are here
+overview-presence-you-and-one = You and { $name } are here
+overview-presence-you-and-many = You and { $count } others are here
+overview-presence-one = { $name } is here
+overview-presence-many = { $count } people are here
+overview-collaborators-here = { $count } collaborators are here

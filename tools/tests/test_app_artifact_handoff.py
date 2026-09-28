@@ -34,6 +34,7 @@ class AppArtifactHandoffTests(unittest.TestCase):
             "tools/ci/__init__.py", "tools/ci/workspace_graph.py",
             "tools/apps/assemble_app_collection.py",
             "apps/calculator/Cargo.toml", "apps/calculator/tilo-app.toml",
+            "crates/packaging/tilo-app-package/max-app-bytes",
             "tools/apps/dev_app_versions.py", "dist/apps/app-collections.toml", ".cargo/config.toml", "tools/apps/app_package_isa.py",
         ):
             self.write(relative, (ROOT / relative).read_text())
@@ -140,7 +141,7 @@ exit 99
             self.assertIn("application tapp is too large", result.stderr)
             self.assertIn("pack failed: app=calculator output=", result.stderr)
             self.assertIn("calculator-0.1.0-x86_64.tapp", result.stderr)
-            self.assertIn("exit_status=37 binary_bytes=64 limit=5242880", result.stderr)
+            self.assertIn("exit_status=37 binary_bytes=64 limit=8388608", result.stderr)
             self.assertNotIn("verify must not run", result.stderr)
             self.assertNotIn("packed app=", result.stdout)
         with self.subTest(phase='missing source isa is staged before pack on both architectures'):
@@ -220,7 +221,7 @@ exit 99
                     self.assertIn("packing app=calculator binary=", result.stdout)
                     self.assertIn("binary_bytes=64", result.stdout)
                     self.assertIn("packed app=calculator output=", result.stdout)
-                    self.assertIn("tapp_bytes=64 limit=5242880", result.stdout)
+                    self.assertIn("tapp_bytes=64 limit=8388608", result.stdout)
                     calls = [json.loads(line) for line in (self.root / "cargo.log").read_text().splitlines()]
                     self.assertTrue(any("--release" in call["args"] for call in calls))
                     self.assertTrue(any("thin-app" in call["args"] for call in calls))

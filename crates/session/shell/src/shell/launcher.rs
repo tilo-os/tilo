@@ -427,58 +427,7 @@ static TRUSTED_IDENTITY_PROJECTIONS: LazyLock<
     Mutex<std::collections::HashMap<RoomId, tilo_user_identity::TrustedIdentityProjectionV2>>,
 > = LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
-/// One installed application the launcher can start.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InstalledApp {
-    /// Reverse-DNS package id — the identity `tilo-install` records.
-    pub package_id: String,
-    /// Human-facing name — the manifest's `[package].name`, or derived
-    /// from the package id's trailing component when unset.
-    pub display_name: String,
-    /// The manifest's `[package].category`, when declared; matched by
-    /// the Applications search provider.
-    pub category: Option<String>,
-    pub version: String,
-    pub manifest_path: PathBuf,
-    pub payload_root: PathBuf,
-    /// Whether the package declares a GUI entrypoint; CLI-only packages
-    /// have no window, so the applications list hides them.
-    pub has_gui: bool,
-    /// The manifest's `[providers].ext` — file extensions this package
-    /// opens (lowercased, no leading dot). The desktop's only answer to
-    /// "which app owns `.odt`": installing an app is what teaches the
-    /// desktop its file types.
-    pub opens_extensions: Vec<String>,
-    /// Concrete normalized MIME claims from `[providers].mime`.
-    pub opens_mime_types: Vec<String>,
-    /// Normalized URI schemes from `[providers].schemes`.
-    pub opens_uri_schemes: Vec<String>,
-}
-
-impl InstalledApp {
-    /// Whether this package declares it opens `ext` (case-insensitive,
-    /// leading dot tolerated).
-    pub fn opens_extension(&self, ext: &str) -> bool {
-        let want = ext.trim().trim_start_matches('.').to_ascii_lowercase();
-        !want.is_empty() && self.opens_extensions.contains(&want)
-    }
-
-    pub fn opens_mime(&self, mime: &str) -> bool {
-        desktop_policy::ResourceKind::mime(mime).is_ok_and(|resource| {
-            resource
-                .mime_name()
-                .is_some_and(|mime| self.opens_mime_types.iter().any(|claim| claim == mime))
-        })
-    }
-
-    pub fn opens_scheme(&self, scheme: &str) -> bool {
-        desktop_policy::ResourceKind::scheme(scheme).is_ok_and(|resource| {
-            resource
-                .scheme_name()
-                .is_some_and(|scheme| self.opens_uri_schemes.iter().any(|claim| claim == scheme))
-        })
-    }
-}
+pub use tilo_installed_apps::InstalledApp;
 
 /// Why a launch could not be started, before any fork. Failures after
 /// the fork arrive asynchronously as a [`LaunchEvent`].
@@ -903,8 +852,8 @@ static APP_CACHE_REVISION: AtomicU64 = AtomicU64::new(0);
 /// the safe default: an app launched before publish gets manifest-only.
 static WORKSPACE_CAPABILITIES: Mutex<Vec<CapOverride>> = Mutex::new(Vec::new());
 /// Resume bytes waiting for the user-directed launch of one dormant tab.
-type ContinuationResumePayload = Option<(u16, Vec<u8>)>;
-type StagedContinuationResume = (ContinuationResumePayload, u64);
+pub type ContinuationResumePayload = Option<(u16, Vec<u8>)>;
+pub type StagedContinuationResume = (ContinuationResumePayload, u64);
 
 static PENDING_CONTINUATION_RESUME: LazyLock<
     Mutex<HashMap<(RoomId, u64), StagedContinuationResume>>,
@@ -1209,43 +1158,9 @@ pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
         user_store = ?package_store::layout::default_user_root(),
         "reading installed application registry"
     );
-    let entries = package_store::list_installed().map_err(|e| LaunchError::RegistryUnreadable {
+    tilo_installed_apps::read_from_env().map_err(|e| LaunchError::RegistryUnreadable {
         detail: e.to_string(),
-    })?;
-    let mut out = Vec::with_capacity(entries.len());
-    for entry in entries {
-        // A missing manifest (payload deleted behind the registry's
-        // back) is skipped, not a failure of the whole enumeration.
-        let Ok(manifest) = launcher::manifest::read_manifest(&entry.manifest_path) else {
-            continue;
-        };
-        let package_id = if manifest.package_id.is_empty() {
-            entry.id.clone()
-        } else {
-            manifest.package_id.clone()
-        };
-        out.push(InstalledApp {
-            display_name: manifest
-                .name
-                .clone()
-                .filter(|n| !n.trim().is_empty())
-                .unwrap_or_else(|| display_name_for_package_id(&package_id)),
-            category: manifest.category.clone().filter(|c| !c.trim().is_empty()),
-            package_id,
-            version: manifest.version.clone(),
-            manifest_path: entry.manifest_path,
-            payload_root: entry.payload_root,
-            // Both conditions must hold: the entrypoint says the package
-            // can draw, `kind` says it's something a user opens — the
-            // on-screen keyboard satisfies the first but not the second.
-            has_gui: manifest.entrypoint.gui_bin().is_some()
-                && manifest.kind == launcher::manifest::KIND_APP,
-            opens_extensions: manifest.opens_ext.clone(),
-            opens_mime_types: manifest.opens_mime.clone(),
-            opens_uri_schemes: manifest.opens_schemes.clone(),
-        });
-    }
-    Ok(out)
+    })
 }
 
 /// Result of resolving an installed package's signed continuity contract.
@@ -1557,6 +1472,21 @@ pub fn revalidate_resource_claim(
     desktop_policy::DefaultAppResolver::new(&candidates)
         .validate_app(resource, package_id)
         .is_ok()
+}
+
+/// This machine's applications, as the shared workspace settings name
+/// them: running under this session, installed as packages, or host apps.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ShellApps;
+
+impl tilo_desktop::workspace_settings::AppDirectory for ShellApps {
+    fn app_display_name(&self, app_id: &str) -> Option<String> {
+        Some(display_name_for_app_id(app_id).unwrap_or_else(|| display_name_for_package_id(app_id)))
+    }
+
+    fn default_app_candidates(&self) -> Vec<desktop_policy::AppCandidate> {
+        default_app_candidates()
+    }
 }
 
 pub fn default_app_candidates() -> Vec<desktop_policy::AppCandidate> {
@@ -3318,7 +3248,10 @@ fn take_staged_resume(
     lock(&PENDING_CONTINUATION_RESUME).remove(&(room, tab))
 }
 
-pub(crate) fn take_staged_resume_for_package(
+/// Take the continuation staged for the next launch of `package_id` into
+/// `room`: the record instance, and the resume projection when there is one.
+/// Taking it means exactly one launch receives it.
+pub fn take_staged_resume_for_package(
     package_id: &str,
     room: RoomId,
 ) -> Option<StagedContinuationResume> {

@@ -21,18 +21,15 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use tilo_rich_text::{FieldOutcome, RichTextField, RichTextSurface, SubmitKey};
 use ui::ColorCompat;
 use ui::icons::{Icon, draw_icon};
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
-use ui::text_edit::{EditCore, Motion};
 use ui::text_render::{TextRenderer, TextWeight};
-use ui::text_selection::{
-    Selection, clipboard_copy, clipboard_paste, next_word_boundary_chars, prev_word_boundary_chars,
-    word_boundaries_chars,
-};
 use ui::theme::Theme;
+use ui::widget::Embedded;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
@@ -681,35 +678,6 @@ struct RoutedEvent<'a> {
     taffy: &'a TaffyTree<()>,
 }
 
-/// Text metrics and placement shared by caret hit-testing, selection geometry,
-/// and caret painting for one text box.
-#[derive(Clone, Copy)]
-struct TextBoxStyle {
-    rect: Rect,
-    font_px: f32,
-    weight: TextWeight,
-    italic: bool,
-    align: TextAlign,
-    center_vertically: bool,
-}
-
-impl TextBoxStyle {
-    fn for_element(element: &Element, rect: Rect, scale: f64) -> Self {
-        Self {
-            rect,
-            font_px: (element.font_size * scale).max(1.0) as f32,
-            weight: if element.bold {
-                TextWeight::Bold
-            } else {
-                TextWeight::Regular
-            },
-            italic: element.italic,
-            align: element.align,
-            center_vertically: true,
-        }
-    }
-}
-
 /// Mutable rendering resources forwarded together through editor paint layers.
 struct PaintContext<'a> {
     scene: &'a mut Scene,
@@ -718,12 +686,42 @@ struct PaintContext<'a> {
     theme: &'a Theme,
 }
 
-/// Normalized keyboard input used by the on-canvas text editor.
-struct EditingKey<'a> {
-    key: &'a Key,
-    text: Option<&'a str>,
-    modifiers: winit::keyboard::ModifiersState,
-    control: bool,
+/// The words of one text box being edited on the canvas: the SDK editor,
+/// embedded where the box is drawn and laid out at the slide's size, editing
+/// the element's rich-text body through `SlidesAction::EditElementText`.
+struct TextBoxEditor {
+    slide_id: String,
+    element_id: String,
+    host: Embedded<RichTextSurface<RichTextField<actions::SlidesAction>>>,
+}
+
+impl TextBoxEditor {
+    fn open(doc: &AutoCommit, slide_id: &str, element: &Element) -> Self {
+        let (locate_slide, locate_element) = (slide_id.to_owned(), element.id.clone());
+        let (edit_slide, edit_element) = (slide_id.to_owned(), element.id.clone());
+        let field = RichTextField::new(
+            actions::SLIDES_ACTION_TYPE,
+            move |doc| SlidesDoc::element_body(doc, &locate_slide, &locate_element),
+            move |edit| actions::SlidesAction::EditElementText {
+                slide_id: edit_slide.clone(),
+                element_id: edit_element.clone(),
+                edit,
+            },
+        );
+        let mut surface = RichTextSurface::field(field)
+            .with_editor(render::text_box_editor(element))
+            .with_submit(SubmitKey::ModEnter);
+        surface.present_from(doc);
+        surface.set_focus(true);
+        surface
+            .editor_mut()
+            .focus_block(usize::MAX, ui::widget::CursorPlacement::End);
+        Self {
+            slide_id: slide_id.to_owned(),
+            element_id: element.id.clone(),
+            host: Embedded::new(surface),
+        }
+    }
 }
 
 /// Default size of the fill colour-picker popover, in logical px.
@@ -811,20 +809,10 @@ pub struct SlidesApp {
     cur_slide: usize,
     sel: Option<Id>,
     editing_text: bool,
-    caret: usize,
     editing_notes: bool,
-    /// Selection anchor (char index) for the active on-canvas text editor.
-    /// `sel_anchor == active_caret()` means "no live selection"; the
-    /// pair is a [`ui::text_selection::Selection`] over the CRDT-backed text, so
-    /// the on-canvas editor gets the same selection semantics as every other
-    /// `ui` text field (shift+arrow, word-wise, drag-select, select-all,
-    /// clipboard) without a per-app text buffer. Reset to the caret whenever an
-    /// editor is (re)entered.
-    sel_anchor: usize,
     /// Inline deck-title rename in progress (toolbar title clicked). Typing
     /// splices into the CRDT title; Enter/Esc/clicking away commits.
     editing_title: bool,
-    title_caret: usize,
     /// Transient state and input policy for a running talk.
     presentation: Presentation,
     /// Local routing policy selected from the presentation resource actions.
@@ -853,18 +841,16 @@ pub struct SlidesApp {
     /// single press just selects and arms a move, so a selected element drags on
     /// the very first grab.
     last_click: Option<(Id, std::time::Instant, Point)>,
-    /// A pending click that should place (or, when `true`, shift-extend) the
-    /// text caret. Resolved on the next `draw`, where the `TextRenderer` is
-    /// available to hit-test a point against the wrapped text layout. `bool` is
-    /// "extend the current selection" (a shift-click or a live drag).
-    caret_click: Option<(Point, bool)>,
-    /// A live text-selection drag is in progress inside the editing text box
-    /// (mouse held down after a press). While set, cursor motion extends the
-    /// selection from its anchor.
+    /// A press inside the text box being edited is held: its drag selects
+    /// text in the box, not the element.
     text_drag: bool,
-    /// A pending double-click inside the editing text box that should select the
-    /// word under the point. Resolved on the next `draw` (needs text measuring).
-    select_word_click: Option<Point>,
+    /// The words of the text box being edited, in the SDK editor; opened when
+    /// editing starts and closed when it ends.
+    text_editor: Option<TextBoxEditor>,
+    /// Select every word once the editor opens (a search result revealed).
+    text_edit_select_all: bool,
+    /// Where the text box being edited is drawn, in window coordinates.
+    text_edit_box: Rect,
     needs_commit: bool,
 
     /// Framework-owned action dispatch (undo boundary + executor + last-action
@@ -986,10 +972,6 @@ pub struct SlidesApp {
     /// The shared editor owns multiline layout, selection, clipboard, scrolling
     /// and IME; `editing_notes` only owns the inspector's open state.
     notes_input: TextInput,
-    /// Shared headless caret/selection/edit core for the on-canvas text box.
-    /// The canvas keeps its own typography and geometry, but no longer owns
-    /// the text-editing semantics.
-    element_edit_core: EditCore,
     /// Set when the popover opens so the next `draw` (which has the theme, hence
     /// can resolve a colour *role* to a concrete colour) seeds the picker with
     /// the selected element's current fill.
@@ -1076,11 +1058,8 @@ impl SlidesApp {
             cur_slide: 1,
             sel: None,
             editing_text: false,
-            caret: 0,
             editing_notes: false,
-            sel_anchor: 0,
             editing_title: false,
-            title_caret: 0,
             presentation: Presentation::default(),
             presentation_target: ui::fullscreen::FullscreenTarget::Largest,
             help_overlay: HelpOverlay::default(),
@@ -1089,9 +1068,10 @@ impl SlidesApp {
             drag: Drag::None,
             page_sidebar: PageSidebar::new(SLIDE_H / SLIDE_W).with_panel(false),
             last_click: None,
-            caret_click: None,
             text_drag: false,
-            select_word_click: None,
+            text_editor: None,
+            text_edit_select_all: false,
+            text_edit_box: Rect::ZERO,
             needs_commit: false,
             actions: ui::ActionHost::new(),
             rail_flap: FlapState::open_when_docked(),
@@ -1142,7 +1122,6 @@ impl SlidesApp {
                 .with_plain_chrome()
                 .with_font_size(12.5)
                 .with_id("slides-speaker-notes"),
-            element_edit_core: EditCore::new(),
             demo_menu: None,
             demo_reorder: false,
             demo_delete_zone: false,
@@ -1404,17 +1383,7 @@ impl SlidesApp {
                 .find(|e| e.kind == ElementKind::Text)
                 .map(|e| e.id.clone())
         });
-        self.editing_text = true;
-        let text = self
-            .selected_element()
-            .map(|e| e.text.clone())
-            .unwrap_or_default();
-        let (a, b) = word_boundaries_chars(&text, 0);
-        self.element_edit_core.set_selection(
-            Self::element_char_to_byte(&text, a),
-            Self::element_char_to_byte(&text, b),
-        );
-        self.sync_legacy_from_element_core();
+        self.begin_text_edit(true);
         self.bootstrapped = true;
     }
 
@@ -1521,8 +1490,6 @@ impl SlidesApp {
             self.page_sidebar.on_escape();
             self.active_guides.clear();
             self.text_drag = false;
-            self.caret_click = None;
-            self.select_word_click = None;
             self.ctx_menu.close();
             self.ctx_hits.clear();
             self.fill_picker_open = false;
@@ -3905,197 +3872,6 @@ impl SlidesApp {
 
     // --- text editing -------------------------------------------------------
 
-    fn element_char_to_byte(text: &str, char_idx: usize) -> usize {
-        text.char_indices()
-            .nth(char_idx)
-            .map_or(text.len(), |(byte, _)| byte)
-    }
-
-    fn sync_element_core_from_legacy(&mut self) {
-        let text = self.cur_edit_text();
-        if self.editing_text {
-            self.element_edit_core.set_selection(
-                Self::element_char_to_byte(&text, self.sel_anchor),
-                Self::element_char_to_byte(&text, self.caret),
-            );
-            self.element_edit_core.clamp_to(&text);
-        }
-    }
-
-    #[expect(
-        clippy::string_slice,
-        reason = "the element edit core keeps its offsets on char boundaries of this same text"
-    )]
-    fn sync_legacy_from_element_core(&mut self) {
-        if !self.editing_text {
-            return;
-        }
-        let text = self.cur_edit_text();
-        let selection = self.element_edit_core.selection();
-        self.sel_anchor = text[..selection.anchor.min(text.len())].chars().count();
-        self.caret = text[..selection.cursor.min(text.len())].chars().count();
-    }
-
-    fn begin_element_edit_at_end(&mut self) {
-        self.editing_text = true;
-        self.editing_notes = false;
-        let text = self.cur_edit_text();
-        let end = text.len();
-        self.element_edit_core.set_caret(end);
-        self.sel_anchor = text.chars().count();
-        self.caret = self.sel_anchor;
-    }
-
-    fn set_element_selection_chars(&mut self, anchor: usize, cursor: usize) {
-        let text = self.cur_edit_text();
-        self.element_edit_core.set_selection(
-            Self::element_char_to_byte(&text, anchor),
-            Self::element_char_to_byte(&text, cursor),
-        );
-        self.sync_legacy_from_element_core();
-    }
-
-    #[expect(
-        clippy::string_slice,
-        reason = "the element edit core keeps its offsets on char boundaries of this same text"
-    )]
-    fn apply_element_edit(&mut self, doc: &mut AutoCommit, edit: &ui::text_edit::Edit) {
-        if edit.is_noop() || !self.editing_text {
-            return;
-        }
-        let text = self.cur_edit_text();
-        let char_at = |byte: usize| text[..byte.min(text.len())].chars().count();
-        SlidesDoc::splice_element_text(
-            doc,
-            self.cur_slide,
-            self.sel.as_deref().unwrap_or_default(),
-            char_at(edit.at),
-            text[edit.at..edit.at.saturating_add(edit.removed)]
-                .chars()
-                .count(),
-            &edit.inserted,
-        );
-        self.mark();
-        self.reload(doc);
-        self.sync_legacy_from_element_core();
-    }
-
-    fn insert_text(&mut self, doc: &mut AutoCommit, s: &str) {
-        if self.editing_title {
-            // A title is one line — drop any embedded newlines from a paste.
-            let s: String = s.chars().filter(|c| *c != '\n').collect();
-            if s.is_empty() {
-                return;
-            }
-            SlidesDoc::splice_title(doc, self.title_caret, 0, &s);
-            self.title_caret += s.chars().count();
-            self.reload(doc);
-            return;
-        }
-        // On-canvas editing uses the shared byte-safe core; the canvas only
-        // translates its edit into Automerge's character-addressed splice.
-        if self.editing_text {
-            self.sync_element_core_from_legacy();
-            let edit = self.element_edit_core.insert(s);
-            self.apply_element_edit(doc, &edit);
-            return;
-        }
-        // Typing over a selection replaces it (delete first, then insert at the
-        // collapsed caret).
-        self.delete_selection(doc);
-        if let Some(id) = self.sel.clone() {
-            SlidesDoc::splice_element_text(doc, self.cur_slide, &id, self.caret, 0, s);
-            self.caret += s.chars().count();
-            self.sel_anchor = self.caret;
-            self.reload(doc);
-        }
-    }
-
-    fn backspace_text(&mut self, doc: &mut AutoCommit) {
-        if self.editing_title {
-            if self.title_caret > 0 {
-                SlidesDoc::splice_title(doc, self.title_caret - 1, 1, "");
-                self.title_caret -= 1;
-                self.mark();
-                self.reload(doc);
-            }
-            return;
-        }
-        if self.editing_text {
-            self.sync_element_core_from_legacy();
-            let text = self.cur_edit_text();
-            let edit = self.element_edit_core.delete_backward(&text, false);
-            self.apply_element_edit(doc, &edit);
-            return;
-        }
-        // A live selection is deleted whole; otherwise delete the char before.
-        if self.delete_selection(doc) {
-            return;
-        }
-        if let Some(id) = self.sel.clone()
-            && self.caret > 0
-        {
-            SlidesDoc::splice_element_text(doc, self.cur_slide, &id, self.caret - 1, 1, "");
-            self.caret -= 1;
-            self.sel_anchor = self.caret;
-            self.mark();
-            self.reload(doc);
-        }
-    }
-
-    /// Forward-delete: remove the selection if any, else the char after the
-    /// caret (the `Delete` key inside a text editor).
-    fn forward_delete_text(&mut self, doc: &mut AutoCommit) {
-        if self.editing_title {
-            let len = self.deck.title.chars().count();
-            if self.title_caret < len {
-                SlidesDoc::splice_title(doc, self.title_caret, 1, "");
-                self.mark();
-                self.reload(doc);
-            }
-            return;
-        }
-        if self.editing_text {
-            self.sync_element_core_from_legacy();
-            let text = self.cur_edit_text();
-            let edit = self.element_edit_core.delete_forward(&text, false);
-            self.apply_element_edit(doc, &edit);
-            return;
-        }
-        if self.delete_selection(doc) {
-            return;
-        }
-        let len = self.cur_text_len();
-        if let Some(id) = self.sel.clone()
-            && self.caret < len
-        {
-            SlidesDoc::splice_element_text(doc, self.cur_slide, &id, self.caret, 1, "");
-            self.mark();
-            self.reload(doc);
-        }
-    }
-
-    fn cur_text_len(&self) -> usize {
-        if self.editing_title {
-            self.deck.title.chars().count()
-        } else {
-            self.selected_element()
-                .map_or(0, |e| e.text.chars().count())
-        }
-    }
-
-    /// The text currently being edited (title / notes / selected element), used
-    /// by the caret helpers for vertical navigation.
-    fn cur_edit_text(&self) -> String {
-        if self.editing_title {
-            self.deck.title.clone()
-        } else {
-            self.selected_element()
-                .map(|e| e.text.clone())
-                .unwrap_or_default()
-        }
-    }
-
     /// Start renaming the deck title inline via the shared [`TextInput`] (caret
     /// at the end, ready for full selection editing).
     fn begin_title_edit(&mut self) {
@@ -4103,7 +3879,6 @@ impl SlidesApp {
         self.editing_text = false;
         self.editing_notes = false;
         self.sel = None;
-        self.title_caret = self.deck.title.chars().count();
         self.title_input.set_text(&self.deck.title);
         // `set_text` clamps but doesn't advance the caret, so park it at the end.
         self.title_input.set_cursor_pos(self.deck.title.len());
@@ -4297,206 +4072,6 @@ impl SlidesApp {
         input_handled
     }
 
-    /// The char-index caret of whatever text is being edited.
-    fn active_caret(&self) -> usize {
-        if self.editing_title {
-            self.title_caret
-        } else {
-            self.caret
-        }
-    }
-
-    fn set_active_caret(&mut self, v: usize) {
-        if self.editing_title {
-            self.title_caret = v;
-        } else {
-            self.caret = v;
-        }
-    }
-
-    /// The active editor's [`Selection`] (anchor + caret) over the CRDT text,
-    /// clamped to the current text length. Collapsed when nothing is selected.
-    fn selection(&self) -> Selection {
-        let len = self.cur_text_len();
-        Selection {
-            anchor: self.sel_anchor.min(len),
-            cursor: self.active_caret().min(len),
-        }
-    }
-
-    /// Whether the active editor has a non-empty text selection.
-    fn has_text_selection(&self) -> bool {
-        !self.selection().is_collapsed()
-    }
-
-    /// Move the caret to `pos`; unless `extend`, collapse the selection there.
-    fn place_caret(&mut self, pos: usize, extend: bool) {
-        let len = self.cur_text_len();
-        let pos = pos.min(len);
-        self.set_active_caret(pos);
-        if !extend {
-            self.sel_anchor = pos;
-        }
-    }
-
-    /// Collapse the selection to its caret (anchor follows the cursor).
-    fn collapse_selection(&mut self) {
-        self.sel_anchor = self.active_caret();
-    }
-
-    /// Delete the current selection from the CRDT, if any. Returns `true` when
-    /// something was deleted (the caret is left at the deletion point).
-    fn delete_selection(&mut self, doc: &mut AutoCommit) -> bool {
-        if self.editing_text {
-            self.sync_element_core_from_legacy();
-            if !self.element_edit_core.has_selection() {
-                return false;
-            }
-            let text = self.cur_edit_text();
-            let edit = self.element_edit_core.delete_backward(&text, false);
-            self.apply_element_edit(doc, &edit);
-            return true;
-        }
-        let sel = self.selection();
-        if sel.is_collapsed() {
-            return false;
-        }
-        let (a, b) = (sel.min(), sel.max());
-        if let Some(id) = self.sel.clone() {
-            SlidesDoc::splice_element_text(doc, self.cur_slide, &id, a, b - a, "");
-            self.caret = a;
-        } else {
-            return false;
-        }
-        self.sel_anchor = a;
-        self.mark();
-        self.reload(doc);
-        true
-    }
-
-    /// The currently-selected substring of the active editor's text.
-    fn selected_text(&self) -> String {
-        let sel = self.selection();
-        if sel.is_collapsed() {
-            return String::new();
-        }
-        self.cur_edit_text()
-            .chars()
-            .skip(sel.min())
-            .take(sel.max() - sel.min())
-            .collect()
-    }
-
-    /// Select the whole of the active editor's text.
-    fn select_all_text(&mut self) {
-        let len = self.cur_text_len();
-        if self.editing_text {
-            let text = self.cur_edit_text();
-            self.element_edit_core.select_all(&text);
-        }
-        self.sel_anchor = 0;
-        self.set_active_caret(len);
-    }
-
-    /// Move the active caret one char left (`dir < 0`) or right. When `extend`
-    /// is false and a selection is live, collapse to the selection edge in that
-    /// direction instead of moving past it (standard editor behaviour).
-    fn move_caret(&mut self, dir: i32, extend: bool) {
-        if self.editing_text {
-            self.sync_element_core_from_legacy();
-            let text = self.cur_edit_text();
-            self.element_edit_core.motion(
-                &text,
-                if dir < 0 { Motion::Left } else { Motion::Right },
-                extend,
-            );
-            self.sync_legacy_from_element_core();
-            return;
-        }
-        if !extend && self.has_text_selection() {
-            let sel = self.selection();
-            let edge = if dir < 0 { sel.min() } else { sel.max() };
-            self.place_caret(edge, false);
-            return;
-        }
-        let len = self.cur_text_len();
-        let cur = self.active_caret().min(len);
-        let next = if dir < 0 {
-            cur.saturating_sub(1)
-        } else {
-            (cur + 1).min(len)
-        };
-        self.place_caret(next, extend);
-    }
-
-    /// Move the active caret one word left (`dir < 0`) or right, via the shared
-    /// word-boundary walker (`ctrl`+arrow).
-    fn move_caret_word(&mut self, dir: i32, extend: bool) {
-        if self.editing_text {
-            self.sync_element_core_from_legacy();
-            let text = self.cur_edit_text();
-            self.element_edit_core.motion(
-                &text,
-                if dir < 0 {
-                    Motion::WordLeft
-                } else {
-                    Motion::WordRight
-                },
-                extend,
-            );
-            self.sync_legacy_from_element_core();
-            return;
-        }
-        let text = self.cur_edit_text();
-        let cur = self.active_caret().min(text.chars().count());
-        let next = if dir < 0 {
-            prev_word_boundary_chars(&text, cur)
-        } else {
-            next_word_boundary_chars(&text, cur)
-        };
-        self.place_caret(next, extend);
-    }
-
-    /// Move the active caret up/down one explicit line, keeping the column.
-    fn move_caret_vertical(&mut self, dir: i32, extend: bool) {
-        let text = self.cur_edit_text();
-        let next = caret_line_move(&text, self.active_caret(), dir);
-        self.place_caret(next, extend);
-    }
-
-    /// Move the active caret to the start (`end=false`) or end of its line.
-    fn move_caret_home_end(&mut self, end: bool, extend: bool) {
-        if self.editing_text {
-            self.sync_element_core_from_legacy();
-            let text = self.cur_edit_text();
-            self.element_edit_core.motion(
-                &text,
-                if end {
-                    Motion::LineEnd
-                } else {
-                    Motion::LineStart
-                },
-                extend,
-            );
-            self.sync_legacy_from_element_core();
-            return;
-        }
-        let text = self.cur_edit_text();
-        let next = caret_line_home_end(&text, self.active_caret(), end);
-        self.place_caret(next, extend);
-    }
-
-    /// Copy the selection to the clipboard (shared `ui` clipboard). Returns
-    /// `true` when there was a selection to copy.
-    fn copy_selection(&self) -> bool {
-        let s = self.selected_text();
-        if s.is_empty() {
-            return false;
-        }
-        clipboard_copy(&s);
-        true
-    }
-
     // --- drawing ------------------------------------------------------------
 
     /// Whether a chrome point (a button/label centre) falls inside the
@@ -4538,12 +4113,8 @@ impl SlidesApp {
         // the declared `border_standard` is within a shade of dark `raised`.
         let div = ui::surface::edge_on(c.surfaces.raised);
 
-        // Resolve any pending pointer interaction (click-to-place caret,
-        // double-click word-select, drag-extend) now that the text layout is
-        // measurable, before anything borrows the slide immutably.
         let chrome_text_scale = tr.text_scale();
         tr.set_text_scale(1.0);
-        self.resolve_text_pointer(tr, chrome);
 
         {
             let mut paint = PaintContext {
@@ -4555,6 +4126,7 @@ impl SlidesApp {
             self.draw_editor_panels_base(&mut paint, chrome, rail_overlay, insp_overlay, div);
         }
         self.draw_editor_canvas(scene, t, tr, theme, chrome, &pal);
+        self.draw_text_editor(scene, t, tr, theme, chrome, &pal);
         tr.set_text_scale(chrome_text_scale);
         self.draw_editor_base_chrome(scene, t, tr, theme, chrome, &pal);
 
@@ -4688,7 +4260,13 @@ impl SlidesApp {
             14.0,
             render::with_alpha(Color::BLACK, 70),
         );
-        render::draw_slide(
+        // The text box being edited draws its words through its editor.
+        let editing = self
+            .text_editor
+            .as_ref()
+            .filter(|_| self.editing_text)
+            .map(|editor| editor.element_id.as_str());
+        render::draw_slide_except(
             scene,
             t,
             tr,
@@ -4698,6 +4276,7 @@ impl SlidesApp {
             chrome.slide_dest,
             14.0,
             &self.images,
+            editing,
         );
         chrome::stroke_round(
             scene,
@@ -4708,7 +4287,7 @@ impl SlidesApp {
             1.0,
         );
 
-        self.draw_editor_selection_chrome(scene, t, tr, theme, chrome, pal);
+        self.draw_editor_selection_chrome(scene, t, chrome, pal);
         self.draw_editor_guides(scene, t, chrome, pal);
 
         // Caption under the slide.
@@ -4731,8 +4310,6 @@ impl SlidesApp {
         &self,
         scene: &mut Scene,
         t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         chrome: &Chrome,
         pal: &Palette,
     ) {
@@ -4752,16 +4329,8 @@ impl SlidesApp {
             sel_col,
             1.5,
         );
-        if self.editing_text {
-            let mut paint = PaintContext {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
-            };
-            self.draw_text_selection(&mut paint, pal, el, er, chrome.scale);
-            self.draw_text_caret(&mut paint, pal, el, er, chrome.scale);
-        } else {
+        // The text box being edited draws its own caret and selection.
+        if !self.editing_text {
             for (_, hr) in self.handles_of(chrome.slide_dest, chrome.scale, el) {
                 // The returned rect is the generous grab zone (±HANDLE);
                 // paint a smaller visual pip centred on it so the handle
@@ -5517,276 +5086,6 @@ impl SlidesApp {
         }
     }
 
-    fn draw_text_caret(
-        &self,
-        paint: &mut PaintContext<'_>,
-        pal: &Palette,
-        el: &Element,
-        er: Rect,
-        s: f64,
-    ) {
-        let style = TextBoxStyle::for_element(el, er, s);
-        self.draw_caret_in_box(paint, pal.accent, &el.text, self.caret, style);
-    }
-
-    /// Paint a vertical caret over one line of text inside `er`. The caret
-    /// tracks the same layout the text is painted with (line height `font_px *
-    /// 1.25`, per-line `align` offset, optional vertical centering), so it lands
-    /// correctly on centre- and right-aligned boxes — not just left-anchored
-    /// ones. `caret` is a char index into `text`.
-    fn draw_caret_in_box(
-        &self,
-        paint: &mut PaintContext<'_>,
-        accent: Color,
-        text: &str,
-        caret: usize,
-        style: TextBoxStyle,
-    ) {
-        let (top, line_h) = self.caret_geometry(paint.text, text, caret, style);
-        let bar = Line::new(
-            Point::new(top.x, top.y + 2.0),
-            Point::new(top.x, top.y + line_h - 2.0),
-        );
-        paint
-            .scene
-            .stroke(&Stroke::new(2.0), paint.transform, accent, None, &bar);
-    }
-
-    /// Pure geometry for [`Self::draw_caret_in_box`]: the caret bar's top point
-    /// and the line height, tracking the same layout the painter uses (line
-    /// height `font_px * 1.25`, per-line `align` offset, optional vertical
-    /// centering). Split out so the placement can be asserted directly.
-    #[allow(
-        clippy::unused_self,
-        reason = "keeps the ergonomic self.caret_geometry(...) call site consistent with the \
-                  other text-layout geometry helpers; converting to an associated function \
-                  would read worse at every call site for no benefit"
-    )]
-    fn caret_geometry(
-        &self,
-        tr: &mut TextRenderer,
-        text: &str,
-        caret: usize,
-        style: TextBoxStyle,
-    ) -> (Point, f64) {
-        let chars: Vec<char> = text.chars().collect();
-        let caret = caret.min(chars.len());
-        let starts = line_starts(&chars);
-        // Explicit line the caret sits on, and that line's char span.
-        let mut li = 0usize;
-        for (k, &st) in starts.iter().enumerate() {
-            if caret >= st {
-                li = k;
-            } else {
-                break;
-            }
-        }
-        let line_start = starts.get(li).copied().unwrap_or(0);
-        let line_end = starts
-            .get(li + 1)
-            .map_or(chars.len(), |&s| s.saturating_sub(1));
-        let cur_line: String = chars
-            .get(line_start..line_end)
-            .unwrap_or(&[])
-            .iter()
-            .collect();
-        let prefix: String = chars.get(line_start..caret).unwrap_or(&[]).iter().collect();
-
-        let line_h = f64::from(style.font_px) * 1.25;
-        let wrap_w = (style.rect.width() + 4.0).max(1.0) as f32;
-        // Total painted height (wrapped rows across explicit lines) mirrors
-        // `render::draw_text_element`, so the caret shares its baselines.
-        let rows: Vec<usize> = text
-            .split('\n')
-            .map(|l| {
-                if l.is_empty() {
-                    1
-                } else {
-                    let (_, h) = tr.measure_styled(
-                        l,
-                        style.font_px,
-                        Some(wrap_w),
-                        style.weight,
-                        style.italic,
-                        false,
-                    );
-                    ((f64::from(h) / line_h).round() as usize).max(1)
-                }
-            })
-            .collect();
-        let total_h = rows.iter().sum::<usize>() as f64 * line_h;
-        let block_top = if style.center_vertically && total_h < style.rect.height() {
-            style.rect.y0 + (style.rect.height() - total_h) / 2.0
-        } else {
-            style.rect.y0
-        };
-        let rows_before: usize = rows.iter().take(li).sum();
-        let cy = block_top + rows_before as f64 * line_h;
-
-        // Horizontal: offset the line by its own width per its alignment (as the
-        // painter does), then advance past the prefix to the caret.
-        let (lw, _) = tr.measure_styled(
-            &cur_line,
-            style.font_px,
-            Some(wrap_w),
-            style.weight,
-            style.italic,
-            false,
-        );
-        let (pw, _) = tr.measure_styled(
-            &prefix,
-            style.font_px,
-            None,
-            style.weight,
-            style.italic,
-            false,
-        );
-        let line_x = match style.align {
-            TextAlign::Left | TextAlign::Justify => style.rect.x0,
-            TextAlign::Center => style.rect.x0 + (style.rect.width() - f64::from(lw)) / 2.0,
-            TextAlign::Right => style.rect.x1 - f64::from(lw),
-        };
-        let cx = line_x + f64::from(pw);
-        (Point::new(cx, cy), line_h)
-    }
-
-    /// Inverse of [`Self::caret_geometry`]: the char index whose caret sits
-    /// nearest `p` in the same wrapped layout, for click-to-position and
-    /// drag-select. Scans candidate carets and picks the closest, weighting a
-    /// matching visual line over horizontal distance.
-    fn char_at_point_in_box(
-        &self,
-        tr: &mut TextRenderer,
-        text: &str,
-        style: TextBoxStyle,
-        p: Point,
-    ) -> usize {
-        let len = text.chars().count();
-        let mut best = 0usize;
-        let mut best_d = f64::INFINITY;
-        for i in 0..=len {
-            let (pt, line_h) = self.caret_geometry(tr, text, i, style);
-            let dy = if p.y < pt.y {
-                pt.y - p.y
-            } else if p.y > pt.y + line_h {
-                p.y - (pt.y + line_h)
-            } else {
-                0.0
-            };
-            let dx = (p.x - pt.x).abs();
-            // A caret on the pointer's line always beats one on another line.
-            let d = dy * 100_000.0 + dx;
-            if d < best_d {
-                best_d = d;
-                best = i;
-            }
-        }
-        best
-    }
-
-    /// Selection highlight rectangles for the char range `[min, max)` in `text`,
-    /// tracking the same wrapped layout the caret + painter use. One rect per
-    /// explicit line the selection covers.
-    fn selection_rects_in_box(
-        &self,
-        tr: &mut TextRenderer,
-        text: &str,
-        min: usize,
-        max: usize,
-        style: TextBoxStyle,
-    ) -> Vec<Rect> {
-        if min >= max {
-            return Vec::new();
-        }
-        let chars: Vec<char> = text.chars().collect();
-        let starts = line_starts(&chars);
-        let mut rects = Vec::new();
-        for (li, &ls) in starts.iter().enumerate() {
-            let le = starts
-                .get(li + 1)
-                .map_or(chars.len(), |&s| s.saturating_sub(1));
-            // Portion of this explicit line covered by the selection.
-            let a = min.max(ls);
-            let b = max.min(le);
-            // The line's trailing '\n' is selected when the selection spans past
-            // this line into the next — draw a small trailing sliver so the wrap
-            // reads as selected.
-            let covers_break = li + 1 < starts.len() && max > le && min <= le;
-            if a > b && !covers_break {
-                continue;
-            }
-            let a = a.min(le);
-            let b = b.max(a).min(le);
-            let (pa, lh) = self.caret_geometry(tr, text, a, style);
-            let (pb, _) = self.caret_geometry(tr, text, b, style);
-            let x0 = pa.x.min(pb.x);
-            let mut x1 = pa.x.max(pb.x);
-            if covers_break {
-                x1 = x1.max(x0) + f64::from(style.font_px) * 0.35;
-            }
-            if x1 - x0 < 1.5 {
-                x1 = x0 + 1.5;
-            }
-            rects.push(Rect::new(x0, pa.y, x1, pa.y + lh));
-        }
-        rects
-    }
-
-    /// Resolve any pending pointer interaction (click-to-place caret,
-    /// double-click word-select, drag-extend) against the live text layout. Runs
-    /// at the top of `draw` where the `TextRenderer` is available. Selection is
-    /// pure per-peer view state, so no CRDT access is needed here.
-    fn resolve_text_pointer(&mut self, tr: &mut TextRenderer, chrome: &Chrome) {
-        if !self.editing_text {
-            // Notes / no editor: drop any element-targeted pointer intent.
-            self.caret_click = None;
-            self.select_word_click = None;
-            return;
-        }
-        let Some(el) = self.selected_element().cloned() else {
-            self.caret_click = None;
-            self.select_word_click = None;
-            return;
-        };
-        if el.kind != ElementKind::Text {
-            return;
-        }
-        let er = render::element_dest(chrome.slide_dest, chrome.scale, &el);
-        let style = TextBoxStyle::for_element(&el, er, chrome.scale);
-        if let Some(p) = self.select_word_click.take() {
-            let idx = self.char_at_point_in_box(tr, &el.text, style, p);
-            let (a, b) = word_boundaries_chars(&el.text, idx);
-            self.set_element_selection_chars(a, b);
-        } else if let Some((p, extend)) = self.caret_click.take() {
-            let idx = self.char_at_point_in_box(tr, &el.text, style, p);
-            self.element_edit_core.set_selection(
-                Self::element_char_to_byte(&el.text, if extend { self.sel_anchor } else { idx }),
-                Self::element_char_to_byte(&el.text, idx),
-            );
-            self.sync_legacy_from_element_core();
-        }
-    }
-
-    /// Paint the on-canvas text selection highlight for the editing element.
-    fn draw_text_selection(
-        &self,
-        paint: &mut PaintContext<'_>,
-        pal: &Palette,
-        el: &Element,
-        er: Rect,
-        s: f64,
-    ) {
-        let sel = self.selection();
-        if sel.is_collapsed() {
-            return;
-        }
-        let style = TextBoxStyle::for_element(el, er, s);
-        let col = render::with_alpha(pal.accent, 70);
-        for r in self.selection_rects_in_box(paint.text, &el.text, sel.min(), sel.max(), style) {
-            chrome::fill_round(paint.scene, paint.transform, r, 2.0, col);
-        }
-    }
-
     fn draw_notes(
         &mut self,
         scene: &mut Scene,
@@ -5944,73 +5243,6 @@ fn on_accent(c: &ui::tokens::Colors, pal: &Palette) -> Color {
         Color::WHITE,
         ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
     )
-}
-
-/// Line starts (char index of the first char of every `\n`-delimited line).
-fn line_starts(chars: &[char]) -> Vec<usize> {
-    let mut starts = vec![0usize];
-    for (i, ch) in chars.iter().enumerate() {
-        if *ch == '\n' {
-            starts.push(i + 1);
-        }
-    }
-    starts
-}
-
-/// Move a char-index caret up (`dir < 0`) or down one explicit (`\n`-delimited)
-/// line, keeping the column where the target line is long enough. At the first
-/// line (up) or last line (down) the caret is returned unchanged.
-fn caret_line_move(text: &str, caret: usize, dir: i32) -> usize {
-    let chars: Vec<char> = text.chars().collect();
-    let caret = caret.min(chars.len());
-    let starts = line_starts(&chars);
-    // Current line = the largest start <= caret.
-    let mut li = 0usize;
-    for (k, &st) in starts.iter().enumerate() {
-        if caret >= st {
-            li = k;
-        } else {
-            break;
-        }
-    }
-    let col = caret - starts.get(li).copied().unwrap_or(0);
-    let target = if dir < 0 {
-        if li == 0 {
-            return caret;
-        }
-        li - 1
-    } else {
-        if li + 1 >= starts.len() {
-            return caret;
-        }
-        li + 1
-    };
-    let tstart = starts.get(target).copied().unwrap_or(0);
-    let tend = starts
-        .get(target + 1)
-        .map_or(chars.len(), |&s| s.saturating_sub(1)); // drop the trailing '\n'
-    tstart + col.min(tend.saturating_sub(tstart))
-}
-
-/// Move a char-index caret to the start (`end=false`) or end of its explicit
-/// line.
-fn caret_line_home_end(text: &str, caret: usize, end: bool) -> usize {
-    let chars: Vec<char> = text.chars().collect();
-    let caret = caret.min(chars.len());
-    let mut ls = 0usize;
-    for (i, ch) in chars.iter().enumerate().take(caret) {
-        if *ch == '\n' {
-            ls = i + 1;
-        }
-    }
-    if !end {
-        return ls;
-    }
-    let mut le = caret;
-    while chars.get(le).is_some_and(|&c| c != '\n') {
-        le += 1;
-    }
-    le
 }
 
 /// Write a small, unmistakably-photographic test raster to a temp PNG and
@@ -6446,7 +5678,6 @@ impl Widget for SlidesApp {
                 if edit_text && target.kind != ElementKind::Text {
                     return Err("element is not editable text".into());
                 }
-                let text_len = target.text.chars().count();
                 self.mode = Mode::Edit;
                 self.editing_notes = false;
                 self.goto_slide(idx);
@@ -6455,8 +5686,7 @@ impl Widget for SlidesApp {
                 if edit_text {
                     // A text search result restores an immediately useful edit
                     // state: the exact text resource is selected in full.
-                    self.sel_anchor = 0;
-                    self.caret = text_len;
+                    self.begin_text_edit(true);
                 }
                 self.scroll_rail_to_current();
             }
@@ -6605,6 +5835,8 @@ impl Widget for SlidesApp {
         if self.editing_notes {
             self.sync_notes_input(state, false);
         }
+        self.upgrade_text(state);
+        self.ensure_text_editor(state);
     }
 
     fn build_layout(
@@ -6852,6 +6084,10 @@ impl Widget for SlidesApp {
         // first refusal on events over them.
         if self.route_inspector_widgets(&mut routed) {
             *handled = true;
+            return;
+        }
+        // The text box being edited owns the keyboard and its own pointer.
+        if self.route_text_edit(&mut routed, handled) {
             return;
         }
         self.dispatch_unmodal_event(
@@ -7169,6 +6405,11 @@ impl Widget for SlidesApp {
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
+        if self.editing_text
+            && let Some(editor) = &self.text_editor
+        {
+            return editor.host.ime_cursor_rect();
+        }
         self.editing_notes
             .then(|| self.notes_input.ime_cursor_rect())
             .flatten()
@@ -7215,7 +6456,18 @@ impl Widget for SlidesApp {
     /// its slides action, so it records one undo boundary for it (see
     /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
+        let typed = self
+            .text_editor
+            .as_mut()
+            .and_then(|editor| editor.host.widget_mut().take_committed_action());
+        typed.or_else(|| self.actions.take_committed())
+    }
+
+    /// Typing a word into a text box is one undo step, open until the word ends.
+    fn keeps_undo_step_open(&self) -> bool {
+        self.text_editor
+            .as_ref()
+            .is_some_and(|editor| editor.host.widget().keeps_undo_step_open())
     }
 
     /// Fold the deck's slides, elements, text and notes into the unified Ctrl+K
@@ -7249,11 +6501,6 @@ impl SlidesApp {
                     // gap + hover track the cursor. (The rail's list geometry is
                     // refreshed each frame in `draw` and on press.)
                     self.page_sidebar.on_motion(p);
-                    *handled = true;
-                } else if self.text_drag {
-                    // Extend the text selection from its anchor to the pointer
-                    // (resolved against the wrapped layout on the next draw).
-                    self.caret_click = Some((p, true));
                     *handled = true;
                 } else if self.drag.active() {
                     self.drag_move(p);
@@ -7768,12 +7015,6 @@ impl SlidesApp {
             // the caret (and arms a selection drag), never starts a box move,
             // so click-to-position and drag-select work like any text field.
             if self.editing_text && self.sel.as_deref() == Some(id.as_str()) {
-                if double {
-                    self.select_word_click = Some(p);
-                } else {
-                    self.caret_click = Some((p, false));
-                    self.text_drag = true;
-                }
                 *handled = true;
                 return;
             }
@@ -7782,8 +7023,7 @@ impl SlidesApp {
             if double && is_text {
                 // A deliberate double-click opens the text for editing and
                 // selects the word under the point.
-                self.begin_element_edit_at_end();
-                self.select_word_click = Some(p);
+                self.begin_text_edit(false);
             } else {
                 // Single press: select AND arm a move so a selected element
                 // can be dragged on the very first grab (the reported bug was
@@ -8122,13 +7362,6 @@ impl SlidesApp {
     }
 
     fn on_release(&mut self, doc: &mut AutoCommit, handled: &mut bool) {
-        // A text-selection drag ends here (no document write — selection is
-        // per-peer view state).
-        if self.text_drag {
-            self.text_drag = false;
-            *handled = true;
-            return;
-        }
         // A thumbnail drag-to-reorder: the shared rail commits the move (emitting
         // a Reorder we apply to the CRDT) or — if the press never crossed the
         // threshold into a real drag — nothing, in which case it stays a plain
@@ -8243,7 +7476,7 @@ impl SlidesApp {
         &mut self,
         doc: &mut AutoCommit,
         key: &Key,
-        text: Option<&str>,
+        _text: Option<&str>,
         modifiers: Modifiers,
         handled: &mut bool,
     ) {
@@ -8308,16 +7541,7 @@ impl SlidesApp {
         // for shortcuts the fields intentionally leave to the toolkit (notably
         // global undo/redo).
         if self.editing_text || self.editing_notes || self.editing_title {
-            self.on_key_editing_text(
-                doc,
-                &EditingKey {
-                    key,
-                    text,
-                    modifiers: mods,
-                    control: ctrl,
-                },
-                handled,
-            );
+            self.on_key_editing_text(key, handled);
             return;
         }
 
@@ -8388,167 +7612,16 @@ impl SlidesApp {
         }
     }
 
-    /// Keys while the on-canvas text box, speaker notes, or the deck-title
-    /// rename is focused: caret/selection navigation first, then clipboard
-    /// and character insertion.
-    fn on_key_editing_text(
-        &mut self,
-        doc: &mut AutoCommit,
-        input: &EditingKey<'_>,
-        handled: &mut bool,
-    ) {
-        let shift = input.modifiers.shift_key();
-        if self.on_key_editing_nav(doc, input.key, input.control, shift, handled) {
-            return;
-        }
-        self.on_key_editing_insert(doc, input.key, input.text, input.control, handled);
-    }
-
-    /// Caret/selection navigation while editing text: Escape commits + exits,
-    /// Backspace/Delete/Enter/Space edit, and the arrow/Home/End keys move or
-    /// extend the caret. Returns `true` when `key` matched one of these (so
-    /// [`Self::on_key_editing_text`] should stop).
-    fn on_key_editing_nav(
-        &mut self,
-        doc: &mut AutoCommit,
-        key: &Key,
-        ctrl: bool,
-        shift: bool,
-        handled: &mut bool,
-    ) -> bool {
-        match key {
-            Key::Named(NamedKey::Escape) => {
-                self.collapse_selection();
-                self.editing_text = false;
-                self.editing_notes = false;
-                self.editing_title = false;
-                self.mark();
-                *handled = true;
-            }
-            Key::Named(NamedKey::Backspace) => {
-                self.backspace_text(doc);
-                *handled = true;
-            }
-            Key::Named(NamedKey::Delete) => {
-                self.forward_delete_text(doc);
-                *handled = true;
-            }
-            Key::Named(NamedKey::Enter) => {
-                // A title is a single line — Enter commits the rename rather
-                // than inserting a newline.
-                if self.editing_title {
-                    self.editing_title = false;
-                    self.mark();
-                } else {
-                    self.insert_text(doc, "\n");
-                }
-                *handled = true;
-            }
-            Key::Named(NamedKey::Space) => {
-                self.insert_text(doc, " ");
-                *handled = true;
-            }
-            Key::Named(NamedKey::ArrowLeft) => {
-                if ctrl {
-                    self.move_caret_word(-1, shift);
-                } else {
-                    self.move_caret(-1, shift);
-                }
-                *handled = true;
-            }
-            Key::Named(NamedKey::ArrowRight) => {
-                if ctrl {
-                    self.move_caret_word(1, shift);
-                } else {
-                    self.move_caret(1, shift);
-                }
-                *handled = true;
-            }
-            Key::Named(NamedKey::ArrowUp) => {
-                self.move_caret_vertical(-1, shift);
-                *handled = true;
-            }
-            Key::Named(NamedKey::ArrowDown) => {
-                self.move_caret_vertical(1, shift);
-                *handled = true;
-            }
-            Key::Named(NamedKey::Home) => {
-                if ctrl {
-                    self.place_caret(0, shift);
-                } else {
-                    self.move_caret_home_end(false, shift);
-                }
-                *handled = true;
-            }
-            Key::Named(NamedKey::End) => {
-                if ctrl {
-                    let len = self.cur_text_len();
-                    self.place_caret(len, shift);
-                } else {
-                    self.move_caret_home_end(true, shift);
-                }
-                *handled = true;
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    /// Clipboard (Ctrl+A/C/X/V via the shared clipboard core) and plain
-    /// character insertion while editing text. Reached only once
-    /// [`Self::on_key_editing_nav`] didn't match.
-    fn on_key_editing_insert(
-        &mut self,
-        doc: &mut AutoCommit,
-        key: &Key,
-        text: Option<&str>,
-        ctrl: bool,
-        handled: &mut bool,
-    ) {
-        match key {
-            // Clipboard + select-all, via the shared clipboard core.
-            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("a") => {
-                self.select_all_text();
-                *handled = true;
-            }
-            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("c") => {
-                self.copy_selection();
-                *handled = true;
-            }
-            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("x") => {
-                if self.copy_selection() {
-                    self.delete_selection(doc);
-                }
-                *handled = true;
-            }
-            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("v") => {
-                if let Some(s) = clipboard_paste() {
-                    let s = if self.editing_title {
-                        s.replace('\n', " ")
-                    } else {
-                        s
-                    };
-                    if !s.is_empty() {
-                        self.insert_text(doc, &s);
-                    }
-                }
-                *handled = true;
-            }
-            // Ctrl+Z / Ctrl+Y (and any other ctrl-combo we don't own) fall
-            // through unhandled so the toolkit's global undo / redo fires.
-            Key::Character(c) if !ctrl => {
-                self.insert_text(doc, c.as_str());
-                *handled = true;
-            }
-            _ => {
-                if let Some(txt) = text
-                    && !txt.is_empty()
-                    && !ctrl
-                {
-                    self.insert_text(doc, txt);
-                    *handled = true;
-                }
-            }
+    /// Keys the focused text (a text box, the speaker notes, the deck-title
+    /// rename) left alone: Escape ends editing; everything else (global
+    /// undo and redo) falls through to the toolkit.
+    fn on_key_editing_text(&mut self, key: &Key, handled: &mut bool) {
+        if matches!(key, Key::Named(NamedKey::Escape)) {
+            self.end_text_edit();
+            self.editing_notes = false;
+            self.editing_title = false;
+            self.mark();
+            *handled = true;
         }
     }
 
@@ -8599,7 +7672,7 @@ impl SlidesApp {
                     .selected_element()
                     .is_some_and(|e| e.kind == ElementKind::Text)
                 {
-                    self.begin_element_edit_at_end();
+                    self.begin_text_edit(false);
                     *handled = true;
                 }
             }
@@ -8735,6 +7808,184 @@ impl SlidesApp {
         };
         self.sel = Some(next);
         self.editing_text = false;
+    }
+}
+
+impl SlidesApp {
+    /// Start editing the selected text box's words; `select_all` selects
+    /// them all once the editor opens.
+    fn begin_text_edit(&mut self, select_all: bool) {
+        self.editing_text = true;
+        self.editing_notes = false;
+        self.text_edit_select_all = select_all;
+    }
+
+    /// Stop editing the text box: its editor closes on the next sync.
+    fn end_text_edit(&mut self) {
+        self.editing_text = false;
+        self.text_drag = false;
+        self.text_editor = None;
+    }
+
+    /// The text box being edited and its slide, when there is one.
+    fn editing_text_box(&self) -> Option<(String, Element)> {
+        if !self.editing_text || self.mode != Mode::Edit {
+            return None;
+        }
+        let slide = self.slide()?;
+        let element = slide.element(self.sel.as_deref()?)?;
+        (element.kind == ElementKind::Text).then(|| (slide.id.clone(), element.clone()))
+    }
+
+    /// Open the editor for the text box being edited, close it when editing
+    /// ended, and bring it up to date with the document.
+    fn ensure_text_editor(&mut self, doc: &mut AutoCommit) {
+        let Some((slide_id, element)) = self.editing_text_box() else {
+            self.text_editor = None;
+            self.text_drag = false;
+            return;
+        };
+        let current = self
+            .text_editor
+            .as_ref()
+            .is_some_and(|editor| editor.slide_id == slide_id && editor.element_id == element.id);
+        if !current {
+            self.text_editor = Some(TextBoxEditor::open(doc, &slide_id, &element));
+        }
+        let select_all = std::mem::take(&mut self.text_edit_select_all);
+        if let Some(editor) = self.text_editor.as_mut() {
+            editor.host.sync(doc, &automerge::ROOT);
+            if select_all {
+                editor.host.widget_mut().editor_mut().select_all();
+            }
+        }
+    }
+
+    /// Give the text box being edited its keyboard and pointer events.
+    /// Returns whether the event was the box's.
+    fn route_text_edit(&mut self, routed: &mut RoutedEvent<'_>, handled: &mut bool) -> bool {
+        if self.editing_text_box().is_none() {
+            return false;
+        }
+        let keyboard = matches!(
+            routed.event,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+        );
+        let pointer = match routed.event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => self.text_edit_box.contains(self.last_mouse),
+            WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => self.text_drag,
+            _ => false,
+        };
+        // The pointer's position always reaches the box, so a press lands
+        // where it was last seen.
+        let moved = matches!(routed.event, WindowEvent::CursorMoved { .. });
+        if !keyboard && !pointer && !moved {
+            return false;
+        }
+        self.ensure_text_editor(routed.state);
+        let Some(editor) = self.text_editor.as_mut() else {
+            return false;
+        };
+        let mut consumed = false;
+        editor.host.handle_event(
+            routed.event,
+            routed.scale_factor,
+            &routed.modifiers,
+            routed.state,
+            routed.path,
+            &mut consumed,
+        );
+        editor.host.sync(routed.state, routed.path);
+        let outcome = editor.host.widget_mut().take_outcome();
+        match routed.event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } => self.text_drag = true,
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                ..
+            } => self.text_drag = false,
+            _ => {}
+        }
+        if outcome.is_some() {
+            // Escape or Ctrl+Enter: done with the words, the box stays selected.
+            debug_assert!(matches!(
+                outcome,
+                Some(FieldOutcome::Submit | FieldOutcome::Cancel)
+            ));
+            self.end_text_edit();
+            consumed = true;
+        }
+        self.reload(routed.state);
+        if keyboard || pointer {
+            // Keys the editor left alone (global undo) fall through to the host.
+            *handled |= consumed || pointer;
+            return true;
+        }
+        false
+    }
+
+    /// Paint the text box being edited: its editor, laid out at the slide's
+    /// size and drawn where the box is, in the box's colour.
+    fn draw_text_editor(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        chrome: &Chrome,
+        pal: &Palette,
+    ) {
+        let Some((_, element)) = self.editing_text_box() else {
+            return;
+        };
+        let background = self.slide().map(|slide| slide.background);
+        let Some(editor) = self.text_editor.as_mut() else {
+            return;
+        };
+        if editor.element_id != element.id {
+            return;
+        }
+        let palette = background.map_or(*pal, |background| pal.on(background));
+        let color = palette.resolve_role(&element.fill).unwrap_or(palette.text);
+        let surface = editor.host.widget_mut();
+        surface.editor_mut().set_body_size(element.font_size as f32);
+        surface
+            .editor_mut()
+            .set_text_align(render::text_align(element.align));
+        editor.host.set_text_color(Some(color));
+        let content_h = editor
+            .host
+            .layout(render::text_box_rect(&element), theme, tr);
+        editor.host.set_transform(render::text_box_transform(
+            chrome.slide_dest,
+            chrome.scale,
+            &element,
+            content_h,
+        ));
+        editor.host.draw(scene, t, tr, theme, &PresenceCtx::empty());
+        self.text_edit_box = render::element_dest(chrome.slide_dest, chrome.scale, &element);
+    }
+
+    /// Rewrite a first-format deck's text as rich text, once, as an action
+    /// that is not an undo step of its own.
+    fn upgrade_text(&mut self, doc: &mut AutoCommit) {
+        if !SlidesDoc::needs_upgrade(doc) {
+            return;
+        }
+        self.perform_action(doc, &actions::SlidesAction::UpgradeText);
+        let _ = self.actions.take_committed();
+        self.reload(doc);
     }
 }
 
@@ -10365,28 +9616,26 @@ mod tests {
         // a selection drag) rather than starting a box move.
         {
             let (mut app, mut doc, _id) = selected_text_app();
-            sized(&mut app, 1280.0, 800.0);
-            app.editing_text = true;
+            edit_frame(&mut app, &mut doc);
             let chrome = app.compute_chrome();
             let er = render::element_dest(
                 chrome.slide_dest,
                 chrome.scale,
                 app.selected_element().unwrap(),
             );
-            let p = er.center();
-            app.last_mouse = p;
-            let mut h = false;
-            app.on_press(&mut doc, p, &mut h);
-            assert!(h, "the press is handled");
+            app_dispatch(&mut app, &mut doc, &cursor_ev(er.center()));
+            assert!(
+                app_dispatch(&mut app, &mut doc, &left_press_ev()),
+                "the press is handled"
+            );
             assert!(
                 app.text_drag,
                 "a press inside the editing box starts a selection drag"
             );
-            assert!(
-                app.caret_click.is_some(),
-                "the click is queued to place the caret"
-            );
             assert!(!app.drag.active(), "the box is not being moved");
+            app_dispatch(&mut app, &mut doc, &release_ev());
+            assert!(!app.text_drag);
+            assert!(app.editing_text, "the box is still being edited");
         }
     }
 
@@ -11060,6 +10309,13 @@ mod tests {
             button: MouseButton::Left,
         }
     }
+    fn release_ev() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        }
+    }
     fn key_event(logical: Key, text: Option<&str>) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical;
@@ -11109,19 +10365,78 @@ mod tests {
         app.on_key(doc, &Key::Named(key), None, Modifiers::default(), &mut h);
         h
     }
-    fn keyc(app: &mut SlidesApp, doc: &mut AutoCommit, ch: &str) -> bool {
-        let mut h = false;
-        app.on_key(
-            doc,
-            &Key::Character(ch.into()),
-            Some(ch),
-            Modifiers::default(),
-            &mut h,
-        );
-        h
-    }
     fn loaded(doc: &AutoCommit) -> Deck {
         crate::doc::SlidesDoc::load(doc).expect("deck round-trips from the document")
+    }
+
+    /// Open the selected text box for editing and draw one canvas frame, so
+    /// its editor is open and laid out where the box is.
+    fn edit_frame(app: &mut SlidesApp, doc: &mut AutoCommit) {
+        if app.rect.width() <= 0.0 {
+            sized(app, 1280.0, 800.0);
+        }
+        app.editing_text = true;
+        Widget::sync(app, doc, &automerge::ROOT);
+        text_frame(app);
+    }
+
+    /// Draw the text box being edited, as the canvas does each frame.
+    fn text_frame(app: &mut SlidesApp) {
+        let chrome = app.compute_chrome();
+        let theme = Theme::dark();
+        let pal = app.palette(&theme);
+        let mut tr = TextRenderer::new();
+        app.draw_text_editor(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &chrome,
+            &pal,
+        );
+    }
+
+    /// The text box editor's block editor.
+    fn text_box(app: &SlidesApp) -> &ui::widget::BlockEditor {
+        app.text_editor
+            .as_ref()
+            .expect("the text box is being edited")
+            .host
+            .widget()
+            .editor()
+    }
+
+    /// The text selected in the text box being edited.
+    fn edit_selection(app: &SlidesApp) -> String {
+        let editor = text_box(app);
+        if let Some(text) = editor.selected_text() {
+            return text;
+        }
+        editor
+            .blocks()
+            .iter()
+            .find(|block| block.line.is_focused())
+            .and_then(|block| {
+                let (start, end) = block.line.selection_range()?;
+                block.text().get(start..end).map(str::to_owned)
+            })
+            .unwrap_or_default()
+    }
+
+    /// The caret's byte offset in the text box's focused paragraph.
+    fn edit_caret(app: &SlidesApp) -> usize {
+        text_box(app)
+            .blocks()
+            .iter()
+            .find(|block| block.line.is_focused())
+            .map_or(0, |block| block.line.cursor_pos())
+    }
+
+    /// Type `text` into the focused field through the app's event path.
+    fn type_text(app: &mut SlidesApp, doc: &mut AutoCommit, text: &str) {
+        for ch in text.chars() {
+            app_dispatch(app, doc, &char_ev(&ch.to_string()));
+        }
     }
     fn sized(app: &mut SlidesApp, w: f64, h: f64) {
         app.rect = Rect::new(0.0, 0.0, w, h);
@@ -11337,95 +10652,34 @@ mod tests {
 
     // --- text caret alignment (was hard-coded to the left edge) -------------
 
-    /// Caret placement under alignment, line moves, Home/End and word-wise moves.
+    /// Caret placement under alignment and word-wise moves.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
     fn caret_navigation_tracks_alignment_and_lines() {
         // Case `caret_tracks_center_and_right_alignment_not_just_left`.
+        // The box's alignment is the editor's: the caret at the end of a short
+        // word sits further right as the box goes from left to centre to right.
         {
-            let app = app_with(Slide::new(Layout::Blank));
-            let mut tr = TextRenderer::new();
-            let er = Rect::new(100.0, 100.0, 700.0, 200.0);
-            let text = "Hello";
-            let end = text.chars().count();
-            let geo = |al: TextAlign, tr: &mut TextRenderer| {
-                let style = TextBoxStyle {
-                    rect: er,
-                    font_px: 40.0,
-                    weight: TextWeight::Regular,
-                    italic: false,
-                    align: al,
-                    center_vertically: true,
-                };
-                app.caret_geometry(tr, text, end, style).0
+            let caret_x = |align: TextAlign| {
+                let mut s = Slide::new(Layout::Blank);
+                let id = s.add(
+                    Element::text("Hello", 100.0, 100.0, 600.0, 120.0, 40.0)
+                        .with(|e| e.align = align),
+                );
+                let (mut app, mut doc) = app_doc(s);
+                app.sel = Some(id);
+                edit_frame(&mut app, &mut doc);
+                assert_eq!(text_box(&app).text_align(), render::text_align(align));
+                app.ime_cursor_rect().expect("the caret is shown").x0
             };
-            let left = geo(TextAlign::Left, &mut tr);
-            let center = geo(TextAlign::Center, &mut tr);
-            let right = geo(TextAlign::Right, &mut tr);
-            // Right-aligned caret at the line end sits at the box's right edge.
-            assert!(
-                (right.x - er.x1).abs() < 1.0,
-                "right caret at line end hits the right edge (x={})",
-                right.x
-            );
-            // The three alignments are genuinely distinct (the old stub returned the
-            // same left-anchored x for every arm).
-            assert!(
-                left.x < center.x && center.x < right.x,
-                "l={} c={} r={}",
-                left.x,
-                center.x,
-                right.x
+            let (left, center, right) = (
+                caret_x(TextAlign::Left),
+                caret_x(TextAlign::Center),
+                caret_x(TextAlign::Right),
             );
             assert!(
-                (center.x - left.x).abs() > 1.0,
-                "center caret differs from the left-anchored position"
+                left < center && center < right,
+                "l={left} c={center} r={right}"
             );
-        }
-
-        // Case `caret_line_move_keeps_column_and_clamps_at_edges`.
-        {
-            let t = "abc\ndef\nghij";
-            // Down/up keep the column.
-            assert_eq!(
-                caret_line_move(t, 2, 1),
-                6,
-                "down from line0 col2 → line1 col2"
-            );
-            assert_eq!(
-                caret_line_move(t, 6, -1),
-                2,
-                "up from line1 col2 → line0 col2"
-            );
-            // A longer column clamps to a shorter target line's length.
-            assert_eq!(
-                caret_line_move(t, 12, -1),
-                7,
-                "up from line2 col4 clamps to line1 col3"
-            );
-            // Edges are no-ops.
-            assert_eq!(
-                caret_line_move(t, 2, -1),
-                2,
-                "up on the first line is unchanged"
-            );
-            assert_eq!(
-                caret_line_move(t, 10, 1),
-                10,
-                "down on the last line is unchanged"
-            );
-        }
-
-        // Case `caret_line_home_end_snaps_within_the_line`.
-        {
-            let t = "abc\ndef";
-            assert_eq!(caret_line_home_end(t, 5, false), 4, "Home → line start");
-            assert_eq!(caret_line_home_end(t, 5, true), 7, "End → line end");
-            assert_eq!(caret_line_home_end(t, 1, false), 0);
-            assert_eq!(caret_line_home_end(t, 1, true), 3);
         }
 
         // Case `ctrl_arrow_moves_word_wise`.
@@ -11443,21 +10697,20 @@ mod tests {
             ));
             let (mut app, mut doc) = app_doc(s);
             app.sel = Some(id);
-            app.editing_text = true;
-            app.place_caret(app.cur_text_len(), false);
-            assert!(key_named_mods(
+            edit_frame(&mut app, &mut doc);
+            app_dispatch_mods(
                 &mut app,
                 &mut doc,
-                NamedKey::ArrowLeft,
-                ModifiersState::CONTROL
-            ));
+                Modifiers::from(ModifiersState::CONTROL),
+                &named_ev(NamedKey::ArrowLeft),
+            );
             assert_eq!(
-                app.active_caret(),
+                edit_caret(&app),
                 6,
                 "ctrl+left jumps to the start of the last word"
             );
             assert!(
-                !app.has_text_selection(),
+                edit_selection(&app).is_empty(),
                 "a plain word move collapses the selection"
             );
         }
@@ -11533,67 +10786,63 @@ mod tests {
         // Case `editing_element_text_types_and_deletes_through_the_crdt`.
         {
             let (mut app, mut doc, id) = selected_text_app();
-            // Enter opens the text editor on the selected box.
+            sized(&mut app, 1280.0, 800.0);
+            // Enter opens the text editor on the selected box, caret at the end.
             assert!(keyn(&mut app, &mut doc, NamedKey::Enter));
             assert!(app.editing_text);
-            assert_eq!(app.caret, "Hi".chars().count());
-            assert!(keyc(&mut app, &mut doc, "!"));
+            edit_frame(&mut app, &mut doc);
+            assert_eq!(edit_caret(&app), "Hi".len());
+            type_text(&mut app, &mut doc, "!");
             assert_eq!(
                 loaded(&doc).slides[0].element(&id).unwrap().text,
                 "Hi!",
                 "typed char persisted"
             );
-            assert!(keyn(&mut app, &mut doc, NamedKey::Backspace));
+            app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Backspace));
             assert_eq!(
                 loaded(&doc).slides[0].element(&id).unwrap().text,
                 "Hi",
                 "backspace persisted"
             );
+            // Enter starts a paragraph; Escape ends editing, box still selected.
+            app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Enter));
+            type_text(&mut app, &mut doc, "yo");
+            assert_eq!(loaded(&doc).slides[0].element(&id).unwrap().text, "Hi\nyo");
+            app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Escape));
+            assert!(!app.editing_text);
+            assert_eq!(app.sel.as_deref(), Some(id.as_str()));
         }
 
         // Case `shift_arrow_extends_a_selection_over_the_crdt_text`.
-        // Shift+Arrow through the real key path builds a live selection over the
-        // CRDT-backed text (the shared `ui` selection core, not a per-app buffer).
         {
             use winit::keyboard::ModifiersState;
             let (mut app, mut doc, _id) = selected_text_app();
-            app.editing_text = true;
-            app.place_caret(app.cur_text_len(), false);
-            assert!(!app.has_text_selection(), "starts with no selection");
-            assert!(key_named_mods(
-                &mut app,
-                &mut doc,
-                NamedKey::ArrowLeft,
-                ModifiersState::SHIFT
-            ));
-            assert!(key_named_mods(
-                &mut app,
-                &mut doc,
-                NamedKey::ArrowLeft,
-                ModifiersState::SHIFT
-            ));
-            assert!(
-                app.has_text_selection(),
-                "shift+arrow builds a live selection"
-            );
-            assert_eq!(app.selected_text(), "Hi", "the selection spans both chars");
+            edit_frame(&mut app, &mut doc);
+            assert!(edit_selection(&app).is_empty(), "starts with no selection");
+            for _ in 0..2 {
+                app_dispatch_mods(
+                    &mut app,
+                    &mut doc,
+                    Modifiers::from(ModifiersState::SHIFT),
+                    &named_ev(NamedKey::ArrowLeft),
+                );
+            }
+            assert_eq!(edit_selection(&app), "Hi", "the selection spans both chars");
         }
 
         // Case `select_all_then_backspace_clears_the_element_text_in_the_crdt`.
-        // Ctrl+A then Backspace clears the whole element text in the CRDT.
         {
             use winit::keyboard::ModifiersState;
             let (mut app, mut doc, id) = selected_text_app();
-            app.editing_text = true;
-            app.place_caret(0, false);
-            assert!(key_char_mods(
+            edit_frame(&mut app, &mut doc);
+            app_dispatch_mods(
                 &mut app,
                 &mut doc,
-                "a",
-                ModifiersState::CONTROL
-            ));
-            assert_eq!(app.selected_text(), "Hi", "Ctrl+A selects the whole text");
-            assert!(keyn(&mut app, &mut doc, NamedKey::Backspace));
+                Modifiers::from(ModifiersState::CONTROL),
+                &char_ev("a"),
+            );
+            assert_eq!(edit_selection(&app), "Hi", "Ctrl+A selects the whole text");
+            app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Backspace));
             assert_eq!(
                 loaded(&doc).slides[0].element(&id).unwrap().text,
                 "",
@@ -11602,12 +10851,11 @@ mod tests {
         }
 
         // Case `typing_over_a_selection_replaces_it_in_the_crdt`.
-        // Typing over a live selection replaces it in the CRDT.
         {
             let (mut app, mut doc, id) = selected_text_app();
-            app.editing_text = true;
-            app.select_all_text();
-            assert!(keyc(&mut app, &mut doc, "X"), "a plain char is inserted");
+            app.begin_text_edit(true);
+            edit_frame(&mut app, &mut doc);
+            type_text(&mut app, &mut doc, "X");
             assert_eq!(
                 loaded(&doc).slides[0].element(&id).unwrap().text,
                 "X",
@@ -11615,38 +10863,28 @@ mod tests {
             );
         }
 
-        // Case `forward_delete_removes_the_char_after_the_caret_in_the_crdt`.
-        // The Delete key forward-deletes the char after the caret in the CRDT.
-        {
-            let (mut app, mut doc, id) = selected_text_app();
-            app.editing_text = true;
-            app.place_caret(0, false);
-            assert!(keyn(&mut app, &mut doc, NamedKey::Delete));
-            assert_eq!(
-                loaded(&doc).slides[0].element(&id).unwrap().text,
-                "i",
-                "Delete removed the first char"
-            );
-        }
-
-        // Case `cut_removes_the_selection_from_the_crdt`.
-        // Ctrl+X copies then removes the selection from the CRDT.
+        // Case `bold_typed_in_a_box_is_a_mark_and_undo_takes_back_a_word`.
         {
             use winit::keyboard::ModifiersState;
             let (mut app, mut doc, id) = selected_text_app();
-            app.editing_text = true;
-            app.select_all_text();
-            assert!(app.copy_selection(), "there is a selection to cut");
-            assert!(key_char_mods(
+            edit_frame(&mut app, &mut doc);
+            type_text(&mut app, &mut doc, " ");
+            app_dispatch_mods(
                 &mut app,
                 &mut doc,
-                "x",
-                ModifiersState::CONTROL
-            ));
-            assert_eq!(
-                loaded(&doc).slides[0].element(&id).unwrap().text,
-                "",
-                "cut removed the selected text from the CRDT"
+                Modifiers::from(ModifiersState::CONTROL),
+                &char_ev("b"),
+            );
+            type_text(&mut app, &mut doc, "bold");
+            let element = loaded(&doc).slides[0].element(&id).unwrap().clone();
+            assert_eq!(element.text, "Hi bold");
+            assert!(
+                element.blocks[0]
+                    .marks
+                    .iter()
+                    .any(|span| span.mark == ui::widget::marks::Mark::Bold && span.range == (3..7)),
+                "{:?}",
+                element.blocks[0].marks
             );
         }
 
@@ -11839,29 +11077,6 @@ mod tests {
 
     // === shared caret / selection core (HIG §3) ===========================
 
-    fn key_named_mods(
-        app: &mut SlidesApp,
-        doc: &mut AutoCommit,
-        key: NamedKey,
-        state: winit::keyboard::ModifiersState,
-    ) -> bool {
-        let mut h = false;
-        let mods = Modifiers::from(state);
-        app.on_key(doc, &Key::Named(key), None, mods, &mut h);
-        h
-    }
-    fn key_char_mods(
-        app: &mut SlidesApp,
-        doc: &mut AutoCommit,
-        ch: &str,
-        state: winit::keyboard::ModifiersState,
-    ) -> bool {
-        let mut h = false;
-        let mods = Modifiers::from(state);
-        app.on_key(doc, &Key::Character(ch.into()), Some(ch), mods, &mut h);
-        h
-    }
-
     // === drag-to-delete zone ==============================================
 
     /// Brokered text reveal and history restore rebinding notes.
@@ -11905,12 +11120,12 @@ mod tests {
             assert_eq!(app.cur_slide, slide_index);
             assert_eq!(app.sel.as_deref(), Some(element_id.as_str()));
             assert!(app.editing_text);
+            let mut doc = doc;
+            edit_frame(&mut app, &mut doc);
             assert_eq!(
-                app.selection(),
-                Selection {
-                    anchor: 0,
-                    cursor: text_len,
-                }
+                edit_selection(&app).chars().count(),
+                text_len,
+                "the revealed text is selected in full"
             );
             assert_eq!(app.mode, Mode::Edit);
         }
@@ -12205,12 +11420,13 @@ mod history_interruption_tests {
             app.sync(&mut doc, &automerge::ROOT);
             assert_eq!(app.notes_input.value(), "TWO ONE Selected notes");
             app.begin_title_edit();
-            app.insert_text(&mut doc, " one");
-            doc.get_heads();
-            app.sync(&mut doc, &automerge::ROOT);
-            app.insert_text(&mut doc, " two");
-            doc.get_heads();
-            app.sync(&mut doc, &automerge::ROOT);
+            for typed in [" one", " two"] {
+                let end = app.deck.title.chars().count();
+                SlidesDoc::splice_title(&mut doc, end, 0, typed);
+                app.reload(&doc);
+                doc.get_heads();
+                app.sync(&mut doc, &automerge::ROOT);
+            }
             assert!(app.editing_title);
             assert!(app.deck.title.ends_with(" one two"));
         }

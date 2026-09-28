@@ -17,6 +17,28 @@ def active_policy() -> str:
 
 
 class BridgeContract(unittest.TestCase):
+    def test_installed_firstboot_files_get_final_etc_labels_before_rename(self):
+        backend = BACKEND.read_text()
+        helper = backend[backend.index('label_installed_tilo_path() {'):]
+        helper = helper[:helper.index('\n}')]
+        self.assertIn('matchpathcon -n -- "$installed"', helper)
+        self.assertIn('chcon -- "$context" "$staged"', helper)
+
+        # The deployed /etc tree is accessed through /run during installation.
+        # Atomic rename retains the temporary inode's label, so each staged
+        # first-boot input must be relabelled before publication.
+        for staged, final, publication in (
+            ('$DEPLOY_ETC/tilo', '/etc/tilo', 'INSTALL_MARKER='),
+            ('$marker_tmp', '/etc/tilo/install-marker', 'mv -f -- "$marker_tmp" "$INSTALL_MARKER"'),
+            ('$AUTOLOGIN_PENDING_TMP', '/etc/tilo/firstboot-autologin-pending', 'mv -f -- "$AUTOLOGIN_PENDING_TMP" "$AUTOLOGIN_PENDING"'),
+            ('$CONF_TMP', '/etc/tilo/install-user.conf', 'mv -f "$CONF_TMP" "$CONF"'),
+            ('$FULL_NAME_TMP', '/etc/tilo/install-user-full-name', 'mv -f "$FULL_NAME_TMP" "$FULL_NAME_CONF"'),
+        ):
+            with self.subTest(final=final):
+                label = f'label_installed_tilo_path "{staged}" {final}'
+                self.assertIn(label, backend)
+                self.assertLess(backend.index(label), backend.index(publication))
+
     def test_selinux_bridge_policy(self):
         with self.subTest(phase="policy_enforces_greeter_and_scopes_bridge"):
             policy = active_policy()

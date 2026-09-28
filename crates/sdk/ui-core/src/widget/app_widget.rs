@@ -1564,6 +1564,34 @@ mod component_adapter {
                 })
                 .unwrap_or(false)
         }
+        fn start_operation(
+            &mut self,
+            op: &crate::widget::ResourceOperation<'_>,
+            doc: &mut AutoCommit,
+            path: &ObjId,
+        ) -> Result<Option<ResourceOperationStart>, String> {
+            // A required operation arrives inside its owner's checked record
+            // frame; it is routed without taking this component's document loan.
+            if op.is_scoped() {
+                return crate::widget::start_in_children(self, op, doc, path);
+            }
+            let binding = self.component.callback_binding();
+            let result = binding
+                .with_document(doc, |document, record_root| {
+                    let Some(root) = self.component.root.as_deref_mut() else {
+                        return Err("component callback refused".into());
+                    };
+                    root.start_operation(op, document, record_root)
+                })
+                .unwrap_or_else(|_| Err("component callback refused".into()));
+            if matches!(result, Ok(Some(ResourceOperationStart::Accepted)))
+                && !self.component.invocations.contains(&op.invocation())
+            {
+                self.component.invocations.push(op.invocation());
+            }
+            result
+        }
+        // Legacy adapters for apps not yet on `Widget::start_operation`.
         fn invoke_resource_operation(
             &mut self,
             kind: tilo_actions::OperationKind,
@@ -1632,6 +1660,7 @@ mod component_adapter {
             }
             result
         }
+        /// Legacy adapter: offered through [`Widget::start_operation`].
         fn start_resource_operation_with_document(
             &mut self,
             invocation: tilo_actions::InvocationId,
@@ -1639,30 +1668,13 @@ mod component_adapter {
             type_id: &str,
             payload: &[u8],
             doc: &mut AutoCommit,
-            _path: &ObjId,
+            path: &ObjId,
         ) -> Result<Option<ResourceOperationStart>, String> {
-            let binding = self.component.callback_binding();
-            let result = binding
-                .with_document(doc, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return Err("component callback refused".into());
-                    };
-                    root.start_resource_operation_with_document(
-                        invocation,
-                        kind,
-                        type_id,
-                        payload,
-                        document,
-                        record_root,
-                    )
-                })
-                .unwrap_or_else(|_| Err("component callback refused".into()));
-            if matches!(result, Ok(Some(ResourceOperationStart::Accepted)))
-                && !self.component.invocations.contains(&invocation)
-            {
-                self.component.invocations.push(invocation);
-            }
-            result
+            self.start_operation(
+                &crate::widget::ResourceOperation::local(invocation, kind, type_id, payload),
+                doc,
+                path,
+            )
         }
         fn poll_resource_operation(
             &mut self,

@@ -73,11 +73,20 @@ fn path_lookup(binary: &str) -> bool {
 /// writes into an unread pipe deadlocks once the child outfills the pipe buffer, which
 /// `nmcli device wifi list` on a busy band is comfortably large enough to do.
 pub(crate) fn run_capture(binary: &str, args: &[&str]) -> Result<String, String> {
+    run_capture_within(binary, args, DEFAULT_TIMEOUT)
+}
+
+/// [`run_capture`] with an explicit deadline.
+fn run_capture_within(
+    binary: &str,
+    args: &[&str],
+    timeout: std::time::Duration,
+) -> Result<String, String> {
     crate::owner::admit(binary)?;
     if !which(binary) {
         return Err(format!("{binary} not installed"));
     }
-    let output = bounded_command::run(binary, args, None, MAX_CAPTURE_BYTES, DEFAULT_TIMEOUT)
+    let output = bounded_command::run(binary, args, None, MAX_CAPTURE_BYTES, timeout)
         .map_err(|error| bounded_error(binary, error))?;
     if !output.status.success() {
         let stderr = sanitized_diagnostic(&output.stderr);
@@ -159,11 +168,12 @@ mod tests {
                 assert!(which("head"), "head is required for the output-limit probe");
                 let bytes = (MAX_CAPTURE_BYTES + 4096).to_string();
                 let args = ["-c", bytes.as_str(), "/dev/zero"];
-                let capture =
-                    run_capture("head", &args).expect_err("oversized stdout must be rejected");
+                // The output ceiling is under test; the deadline only catches a hang.
+                let capture = run_capture_within("head", &args, tilo_test_env::hang_bound())
+                    .expect_err("oversized stdout must be rejected");
                 assert!(capture.contains("output exceeded"), "{capture}");
 
-                let with_input = run_with_input("head", &args, b"", DEFAULT_TIMEOUT)
+                let with_input = run_with_input("head", &args, b"", tilo_test_env::hang_bound())
                     .expect_err("secret-input helper must share the same output ceiling");
                 assert!(with_input.contains("output exceeded"), "{with_input}");
             }
@@ -180,7 +190,9 @@ mod tests {
                     which("sleep"),
                     "`sleep` is required to exercise the run_capture deadline"
                 );
-                let over = DEFAULT_TIMEOUT.as_secs_f64() * 4.0;
+                // The child outlives the hang bound, so returning within it proves the
+                // kill fired at `run_capture`'s own deadline.
+                let over = tilo_test_env::hang_bound().as_secs() * 2;
                 let arg = format!("{over}");
                 let started = Instant::now();
                 let result = run_capture("sleep", &[arg.as_str()]);
@@ -193,9 +205,9 @@ mod tests {
                     "expected a timeout error, got: {err}"
                 );
                 assert!(
-                    elapsed < DEFAULT_TIMEOUT * 2,
-                    "run_capture returned after {elapsed:?}, past its own {DEFAULT_TIMEOUT:?} \
-                     deadline — the kill path did not fire"
+                    elapsed < tilo_test_env::hang_bound(),
+                    "run_capture returned after {elapsed:?}; its {DEFAULT_TIMEOUT:?} kill path did \
+                     not fire"
                 );
             }
         });

@@ -536,10 +536,11 @@ impl UndoLog {
         &mut self,
         doc: &mut AutoCommit,
         entry: &UndoEntry,
+        message: Option<String>,
     ) -> (Vec<ChangeHash>, Vec<ChangeHash>) {
         let inverse_before = doc.get_heads();
         write_revert_patches(doc, &entry.after, &entry.before);
-        let _ = tilo_resource::history::commit_stamped(doc);
+        let _ = tilo_resource::history::commit_stamped_with_message(doc, message);
         let inverse_after = doc.get_heads();
         self.last_heads.clone_from(&inverse_after);
         (inverse_before, inverse_after)
@@ -566,7 +567,7 @@ impl UndoLog {
             return None;
         }
         let entry = self.undo_stack.remove(index);
-        let (before, after) = self.apply_inverse(doc, &entry);
+        let (before, after) = self.apply_inverse(doc, &entry, None);
         push_history(
             &mut self.redo_stack,
             UndoEntry {
@@ -655,7 +656,7 @@ impl UndoLog {
             return None;
         }
         let entry = self.redo_stack.remove(index);
-        let (before, after) = self.apply_inverse(doc, &entry);
+        let (before, after) = self.apply_inverse(doc, &entry, None);
         push_history(
             &mut self.undo_stack,
             UndoEntry {
@@ -720,7 +721,36 @@ impl UndoLog {
         metadata: Option<String>,
         author: Option<UserId>,
     ) -> bool {
-        self.restore_to_heads_owned(doc, target_heads, focused_node_idx, metadata, author, None)
+        self.restore_to_heads_owned(
+            doc,
+            target_heads,
+            focused_node_idx,
+            metadata,
+            author,
+            None,
+            None,
+        )
+    }
+
+    /// See [`State::restore_to_heads_with_context`].
+    pub fn restore_to_heads_with_message(
+        &mut self,
+        doc: &mut AutoCommit,
+        target_heads: &[ChangeHash],
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+        message: Option<String>,
+    ) -> bool {
+        self.restore_to_heads_owned(
+            doc,
+            target_heads,
+            focused_node_idx,
+            metadata,
+            author,
+            None,
+            message,
+        )
     }
 
     pub fn restore_to_heads_in(
@@ -739,6 +769,7 @@ impl UndoLog {
             metadata,
             Some(author),
             Some(instance),
+            None,
         )
     }
 
@@ -754,6 +785,7 @@ impl UndoLog {
         metadata: Option<String>,
         author: Option<UserId>,
         instance_id: Option<InstanceId>,
+        message: Option<String>,
     ) -> bool {
         let current = doc.get_heads();
         if current == target_heads {
@@ -774,7 +806,7 @@ impl UndoLog {
             author: author.clone(),
             instance_id,
         };
-        let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
+        let (inv_before, inv_after) = self.apply_inverse(doc, &entry, message);
         if inv_before == inv_after {
             return false;
         }
@@ -1059,6 +1091,26 @@ impl State {
             focused_node_idx,
             metadata,
             author,
+        )
+    }
+
+    /// [`Self::restore_to_heads`], stamping the restore change with `context`
+    /// so History names it rather than describing its raw patch set.
+    pub fn restore_to_heads_with_context(
+        &mut self,
+        target_heads: &[ChangeHash],
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+        context: &tilo_actions::ActionContext,
+    ) -> bool {
+        self.undo.restore_to_heads_with_message(
+            &mut self.doc,
+            target_heads,
+            focused_node_idx,
+            metadata,
+            author,
+            context.change_message(),
         )
     }
 

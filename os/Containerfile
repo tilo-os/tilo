@@ -26,9 +26,9 @@
 # the exact RPM set (built by os/Containerfile.rpms / the snapshot-rpms CI
 # job), never live Fedora mirrors — so the same source rebuilds the same image
 # regardless of when. RPMS_REF (registry.tilo.so/tilo/rpms@sha256:...) comes from
-# os/rpms-snapshot.env via the build scripts.
+# resolve-rpm-snapshot.sh via the build scripts.
 # ADD/REMOVE A PACKAGE below -> re-run the `snapshot-rpms` workflow (it prints a
-# new RPMS_REF; commit it to os/rpms-snapshot.env), else the build fails "No
+# new set-<fingerprint> tag), else the build fails "No
 # match for argument". The snapshot's package list is derived from this file.
 # All three ARGs are declared here (before the first FROM) so they're in
 # scope for FROM directives. An `ARG NAME` placed between two FROMs is
@@ -62,7 +62,7 @@ ARG TILO_WITH_WINDOWS=1
 # TILO_WITH_BROWSER=0 builds the image without the browser: no WPE WebKit engine
 # stage, no `browser` binary. Default 1 — a normal build is unchanged.
 #
-# The engine stage compiles libwpe + wpebackend-fdo + wpewebkit from source.
+# The engine compiles in os/Containerfile.wpe (libwpe + wpebackend-fdo + wpewebkit).
 # Measure cold and warm durations on the selected native runner; no universal
 # build-time estimate applies across hardware. Nothing about the boot chain
 # (kernel, initramfs, LUKS/TPM unlock, greeter, installer, rollback) depends on
@@ -70,27 +70,10 @@ ARG TILO_WITH_WINDOWS=1
 # out is how you get an image to boot-test in minutes while the browser's own
 # build is being repaired.
 ARG TILO_WITH_BROWSER=1
-# Where the Rust compiler comes from: a registry.tilo.so/tilo/tilo-builder
-# index, pinned by digest, the same one os/Containerfile.dev and the CI check
-# lanes compile with. .forgejo/workflows/build-builder-image.yml installs the
-# channel rust-toolchain.toml names into it for both architectures, and the
-# builder stage takes exactly that channel out of it and fails when the image
-# lacks it. Not Fedora's rust package: its version moves whenever the RPM
-# snapshot is refreshed, and a different compiler emits different code, so
-# the tapps this image packs came out ~1.7 MB larger each than what rcargo and
-# CI measure. The runtime dylib, its libstd and every thin app are linked
-# with -C prefer-dynamic, so all of them must come from this one compiler.
-ARG RUST_TOOLCHAIN_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
 FROM scratch AS public-trust
 COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /
 
 FROM ${RPMS_REF} AS rpms
-FROM ${RUST_TOOLCHAIN_IMAGE} AS rust-toolchain
-
-# The toolchain pin alone, so the builder's toolchain layer is keyed on it and
-# not on the whole workspace.
-FROM scratch AS rust-toolchain-pin
-COPY rust-toolchain.toml /
 
 # Public trust parsing is a build-only operation. The pinned base supplies the
 # OpenSSL CLI while its ABI libraries remain part of the runtime package policy.
@@ -257,38 +240,42 @@ RUN PYTHONPATH=/src/src python3 -m unittest discover -s /src/tests -p 'test_wfd.
     && PYTHONPATH=/src/src python3 /fluxcast-rtsp-receiver.py
 
 
-# ---- Stage 1a: WPE WebKit (browser engine) ----------------------------------
-# The browser's engine is WPE WebKit; Fedora ships no WPE packages, so the
-# stack (libwpe + wpebackend-fdo + wpewebkit) is compiled from release
-# tarballs by the same script developers use locally (os/dev/build-wpe.sh).
-# Configured for prefix=/usr and staged into /wpe: the rust builder overlays
-# it to link `browser --features wpe`, the final image copies it into the
-# rootfs.
-#
-# Fedora's source BuildRequires are resolved only by the protected WPE
-# buildroot snapshot workflow. Production builds consume that per-architecture
-# image by digest and therefore have no Fedora mirror path in this stage.
-FROM ${WPE_BUILDROOT_REF} AS wpe-builder-1
-ARG WPE_BUILD_JOBS=8
-# The engine carries its own dependency epoch, independent of the OS release.
-# Taking the OS commit time here would give every commit a new cache key for
-# the longest compile in the image, although no engine input changed.
-# Expose it to compiler/build tools as well as the layer timestamp normalizer.
-ARG TILO_WPE_SOURCE_DATE_EPOCH=0
-ENV SOURCE_DATE_EPOCH=${TILO_WPE_SOURCE_DATE_EPOCH}
-RUN test -s /usr/lib/tilo/wpe-buildroot-packages.txt \
-    && test "$(cat /usr/lib/tilo/wpe-buildroot-arch)" = "$(uname -m)"
+# ---- Joy-Con pairing daemon -------------------------------------------------
+# joycond (GPL-3.0-only) folds a left and a right Joy-Con into one uinput
+# controller, or releases a single half to be held sideways. Fedora carries it
+# only in COPR, which the frozen snapshot's signature policy cannot admit
+# (os/dev/verify-rpm-snapshot-signatures.sh), so build the pinned upstream
+# commit from snapshot build dependencies. Its udev rules are replaced by
+# os/usr/lib/udev/rules.d/72-joycond.rules, which scopes it to Joy-Cons, and
+# its modules-load snippet moves from /etc to the immutable /usr/lib.
+# tilo-rpm-snapshot-package: libevdev-devel
+FROM ${BASE_REF} AS joycond-builder
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    dnf install -y --setopt=reposdir=/repo \
+      cmake gcc-c++ make pkgconf-pkg-config libevdev-devel systemd-devel \
+    && dnf clean all
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    mkdir -p /src \
+    && tar -xzf /tilo-assets/joycond-0df025a.tar.gz --strip-components=1 -C /src \
+    && cmake -S /src -B /build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build /build --parallel \
+    && DESTDIR=/out cmake --install /build \
+    && install -D -m 0644 /out/etc/modules-load.d/joycond.conf \
+      /out/usr/lib/modules-load.d/joycond.conf \
+    && test -x /out/usr/bin/joycond \
+    && test -f /out/usr/lib/systemd/system/joycond.service
 
-COPY os/dev/build-wpe.sh /build-wpe.sh
-RUN --mount=type=cache,target=/wpe-cache \
-    --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
-    started=$(date +%s) \
-    && trap 'status=$?; printf "TILO_BUILD_TIMING phase=wpe elapsed_seconds=%s exit_code=%s\n" "$(( $(date +%s) - started ))" "$status"; exit "$status"' EXIT \
-    && TILO_WPE_CACHE=/wpe-cache TILO_WPE_SOURCE_DIR=/tilo-assets TILO_WPE_OFFLINE=1 \
-    TILO_WPE_PREFIX=/usr TILO_WPE_DESTDIR=/wpe \
-    JOBS="$WPE_BUILD_JOBS" \
-    bash /build-wpe.sh build \
-    && { [ ! -L /wpe/usr/lib ] || rm /wpe/usr/lib; }
+
+# ---- Stage 1a: WPE WebKit (browser engine) ----------------------------------
+# Compilation lives only in os/Containerfile.wpe. Image entrypoints
+# (os/dev/build-image.sh, the WPE producer, and adoption/import) supply the
+# completed stage as `--build-context wpe-builder=container-image://…`. This
+# stage exists so a forgotten context fails closed instead of compiling here
+# and invalidating WPE receipts on unrelated OS recipe edits.
+FROM ${WPE_BUILDROOT_REF} AS wpe-builder-1
+RUN printf '%s\n' \
+      'WPE compilation lives in os/Containerfile.wpe; supply --build-context wpe-builder=…' >&2 \
+    && exit 1
 
 
 # ---- Stage 1a-off: the same stage with no engine in it ----------------------
@@ -344,8 +331,8 @@ COPY os/app-runtime /build/os/app-runtime
 # BASE_REF, re-run `snapshot-rpms`.
 FROM ${BASE_REF} AS builder
 
-# The C toolchain and -devel deps the workspace's *-sys crates link or build
-# against (the Rust compiler is the pinned release, installed below). Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
+# Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
+# against. Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
 # toolchain a minimal bootc image lacks: cmake/perl/clang etc. that
 # vendored crates (aws-lc-sys, the freetype/harfbuzz/fontconfig font stack,
 # jemalloc, sqlite) need to build. `sccache` honours the project's
@@ -369,7 +356,7 @@ FROM ${BASE_REF} AS builder
 #     flite; shell links the same engine when the browser is built, because
 #     both share one Cargo invocation.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-        sccache capnproto \
+        rust cargo sccache capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
         clang clang-devel pkgconf-pkg-config \
         libxkbcommon-devel wayland-devel \
@@ -385,30 +372,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         nasm \
         gstreamer1-devel gstreamer1-plugins-base-devel \
     && dnf clean all
-
-# The Rust release rust-toolchain.toml pins, out of RUST_TOOLCHAIN_IMAGE (top of
-# file), linked into /usr/local/bin. No rustup: nothing here switches
-# toolchains, and a proxy that read rust-toolchain.toml would try to download.
-RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/rustup/toolchains,target=/run/tilo-rust-toolchains,ro \
-    --mount=type=bind,from=rust-toolchain-pin,source=/rust-toolchain.toml,target=/run/tilo-rust-toolchain.toml,ro \
-    channel="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' /run/tilo-rust-toolchain.toml)" \
-    && [ -n "$channel" ] \
-    && toolchain="$channel-$(uname -m)-unknown-linux-gnu" \
-    && if [ ! -x "/run/tilo-rust-toolchains/$toolchain/bin/rustc" ]; then \
-         printf 'RUST_TOOLCHAIN_IMAGE has no %s toolchain, which rust-toolchain.toml pins (it has: %s).\n' \
-           "$toolchain" "$(ls /run/tilo-rust-toolchains | tr '\n' ' ')" >&2; \
-         printf 'Pin a tilo-builder index built from this rust-toolchain.toml (build-builder-image.yml tags it %s).\n' \
-           "$channel" >&2; \
-         exit 1; \
-       fi \
-    && cp -a "/run/tilo-rust-toolchains/$toolchain" /usr/local/lib/rust-toolchain \
-    && for tool in /usr/local/lib/rust-toolchain/bin/*; do ln -s "$tool" "/usr/local/bin/${tool##*/}"; done \
-    && actual="$(rustc --version | awk '{print $2}')" \
-    && if [ "$actual" != "$channel" ]; then \
-         printf 'the image builder compiles with rustc %s, but rust-toolchain.toml pins %s\n' "$actual" "$channel" >&2; \
-         exit 1; \
-       fi \
-    && cargo --version
 
 # Fedora's sccache RPM is built without the S3 backend. Use the same pinned,
 # full-feature static client as the canonical CI builder so the nested image
@@ -675,13 +638,18 @@ RUN --mount=type=cache,target=/build/.cargo-home \
                     || { cargo clean --release && cargo clean --profile thin-app; } ;; \
          *) printf '%s\n' 'TILO_CARGO_FRESHNESS must be clean or content' >&2; exit 1 ;; \
        esac \
+    # Thin apps use the same package set and features as dist/apps/app-collections.toml
+    # (default collection). Browser stays out of that graph: ui/webview from
+    # browser/wpe otherwise unifies into every tapp and was the ~1.9 MB .text gap
+    # versus CI package-apps (#1158). Ship browser through the separate runtime
+    # below, the same route prebuilt collections already use.
     && if [ "${TILO_WITH_BROWSER}" = "0" ]; then \
-         BROWSER_PKG=""; THIN_EXCLUDES="browser"; THIN_BROWSER_FEATURE=""; \
+         BROWSER_PKG=""; \
        else \
          BROWSER_PKG="-p browser --bin browser --features browser/wpe"; \
-         THIN_EXCLUDES=""; THIN_BROWSER_FEATURE=",browser/wpe"; \
        fi \
-    && APP_FEATURES="music/audio,music/live,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,chat/live-media,mail/live,disks/live,video-editor/decode,video-editor/gst" \
+    && THIN_EXCLUDES="browser" \
+    && APP_FEATURES="music/audio,music/live,video-player/decode,camera/live-capture,tube/live,tube/media,chat/live-media,mail/live,disks/live,video-editor/decode,video-editor/gst" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
@@ -783,7 +751,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          && cp "$RUNTIME_DYLIB" /out/libruntime_dylib.so; \
        else \
          EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
-         APP_FEATURES="${APP_FEATURES}${THIN_BROWSER_FEATURE}" \
+         APP_FEATURES="${APP_FEATURES}" \
            /build/os/scripts/build-thin-apps.sh \
          && for m in /build/apps/*/tilo-app.toml; do \
               p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
@@ -876,17 +844,17 @@ RUN if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
       && rm -f /out/runtime-bundle-identity.json; \
     fi
 
-# A full WPE browser is much larger than the 5 MiB application wire limit.
-# Keep its executable in a separately signed runtime and package only a tiny
-# entrypoint. This leaves the canonical app-size policy intact while giving
-# the browser the same app-store and sandbox route as every other app. The
-# special runtime is needed only when the main app collection was prebuilt;
-# source builds already make the browser thin in the unified runtime graph.
+# A full WPE browser is much larger than the application wire limit, and putting
+# browser/wpe into the thin-app Cargo graph unified ui/webview into every tapp
+# (~1.9 MB of .text on Settings vs CI). Keep the executable in a separately
+# signed runtime and package only a tiny entrypoint for both source and prebuilt
+# collections, matching dist/apps/app-collections.toml which excludes browser.
 ARG TILO_BROWSER_RUNTIME_PUBLISHER=""
 RUN --mount=type=secret,id=browser_runtime_identity \
     : > /out/browser-runtime-publisher.hex \
-    && if [ "${TILO_PREBUILT_APPS}" = 1 ] && [ "${TILO_WITH_BROWSER}" != 0 ]; then \
-         test "${RUNTIME_VERSION}" = 2026.07 \
+    && if [ "${TILO_WITH_BROWSER}" != 0 ]; then \
+         mkdir -p /out/browser-app \
+         && test "${RUNTIME_VERSION}" = 2026.07 \
          && test -x /out/optional/browser \
          && if [ -n "$TILO_BROWSER_RUNTIME_PUBLISHER" ]; then \
               test -s /run/secrets/browser_runtime_identity \
@@ -942,8 +910,7 @@ RUN --mount=type=secret,id=browser_app_identity \
     SHIM_BIN=/out/tilo-cli-shim \
     PUBKEY_OUT=/out/app-publisher.hex \
     /build/os/scripts/pack-apps.sh \
-    && { [ "${TILO_PREBUILT_APPS}" != 1 ] \
-         || [ "${TILO_WITH_BROWSER}" = 0 ] \
+    && { [ "${TILO_WITH_BROWSER}" = 0 ] \
          || { mkdir -p /tmp/browser-package-repo/apps/browser \
             && sed "s#tilo-runtime/${RUNTIME_VERSION}\"#tilo-runtime/2026.7.0-browser\"#" \
                  /build/apps/browser/tilo-app.toml \
@@ -982,6 +949,13 @@ COPY --from=builder /out/ /out/
 COPY --from=builder /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
 COPY --from=builder /usr/share/tilo-apps/ /usr/share/tilo-apps/
 
+# Fedora DNF/RPM record wall-clock transaction times in rpmdb and history.
+# Build the tiny clock shim separately so it does not invalidate Rust/WPE output.
+FROM ${WPE_BUILDROOT_REF} AS dnf-build-clock
+COPY os/scripts/build-clock.c /tmp/build-clock.c
+RUN cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC -shared \
+    /tmp/build-clock.c -o /build-clock.so
+
 # ---- Tilo build outputs, arranged by os/components.toml ---------------------
 # The manifest is the one record of which Tilo-built file lands where. This
 # stage applies it: every file of every image layer is installed under
@@ -1008,6 +982,9 @@ COPY --from=component-files /image/desktop-binaries/ /
 COPY --from=doubletake-builder /out/doubletake /usr/libexec/tilo-doubletake
 COPY --from=doubletake-builder /out/doubletake-test-receiver /usr/libexec/tilo-doubletake-test-receiver
 COPY --from=fluxcast-builder /src/src /usr/libexec/tilo-fluxcast-src
+COPY --from=joycond-builder /out/usr/bin/joycond /usr/bin/joycond
+COPY --from=joycond-builder /out/usr/lib/systemd/system/joycond.service /usr/lib/systemd/system/joycond.service
+COPY --from=joycond-builder /out/usr/lib/modules-load.d/joycond.conf /usr/lib/modules-load.d/joycond.conf
 
 FROM scratch AS remote-capture-files
 COPY os/etc/tilo/desktop.toml /etc/tilo/desktop.toml
@@ -1112,6 +1089,7 @@ COPY os/usr/share/doc/tilo/codec-pack.md /usr/share/doc/tilo/codec-pack.md
 # to be built over the *finished* rootfs (its composefs digest is the digest of
 # what will actually be mounted). See the split/uki/final stages at the end.
 FROM ${BASE_REF} AS rootfs
+ARG SOURCE_DATE_EPOCH=0
 
 # ---- Finalize SQLite's rpmdb after every rpm transaction --------------------
 # rpm's sqlite backend persists `rpmdb.sqlite-wal` and `rpmdb.sqlite-shm` rather
@@ -1184,6 +1162,12 @@ FROM ${BASE_REF} AS rootfs
 # directory. This avoids asking the layer diff to capture a heavily rewritten
 # database inode and turns corruption into an immediate failure.
 COPY --chmod=0755 os/scripts/finalize-rpmdb.sh /usr/libexec/tilo/finalize-rpmdb
+COPY --chmod=0755 os/scripts/clean-dnf-layer-state.sh /usr/libexec/tilo/clean-dnf-layer-state
+COPY --from=dnf-build-clock /build-clock.so /usr/libexec/tilo/build-clock.so
+COPY --chmod=0755 os/scripts/dnf-fixed-time.sh /usr/local/bin/dnf
+COPY --chmod=0755 os/scripts/dnf-fixed-time.sh /usr/local/bin/rpm
+RUN test "$(command -v dnf)" = /usr/local/bin/dnf \
+    && test "$(command -v rpm)" = /usr/local/bin/rpm
 ARG FINALIZE_RPMDB="/usr/libexec/tilo/finalize-rpmdb"
 
 # Graphics stack. `at-spi2-core` supplies the D-Bus-activated org.a11y.Bus
@@ -1389,7 +1373,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
 # boot; advertising languages backed by only glibc-langpack-en would silently
 # apply an unusable LANG value and fall back to English. Keep this curated set
 # in lock-step with os/usr/share/tilo/installer-locales.txt rather than pulling
-# the much larger all-locales archive into every download.
+# the much larger all-locales archive into every download. libevdev is the
+# runtime library of joycond (see joycond-builder).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     chrony \
     zram-generator \
@@ -1415,6 +1400,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     glibc-langpack-zh \
     firewalld \
     bluez \
+    libevdev \
     power-profiles-daemon \
     && dnf clean all && ${FINALIZE_RPMDB}
 
@@ -1557,8 +1543,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     at-spi2-atk \
     libmanette \
     libxslt \
-    && dnf clean all && ${FINALIZE_RPMDB} \
     && ldconfig \
+    && dnf clean all && ${FINALIZE_RPMDB} \
     && gst-inspect-1.0 h264parse >/dev/null \
     && gst-inspect-1.0 hlssink2 >/dev/null \
     && gst-inspect-1.0 pulsesrc >/dev/null \
@@ -1873,7 +1859,17 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     install -D -m 0644 /tilo-assets/doubletake-ae06722-LICENSE \
       /usr/share/licenses/tilo-doubletake/LICENSE \
     && install -D -m 0644 /tilo-assets/fluxcast-a74f39f-LICENSE \
-      /usr/share/licenses/tilo-fluxcast/LICENSE
+      /usr/share/licenses/tilo-fluxcast/LICENSE \
+    && install -D -m 0644 /tilo-assets/joycond-0df025a-LICENSE \
+      /usr/share/licenses/joycond/LICENSE \
+    && printf '%s\n' \
+      'joycond - Nintendo Switch Joy-Con pairing daemon' \
+      'Copyright (C) Daniel J. Ogorchock and joycond contributors' \
+      'License: GPL-3.0-only (see LICENSE)' \
+      'Source: https://github.com/DanielOgorchock/joycond/tree/0df025ac5dc284b1f31172b6b252321ba788c4de' \
+      'Unmodified; built from the source above. /usr/lib/udev/rules.d/72-joycond.rules' \
+      'is adapted from its udev/72-joycond.rules.' \
+      > /usr/share/licenses/joycond/NOTICE
 # PDF rendering and text extraction. Sandboxed apps read /usr/lib64 through
 # the launcher's system read profile, so the viewer finds it without a grant.
 RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
@@ -2090,7 +2086,11 @@ COPY \
 # session so external monitors' brightness can be set over DDC/CI; the
 # tilo-ddc.conf modules-load snippet (copied with the remote-camera one)
 # makes i2c-dev expose them as /dev/i2c-N.
-COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-tilo-io-scheduler.rules os/usr/lib/udev/rules.d/70-tilo-console.rules os/usr/lib/udev/rules.d/70-tilo-ddc.rules /usr/lib/udev/rules.d/
+#
+# 72-joycond.rules hands raw Joy-Con halves to joycond (installed with the
+# desktop binaries), which presents a pair as one combined controller;
+# Pro/SNES/N64 controllers stay with hid-nintendo and Steam.
+COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-tilo-io-scheduler.rules os/usr/lib/udev/rules.d/70-tilo-console.rules os/usr/lib/udev/rules.d/70-tilo-ddc.rules os/usr/lib/udev/rules.d/72-joycond.rules /usr/lib/udev/rules.d/
 
 # Grow the block-backed filesystem at /sysroot. The stock systemd-growfs-root.service
 # targets `/`, which is a composefs overlay here and cannot be grown; the
@@ -2387,7 +2387,9 @@ RUN chmod 0755 /usr/libexec/tilo-windows-vm-network /usr/libexec/tilo-windows-pr
 # pipewire + pipewire-pulse, plus the wireplumber session manager). Printing is
 # socket-activated rather than always-on. Time sync, firewall, Bluetooth,
 # modem, power, homed, hardening, boot assessment, automatic bootc updates and
-# NetworkManager are system services/timers.
+# NetworkManager are system services/timers. joycond is not enabled here:
+# 72-joycond.rules pulls it in when a Joy-Con appears, so it stays off the
+# boot path and off machines that never see one.
 RUN systemctl enable greetd.service && \
     restorecon -v /usr/lib/systemd/user/tilo-graphical-session.target && \
     systemctl disable NetworkManager.service firewalld.service chronyd.service && \
@@ -2655,6 +2657,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     # ldconfig -r in dracut requires absolute include patterns. Fedora's
     # default relative pattern resolves to the same directory without -r.
     sed -i 's@^include ld\.so\.conf\.d/\*\.conf$@include /etc/ld.so.conf.d/*.conf@' /etc/ld.so.conf; \
+    # Build containers do not guarantee a writable /dev/log. Keep -v stderr
+    # diagnostics while disabling the distro's default syslog sink.
+    printf 'sysloglvl=0\n' > /etc/dracut.conf.d/99-tilo-build-logging.conf; \
     dracut --force --reproducible --compress zstd -v --kver "$kver" \
         --omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh" \
         --omit-drivers "ext4 xfs" \
@@ -2874,6 +2879,7 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
     && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
     && bash /usr/local/bin/verify-no-ui-toolkits.sh \
     && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh /usr/local/bin/verify-no-ui-toolkits.sh \
+             /usr/local/bin/dnf /usr/local/bin/rpm /usr/libexec/tilo/build-clock.so \
     && python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py \
     && bootc container lint
 

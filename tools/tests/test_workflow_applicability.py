@@ -88,7 +88,7 @@ jobs:
             self.setUp()
             workflows = {
                 'build-kernel.yml': 'os/kernel/new.config',
-                'tilo-relay.yaml': 'crates/hosting/tilo-relay/src/lib.rs',
+                'release-relay.yml': 'crates/hosting/tilo-relay/src/lib.rs',
                 'fs-fuse.yml': 'crates/system/fs/src/lib.rs',
                 'legacy-app-e2e.yml': 'scripts/legacy-app-caret-e2e.py',
                 'package-desktop.yml': 'dist/VERSION',
@@ -204,7 +204,7 @@ jobs:
         with self.subTest(phase='declared transitive dependency and rename removal match'):
             self.doCleanups()
             self.setUp()
-            paths = gate.declared_paths(ROOT/'.forgejo/workflows/tilo-relay.yaml')
+            paths = gate.declared_paths(ROOT/'.forgejo/workflows/release-relay.yml')
             self.write('crates/doc/qdoc/src/lib.rs', 'dependency')
             head = self.commit()
             self.assertTrue(gate.applicable(self.repo, 'pull_request', self.event(self.base, head), paths)[0])
@@ -287,7 +287,7 @@ jobs:
         with self.subTest(phase='actual declared paths and unsupported shapes'):
             self.doCleanups()
             self.setUp()
-            for name in ('build-kernel.yml', 'tilo-relay.yaml', 'fs-fuse.yml',
+            for name in ('build-kernel.yml', 'release-relay.yml', 'fs-fuse.yml',
                          'legacy-app-e2e.yml', 'package-desktop.yml'):
                 path = ROOT/'.forgejo/workflows'/name
                 declared = gate.declared_paths(path)
@@ -313,7 +313,7 @@ jobs:
                         if line.startswith('      - "')}
 
             helper = 'tools/ci/prepare_pr_history.py'
-            for name in ('build-kernel.yml', 'tilo-relay.yaml'):
+            for name in ('build-kernel.yml', 'release-relay.yml'):
                 with self.subTest(workflow=name):
                     source = (ROOT/'.forgejo/workflows'/name).read_text(encoding='utf-8')
                     self.assertNotIn(helper, event_paths(source, 'push'))
@@ -331,7 +331,7 @@ jobs:
 
             jobs = {
                 'build-kernel.yml': ('build-and-push-kernel',),
-                'tilo-relay.yaml': ('build-and-push',),
+                'release-relay.yml': ('build-and-push',),
                 'fs-fuse.yml': ('real-fuse', 'files-ux'),
                 'legacy-app-e2e.yml': ('caret',),
                 'package-desktop.yml': ('validate',),

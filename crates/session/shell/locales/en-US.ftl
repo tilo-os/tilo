@@ -1,6 +1,10 @@
 # Continuing on this desktop what you were just doing on another device.
 continuity-continue = Continue { $app } from { $device }
 continuity-continue-subtitle = Focus the tab you were just using on { $device }
+continuity-bringing-record = Bringing its document over from another device…
+record-not-kept-here = That document is not kept on this device.
+record-too-large-to-bring = That document is too large to bring over.
+record-offset-past-end = That part of the document does not exist.
 continuity-dismiss-title = Dismiss “Continue { $app } from { $device }”
 continuity-dismiss-subtitle = Hidden until you switch tabs on { $device } again
 continuity-other-device = your other device
@@ -35,11 +39,14 @@ display-confirm-keep = Keep
 display-confirm-revert = Revert
 display-rejected = Couldn't apply this layout: { $reason }
 
-# Keep or revert a change a display tool (kanshi, wlr-randr) made
-display-confirm-tool-title = Keep the display settings { $tool } applied?
-display-confirm-tool-unknown-title = Keep the display settings a tool applied?
-display-confirm-always = Always keep changes from { $tool }
-display-confirm-a11y-description = A display tool changed your screens. Enter keeps the change, Escape restores the previous layout.
+# Keep or revert a risky change a display tool (kanshi, wlr-randr) made:
+# one that could leave a screen blank or turn off the one in use
+display-confirm-tool-title = Keep the display change from { $tool }?
+display-confirm-tool-unknown-title = Keep this display change?
+display-confirm-always = Keep, and don't ask again for { $tool }
+display-confirm-a11y-description = A display tool changed a screen you're using, or picked a mode it hasn't shown before, which can leave it blank. Enter keeps the change; Escape, or waiting, restores the previous layout.
+display-tool-reapply-refused = { $tool } tried to reapply a display layout you reverted
+display-tool-reapply-refused-unknown = A display tool tried to reapply a display layout you reverted
 
 # Wireless receivers, the lower section of the same sheet
 wireless-heading = Wireless displays
@@ -66,14 +73,6 @@ wireless-protocols = Miracast · Google Cast · AirPlay · FCast
 # Identify displays: the card painted on each display
 display-identify-builtin = Built-in display
 display-identify-unnamed = Display { $number }
-
-# The Alt+Tab window switcher.
-window-switcher-title = Switch windows
-window-switcher-description = Windows in this workspace, most recently used first. Hold Alt and press Tab or the arrow keys to move, release Alt to switch, or press Escape to stay.
-window-switcher-app-title = Switch windows of this app
-window-switcher-app-description = This app's windows in this workspace, most recently used first. Hold Alt and press ` to move, release Alt to switch, or press Escape to stay.
-window-switcher-untitled = Untitled window
-window-switcher-caption-paged = { $title } ({ $position } of { $count })
 
 # The overview's row of the current workspace's windows.
 overview-windows-title = Windows in this workspace
@@ -633,17 +632,6 @@ a11y-workspace-name = Workspace name
 a11y-workspace-settings-content = Workspace settings content
 a11y-at-a-glance = At a glance
 
-# Accessibility tree: retained notifications
-a11y-notifications-none = No retained notifications.
-a11y-notifications-description = Showing newest rows { $first } through { $last } of { $total }, grouped by app. Use Up and Down to select a notification, Page Up and Page Down to move a screen, and Home or End to jump to the newest or oldest retained notification. Enter opens the selected notification or folds its app group, and Delete dismisses it.
-a11y-notifications-list = Retained notifications
-a11y-notifications-clear = Clear all notifications
-a11y-notifications-clear-description = Delete this session's retained notification history. An Undo action remains available for eight seconds.
-a11y-notifications-cleared = Notifications cleared
-a11y-notifications-undo = Undo clear notifications
-a11y-notifications-undo-description = Restore the cleared notifications in their original order. Press Enter or Space.
-a11y-notifications = Notifications
-
 # Accessibility tree: clipboard history
 a11y-clipboard-data = Clipboard data
 a11y-clipboard-item-description = From { $source }; { $age }; { $bytes } bytes; { $pinned ->
@@ -814,22 +802,6 @@ follow-stop = Stop
 # Search filter chips
 search-filter-all = All
 
-# Quick Settings: notification history
-qs-notifications-title = Notifications
-qs-notifications-empty = No recent notifications
-qs-notifications-cleared = Notifications cleared
-qs-notifications-clear-all = Clear all
-qs-notifications-position = Newest { $first }–{ $last } of { $total }
-qs-notifications-count = { $count ->
-        [one] { $count } notification
-       *[other] { $count } notifications
-    }
-qs-notifications-source-system = System
-qs-notifications-newer = ↑ Newer
-qs-notifications-at-newest = At newest
-qs-notifications-older = ↓ Older
-qs-notifications-at-oldest = At oldest
-
 # Quick Settings: devices and media rows
 qs-devices-mic-other = Microphone · record from here
 qs-devices-mic-current = Current microphone
@@ -895,6 +867,11 @@ qs-devices-speakers-playing = { $count ->
         [one] { $count } speaker playing · select to stop
        *[other] { $count } speakers playing · select to stop
     }
+qs-devices-speaker-syncing = { $playing } playing, { $syncing } syncing clocks… · select to stop
+qs-devices-speaker-clock-failed = { $count ->
+        [one] { $count } speaker can't play in time: { $reason } · select to stop
+       *[other] { $count } speakers can't play in time: { $reason } · select to stop
+    }
 qs-devices-speaker-setup-note = Stereo pair or room speakers · opens Settings → Speakers
 qs-devices-speaker-membership-note = set up on { $leader } · select to leave
 qs-devices-another-certified = Another certified device
@@ -905,6 +882,8 @@ qs-devices-certified-device = certified device
 qs-devices-audio-awaiting = waiting for approval with { $peer } · select to stop
 qs-devices-audio-streaming = streaming with { $peer } · select to stop
 qs-devices-audio-interrupted = interrupted with { $peer } · select to dismiss
+qs-devices-audio-syncing = syncing clocks with { $peer }… · select to stop
+qs-devices-audio-clock-failed = can't play in time with { $peer }: { $reason } · select to stop
 qs-devices-capture-share = Share this device's { $input }
 qs-devices-capture-requested = { $source } requested this for { $app } · allow once or decline
 qs-devices-capture-use-remote = Use remote { $input }
@@ -996,26 +975,6 @@ qs-wifi-protected = This network is protected
 
 # Retained history: sources and severities
 history-this-device = This device
-history-severity-info = Information
-history-severity-warning = Warning
-history-severity-error = Error
-history-source-system = System
-history-notification-description = { $severity }. From { $source }. { $time }
-history-notification-description-body = { $severity }. From { $source }. { $time }. { $body }
-
-# Notification center rows
-notification-center-group-description = { $count } notifications. Press Enter to { $expanded ->
-        [yes] collapse
-       *[no] expand
-    }, Delete to dismiss them all.
-notification-center-dismiss-all = Dismiss all from { $app }
-notification-center-dismiss = Dismiss
-notification-center-hand-to = Hand to { $agent }
-notification-center-hand-to-description = Give this notification to the workspace agent as a task.
-notification-center-group-count = { $count ->
-        [one] { $count } notification
-       *[other] { $count } notifications
-    }
 
 # On-screen display for the hardware keys
 osd-play = Play
@@ -1057,13 +1016,6 @@ status-other-displays-a11y = Other displays
 
 # Notification toasts
 notification-source-caption = { $app } · From { $device }
-notification-lock-count = { $count ->
-    [one] 1 notification
-   *[other] { $count } notifications
-}
-notification-dnd-held = { $status } · { $count } held
-notification-stack-a11y = Notifications
-notification-group-system = System
 notification-app-host-apps = Host Apps
 notification-app-power = Power
 notification-remote-input-stopped = Remote input stopped
@@ -1210,82 +1162,6 @@ portal-capture-default-microphone = Default microphone
 portal-capture-default-camera = Default camera
 portal-capture-primary-display = Primary display
 portal-capture-system-audio = System audio
-
-# People panel, as assistive technology reads it
-a11y-shell-people = People
-a11y-shell-people-description = Live workspace presence, current activity, intent, and status privacy controls
-a11y-shell-people-screen-visible = Screen visible now: { $exposure }
-a11y-shell-people-here-now = People here now
-a11y-shell-people-agent = Agent
-a11y-shell-people-invited = Invited, not currently present
-a11y-shell-people-present = Present now
-a11y-shell-people-now = Now: { $activity }
-a11y-shell-people-intent = Intent: { $status }
-a11y-shell-people-intent-inferred = Intent, inferred: { $status }
-a11y-shell-status-name = Your collaboration status
-a11y-shell-status-inferred = Inferred on this device from recent semantic actions
-a11y-shell-status-set = Set what you are trying to accomplish
-a11y-shell-status-automatic = Automatic status
-a11y-shell-status-manual = Manual status only
-a11y-shell-status-off = Hide status
-a11y-shell-status-automatic-description = Infer a short status locally from recent workspace actions
-a11y-shell-status-manual-description = Share only text you enter yourself
-a11y-shell-status-off-description = Publish no status to this workspace
-a11y-shell-follow-collaborator = Follow collaborator
-a11y-shell-follow = Follow { $name }
-a11y-shell-follow-description = Mirror this participant's live workspace view
-a11y-shell-people-previous = Previous people
-a11y-shell-people-previous-description = Show the previous people in this workspace
-a11y-shell-people-next = Next people
-a11y-shell-people-next-description = Show the next people in this workspace
-a11y-shell-invite = Invite people
-a11y-shell-invite-description = Create an authenticated workspace invitation
-a11y-shell-join = Join workspace
-a11y-shell-join-description = Connect using an authenticated invitation
-a11y-shell-workspace-activity = Workspace activity
-a11y-shell-workspace-activity-description = Review grouped outcomes and what happened while you were away
-
-# Empty-workspace launchpad
-a11y-shell-launchpad-title = Make something together
-a11y-shell-launchpad-description = Choose a shared conversation, notes, tasks, meeting, invitation, or workspace activity.
-a11y-shell-launchpad-open-app = Open an app
-a11y-shell-launchpad-discuss = Discuss
-a11y-shell-launchpad-notes = Notes
-a11y-shell-launchpad-tasks = Tasks
-a11y-shell-launchpad-meet = Plan a meeting
-a11y-shell-launchpad-invite = Invite people
-a11y-shell-launchpad-activity = Catch up
-a11y-shell-launchpad-discuss-detail = Open the shared conversation
-a11y-shell-launchpad-notes-detail = Write ideas together
-a11y-shell-launchpad-tasks-detail = Plan work in Calendar
-a11y-shell-launchpad-meet-detail = Open Chat, then start a voice or video call
-a11y-shell-launchpad-invite-detail = Bring someone into this workspace
-a11y-shell-launchpad-activity-detail = See what changed and why
-
-# Workspace wheel
-a11y-shell-wheel = Workspace wheel
-a11y-shell-wheel-switch = Switch to { $workspace }
-a11y-shell-wheel-add = Add a workspace
-
-# The emoji picker (Super+. by default)
-emoji-picker-title = Emoji
-emoji-picker-search = Search emoji
-emoji-picker-groups = Emoji categories
-emoji-picker-recent = Recently used
-emoji-picker-results = Matching emoji
-emoji-picker-no-results = No emoji found
-emoji-picker-hint = Enter inserts · Esc closes
-emoji-picker-hint-tones = Enter inserts · Shift+Enter picks a skin tone
-emoji-picker-tones = Skin tones
-emoji-picker-tones-hint = Right-click, long-press or Shift+Enter for skin tones
-emoji-picker-a11y-description = Type to search. The arrow keys move between emoji, Tab changes the category, Enter inserts the highlighted emoji into the text field you were typing in, Shift+Enter picks a skin tone, Escape closes.
-# An emoji in a skin tone: "thumbs up, medium skin tone".
-emoji-picker-toned = { $name }, { $tone }
-emoji-picker-tone-light = light skin tone
-emoji-picker-tone-medium-light = medium-light skin tone
-emoji-picker-tone-medium = medium skin tone
-emoji-picker-tone-medium-dark = medium-dark skin tone
-emoji-picker-tone-dark = dark skin tone
 
 # The remark surface: say something about any part of any app, pick mode,
 # recording and review before sending.
@@ -2253,312 +2129,6 @@ peer-sync-token-characters = { $token } · { $count ->
 }
 peer-sync-token-incomplete = Not a whole invite yet
 
-# Workspace settings: permission roles and ownership on the action door
-workspace-settings-roles-resource = { $workspace } permission roles
-workspace-settings-role-save = Create or update permission role
-workspace-settings-role-save-placeholder = Role name
-workspace-settings-role-save-description = Save a reusable least-privilege role made from app, action, file, resource, or workspace capability rules.
-workspace-settings-role-assign = Assign permission role
-workspace-settings-role-assign-placeholder = Role and collaborator
-workspace-settings-role-assign-description = Assign a saved least-privilege role to a person, application, or agent.
-workspace-settings-role-assign-named = Assign { $role }
-workspace-settings-role-assign-named-placeholder = Collaborator identity
-workspace-settings-app-action-placeholder = App and action
-workspace-settings-app-action-grant = Let an app use another app's action
-workspace-settings-app-action-grant-description = Grant one application the use of one action another application publishes, in this workspace.
-workspace-settings-app-action-revoke = Stop an app using another app's action
-workspace-settings-app-action-revoke-description = Take back every grant letting one application use another application's action in this workspace.
-workspace-settings-ownership-resource = { $workspace } ownership
-workspace-settings-ownership-propose = Propose ownership transfer
-workspace-settings-ownership-propose-placeholder = Recipient identity
-workspace-settings-ownership-propose-description = Your signature authorizes ownership to transfer immediately if this exact administrator accepts before expiry.
-workspace-settings-ownership-accept = Accept workspace ownership
-workspace-settings-ownership-accept-description = Acceptance immediately transfers ownership; generic role controls cannot perform this action.
-workspace-settings-ownership-accept-phrase = Accept ownership
-workspace-settings-ownership-cancel = Cancel ownership transfer
-workspace-settings-ownership-cancel-description = Cancel the pending offer before the recipient accepts it.
-
-# Workspace settings: tabs and frame
-workspace-settings-title = Workspace Settings
-workspace-settings-close = Close Settings
-workspace-settings-tab-general = General
-workspace-settings-tab-people = People
-workspace-settings-tab-agents = Agents
-workspace-settings-tab-privacy-security = Privacy & Security
-workspace-settings-tab-privacy = Privacy
-workspace-settings-tab-apps-files = Apps & Files
-workspace-settings-tab-apps = Apps
-workspace-settings-close-hint = Press Esc to close
-workspace-settings-edit-hint = Enter to save · Esc to cancel
-
-# Workspace settings: roles
-workspace-settings-role-owner = Owner
-workspace-settings-role-editor = Editor
-workspace-settings-role-commenter = Commenter
-workspace-settings-role-viewer = Viewer
-workspace-settings-role-blocked = Blocked
-workspace-settings-role-admin = Admin
-workspace-settings-role-guest = Guest
-workspace-settings-role-owner-preview = Can manage people, permissions, and workspace settings.
-workspace-settings-role-editor-preview = Can view, comment on, and edit shared work.
-workspace-settings-role-commenter-preview = Can view shared work and add comments, but cannot edit it.
-workspace-settings-role-viewer-preview = Can view shared work, but cannot comment or edit it.
-workspace-settings-role-blocked-preview = Cannot access this workspace.
-
-# Workspace settings: what a capability covers, on its own
-workspace-settings-scope-workspace = this workspace
-workspace-settings-scope-app = the { $app } app
-workspace-settings-scope-workspace-files = workspace files
-workspace-settings-scope-workspace-folder = “{ $folder }” in this workspace
-workspace-settings-scope-path = files under { $path }
-workspace-settings-scope-record = one shared file ({ $id })
-workspace-settings-scope-agent = operating the agent { $agent }
-workspace-settings-scope-camera = the camera
-workspace-settings-scope-microphone = the microphone
-workspace-settings-scope-screencast = screen capture
-workspace-settings-scope-remote-desktop = remote pointer + keyboard
-workspace-settings-scope-any-host = any network host
-workspace-settings-scope-host = network host { $host }
-workspace-settings-scope-action = “{ $action }” in { $app }
-workspace-settings-scope-resource-type = { $kind ->
-    [note] every note
-    [file] every file
-    [cluster] every saved cluster
-    [kanban] every board
-   *[chat-log] every chat log
-}
-workspace-settings-scope-resource-instance = one document ({ $id })
-
-# Workspace settings: what a capability covers, as the object of what it allows
-workspace-settings-scope-workspace-object = this workspace
-workspace-settings-scope-app-object = the { $app } app
-workspace-settings-scope-workspace-files-object = workspace files
-workspace-settings-scope-workspace-folder-object = “{ $folder }” in this workspace
-workspace-settings-scope-path-object = files under { $path }
-workspace-settings-scope-record-object = one shared file ({ $id })
-workspace-settings-scope-agent-object = operating the agent { $agent }
-workspace-settings-scope-camera-object = the camera
-workspace-settings-scope-microphone-object = the microphone
-workspace-settings-scope-screencast-object = screen capture
-workspace-settings-scope-remote-desktop-object = remote pointer + keyboard
-workspace-settings-scope-any-host-object = any network host
-workspace-settings-scope-host-object = network host { $host }
-workspace-settings-scope-action-object = “{ $action }” in { $app }
-workspace-settings-scope-resource-type-object = { $kind ->
-    [note] every note
-    [file] every file
-    [cluster] every saved cluster
-    [kanban] every board
-   *[chat-log] every chat log
-}
-workspace-settings-scope-resource-instance-object = one document ({ $id })
-
-# Workspace settings: what a capability allows
-workspace-settings-allows-control = Control { $what }
-workspace-settings-allows-use = Use { $what }
-workspace-settings-allows-reach = Reach { $what }
-workspace-settings-allows-run = Run { $what }
-workspace-settings-allows-administer = Administer { $what }
-workspace-settings-allows-edit = Edit { $what }
-workspace-settings-allows-comment = Comment on { $what }
-workspace-settings-allows-invite = Invite others to { $what }
-workspace-settings-allows-view = View { $what }
-
-# Workspace settings: how long a grant lasts and who made it
-workspace-settings-expiry-once = Once
-workspace-settings-expiry-session = Session
-workspace-settings-expiry-until = Until
-workspace-settings-expiry-always = Always
-workspace-settings-granted-by-person = granted by { $id }
-workspace-settings-granted-by-app = granted by the { $app } app
-workspace-settings-granted-by-agent = granted by agent { $id }
-workspace-settings-granted-by-token = granted by token { $id }
-workspace-settings-granted-by-workspace = granted by workspace { $id }
-workspace-settings-permission-detail = { $allows } · { $grantor }
-
-# Workspace settings: who a permission is for
-workspace-settings-section-apps = Apps
-workspace-settings-section-app-actions = App actions
-workspace-settings-section-people = People
-workspace-settings-section-agents = Agents
-workspace-settings-section-roles = Roles
-workspace-settings-section-other = Other
-workspace-settings-subject-role = everyone with { $role }
-workspace-settings-subject-token = token { $id }
-workspace-settings-subject-workspace = workspace { $id }
-
-# Workspace settings: what the grant composer can allow
-workspace-settings-grant-camera = Camera
-workspace-settings-grant-microphone = Microphone
-workspace-settings-grant-screencast = Screen capture
-workspace-settings-grant-remote-control = Remote control
-workspace-settings-grant-network = Network access
-workspace-settings-grant-read-files = Read workspace files
-workspace-settings-grant-edit-files = Edit workspace files
-workspace-settings-grant-create-roles = Create permission roles
-workspace-settings-grant-assign-roles = Assign permission roles
-
-# Workspace settings: agent profiles
-workspace-settings-preset-observer = Observer
-workspace-settings-preset-contributor = Contributor
-workspace-settings-preset-operator = Operator
-workspace-settings-preset-custom = Custom
-workspace-settings-preset-observer-hint = Read only on surfaces you select
-workspace-settings-preset-contributor-hint = Read/write only on surfaces you select
-workspace-settings-preset-operator-hint = Run only approved app actions
-workspace-settings-preset-custom-hint = Review every scoped permission
-
-# Workspace settings: People tab
-workspace-settings-members-count = { $count ->
-    [one] 1 person shares this workspace
-   *[other] { $count } people share this workspace
-}
-workspace-settings-members-help = Removing someone blocks future sync and edits; copies already downloaded stay with them.
-workspace-settings-ownership = Ownership
-workspace-settings-you-manage = You manage
-workspace-settings-view-only = View only
-workspace-settings-members-empty-title = No one else is in this workspace
-workspace-settings-members-empty-detail = Create a signed invite from the General tab to add someone.
-workspace-settings-people-header = PEOPLE
-workspace-settings-ownership-offered = { $owner } offered you ownership. Review the workspace and explicitly accept before the offer expires.
-workspace-settings-ownership-waiting = Waiting for { $recipient } to explicitly accept ownership. You can cancel until acceptance.
-workspace-settings-ownership-pending = Ownership transfer to { $recipient } is awaiting that person's acceptance.
-workspace-settings-you = You
-workspace-settings-member-detail = { $count ->
-    [0] { $role } · no extra permissions
-    [one] { $role } · 1 extra permission
-   *[other] { $role } · { $count } extra permissions
-}
-workspace-settings-remove = Remove
-workspace-settings-owner-only = Only the workspace owner can change permissions.
-
-# Workspace settings: Agents tab
-workspace-settings-agents-count = { $count ->
-    [one] 1 agent collaborator
-   *[other] { $count } agent collaborators
-}
-workspace-settings-agents-help = Agents are visibly non-human collaborators. Admission grants no ambient workspace power.
-workspace-settings-add-agent = Add agent
-workspace-settings-recording-toggle = Members may record
-workspace-settings-agent-delegated = Records for a member · controlled by “Members may record”
-workspace-settings-add-triage-agent = Add the triage agent
-workspace-settings-agent-triage-note = The Tilo team’s triage agent helps sort reports here
-workspace-settings-triage-direct-rooms = Triage in direct rooms
-workspace-settings-agents-empty-title = No agents have access
-workspace-settings-agents-empty-detail = Start with a safe profile, then review each exact surface.
-workspace-settings-agents-header = AGENTS
-workspace-settings-service-member = Service member · { $access ->
-    [admin] administers
-    [write] reads and edits
-    [comment] reads and comments
-   *[read] reads
-} end-to-end encrypted content · { $until } · device { $device }
-workspace-settings-service-until-removed = until removed
-workspace-settings-service-ends-soon = access ends within a minute
-workspace-settings-service-ends-minutes = access ends in { $minutes } min
-workspace-settings-service-ends-hours = access ends in { $hours } h
-workspace-settings-badge-service = SERVICE
-workspace-settings-badge-agent = AGENT
-workspace-settings-agent-detail = { $count ->
-    [0] { $admission } · no scoped permissions — review required
-    [one] { $admission } · { $profile } profile · 1 scoped permission
-   *[other] { $admission } · { $profile } profile · { $count } scoped permissions
-}
-workspace-settings-admitted = Admitted
-workspace-settings-review-access = Review access
-workspace-settings-revoke = Revoke
-workspace-settings-admission-admin = Admin admission
-workspace-settings-admission-write = Write admission
-workspace-settings-admission-comment = Comment admission
-workspace-settings-admission-read = Read admission
-
-# Workspace settings: Apps & Files tab
-workspace-settings-unavailable-app = Unavailable app
-workspace-settings-apps-empty-title = No file handlers installed
-workspace-settings-apps-empty-detail = Apps appear here after they declare supported file types.
-workspace-settings-apps-intro-title = Defaults without lock-in
-workspace-settings-apps-intro-detail = The workspace supplies a baseline; each person can explicitly choose something else.
-workspace-settings-apps-header = DEFAULT APPLICATIONS
-workspace-settings-workspace-choice = Workspace choice
-workspace-settings-your-choice = Your choice
-workspace-settings-follow-personal = Follow personal defaults
-workspace-settings-use-workspace-choice = Use workspace choice
-workspace-settings-use-personal-default = Use my personal default
-workspace-settings-apps-file-types = { $count ->
-    [one] 1 file type
-   *[other] { $count } file types
-}
-workspace-settings-apps-custom-rules = { $count ->
-    [one] 1 custom rule
-   *[other] { $count } custom rules
-}
-
-# Workspace settings: Privacy & Security tab
-workspace-settings-permissions-intro-title = Access is explicit and revocable
-workspace-settings-permissions-intro-detail = Grants are enforced by the app sandbox and stay scoped to this workspace.
-workspace-settings-active-grants = { $count ->
-    [one] 1 active grant
-   *[other] { $count } active grants
-}
-workspace-settings-permissions-empty-title = No permissions granted
-workspace-settings-permissions-empty-detail = Apps get nothing until it is granted here or approved in a prompt.
-workspace-settings-more = +{ $count } more
-workspace-settings-who = Who
-workspace-settings-who-agent = Who · AGENT (only this surface; no ambient workspace access)
-workspace-settings-nobody-to-grant = Nobody to grant to yet — invite someone, or open an app here.
-workspace-settings-what-it-allows = What it allows
-workspace-settings-grant-header = GRANT A PERMISSION
-workspace-settings-saved-roles = { $count ->
-    [one] 1 SAVED ROLE · MANAGE
-   *[other] { $count } SAVED ROLES · MANAGE
-}
-workspace-settings-expiry-caption = Until
-workspace-settings-grant = Grant
-
-# Workspace settings: confirmation sheets
-workspace-settings-role-sheet-title = Choose workspace access
-workspace-settings-role-sheet-description = { $person } is currently { $role }. Choose exactly what they can do.
-workspace-settings-remove-sheet-title = Remove this person?
-workspace-settings-remove-sheet-description = They will stop receiving future sync and edits. Downloaded copies remain on their devices.
-workspace-settings-revoke-sheet-title = Revoke this permission?
-workspace-settings-revoke-sheet-description = The selected capability will stop applying immediately. Review its activity first if you are unsure.
-workspace-settings-keep-access = Keep access
-workspace-settings-review-activity = Review activity first
-workspace-settings-remove-person = Remove person
-workspace-settings-no-changes = No changes are made.
-workspace-settings-open-history = Open workspace history before deciding.
-workspace-settings-remove-person-detail = This removes their workspace capabilities.
-workspace-settings-keep-permission = Keep permission
-workspace-settings-revoke-permission = Revoke permission
-workspace-settings-revoke-permission-detail = This removes the selected capability immediately.
-
-# Workspace settings: General tab
-workspace-settings-workspace-fallback = Workspace
-workspace-settings-identity-caption = Workspace · { $role }
-workspace-settings-current-workspace = CURRENT WORKSPACE
-workspace-settings-role-policy-line = { $role } · Settings and policy stay with this workspace
-workspace-settings-identity-title = Workspace identity
-workspace-settings-identity-description = This name appears in the top bar, invites, and shared activity.
-workspace-settings-rename-admin-only = Only a workspace administrator can rename this workspace.
-workspace-settings-invite-hint = Choose a person and role; Tilo signs a one-hour invite.
-workspace-settings-invite-admin-only = Only a governing administrator can create workspace invites.
-workspace-settings-invite-create = Create
-workspace-settings-invite-title = Invite people
-workspace-settings-invite-description = Invites bind the workspace, recipient role, expiry and this device's identity.
-workspace-settings-glance-title = At a glance
-workspace-settings-stat-members = { $count ->
-    [one] member
-   *[other] members
-}
-workspace-settings-stat-grants = { $count ->
-    [one] specific grant
-   *[other] specific grants
-}
-workspace-settings-stat-app-rules = { $count ->
-    [one] app rule
-   *[other] app rules
-}
-
 # Leftover shell notices: document opens, host app provenance, quiet status, collaboration
 doc-open-failed = Couldn't open { $name }
 doc-open-unnamed-file = File
@@ -2580,30 +2150,7 @@ state-notice-unreadable-body = The file could not be read. Nothing was changed.
 state-notice-newer-detail = { $path } was written by a newer version of Tilo (layout { $found }; this one understands { $understood }). It has not been changed, and nothing has been written over it — this session runs without saving, so it cannot be. Update again, or roll forward, to get back to your own workspaces.
 state-notice-unreadable-detail = { $path } exists but could not be read ({ $error }). It has not been changed, and this session runs without saving, so it cannot be.
 
-# People popover
-people-panel-here-now = { $count } here now
-people-panel-screen-visible = Screen visible now
-people-panel-only-you = Only you are here
-people-panel-status-typing = Type a status, then press Enter
-people-panel-status-empty = Set what you're working toward…
-people-panel-own-status = You · { $status }
-people-panel-sharing-auto = ✦ Auto
-people-panel-sharing-manual = Manual
-people-panel-sharing-hidden = Hidden
-people-panel-agent-tag = agent
-people-panel-invited-tag = invited
-people-panel-following = Following
-people-panel-following-activity = Following · { $activity }
-people-panel-viewing = Viewing { $title }
-people-panel-follow = Follow
-people-panel-stop-following = Stop
-people-panel-invite = Invite
-people-panel-join = Join
-
 # Workspace overview: who is in a room and what it shares
-overview-empty-window = Empty window
-overview-access-nobody = No one has access
-overview-access-private = Private to you
 overview-access-shared-one = Shared with { $name }
 overview-access-shared-two = Shared with { $first } and { $second }
 overview-access-shared-many = { $count ->
@@ -2614,12 +2161,6 @@ overview-items-shared = { $count ->
     [one] 1 item shared
    *[other] { $count } items shared
 }
-overview-presence-you = You are here
-overview-presence-you-and-one = You and { $name } are here
-overview-presence-you-and-many = You and { $count } others are here
-overview-presence-one = { $name } is here
-overview-presence-many = { $count } people are here
-overview-collaborators-here = { $count } collaborators are here
 
 # Windows and documents the shell hosts
 shell-window-restoring = Restoring this window…
@@ -2639,10 +2180,67 @@ window-move-unknown-workspace = That workspace is gone.
 window-move-same-workspace = The window is already in that workspace.
 window-move-pinned = This window belongs to its workspace and cannot move.
 window-move-document-refused = The workspace document did not accept the change, so nothing was moved.
+window-move-hosted-workspace = That workspace is run by its owner, and this device can't reach it right now, so windows can't be carried into or out of it.
+window-move-not-permitted = That workspace doesn't let you open this app there.
+window-move-already-moving = This window is already being moved.
+window-move-nobody-to-confirm = Moving a window needs the person at this desktop to agree to what crosses, and nobody is here to ask.
+window-transfer-title = Move “{ $window }” to { $to }?
+window-transfer-carries = The document in “{ $window }” goes to { $to } with its full edit history, and the window reopens there where you left it.
+window-transfer-move-detail = Move: it leaves { $from }, whose history keeps a note that it moved to { $to }.
+window-transfer-copy-detail = Copy: { $to } gets its own copy with the history so far, the original stays in { $from }, and from then on the two change separately.
+window-transfer-access-only-you = Only you can open it in { $from }.
+window-transfer-access-others = In { $from }, { $people } can open it now. After a move they lose access; after a copy they keep the original.
+window-transfer-access-destination = In { $to }, that workspace's members and permissions decide who can open it.
+window-transfer-grants-stay = What this app may do in { $from } stays there and doesn't come along: { $grants }.
+window-transfer-move-blocked = Move isn't available because another window in { $from } still shows this document. Close that window first, or make a copy.
+window-transfer-choice-move = Move — { $from } no longer has it
+window-transfer-choice-copy = Copy — { $from } keeps the original
+window-transfer-confirm = Continue
+window-transfer-fresh-title = “{ $window }” can't take its work to { $to }
+window-transfer-fresh-detail = This app keeps what you're doing inside its running program, so none of it can cross into another workspace. “{ $window }” stays open in { $from }, unchanged. You can open a new, empty window of the app in { $to } instead.
+window-transfer-choice-fresh = Open a new window in { $to }
+window-transfer-fresh-confirm = Open
+window-transfer-failed-title = Couldn't move “{ $window }”
+window-transfer-failed-detail = { $reason } Nothing was lost: the document is still in { $from }.
+window-transfer-failed-busy = The app still has the document open.
+window-transfer-failed-record = The app's document couldn't be read.
+window-transfer-failed-storage = The app's storage couldn't be reached.
+window-transfer-failed-timeout = The app didn't open a window in the other workspace in time.
+window-transfer-failed-closed = The new window was closed before it opened.
+window-transfer-reopen-failed = The document is here, but the app didn't open a window. Open it again to continue.
+window-transfer-bringing-edits = Bringing over your last edits…
+window-transfer-receipt-copied = Copied “{ $window }” here from { $from }
+window-transfer-receipt-moved-out = Moved “{ $window }” to { $to }
+window-transfer-receipt-moved-in = Moved “{ $window }” here from { $from }
+window-transfer-lost-title = “{ $window }” closed while it was moving
+window-transfer-lost-detail = The app closed unexpectedly, so edits from its last few seconds may be missing. Everything it had saved is now in { $to }.
+window-transfer-late-edits-title = Your last edits in “{ $window }” came along
+window-transfer-late-edits-detail = Changes made in { $from } while the window was moving were added to the document.
+window-transfer-move-needs-window = Move needs the window open in { $from }, so it can mark the original as moved there. Open it first, or make a copy.
+window-transfer-owner-accepts = { $to } is run by its owner, who has to accept the document before it opens there.
+window-transfer-awaiting-owner = Waiting for the owner of { $to } to accept it…
+window-transfer-too-large-hosted = It is too large to move into { $to } yet.
+window-transfer-proposal-failed = { $to } didn't take it: { $reason }
+window-transfer-declined = The owner of { $to } declined it.
+window-transfer-owner-timeout = The owner of { $to } didn't answer in time.
+window-transfer-kept-as-copy-title = “{ $window }” was copied, not moved
+window-transfer-kept-as-copy-detail = It changed in { $from } while the owner of { $to } decided, so both stay. { $to } has it as it was when you moved it.
+window-transfer-not-retired-title = “{ $window }” is still in { $from }
+window-transfer-not-retired-detail = Its window closed before it could mark the document as moved, so the original stays in { $from } as well.
+window-transfer-late-edits-stay-title = Your last edits stayed in { $from }
+window-transfer-late-edits-stay-detail = Changes made in { $from } just before its window closed are in the document's history there, not in { $to }.
+document-import-title = Accept “{ $title }” into { $to }?
+document-import-detail = { $person } wants to move “{ $title }” ({ $app }) into { $to }, with its history. Everyone in { $to } will be able to open it.
+document-import-accept = Accept it into { $to }
+document-import-decline = Decline
+document-import-confirm = Answer
+document-import-someone = Someone
+document-import-answer-failed-title = Your answer about “{ $title }” didn't reach its workspace
+window-transfer-moved-away-title = “{ $window }” was moved to another workspace
+window-transfer-moved-away-to = { $person } moved it to { $to }, where it opens for you now. What you see here is how it was when it left; it can't be edited here any more.
+window-transfer-moved-away-elsewhere = { $person } moved it to a workspace you're not in. What you see here is how it was when it left; it can't be edited here any more.
 
 # Empty-workspace launchpad and the default command list
-launchpad-keyboard-hint = Arrow keys move  ·  Enter opens  ·  Super+N shows every app
-launchpad-subtitle = Choose how to begin. Workspace content syncs; your layout and controls stay local.
 global-search-create-workspace = Create Workspace
 global-search-rename-workspace = Rename Workspace
 global-search-switch-workspace = Switch Workspace…
@@ -2676,7 +2274,6 @@ pad-map-dial-zoom = Zoom
 pad-map-dial-brush-size = Brush size
 pad-map-dial-volume = Volume
 pad-map-dial-brightness = Brightness
-workspace-settings-sheet-keyboard-hint = ↑ ↓ to choose · Enter to confirm · Esc to cancel
 
 # Peer views, opening documents, identity backup and invitations
 peer-view-surface-title = Peer surface #{ $id }
@@ -2783,6 +2380,13 @@ speaker-calibration-reason-microphone-gone = that microphone is no longer connec
 speaker-calibration-reason-output-gone = that speaker's output is no longer connected
 speaker-calibration-reason-play-failed = could not play the sweep: { $error }
 speaker-calibration-reason-listen-failed = could not start listening: { $error }
+speaker-calibration-reason-clock = could not sync clocks with that speaker: { $reason }
+clock-sync-failure-media-disabled = media continuity is off on this device
+clock-sync-failure-no-reply = the other device did not answer clock sync
+now-playing-speakers-playing = Playing on { $group }
+now-playing-speakers-connecting = { $group }: connecting…
+now-playing-speakers-syncing = { $group }: syncing clocks…
+now-playing-speakers-clock-failed = { $group }: can't play in time — { $reason }
 speaker-calibration-failed = Could not measure { $speaker }: { $reason }
 speaker-calibration-cancelled = Calibration was cancelled
 

@@ -19,7 +19,7 @@ use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use std::cell::Cell;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 use std::cell::RefCell;
 use std::rc::Rc;
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Politeness, Role};
@@ -72,7 +72,7 @@ struct ContinuationRuntimeIdentity {
     target_id: String,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 fn next_continuation_epoch() -> Option<u64> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_update(
@@ -210,7 +210,7 @@ enum Bg {
     Pull(StreamMsg),
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub enum ControlledRuntimeRequest {
     Refresh(ControlledRefreshRequest),
     SelectedDetails {
@@ -225,12 +225,12 @@ pub enum ControlledRuntimeRequest {
     Create(ControlledCreateRequest),
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub struct ControlledRefreshRequest {
     events: Sender<Bg>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 impl ControlledRefreshRequest {
     /// # Errors
     ///
@@ -242,14 +242,14 @@ impl ControlledRefreshRequest {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub struct ControlledPullRequest {
     pub reference: String,
     pub arguments: Vec<String>,
     events: Sender<Bg>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 impl ControlledPullRequest {
     /// # Errors
     ///
@@ -279,7 +279,7 @@ impl ControlledPullRequest {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub struct ControlledCreateRequest {
     pub arguments: Vec<String>,
     events: Sender<Bg>,
@@ -288,7 +288,7 @@ pub struct ControlledCreateRequest {
 /// The armed retention fixture: the app, its runtime request and result
 /// channels, the retention observer, the restart-arm flag, and the runtime
 /// replacement request channel and trigger.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub type ArmedRetentionRoot = (
     ContainersApp,
     Receiver<ControlledRuntimeRequest>,
@@ -299,7 +299,7 @@ pub type ArmedRetentionRoot = (
     Rc<Cell<bool>>,
 );
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryRetentionSnapshot {
     pub input_instances: [usize; CreateField::COUNT],
@@ -317,7 +317,7 @@ pub struct HistoryRetentionSnapshot {
     pub background_channels: (bool, bool),
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 impl ControlledCreateRequest {
     /// Deliver the existing post-run refresh event. The current create worker
     /// exposes no classified create success/failure result.
@@ -405,16 +405,16 @@ pub struct ContainersApp {
     /// Background refresh plumbing. `None` in headless/shots mode.
     bg_rx: Option<Receiver<Bg>>,
     bg_tx: Option<Sender<Bg>>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     controlled_runtime: Option<Sender<ControlledRuntimeRequest>>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     controlled_immediate_results: Option<Receiver<Result<(), String>>>,
     continuation_runtime_identity: Option<ContinuationRuntimeIdentity>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     history_retention_observer: Option<Rc<RefCell<Option<HistoryRetentionSnapshot>>>>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     history_arm_restart: Option<Rc<Cell<bool>>>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     history_runtime_replacement: Option<(
         Rc<Cell<bool>>,
         Sender<ControlledRuntimeRequest>,
@@ -459,7 +459,7 @@ impl InputFactories {
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
     fn controlled() -> Self {
         Self {
             text: || {
@@ -551,16 +551,16 @@ impl ContainersApp {
             toast: None,
             bg_rx,
             bg_tx,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(test)]
             controlled_runtime: None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(test)]
             controlled_immediate_results: None,
             continuation_runtime_identity: None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(test)]
             history_retention_observer: None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(test)]
             history_arm_restart: None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(test)]
             history_runtime_replacement: None,
             last_refresh: Instant::now(),
             live,
@@ -574,7 +574,7 @@ impl ContainersApp {
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
     pub fn history_test_root() -> Self {
         Self::with_engine(
             Engine::default(),
@@ -586,7 +586,7 @@ impl ContainersApp {
         )
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn history_test_open_create_root() -> Self {
         let mut app = Self::history_test_root();
         app.create_open = true;
@@ -596,28 +596,28 @@ impl ContainersApp {
         app
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn history_test_palette_root() -> Self {
         let mut app = Self::history_test_root();
         app.open_container_palette();
         app
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn history_test_prompt_root() -> Self {
         let mut app = Self::history_test_root();
         app.seed_shot("prompt");
         app
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn history_test_confirm_root() -> Self {
         let mut app = Self::history_test_root();
         app.seed_shot("confirm");
         app
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn history_test_pull_root() -> Self {
         let mut app = Self::history_test_root();
         app.pull = Some(PullProgress {
@@ -629,7 +629,7 @@ impl ContainersApp {
         app
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn history_test_runtime_root() -> (
         Self,
         Receiver<ControlledRuntimeRequest>,
@@ -665,7 +665,7 @@ impl ContainersApp {
         (app, requests_rx, results_tx)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn history_test_producer_order_root() -> Self {
         let (mut app, _requests, _results) = Self::history_test_runtime_root();
         app.engine = Self::history_test_runtime_engine("controlled Podman", true);
@@ -677,7 +677,7 @@ impl ContainersApp {
         app
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn history_test_retention_root() -> (
         Self,
         Receiver<ControlledRuntimeRequest>,
@@ -692,7 +692,7 @@ impl ContainersApp {
         (app, requests, observer)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn history_test_armed_retention_root() -> ArmedRetentionRoot {
         let (mut app, requests, results) = Self::history_test_runtime_root();
         app.list_scroll = 41.0;
@@ -749,7 +749,7 @@ impl ContainersApp {
         )
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn history_test_runtime_engine(connection: &str, hydrated: bool) -> Engine {
         Engine {
             live: true,
@@ -781,7 +781,7 @@ impl ContainersApp {
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     fn publish_history_retention(&self) {
         let Some(observer) = &self.history_retention_observer else {
             return;
@@ -843,7 +843,7 @@ impl ContainersApp {
         }
         let Some(tx) = self.bg_tx.clone() else { return };
         self.last_refresh = Instant::now();
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(test)]
         if let Some(controlled) = &self.controlled_runtime {
             let _ = controlled.send(ControlledRuntimeRequest::Refresh(
                 ControlledRefreshRequest { events: tx },
@@ -856,7 +856,7 @@ impl ContainersApp {
         });
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     fn controlled_immediate(
         &self,
         operation: impl Into<String>,
@@ -935,7 +935,7 @@ impl ContainersApp {
         if !needs || !self.live {
             return;
         }
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(test)]
         if let Some(controlled) = &self.controlled_runtime {
             let _ = controlled.send(ControlledRuntimeRequest::SelectedDetails { target: sel });
             return;
@@ -1031,7 +1031,7 @@ impl ContainersApp {
         if self.live {
             if let Some(tx) = self.bg_tx.clone() {
                 let args = podman::pull_args(&reference);
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(test)]
                 if let Some(controlled) = &self.controlled_runtime {
                     let _ =
                         controlled.send(ControlledRuntimeRequest::Pull(ControlledPullRequest {
@@ -1118,7 +1118,7 @@ impl ContainersApp {
             return;
         }
         if self.live {
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(test)]
             if let Some(result) = self.controlled_immediate(
                 "containers.image.tag",
                 source,
@@ -1149,7 +1149,7 @@ impl ContainersApp {
             return;
         }
         if self.live {
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(test)]
             if let Some(result) = self.controlled_immediate(
                 "containers.volume.create",
                 name,
@@ -1232,7 +1232,7 @@ impl ContainersApp {
             self.create_open = false;
             self.combo.close();
             if let Some(tx) = self.bg_tx.clone() {
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(test)]
                 if let Some(controlled) = &self.controlled_runtime {
                     let _ = controlled.send(ControlledRuntimeRequest::Create(
                         ControlledCreateRequest {
@@ -2253,7 +2253,7 @@ impl Widget for ContainersApp {
         if !self.engine.live {
             return Err("container engine actions are unavailable while Podman is offline".into());
         }
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(test)]
         if let Some(result) = self.controlled_immediate(
             format!("{type_id}.{verb}"),
             target.to_string(),
@@ -2307,7 +2307,7 @@ impl Widget for ContainersApp {
     }
 
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(test)]
         if self
             .history_runtime_replacement
             .as_ref()
@@ -2317,7 +2317,7 @@ impl Widget for ContainersApp {
             self.controlled_runtime = Some(runtime);
             self.continuation_runtime_identity = Some(identity);
         }
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(test)]
         if self
             .history_arm_restart
             .as_ref()
@@ -2346,7 +2346,7 @@ impl Widget for ContainersApp {
         }
         self.hydrate_selection(doc);
         self.refresh_view(doc);
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(test)]
         self.publish_history_retention();
     }
 

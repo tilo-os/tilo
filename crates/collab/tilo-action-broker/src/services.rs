@@ -115,6 +115,18 @@ pub trait DesktopCommands: Send + Sync {
     }
 }
 
+/// The room's owner for documents proposed into the room
+/// ([`tilo_peer_state::document_import`]). The broker constructs each
+/// request from an authenticated durable invocation; the owner decides it
+/// in its serialized turn.
+pub trait DocumentImports: Send + Sync {
+    fn room(&self) -> &str;
+    fn execute(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> DesktopCommandFuture;
+}
+
 /// The enrolled agent task an open-application command runs for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DesktopOpener {
@@ -338,6 +350,20 @@ pub trait ContinuationServices: Send + Sync {
     ///
     /// Returns a message when the host cannot clear the metadata.
     fn clear(&self, room: RoomId, app: &str, instance: u64) -> Result<(), String>;
+    /// One application instance answering a handoff request, or reporting
+    /// that the document it shows arrived retired. `message` is an encoded
+    /// `ui::collaboration::handoff::HandoffReport`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the host does not take handoff reports.
+    fn handoff(
+        &self,
+        room: RoomId,
+        app: String,
+        instance: u64,
+        message: Vec<u8>,
+    ) -> Result<(), String>;
 }
 /// Called on the broker `LocalSet`; returned Cap'n Proto clients never cross threads.
 pub trait WorkspaceControlServices: Send + Sync {
@@ -571,6 +597,9 @@ pub struct HostServices {
     /// Durable parent-step path for enrolled task actions with a step identity.
     pub enrolled_steps: Option<Arc<dyn crate::enrolled_dispatch::EnrolledStepService>>,
     pub desktop_commands: Option<Arc<dyn DesktopCommands>>,
+    /// Documents proposed into the room and the owner's answers. Without it
+    /// nothing can be proposed.
+    pub document_imports: Option<Arc<dyn DocumentImports>>,
     pub native_certificates: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
     pub legacy_workspace: Option<Arc<dyn LegacyWorkspaceProjection>>,
     pub launcher: Option<Arc<dyn LauncherServices>>,

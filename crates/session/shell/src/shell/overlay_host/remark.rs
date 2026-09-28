@@ -1449,7 +1449,7 @@ impl ShellOverlayHost {
                         &[("room", crate::shell::i18n::text(job.label.clone()))],
                     )
                 };
-                let notice = crate::shell::notification::Notification::new(
+                let notice = tilo_desktop::notifications::Notification::new(
                     title,
                     crate::shell::i18n::t("remark-sent-body"),
                 )

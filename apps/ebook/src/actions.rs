@@ -203,6 +203,9 @@ pub enum EbookAction {
         author: String,
         subject: String,
         added: u64,
+        /// Full content hash of bytes kept in a host content store.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
     },
     /// Replace the authored reading-preference snapshot. Every field is an
     /// absolute value, making replay independent of a receiver's UI state.
@@ -245,6 +248,12 @@ pub enum EbookAction {
     /// Replace an annotation's free-text note (also used to edit a comment,
     /// which is a note row attached to a highlight group).
     EditAnnotationNote { id: String, note: String },
+    /// One edit of an annotation's note as its editor writes it: typing,
+    /// formatting, a new paragraph, applied to the note's rich text.
+    EditNoteText {
+        id: String,
+        edit: qdoc_rich_text::RichTextAction,
+    },
     /// Mark an annotation as finished at an author-supplied timestamp. Draft
     /// editors create their row first and then use this action on Save/Escape;
     /// carrying the timestamp keeps the lifecycle replayable and avoids a
@@ -358,6 +367,7 @@ impl SerializedNote<'_> {
             color: HiColor::from_str(self.color),
             created: 0,
             group,
+            blocks: Vec::new(),
         }
     }
 }
@@ -446,6 +456,7 @@ impl EbookAction {
                 author,
                 subject,
                 added,
+                content,
                 ..
             } => {
                 Self::validate_book_id(book_id)?;
@@ -454,6 +465,14 @@ impl EbookAction {
                 Self::validate_text(subject, MAX_LABEL_BYTES, "book subject")?;
                 if *added > i64::MAX as u64 {
                     return Err(Self::refused("book timestamp is invalid"));
+                }
+                if let Some(content) = content {
+                    let names_book = content
+                        .get(..32)
+                        .is_some_and(|prefix| book_id.strip_prefix("book:") == Some(prefix));
+                    if !tilo_content::valid_hash(content) || !names_book {
+                        return Err(Self::refused("book content hash is invalid"));
+                    }
                 }
             }
             Self::SetReadingSettings { before, settings } => {
@@ -530,7 +549,8 @@ impl EbookAction {
                     return Err(Self::refused("annotation timestamp is invalid"));
                 }
             }
-            Self::DeleteAnnotation { id } => {
+            // A note edit is checked against the note's text when it applies.
+            Self::DeleteAnnotation { id } | Self::EditNoteText { id, .. } => {
                 Self::parse_uuid(id, "annotation")?;
             }
             Self::AddNote {
@@ -722,6 +742,17 @@ impl EbookAction {
             .ok_or_else(|| Self::refused("annotation is no longer available"))
     }
 
+    fn apply_edit_note_text(
+        doc: &mut Doc,
+        id: &str,
+        edit: &qdoc_rich_text::RichTextAction,
+    ) -> Result<(), ActionError> {
+        let id = Self::require_live_annotation(doc, id)?;
+        let root = BooksDoc::annotation_text(doc, id)
+            .ok_or_else(|| Self::refused("annotation has no note text"))?;
+        edit.apply_under(doc, &root)
+    }
+
     fn apply_finalize_annotation(doc: &mut Doc, id: &str, created: u64) -> Result<(), ActionError> {
         let id = Self::require_live_annotation(doc, id)?;
         BooksDoc::write_annotation_created(doc, id, created)
@@ -789,6 +820,7 @@ impl EbookAction {
                     color: HiColor::Yellow,
                     created: 0,
                     group: uuid,
+                    blocks: Vec::new(),
                 },
             );
         }
@@ -848,6 +880,7 @@ impl EbookAction {
                     color: col,
                     created: 0,
                     group: group_uuid,
+                    blocks: Vec::new(),
                 };
                 BooksDoc::upsert_annotation(doc, &anno);
             }
@@ -939,6 +972,7 @@ impl Action for EbookAction {
                 author,
                 subject,
                 added,
+                content,
             } => {
                 BooksDoc::restore_library_entry(
                     doc,
@@ -949,6 +983,7 @@ impl Action for EbookAction {
                         author: author.clone(),
                         subject: subject.clone(),
                         added: *added,
+                        content: content.clone(),
                     },
                 );
                 Ok(())
@@ -998,6 +1033,7 @@ impl Action for EbookAction {
                 Ok(())
             }
             EbookAction::EditAnnotationNote { id, note } => Self::apply_edit_note(doc, id, note),
+            EbookAction::EditNoteText { id, edit } => Self::apply_edit_note_text(doc, id, edit),
             EbookAction::FinalizeAnnotation { id, created } => {
                 Self::apply_finalize_annotation(doc, id, *created)
             }
@@ -1151,6 +1187,7 @@ pub fn restore_library_book_action(entry: &LibraryEntry) -> EbookAction {
         author: entry.author.clone(),
         subject: entry.subject.clone(),
         added: entry.added,
+        content: entry.content.clone(),
     }
 }
 
@@ -1192,6 +1229,14 @@ pub fn edit_note_action(id: Uuid, note: &str) -> EbookAction {
     EbookAction::EditAnnotationNote {
         id: id.to_string(),
         note: note.to_string(),
+    }
+}
+
+/// One edit of an annotation's note, as its SDK editor writes it.
+pub fn edit_note_text_action(id: Uuid, edit: qdoc_rich_text::RichTextAction) -> EbookAction {
+    EbookAction::EditNoteText {
+        id: id.to_string(),
+        edit,
     }
 }
 
@@ -1472,6 +1517,50 @@ fn select_passage_operation(book_id: String, chapter: usize) -> ActionSpec {
     )
 }
 
+/// Move this reader to a chapter and block, as revealing an annotation does:
+/// the page holding the block's start opens, nothing is selected, and any
+/// selection is cleared. Each mount keeps its own position.
+#[allow(
+    clippy::expect_used,
+    reason = "EbookOperation contains only JSON-representable strings and integers"
+)]
+fn go_to_operation(book_id: String, chapter: usize) -> ActionSpec {
+    let index = |name: &'static str, description: &'static str| {
+        ActionParam::optional(name, ParamType::Integer, description)
+            .with_schema(serde_json::json!({"minimum": 0}))
+    };
+    ActionSpec::typed_operation(
+        "go-to",
+        "Go to",
+        "open the book at a chapter and paragraph without selecting",
+        OperationKind::View,
+        EBOOK_OPERATION_TYPE,
+        vec![
+            index(
+                "chapter",
+                "Chapter, counted from 0; the open chapter when omitted",
+            ),
+            index(
+                "block",
+                "Block (paragraph or heading) to open at, counted from 0 in the chapter; its start when omitted",
+            ),
+        ],
+        move |args: &ActionArgs| {
+            let value = |name| args.integer(name).and_then(|v| usize::try_from(v).ok());
+            let operation = EbookOperation::Reveal {
+                book_id: book_id.clone(),
+                chapter: value("chapter").unwrap_or(chapter),
+                page: 0,
+                block: Some(value("block").unwrap_or(0)),
+            };
+            EncodedAction {
+                type_id: EBOOK_OPERATION_TYPE.into(),
+                payload: serde_json::to_vec(&operation).expect("EbookOperation serializes"),
+            }
+        },
+    )
+}
+
 /// The open book's annotations as resources: one per highlight (its comments
 /// beneath it), note and bookmark, with the ids search resolves, each opening
 /// its passage.
@@ -1613,6 +1702,7 @@ pub(crate) fn current_book_actions(mut resource: Resource, ctx: &BookResourceCtx
         ));
     }
     resource = resource.with_action(select_passage_operation(ctx.book_id.clone(), ctx.chapter));
+    resource = resource.with_action(go_to_operation(ctx.book_id.clone(), ctx.chapter));
     resource.children = annotation_resources(&ctx.annotations);
     let book_id = ctx.book_id.clone();
     let chapter = ctx.chapter;
@@ -1953,6 +2043,7 @@ mod tests {
             color: HiColor::Green,
             created: 1,
             group,
+            blocks: Vec::new(),
         };
         BooksDoc::upsert_annotation(&mut doc, &hl);
         // Two comments on it.
@@ -1970,6 +2061,7 @@ mod tests {
                 color: HiColor::Green,
                 created: 10 + i as u64,
                 group,
+                blocks: Vec::new(),
             };
             BooksDoc::upsert_annotation(&mut doc, &cm);
         }
@@ -2254,6 +2346,7 @@ mod tests {
                     author: "Remote Reader".into(),
                     subject: String::new(),
                     added: 1,
+                    content: None,
                 },
             );
 
@@ -2309,6 +2402,7 @@ mod tests {
                 author: "A. Reader".into(),
                 subject: String::new(),
                 added: 7,
+                content: None,
             };
             let mut a = AutoCommit::new();
             BooksDoc::upsert_library_entry(&mut a, &entry);
@@ -2336,6 +2430,7 @@ mod tests {
                 author: "A. Reader".into(),
                 subject: "Architecture".into(),
                 added: 42,
+                content: None,
             };
             let action = restore_library_book_action(&entry);
             let encoded = encode(&action);

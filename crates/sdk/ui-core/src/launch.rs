@@ -21,6 +21,30 @@ pub use shot_frame::{ShotFrame, ShotLayout};
 #[cfg(not(target_arch = "wasm32"))]
 pub use shot_frame::render_widget_png;
 
+#[cfg(all(target_os = "android", feature = "native"))]
+pub mod android;
+#[cfg(any(all(target_os = "android", feature = "native"), test))]
+mod android_env;
+
+/// Export the Android entry point for this binary's `main`.
+///
+/// On Android an app is a shared library that `TiloActivity` loads, not an
+/// executable, so there is no process `main`. Invoked once at the top level
+/// of an app's `main.rs`, this defines the `android_main` the activity calls,
+/// which prepares the process and runs that same `main`. On every other
+/// target it expands to nothing. `crates/sdk/ui-core/android` builds the file
+/// as a `cdylib` example.
+#[macro_export]
+macro_rules! android_main {
+    () => {
+        #[cfg(target_os = "android")]
+        #[unsafe(no_mangle)]
+        fn android_main(app: $crate::launch::android::AndroidApp) {
+            $crate::launch::android::run_main(app, main);
+        }
+    };
+}
+
 pub const DEFAULT_VIEWPORT: (u32, u32) = headless::DEFAULT_VIEWPORT;
 
 /// Explicit runner authority/presentation preparation; application metadata is never authority.
@@ -723,6 +747,22 @@ impl LaunchSpec {
             },
             |factory| Ok(factory()),
         )
+    }
+
+    /// A fresh instance of the live root for History's read-only preview.
+    #[cfg(feature = "native")]
+    fn history_preview_root(
+        &self,
+        args: &LaunchArgs,
+    ) -> impl Fn() -> Result<Box<dyn Widget>, String> + 'static {
+        let live_root = self.live_root;
+        let live_root_with_args = self.live_root_with_args;
+        let args = args.clone();
+        move || match (live_root_with_args, live_root) {
+            (Some(factory), _) => factory(&args).map_err(|error| error.to_string()),
+            (None, Some(factory)) => Ok(factory()),
+            (None, None) => Err("launch specification has no live root".into()),
+        }
     }
 
     #[cfg(feature = "native")]
@@ -1817,12 +1857,20 @@ fn finalize_native_app_with_constructor(
     let root_history = root
         .history_registration()
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    // A second root may only be built where the spec builds it and the host,
+    // not the root, owns persistence: a preview must never open a store.
+    let preview_root = (spec.legacy_preparer.is_none()
+        && matches!(persistence, LegacyPersistencePolicy::Host))
+    .then(|| spec.history_preview_root(args));
     let mut app = crate::collaboration::native_initial::transfer_to_app(|| {
         construct(scope, state, root, domain)
     })
     .map_err(LaunchError::Operation)?
     .with_autosave(autosave)
     .with_legacy_persistence(persistence);
+    if let Some(preview_root) = preview_root {
+        app = app.with_history_preview_root(preview_root);
+    }
     if let LegacyRecordPolicy::Explicit { records, index } = records {
         app = app.with_records(records, index);
     }
@@ -4305,6 +4353,107 @@ mod tests {
         );
         drop(app);
         assert!(!wake.as_ref().unwrap().is_active());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_component_host_admits_a_new_record_before_its_factory_writes_it() {
+        use crate::application::{
+            HostContext, LaunchTarget, PreparedComponentInputs, RestoreInput,
+        };
+        use crate::application_test_support as probe;
+        fn prepare(
+            definition: &crate::application::ApplicationDefinition,
+            args: &LaunchArgs,
+        ) -> Result<PreparedComponentInputs, LaunchError> {
+            let root = std::path::PathBuf::from(args.value("--fixture-root").unwrap());
+            let room = args.value("--fixture-room").unwrap();
+            let id =
+                crate::record::RecordId::parse(args.value("--fixture-record").unwrap()).unwrap();
+            let mut owners = crate::record::RecordOwners::new(root.clone());
+            let records = owners
+                .open(definition.app_id, room)
+                .map_err(LaunchError::Record)?;
+            let views = std::rc::Rc::new(
+                crate::application_view::InstanceViewStore::new(root, probe::DEVICE, room)
+                    .map_err(LaunchError::Restore)?,
+            );
+            // A fresh profile: the default record is only reserved here, and
+            // the component factory writes its genesis after admission.
+            let context = HostContext::prepare_new_record(
+                definition,
+                records,
+                views,
+                probe::DEVICE.into(),
+                11,
+                probe::runner_permissions(),
+                probe::author(),
+                probe::provenance(),
+                id,
+            )?;
+            Ok(PreparedComponentInputs {
+                context,
+                target: LaunchTarget::New,
+                restore: RestoreInput::None,
+                runner_inputs: probe::runner_inputs(),
+            })
+        }
+        let environment = LaunchFixtureEnv::new();
+        let room = uuid::Uuid::new_v4();
+        let id = crate::record::RecordId::minted();
+        let manager = crate::collaboration::CollaborationManager::connected_fixture_for_test(
+            probe::APP,
+            room,
+        );
+        let spec = LaunchSpec::from_definition(probe::runner_probe_definition())
+            .component_host(prepare)
+            .native_services()
+            .allowed_live_options(&["--fixture-root", "--fixture-room", "--fixture-record"]);
+        let raw = vec![
+            "app".into(),
+            "--fixture-root".into(),
+            environment
+                ._directory
+                .path()
+                .join("component")
+                .display()
+                .to_string(),
+            "--fixture-room".into(),
+            room.to_string(),
+            "--fixture-record".into(),
+            id.as_str().into(),
+        ];
+        let args = parse_args_extended(
+            &raw,
+            &[],
+            &[],
+            &[],
+            &["--fixture-root", "--fixture-room", "--fixture-record"],
+            0,
+        )
+        .unwrap();
+        let initializations = probe::initializations();
+        let result = dispatch_definition_with_manager(
+            &spec,
+            &args,
+            |component, inputs, native| {
+                assert!(native);
+                App::from_component_with_native_services(component, inputs)
+            },
+            || Ok(manager),
+        );
+        let app = match result {
+            Ok(DefinitionDispatch::Native(app)) => app,
+            Ok(_) => panic!("native component expected"),
+            Err(error) => panic!("a New default record must pass native admission: {error}"),
+        };
+        assert!(app.collaboration_is_connected());
+        assert_eq!(
+            probe::initializations(),
+            initializations + 1,
+            "the factory wrote the admitted record's genesis"
+        );
     }
 
     #[test]

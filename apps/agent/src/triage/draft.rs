@@ -219,6 +219,7 @@ mod tests {
             author: "u_1f4c3a9b2d7e5061".into(),
             ts: 10,
             text: text.into(),
+            body: Vec::new(),
             edited: false,
             history: vec![],
             parent: None,

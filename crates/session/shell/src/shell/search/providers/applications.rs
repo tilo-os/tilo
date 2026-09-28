@@ -19,19 +19,21 @@ use crate::shell::catalogue::{self, CatalogueApp};
 use crate::shell::chrome_state::{Chrome, OpenTarget};
 use crate::shell::i18n::{t, t_args};
 use crate::shell::launcher::{self, InstalledApp};
-use crate::shell::notification::{Notification, NotificationSeverity};
 use crate::shell::search::action_api::{ActionArgs, ActionError};
+use crate::shell::search::provider_score;
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
+use tilo_desktop::notifications::{Notification, NotificationSeverity};
+use tilo_search::{Document, Matching, Page, SearchIndex};
 
 /// Chip label / group header for launchable apps; also the provider's `name()`.
 pub const APPLICATIONS_KIND: &str = "Applications";
 
 /// Penalty for an app the machine does not have yet, against one it does —
 /// enough to break a tie without dragging a better match below a worse one
-/// (every band in [`match_score`] is at least five points apart).
+/// (every tier of [`application_fields`] is at least five points apart).
 const NOT_INSTALLED_TIEBREAK: i32 = 1;
 const STORE_PACKAGE_ID: &str = "so.tilo.store";
 
@@ -217,7 +219,8 @@ struct ApplicationsSnapshot {
     /// turns a broad palette page into a quadratic catalogue query.
     installed_ids: HashSet<String>,
     host_app_ids: HashSet<String>,
-    index: ui::search::SearchTextIndex,
+    /// Entries' fields, keyed by position in `entries`.
+    index: SearchIndex,
 }
 
 impl ApplicationsProvider {
@@ -334,25 +337,7 @@ impl ApplicationsProvider {
                 })
                 .map(ApplicationEntry::Catalogue),
         );
-        let index = ui::search::SearchTextIndex::new(entries.iter().map(|entry| match entry {
-            ApplicationEntry::Installed(app) => format!(
-                "{}\u{1f}{}\u{1f}{}",
-                app.display_name,
-                app.package_id,
-                app.category.as_deref().unwrap_or("")
-            ),
-            ApplicationEntry::Dynamic(record) => format!(
-                "{}\u{1f}{}\u{1f}{}",
-                record.name, record.id, record.owner_app_id
-            ),
-            ApplicationEntry::Catalogue(app) => format!(
-                "{}\u{1f}{}\u{1f}{}\u{1f}{}",
-                app.display_name,
-                app.package_id,
-                app.category.as_deref().unwrap_or(""),
-                app.description
-            ),
-        }));
+        let index = index_entries(&entries);
         ApplicationsSnapshot {
             // Never stamp a completed mixed read with a generation fetched
             // afterwards: a source can change while this worker builds.
@@ -418,30 +403,43 @@ impl ApplicationsProvider {
         Ref::filter_map(self.snapshot.borrow(), Option::as_ref).ok()
     }
 
-    /// Score `apps` against `needle`. `open_target` only words the row —
-    /// the launch reads the live target again at activation time, since it
-    /// can change between the query that built this row and the Enter that
-    /// fires it.
+    /// Score `apps` against `needle`, as [`Self::installed_rows`].
+    #[cfg(test)]
     pub(crate) fn results_for(
         &self,
         needle: &str,
         apps: Vec<InstalledApp>,
         open_target: OpenTarget,
     ) -> Vec<SearchResult> {
-        let needle_lower = needle.to_lowercase();
+        let scores = test_scores(
+            needle,
+            apps.iter().map(|app| {
+                application_fields(
+                    &app.display_name,
+                    &app.package_id,
+                    app.category.as_deref(),
+                    None,
+                )
+            }),
+        );
+        self.installed_rows(needle, apps, &scores, open_target)
+    }
+
+    /// Launch rows for the `apps` with a score in `scores`. `open_target`
+    /// only words the row — the launch reads the live target again at
+    /// activation time, since it can change between the query that built
+    /// this row and the Enter that fires it.
+    fn installed_rows(
+        &self,
+        needle: &str,
+        apps: Vec<InstalledApp>,
+        scores: &[Option<i32>],
+        open_target: OpenTarget,
+    ) -> Vec<SearchResult> {
         let kind = ResourceKind::Application;
         let mut out = Vec::new();
-        for app in apps {
-            let name_lower = app.display_name.to_lowercase();
-            let id_lower = app.package_id.to_lowercase();
-            let category_lower = app.category.as_deref().map(str::to_lowercase);
-            let Some(score) = match_score(
-                &needle_lower,
-                &name_lower,
-                &id_lower,
-                category_lower.as_deref(),
-                None,
-            ) else {
+        for (app, score) in apps.into_iter().zip(scores) {
+            let Some(score) = *score else {
                 continue;
             };
             let launch_app = app.clone();
@@ -490,23 +488,27 @@ impl ApplicationsProvider {
             .iter()
             .map(|app| app.package_id.to_ascii_lowercase())
             .collect();
-        self.dynamic_results_for_membership(needle, records, &installed_gui, open_target)
+        let scores = test_scores(
+            needle,
+            records
+                .iter()
+                .map(|record| application_fields(&record.name, &record.id, None, None)),
+        );
+        self.dynamic_results_for_membership(records, &scores, &installed_gui, open_target)
     }
 
     fn dynamic_results_for_membership(
         &self,
-        needle: &str,
         records: Vec<DynamicLauncherRecord>,
+        scores: &[Option<i32>],
         installed_gui: &HashSet<String>,
         open_target: OpenTarget,
     ) -> Vec<SearchResult> {
-        let needle_lower = needle.to_lowercase();
         records
             .into_iter()
-            .filter_map(|record| {
-                let name_lower = record.name.to_lowercase();
-                let id_lower = record.id.to_lowercase();
-                let score = match_score(&needle_lower, &name_lower, &id_lower, None, None)?;
+            .zip(scores)
+            .filter_map(|(record, score)| {
+                let score = (*score)?;
                 let valid = match record.launcher_type {
                     1 => {
                         record.target.is_none()
@@ -609,9 +611,21 @@ impl ApplicationsProvider {
             .iter()
             .map(|app| app.desktop_id.to_ascii_lowercase())
             .collect();
+        let scores = test_scores(
+            needle,
+            apps.iter().map(|app| {
+                application_fields(
+                    &app.display_name,
+                    &app.package_id,
+                    app.category.as_deref(),
+                    Some(&app.description),
+                )
+            }),
+        );
         self.catalogue_results_for_membership(
             needle,
             apps,
+            &scores,
             &installed_ids,
             &host_app_ids,
             open_target,
@@ -626,14 +640,14 @@ impl ApplicationsProvider {
         &self,
         needle: &str,
         apps: Vec<CatalogueApp>,
+        scores: &[Option<i32>],
         installed_ids: &HashSet<String>,
         host_app_ids: &HashSet<String>,
         _open_target: OpenTarget,
     ) -> Vec<SearchResult> {
-        let needle_lower = needle.to_lowercase();
         let mut out = Vec::new();
         let mut seen = HashSet::new();
-        for app in apps {
+        for (app, score) in apps.into_iter().zip(scores) {
             let package_id_key = app.package_id.to_ascii_lowercase();
             if installed_ids.contains(&package_id_key)
                 || host_app_ids.contains(&package_id_key)
@@ -641,17 +655,7 @@ impl ApplicationsProvider {
             {
                 continue;
             }
-            let name_lower = app.display_name.to_lowercase();
-            let id_lower = app.package_id.to_lowercase();
-            let category_lower = app.category.as_deref().map(str::to_lowercase);
-            let description_lower = app.description.to_lowercase();
-            let Some(score) = match_score(
-                &needle_lower,
-                &name_lower,
-                &id_lower,
-                category_lower.as_deref(),
-                Some(&description_lower),
-            ) else {
+            let Some(score) = *score else {
                 continue;
             };
             let package_id = app.package_id.clone();
@@ -1056,7 +1060,7 @@ impl SearchProvider for ApplicationsProvider {
         let Some(snapshot) = self.snapshot() else {
             return SearchPage::exhausted(revision, Vec::new());
         };
-        let after = match cursor {
+        let offset = match cursor {
             Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
             Some(cursor) => match cursor
                 .token
@@ -1067,59 +1071,75 @@ impl SearchProvider for ApplicationsProvider {
                         .filter(|(_, query)| *query == ctx.needle)
                         .and_then(|(offset, _)| offset.parse::<usize>().ok())
                 }) {
-                Some(offset) => Some(offset),
+                Some(offset) => offset,
                 None => return SearchPage::stale(revision),
             },
-            None => None,
+            None => 0,
         };
-        let page =
-            snapshot
-                .index
-                .matching_page(ctx.needle, after, budget.max_work, budget.max_results);
-        let mut next_after = page.next_after;
+        let found = snapshot.index.search(
+            ctx.needle,
+            Page {
+                offset,
+                limit: budget.max_work.min(budget.max_results),
+            },
+        );
+        let mut considered = 0usize;
         let mut bytes = 0usize;
         let mut results = Vec::new();
-        for id in page.ids {
-            let Some(entry) = snapshot.entries.get(id) else {
+        for hit in &found.hits {
+            let Some(entry) = usize::try_from(hit.key)
+                .ok()
+                .and_then(|at| snapshot.entries.get(at))
+            else {
+                considered = considered.saturating_add(1);
                 continue;
             };
+            let score = [Some(provider_score(hit.rank.unwrap_or(0)))];
             let mut rows = match entry {
-                ApplicationEntry::Installed(app) => {
-                    self.results_for(ctx.needle, vec![app.clone()], ctx.chrome.open_target)
-                }
-                ApplicationEntry::Dynamic(record) => self.dynamic_results_for_membership(
+                ApplicationEntry::Installed(app) => self.installed_rows(
                     ctx.needle,
+                    vec![app.clone()],
+                    &score,
+                    ctx.chrome.open_target,
+                ),
+                ApplicationEntry::Dynamic(record) => self.dynamic_results_for_membership(
                     vec![record.clone()],
+                    &score,
                     &snapshot.installed_ids,
                     ctx.chrome.open_target,
                 ),
                 ApplicationEntry::Catalogue(app) => self.catalogue_results_for_membership(
                     ctx.needle,
                     vec![app.clone()],
+                    &score,
                     &snapshot.installed_ids,
                     &snapshot.host_app_ids,
                     ctx.chrome.open_target,
                 ),
             };
-            let Some(row) = rows.pop() else { continue };
+            let Some(row) = rows.pop() else {
+                considered = considered.saturating_add(1);
+                continue;
+            };
             let row_bytes = row
                 .title
                 .len()
                 .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
             if bytes.saturating_add(row_bytes) > budget.max_bytes {
-                next_after = Some(id);
                 break;
             }
             bytes = bytes.saturating_add(row_bytes);
+            considered = considered.saturating_add(1);
             results.push(row);
         }
-        let exhausted = next_after.is_none();
+        let exhausted = !found.more && considered == found.hits.len();
+        let next = offset.saturating_add(considered);
         SearchPage {
             revision: revision.clone(),
             results,
-            next_cursor: next_after.map(|offset| SearchCursor {
+            next_cursor: (!exhausted).then(|| SearchCursor {
                 revision,
-                token: format!("applications:{offset}\u{1f}{}", ctx.needle),
+                token: format!("applications:{next}\u{1f}{}", ctx.needle),
             }),
             exhausted,
             stale_cursor: false,
@@ -1140,7 +1160,68 @@ impl ApplicationsProvider {
     }
 }
 
-pub(crate) use ui::search::system::{PACKAGE_ID_WEIGHT, application_match_score as match_score};
+pub(crate) use ui::search::system::{PACKAGE_ID_WEIGHT, application_fields};
+
+/// Applications match words spread over their fields, and typos in names.
+const APPLICATION_MATCHING: Matching = Matching::LOOSE;
+
+/// Each app's provider score for `needle`, for tests building rows from a
+/// bare list.
+#[cfg(test)]
+fn test_scores<'a>(
+    needle: &str,
+    apps: impl Iterator<Item = [(&'a str, tilo_search::FieldWeight); 5]>,
+) -> Vec<Option<i32>> {
+    ui::search::ListIndex::new(APPLICATION_MATCHING)
+        .ranks(needle, apps)
+        .into_iter()
+        .map(|rank| rank.map(provider_score))
+        .collect()
+}
+
+/// Index each entry's [`application_fields`], keyed by position.
+fn index_entries(entries: &[ApplicationEntry]) -> SearchIndex {
+    fn app_fields(
+        document: Document,
+        name: &str,
+        package_id: &str,
+        category: Option<&str>,
+        description: Option<&str>,
+    ) -> Document {
+        application_fields(name, package_id, category, description)
+            .into_iter()
+            .fold(document, |document, (text, weight)| {
+                document.field(text, weight)
+            })
+    }
+    let mut index = SearchIndex::new(APPLICATION_MATCHING);
+    index.replace_all(entries.iter().enumerate().map(|(at, entry)| {
+        let document = Document::new(at as u64);
+        match entry {
+            ApplicationEntry::Installed(app) => app_fields(
+                document,
+                &app.display_name,
+                &app.package_id,
+                app.category.as_deref(),
+                None,
+            ),
+            ApplicationEntry::Dynamic(record) => {
+                app_fields(document, &record.name, &record.id, None, None)
+            }
+            ApplicationEntry::Catalogue(app) => app_fields(
+                document,
+                &app.display_name,
+                &app.package_id,
+                app.category.as_deref(),
+                Some(&app.description),
+            ),
+        }
+    }));
+    if let Err(error) = index.commit() {
+        tracing::error!(%error, "could not index applications");
+    }
+    index
+}
 
 #[cfg(test)]
 mod tests {
@@ -1427,7 +1508,7 @@ mod tests {
             assert_eq!(out.len(), 1, "only the matching package: {out:?}");
             // A shared id *prefix* names a publisher, not an app, so it
             // stays below a name match.
-            assert_eq!(out[0].score, 87);
+            assert_eq!(out[0].score, 93);
             let by_name = p.results_for(
                 "hello",
                 vec![app("so.tilo.hello", "Hello")],
@@ -1826,7 +1907,7 @@ mod tests {
             // user actually named.
             let vague = p.results_for(
                 "sheets",
-                vec![app("so.tilo.shed", "Shed Helper Editor Extra Tool Set")],
+                vec![app("so.tilo.score", "Sheet Music Helper")],
                 OpenTarget::Beside,
             );
             let named = p.catalogue_results_for(
@@ -1938,12 +2019,7 @@ mod tests {
                 ))
             })
             .collect::<Vec<_>>();
-        let index = ui::search::SearchTextIndex::new(entries.iter().map(|entry| match entry {
-            ApplicationEntry::Installed(app) => {
-                format!("{}\u{1f}{}", app.display_name, app.package_id)
-            }
-            ApplicationEntry::Dynamic(_) | ApplicationEntry::Catalogue(_) => String::new(),
-        }));
+        let index = index_entries(&entries);
         *provider.snapshot.borrow_mut() = Some(ApplicationsSnapshot {
             source_generation: provider.source_generation(),
             entries,
@@ -2125,7 +2201,11 @@ mod tests {
 
 /// Tiny session-owned catalog of apps the native host can actually construct.
 /// It shares application visibility policy and action dispatch with package apps.
-pub struct NativeApplicationsProvider;
+#[derive(Default)]
+pub struct NativeApplicationsProvider {
+    /// The apps' names and ids, indexed while they stay the same.
+    ranker: ui::search::ListIndex,
+}
 
 impl SearchProvider for NativeApplicationsProvider {
     fn id(&self) -> &'static str {
@@ -2144,19 +2224,16 @@ impl SearchProvider for NativeApplicationsProvider {
         if !ctx.wanted.contains(&ResourceKind::Application) {
             return Vec::new();
         }
-        let needle = ctx.needle.to_lowercase();
-        ctx.chrome
-            .hosted_inputs
-            .native_apps()
-            .iter()
-            .filter_map(|app| {
-                let score = match_score(
-                    &needle,
-                    &app.display_name.to_lowercase(),
-                    &app.package_id.to_lowercase(),
-                    None,
-                    None,
-                )?;
+        let apps = ctx.chrome.hosted_inputs.native_apps();
+        let ranks = self.ranker.ranks(
+            ctx.needle,
+            apps.iter()
+                .map(|app| application_fields(app.display_name, app.package_id, None, None)),
+        );
+        apps.iter()
+            .zip(ranks)
+            .filter_map(|(app, rank)| {
+                let score = provider_score(rank?);
                 let id = app.package_id;
                 Some(SearchResult::nullary_fallible(
                     ResourceKind::Application,
@@ -2219,7 +2296,7 @@ mod native_application_tests {
             chrome.borrow_mut().hosted_inputs =
                 HostedTileInputs::for_host_directory(directory.path()).unwrap();
             let mut doc = automerge::AutoCommit::new();
-            let results = NativeApplicationsProvider.query(SearchContext {
+            let results = NativeApplicationsProvider::default().query(SearchContext {
                 needle: "Files",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome.borrow(),
@@ -2302,7 +2379,7 @@ mod native_application_tests {
             }
 
             let mut doc = automerge::AutoCommit::new();
-            let results = NativeApplicationsProvider.query(SearchContext {
+            let results = NativeApplicationsProvider::default().query(SearchContext {
                 needle: "Files",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome.borrow(),

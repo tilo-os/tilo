@@ -200,7 +200,7 @@ impl App {
     /// The frontier moves only once the transport has accepted the delta; a
     /// busy transport leaves it for the next wakeup and an over-limit delta
     /// is reported through [`Self::document_sync_status`].
-    fn broadcast_doc_delta(&mut self) {
+    pub(super) fn broadcast_doc_delta(&mut self) {
         self.restore_failed_document_publications();
         // With records in play the live document travels only on a
         // record's route. Until one is checked out the primary route is the
@@ -926,7 +926,9 @@ impl App {
             }
             event @ (CollabEvent::Document { .. } | CollabEvent::ScrollbackBatch { .. }) => {
                 self.apply_document_collab_event(event);
+                self.observe_primary_retirement();
             }
+            CollabEvent::Handoff { request } => self.apply_handoff(request),
             CollabEvent::CommittedDocument { route, read } => {
                 self.queue_committed_document(route, read);
             }
@@ -1333,6 +1335,7 @@ impl App {
                     .history
                     .observe_live(envelope.artifact, envelope.seq);
                 self.apply_signed_document_envelope(&envelope, decrypted_payload.as_deref());
+                self.observe_primary_retirement();
             }
             CollabEvent::ScrollbackBatch {
                 artifact,
@@ -1348,6 +1351,7 @@ impl App {
                 Some(peer_id) => self.follow_with(peer_id, mode),
                 None => self.unfollow(),
             },
+            CollabEvent::Handoff { request } => self.apply_handoff(request),
             CollabEvent::DocumentSnapshotRequested { route } => {
                 if !self.answer_room_index_snapshot(&route)
                     && !self.answer_owned_document_snapshot(&route)

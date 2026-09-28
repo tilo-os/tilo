@@ -54,6 +54,14 @@ grep -Fq 'Independently rebuild the release candidate' "$workflow" \
   && ok 'release compares uncached base and final sealed OS rebuilds' \
   || bad 'reproducibility is claimed without a release-blocking comparison'
 
+# BuildKit applies SOURCE_DATE_EPOCH to file mtimes only when the exporter
+# rewrites them; without it COPY keeps checkout times and RUN the wall clock.
+oci_exports="$(grep -Ec 'type=oci,dest=/var/tmp/tilo-image' "$workflow")"
+[ "$oci_exports" -ge 3 ] \
+  && [ "$(grep -Ec "type=oci,dest=/var/tmp/tilo-image[^ ',]*,rewrite-timestamp=true" "$workflow")" -eq "$oci_exports" ] \
+  && ok 'every OS image export clamps file mtimes to SOURCE_DATE_EPOCH' \
+  || bad 'an OS image export keeps build-time file mtimes'
+
 # Integration images skip the second uncached build, but every publication
 # (tag, nightly or protected manual main release) must still run it. The third
 # publication branch unbinds the shared compiler cache
@@ -91,7 +99,7 @@ grep -Fq '. os/dev/configure-cosign-kms.sh' "$workflow" \
   || bad 'release signing still accepts an exportable private key secret'
 
 if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$workflow" \
-   && grep -Fq 'needs: [plan, signing-preflight]' "$workflow"; then
+   && grep -Eq 'needs: \[plan, signing-preflight(, [A-Za-z0-9_-]+)*\]' "$workflow"; then
   ok 'OS construction starts only after release KMS identity preflight'
 else
   bad 'OS release construction can start before its signing authority is identity-bound'

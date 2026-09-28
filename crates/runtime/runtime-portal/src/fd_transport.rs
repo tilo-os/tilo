@@ -99,9 +99,9 @@ fn recv_into(sock: RawFd, buf: &mut [u8]) -> io::Result<(Vec<u8>, Option<OwnedFd
                 let offset =
                     usize::try_from(libc::CMSG_DATA(header).offset_from(control.as_ptr().cast()))
                         .unwrap_or(usize::MAX);
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "android"))]
                 let (control_len, header_len) = (msg.msg_controllen, (*header).cmsg_len);
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(any(target_os = "linux", target_os = "android")))]
                 let (control_len, header_len) = (
                     usize::try_from(msg.msg_controllen).unwrap_or(0),
                     usize::try_from((*header).cmsg_len).unwrap_or(0),

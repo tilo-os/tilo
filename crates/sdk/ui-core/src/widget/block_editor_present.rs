@@ -50,6 +50,29 @@ impl BlockContent {
     }
 }
 
+/// Whether `line` shows the authored runs `content` names.
+fn shows_authors(content: &BlockContent, line: &RichTextLine) -> bool {
+    let shown = line.author_runs();
+    shown.len() == content.authors.len()
+        && shown
+            .iter()
+            .zip(&content.authors)
+            .all(|((start, end, author), (range, named))| {
+                *start == range.start && *end == range.end && author == named
+            })
+}
+
+/// Whether `block` shows `content` as it is.
+fn shows(block: &Block, content: &BlockContent) -> bool {
+    block.id == content.id
+        && block.kind == content.kind
+        && block.text() == content.text
+        && block.line.marks() == content.marks.as_slice()
+        && block.nesting == content.nesting
+        && block.code_group == content.code_group
+        && shows_authors(content, &block.line)
+}
+
 /// The runs a line shows as authored, as `content` names them.
 fn author_runs(content: &BlockContent) -> Vec<(usize, usize, String)> {
     content
@@ -57,6 +80,31 @@ fn author_runs(content: &BlockContent) -> Vec<(usize, usize, String)> {
         .iter()
         .map(|(range, author)| (range.start, range.end, author.clone()))
         .collect()
+}
+
+/// Which blocks the person may have changed, as
+/// [`BlockEditor::take_edit_scope`] reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EditScope {
+    /// No block.
+    Nothing,
+    /// Only blocks at these indices.
+    Blocks(Range<usize>),
+    /// Any block, and the block list itself.
+    Anywhere,
+}
+
+impl EditScope {
+    /// Also cover what `other` covers.
+    pub fn widen(&mut self, other: Self) {
+        *self = match (std::mem::replace(self, Self::Nothing), other) {
+            (Self::Anywhere, _) | (_, Self::Anywhere) => Self::Anywhere,
+            (Self::Nothing, scope) | (scope, Self::Nothing) => scope,
+            (Self::Blocks(a), Self::Blocks(b)) => {
+                Self::Blocks(a.start.min(b.start)..a.end.max(b.end))
+            }
+        };
+    }
 }
 
 /// Maps a block id to the presence key collaborators address it by.
@@ -175,9 +223,8 @@ impl Block {
             self.line.set_marks(content.marks.clone());
             changed = true;
         }
-        let authors = author_runs(content);
-        if self.line.author_runs() != authors.as_slice() {
-            self.line.set_author_runs(authors);
+        if !shows_authors(content, &self.line) {
+            self.line.set_author_runs(author_runs(content));
             changed = true;
         }
         if self.nesting != content.nesting || self.code_group != content.code_group {
@@ -202,18 +249,13 @@ impl BlockEditor {
     /// what it presented, applies the difference to its model, and presents
     /// the result.
     pub fn present_blocks(&mut self, blocks: &[BlockContent]) -> bool {
-        let unchanged = blocks.len() == self.blocks.len()
-            && blocks.iter().zip(&self.blocks).all(|(next, current)| {
-                next.id == current.id
-                    && next.kind == current.kind
-                    && next.text == current.text()
-                    && next.marks.as_slice() == current.line.marks()
-                    && next.nesting == current.nesting
-                    && next.code_group == current.code_group
-                    && author_runs(next).as_slice() == current.line.author_runs()
-            });
-        if unchanged {
-            return false;
+        let same_blocks = blocks.len() == self.blocks.len()
+            && blocks
+                .iter()
+                .zip(&self.blocks)
+                .all(|(next, current)| next.id == current.id);
+        if same_blocks {
+            return self.present_in_place(blocks.iter().enumerate());
         }
         let old_ids: Vec<String> = self.blocks.iter().map(|block| block.id.clone()).collect();
         let focused_id = self.focused.and_then(|index| old_ids.get(index)).cloned();
@@ -247,6 +289,11 @@ impl BlockEditor {
         if local_author.is_some() {
             for block in &mut self.blocks {
                 block.line.set_local_author(local_author.clone());
+            }
+        }
+        if let Some(paint) = self.mention_paint().cloned() {
+            for block in &mut self.blocks {
+                block.line.set_mention_paint(Some(paint.clone()));
             }
         }
         let old_focus = self.focused;
@@ -294,6 +341,100 @@ impl BlockEditor {
                 anchor: remap(selection.anchor)?,
                 cursor: remap(selection.cursor)?,
             })
+        });
+        if reshaped {
+            self.cross_block_drag_start = None;
+            self.cross_block_drag_touched = None;
+            self.kbd_sel_anchor = None;
+            self.formula_preview_rects.clear();
+            self.table_preview_rects.clear();
+            self.formula_chrome.clear();
+            self.visual_formulas.clear();
+            self.visual_formula_focus = None;
+            self.structure_dirty = true;
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// Show new content for some blocks, the rest as they are: `changed`
+    /// pairs a block's index with what it shows now, and each index must
+    /// still hold the block with that content's id. For an owning model
+    /// that knows which paragraphs an edit touched, so a keystroke's
+    /// read-back costs the blocks it changed, not the document. Returns
+    /// `None`, presenting nothing, when a pair names another block (the
+    /// order changed: present everything with [`Self::present_blocks`]),
+    /// otherwise whether anything changed.
+    pub fn present_changed(&mut self, changed: &[(usize, &BlockContent)]) -> Option<bool> {
+        let fits = changed.iter().all(|(index, content)| {
+            self.blocks
+                .get(*index)
+                .is_some_and(|block| block.id == content.id)
+        });
+        fits.then(|| {
+            self.present_in_place(changed.iter().map(|(index, content)| (*index, *content)))
+        })
+    }
+
+    /// Present new content for blocks at their indices, which hold blocks
+    /// of the same ids: only the blocks whose content changed are touched.
+    fn present_in_place<'a>(
+        &mut self,
+        blocks: impl IntoIterator<Item = (usize, &'a BlockContent)>,
+    ) -> bool {
+        let mut touched = false;
+        let mut reshaped = false;
+        for (index, content) in blocks {
+            let Some(block) = self.blocks.get_mut(index) else {
+                continue;
+            };
+            if shows(block, content) {
+                continue;
+            }
+            let kind_changed = block.kind != content.kind;
+            let (_, block_reshaped) = block.present(content);
+            touched = true;
+            reshaped |= block_reshaped;
+            if kind_changed && self.local_author.is_some() {
+                block.line.set_local_author(self.local_author.clone());
+            }
+            if kind_changed && self.mention_paint.is_some() {
+                block.line.set_mention_paint(self.mention_paint.clone());
+            }
+            if matches!(block.kind, BlockKind::Table { visual: true })
+                && let Some(table) = self.table_editors.get_mut(&block.id)
+            {
+                let rows: Vec<Vec<String>> = super::markdown_table_data_rows(block.text())
+                    .into_iter()
+                    .map(|row| row.into_iter().map(super::decode_table_cell).collect())
+                    .collect();
+                table.project_cells(&rows);
+            }
+        }
+        if !touched {
+            return false;
+        }
+        // A focused table cell keeps the caret from its hidden source line.
+        if let Some(block) = self.focused.and_then(|index| self.blocks.get_mut(index))
+            && matches!(block.kind, BlockKind::Table { visual: true })
+            && self
+                .table_editors
+                .get(&block.id)
+                .is_some_and(|table| table.projected_focus().is_some())
+            && block.line.is_focused()
+        {
+            block.line.set_focus(false);
+        }
+        let blocks = &self.blocks;
+        let clamp = |position: DocumentPosition| DocumentPosition {
+            byte: blocks.get(position.block).map_or(position.byte, |block| {
+                super::clamp_char_boundary(block.text(), position.byte)
+            }),
+            ..position
+        };
+        self.document_selection = self.document_selection.map(|selection| DocumentSelection {
+            anchor: clamp(selection.anchor),
+            cursor: clamp(selection.cursor),
         });
         if reshaped {
             self.cross_block_drag_start = None;

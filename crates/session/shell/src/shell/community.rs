@@ -397,7 +397,7 @@ pub fn team_triages_direct_rooms(
         .is_some_and(|workspace| {
             workspace.triage_in_direct_rooms
                 && workspace
-                    .role_of_agent(crate::shell::workspace_settings::TRIAGE_AGENT)
+                    .role_of_agent(tilo_desktop::workspace_settings::TRIAGE_AGENT)
                     .is_some_and(|role| role != collab_types::role::Role::Denied)
         })
 }
@@ -433,12 +433,12 @@ pub fn prepare_direct_room(
                 workspace.set_owner(me.clone());
                 if setup.triage {
                     let room_id = room.to_string();
-                    let agent = crate::shell::workspace_settings::TRIAGE_AGENT;
+                    let agent = tilo_desktop::workspace_settings::TRIAGE_AGENT;
                     for cap in
-                        crate::shell::workspace_settings::triage_agent_grants(&room_id, agent)
+                        tilo_desktop::workspace_settings::triage_agent_grants(&room_id, agent)
                             .into_iter()
                             .chain(std::iter::once(
-                                crate::shell::workspace_settings::triage_operator_grant(
+                                tilo_desktop::workspace_settings::triage_operator_grant(
                                     &room_id,
                                     agent,
                                     setup.other,
@@ -490,7 +490,7 @@ mod tests {
     #[test]
     fn a_reporters_direct_room_admits_the_team_triage_agent_once() {
         use crate::shell::state::{RoomId, WorkspaceTree};
-        use crate::shell::workspace_settings::{TRIAGE_AGENT, remove_agent};
+        use tilo_desktop::workspace_settings::{TRIAGE_AGENT, remove_agent};
         const TEAM: &str = "team-person";
         let room = RoomId::parse("7a1a9e00-0000-4c0d-9a11-0000000000d1").expect("room id");
         let setup = super::DirectRoomSetup {
@@ -561,10 +561,10 @@ mod tests {
     #[test]
     fn the_team_launches_its_triage_agent_in_a_reporters_room_as_its_operator() {
         use crate::shell::state::{RoomId, WorkspaceTree};
-        use crate::shell::workspace_settings::{TRIAGE_AGENT, remove_agent};
         use tilo_action_broker::collab_broker_capnp::{
             admit_agent_delegation_for_test, principal_id_for_root,
         };
+        use tilo_desktop::workspace_settings::{TRIAGE_AGENT, remove_agent};
         let team_root = [45; 32];
         let team = principal_id_for_root(team_root);
         let room = RoomId::parse("7a1a9e00-0000-4c0d-9a11-0000000000d2").expect("id");

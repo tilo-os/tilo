@@ -11,7 +11,7 @@ use std::io::Read as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use getrandom::{
     SysRng,
@@ -971,9 +971,6 @@ fn spatial_input_state() -> &'static Mutex<SpatialInputState> {
 struct DeviceHealthRuntimeState {
     tracker: crate::shell::spatial_calibration::DeviceHealthTracker,
     last_probe: Option<Instant>,
-    /// Live [`FabricClockSync`] handles per peer.
-    clock_sync_holders: BTreeMap<crate::shell::personal_continuity::DeviceId, usize>,
-    last_clock_sync_probe: Option<Instant>,
     local_power: Option<(
         Instant,
         crate::shell::spatial_calibration::DevicePower,
@@ -986,12 +983,26 @@ fn device_health_state() -> &'static Mutex<DeviceHealthRuntimeState> {
     STATE.get_or_init(|| Mutex::new(DeviceHealthRuntimeState::default()))
 }
 
-/// Keeps one peer's clock estimate fresh: while any handle for a peer is
-/// alive, that peer is probed at
-/// [`CLOCK_SYNC_PROBE_INTERVAL`](crate::shell::spatial_calibration::CLOCK_SYNC_PROBE_INTERVAL)
-/// instead of the ordinary health cadence. Dropping the last handle returns
-/// it to the ordinary cadence.
-#[must_use = "the faster probe cadence lasts only while the handle is held"]
+fn fabric_clock_state() -> &'static Mutex<crate::shell::fabric_clock::FabricClockCore> {
+    static STATE: OnceLock<Mutex<crate::shell::fabric_clock::FabricClockCore>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(crate::shell::fabric_clock::FabricClockCore::default()))
+}
+
+fn with_fabric_clock<T>(
+    apply: impl FnOnce(&mut crate::shell::fabric_clock::FabricClockCore) -> T,
+) -> T {
+    let mut core = fabric_clock_state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    apply(&mut core)
+}
+
+/// Keeps one peer's clock estimate fresh: the fabric clock probes a peer
+/// only while a handle for it is alive, at
+/// [`CLOCK_SYNC_PROBE_INTERVAL`](crate::shell::fabric_clock::CLOCK_SYNC_PROBE_INTERVAL),
+/// and only while Media continuity is on. Dropping the last handle stops
+/// probing and forgets the estimate.
+#[must_use = "the peer's clock is kept only while the handle is held"]
 #[derive(Debug)]
 pub struct FabricClockSync {
     peer: crate::shell::personal_continuity::DeviceId,
@@ -1008,45 +1019,44 @@ impl FabricClockSync {
     pub fn estimate(&self) -> Option<crate::shell::fabric_clock::ClockEstimate> {
         fabric_peer_clock(&self.peer)
     }
+
+    /// Whether audio timed against the peer can play now, and why not.
+    #[must_use]
+    pub fn state(&self) -> crate::shell::fabric_clock::ClockSyncState {
+        let now_us = fabric_monotonic_us();
+        with_fabric_clock(|core| core.state(&self.peer, Instant::now(), now_us))
+    }
 }
 
 impl Drop for FabricClockSync {
     fn drop(&mut self) {
-        if let Ok(mut state) = device_health_state().lock()
-            && let Some(holders) = state.clock_sync_holders.get_mut(&self.peer)
-        {
-            *holders = holders.saturating_sub(1);
-            if *holders == 0 {
-                state.clock_sync_holders.remove(&self.peer);
-            }
-        }
+        with_fabric_clock(|core| core.release(&self.peer));
     }
 }
 
-/// Probe `peer` fast enough to keep its clock synchronised for as long as
-/// the returned handle lives.
+/// Keep `peer`'s clock synchronised for as long as the returned handle
+/// lives.
 pub fn hold_fabric_clock_sync(
     peer: crate::shell::personal_continuity::DeviceId,
 ) -> FabricClockSync {
-    if let Ok(mut state) = device_health_state().lock() {
-        let holders = state.clock_sync_holders.entry(peer.clone()).or_default();
-        *holders = holders.saturating_add(1);
-    }
+    with_fabric_clock(|core| core.hold(peer.clone(), Instant::now()));
     FabricClockSync { peer }
 }
 
 /// The certified peer's clock relative to [`fabric_monotonic_us`], or `None`
-/// before any health probe to it has completed.
+/// while nothing holds it in sync or before its first clock report.
 #[must_use]
 pub fn fabric_peer_clock(
     peer: &crate::shell::personal_continuity::DeviceId,
 ) -> Option<crate::shell::fabric_clock::ClockEstimate> {
     let now_us = fabric_monotonic_us();
-    device_health_state()
-        .lock()
-        .ok()?
-        .tracker
-        .clock(peer, now_us)
+    with_fabric_clock(|core| core.estimate(peer, now_us))
+}
+
+/// Whether the fabric clock runs at all here: Media continuity is on.
+#[must_use]
+pub fn fabric_clock_enabled() -> bool {
+    with_fabric_clock(|core| core.enabled())
 }
 
 fn spatial_calibration_state()
@@ -1441,9 +1451,13 @@ pub struct DeviceFabricRuntime {
     inbound_gamepads: BTreeMap<[u8; 16], InboundGamepadForwarding>,
     local_app_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
     policy: Option<ContinuityPolicySnapshot>,
+    policy_store_stamp: Option<SystemTime>,
+    last_policy_store_check: Option<Instant>,
 }
 
 impl DeviceFabricRuntime {
+    const POLICY_STORE_POLL_INTERVAL: Duration = Duration::from_millis(750);
+
     pub fn new(network: &ShellNetwork, notification_bridge: NotificationBridge) -> Self {
         let counter = network.device_fabric().max_counter();
         Self {
@@ -1471,7 +1485,29 @@ impl DeviceFabricRuntime {
             inbound_gamepads: BTreeMap::new(),
             local_app_focus: None,
             policy: None,
+            policy_store_stamp: None,
+            last_policy_store_check: None,
         }
+    }
+
+    fn current_policy(&mut self, now: Instant) -> ContinuityPolicySnapshot {
+        if self.policy.is_some() && self.policy_cache_fresh(now) {
+            return self.policy.unwrap_or_default();
+        }
+        self.last_policy_store_check = Some(now);
+        let stamp = settings_store::settings_path()
+            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
+        if self.policy.is_none() || stamp != self.policy_store_stamp {
+            self.policy = Some(ContinuityPolicySnapshot::load());
+            self.policy_store_stamp = stamp;
+        }
+        self.policy.unwrap_or_default()
+    }
+
+    fn policy_cache_fresh(&self, now: Instant) -> bool {
+        self.last_policy_store_check.is_some_and(|checked| {
+            now.saturating_duration_since(checked) < Self::POLICY_STORE_POLL_INTERVAL
+        })
     }
 
     pub fn set_realtime_adapter(
@@ -1510,7 +1546,7 @@ impl DeviceFabricRuntime {
         selection: &SharedSelection,
         local: LocalFabricCapabilities,
     ) {
-        let policy = ContinuityPolicySnapshot::load();
+        let policy = self.current_policy(Instant::now());
         self.enforce_policy(network, selection, policy);
         // Always drain Bluetooth worker completions. Policy teardown removes
         // transaction authority immediately, but an already-running BlueZ
@@ -1521,7 +1557,17 @@ impl DeviceFabricRuntime {
             pump_media_handoff_statuses(network);
             self.expire_incoming_media(network);
         }
-        self.maintain_gamepad_forwarding(network, policy);
+        if policy.permits(ContinuityCapability::TypedGamepad)
+            || !self.inbound_gamepads.is_empty()
+            || outbound_gamepad_state()
+                .lock()
+                .is_ok_and(|state| !state.sessions.is_empty())
+            || gamepad_authorization_state()
+                .lock()
+                .is_ok_and(|state| !state.pending.is_empty() || !state.decisions.is_empty())
+        {
+            self.maintain_gamepad_forwarding(network, policy);
+        }
         self.handle_fabric_actions(network, policy);
         self.tethering.pump(
             network,
@@ -1529,7 +1575,10 @@ impl DeviceFabricRuntime {
             unix_now_ms(),
         );
         pump_device_health(network, policy);
-        self.remote_capture.pump(network, policy);
+        pump_fabric_clock(network, policy);
+        if policy.permits(ContinuityCapability::Media) {
+            self.remote_capture.pump(network, policy);
+        }
         crate::shell::remote_audio::pump(
             network,
             policy.permits(ContinuityCapability::Media),
@@ -1689,6 +1738,7 @@ impl DeviceFabricRuntime {
             tear_down_nearby_transfers(network);
         }
         if newly_disabled(ContinuityCapability::Media) {
+            with_fabric_clock(|core| core.set_enabled(false, Instant::now()));
             self.tear_down_incoming_media(network, MediaHandoffFailure::Cancelled);
             tear_down_media_handoffs(network);
             tear_down_bluetooth_handoffs(network);
@@ -1785,7 +1835,10 @@ impl DeviceFabricRuntime {
             if crate::shell::speaker_group_runtime::handle_action(network, &envelope) {
                 continue;
             }
-            if handle_device_health_action(network, &envelope, received_monotonic_us) {
+            if handle_device_health_action(network, &envelope) {
+                continue;
+            }
+            if handle_fabric_clock_action(network, &envelope, received_monotonic_us) {
                 continue;
             }
             if self
@@ -2818,6 +2871,30 @@ impl DeviceFabricRuntime {
     }
 }
 
+#[cfg(test)]
+mod policy_cache_tests {
+    use super::*;
+
+    fn policy_cache_fresh(last_check: Option<Instant>, now: Instant) -> bool {
+        last_check.is_some_and(|checked| {
+            now.saturating_duration_since(checked) < DeviceFabricRuntime::POLICY_STORE_POLL_INTERVAL
+        })
+    }
+
+    #[test]
+    fn cached_policy_avoids_reloading_within_the_frame_loop_window() {
+        let now = Instant::now();
+        assert!(policy_cache_fresh(
+            Some(now),
+            now + Duration::from_millis(749)
+        ));
+        assert!(!policy_cache_fresh(
+            Some(now),
+            now + Duration::from_millis(750)
+        ));
+    }
+}
+
 fn expire_nearby_consents(network: &ShellNetwork) {
     let expired = nearby_drop_state().lock().map_or_else(
         |_| Vec::new(),
@@ -3258,11 +3335,10 @@ fn handle_nearby_drop_action(
 fn handle_device_health_action(
     network: &ShellNetwork,
     envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
-    received_monotonic_us: u64,
 ) -> bool {
     let now = Instant::now();
     match &envelope.action {
-        PersonalFabricAction::DeviceHealthProbe { nonce, sent_us } => {
+        PersonalFabricAction::DeviceHealthProbe { nonce } => {
             let Some((power, energy_saver)) = device_health_state()
                 .lock()
                 .ok()
@@ -3275,9 +3351,6 @@ fn handle_device_health_action(
                 PersonalFabricAction::DeviceHealthReport {
                     report: crate::shell::spatial_calibration::DeviceHealthReport {
                         probe_nonce: *nonce,
-                        probe_sent_us: *sent_us,
-                        received_us: received_monotonic_us,
-                        replied_us: fabric_monotonic_us().max(received_monotonic_us),
                         power,
                         energy_saver,
                     },
@@ -3287,12 +3360,7 @@ fn handle_device_health_action(
         }
         PersonalFabricAction::DeviceHealthReport { report } => {
             if let Ok(mut state) = device_health_state().lock() {
-                let _ = state.tracker.accept_report(
-                    &envelope.source,
-                    *report,
-                    now,
-                    received_monotonic_us,
-                );
+                let _ = state.tracker.accept_report(&envelope.source, *report, now);
             }
             true
         }
@@ -3300,40 +3368,101 @@ fn handle_device_health_action(
     }
 }
 
-/// Every online peer on the ordinary health cadence, and in between only the
-/// peers whose clock someone holds in sync, on the faster cadence.
+/// Answer a peer's clock probe with timestamps only, or feed a report into
+/// the estimate of a peer this device holds in sync. The policy gate has
+/// already admitted both under Media continuity.
+fn handle_fabric_clock_action(
+    network: &ShellNetwork,
+    envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+    received_monotonic_us: u64,
+) -> bool {
+    match &envelope.action {
+        PersonalFabricAction::FabricClockProbe { nonce, sent_us } => {
+            let reply = with_fabric_clock(|core| {
+                core.answer(
+                    *nonce,
+                    *sent_us,
+                    received_monotonic_us,
+                    fabric_monotonic_us(),
+                )
+            });
+            if let Some(reply) = reply {
+                let _ = network.send_personal_fabric_action(&envelope.source, reply);
+            }
+            true
+        }
+        PersonalFabricAction::FabricClockReport { report } => {
+            with_fabric_clock(|core| {
+                core.accept(
+                    &envelope.source,
+                    *report,
+                    Instant::now(),
+                    received_monotonic_us,
+                )
+            });
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Every online peer, once per health cadence.
 fn health_probe_targets(
     state: &mut DeviceHealthRuntimeState,
     online: Vec<crate::shell::personal_continuity::DeviceId>,
     now: Instant,
 ) -> Vec<crate::shell::personal_continuity::DeviceId> {
-    let due = |last: Option<Instant>, interval: Duration| {
-        last.is_none_or(|sampled| {
-            now.checked_duration_since(sampled)
-                .is_none_or(|age| age >= interval)
-        })
-    };
-    if due(
-        state.last_probe,
-        crate::shell::spatial_calibration::HEALTH_PROBE_INTERVAL,
-    ) {
-        state.last_probe = Some(now);
-        state.last_clock_sync_probe = Some(now);
-        return online;
-    }
-    if state.clock_sync_holders.is_empty()
-        || !due(
-            state.last_clock_sync_probe,
-            crate::shell::spatial_calibration::CLOCK_SYNC_PROBE_INTERVAL,
-        )
-    {
+    let due = state.last_probe.is_none_or(|sampled| {
+        now.checked_duration_since(sampled)
+            .is_none_or(|age| age >= crate::shell::spatial_calibration::HEALTH_PROBE_INTERVAL)
+    });
+    if !due {
         return Vec::new();
     }
-    state.last_clock_sync_probe = Some(now);
+    state.last_probe = Some(now);
     online
-        .into_iter()
-        .filter(|peer| state.clock_sync_holders.contains_key(peer))
-        .collect()
+}
+
+/// Probe every online peer something holds in sync, while Media continuity
+/// is on. Nothing else starts the fabric clock.
+fn pump_fabric_clock(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+    let now = Instant::now();
+    let enabled = policy.permits(ContinuityCapability::Media);
+    with_fabric_clock(|core| core.set_enabled(enabled, now));
+    if !enabled {
+        return;
+    }
+    let fabric = network.device_fabric();
+    let local = network
+        .local_device_fabric_identity()
+        .map(|(device, _)| device);
+    let snapshots = fabric.snapshots();
+    let online = |peer: &crate::shell::personal_continuity::DeviceId| {
+        local.as_ref() != Some(peer)
+            && snapshots
+                .get(peer)
+                .is_some_and(|snapshot| snapshot.presence.online)
+    };
+    let now_us = fabric_monotonic_us();
+    let probes = with_fabric_clock(|core| {
+        core.retain_peers(|peer| snapshots.contains_key(peer));
+        core.due_probes(online, now, now_us, || {
+            let mut nonce = [0; 16];
+            while nonce == [0; 16] {
+                UnwrapErr(SysRng).fill_bytes(&mut nonce);
+            }
+            nonce
+        })
+    });
+    for (peer, probe) in probes {
+        let nonce = match &probe {
+            PersonalFabricAction::FabricClockProbe { nonce, .. } => *nonce,
+            _ => continue,
+        };
+        if network.send_personal_fabric_action(&peer, probe).is_err() {
+            with_fabric_clock(|core| core.abandon(&peer, nonce));
+        }
+    }
 }
 
 fn pump_device_health(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
@@ -3367,15 +3496,14 @@ fn pump_device_health(network: &ShellNetwork, policy: ContinuityPolicySnapshot) 
         }
     }
     for (peer, nonce) in probes {
-        let sent_us = fabric_monotonic_us();
         let begun = device_health_state()
             .lock()
-            .is_ok_and(|mut state| state.tracker.begin_probe(peer.clone(), nonce, now, sent_us));
+            .is_ok_and(|mut state| state.tracker.begin_probe(peer.clone(), nonce, now));
         if begun
             && network
                 .send_personal_fabric_action(
                     &peer,
-                    PersonalFabricAction::DeviceHealthProbe { nonce, sent_us },
+                    PersonalFabricAction::DeviceHealthProbe { nonce },
                 )
                 .is_err()
             && let Ok(mut state) = device_health_state().lock()
@@ -3449,6 +3577,8 @@ fn handle_spatial_action(
         | PersonalFabricAction::RemoteCaptureChunk { .. }
         | PersonalFabricAction::DeviceHealthProbe { .. }
         | PersonalFabricAction::DeviceHealthReport { .. }
+        | PersonalFabricAction::FabricClockProbe { .. }
+        | PersonalFabricAction::FabricClockReport { .. }
         | PersonalFabricAction::Tethering { .. }
         | PersonalFabricAction::BluetoothHandoffPrepare { .. }
         | PersonalFabricAction::BluetoothHandoffPrepared { .. }
@@ -8102,53 +8232,34 @@ mod tests {
     use crate::shell::personal_continuity::DeviceId;
 
     #[test]
-    fn clock_sync_holders_get_the_fast_cadence_between_health_rounds() {
-        let speaker = DeviceId::new("clock-speaker").unwrap();
-        let tablet = DeviceId::new("clock-tablet").unwrap();
+    fn health_probes_every_online_peer_once_per_cadence() {
+        let speaker = DeviceId::new("health-speaker").unwrap();
+        let tablet = DeviceId::new("health-tablet").unwrap();
         let online = || vec![speaker.clone(), tablet.clone()];
         let start = Instant::now();
         let at = |ms| start + Duration::from_millis(ms);
         let mut state = DeviceHealthRuntimeState::default();
         assert_eq!(health_probe_targets(&mut state, online(), at(0)), online());
         assert!(health_probe_targets(&mut state, online(), at(300)).is_empty());
-        state.clock_sync_holders.insert(speaker.clone(), 1);
-        assert_eq!(
-            health_probe_targets(&mut state, online(), at(300)),
-            vec![speaker.clone()]
-        );
-        assert!(health_probe_targets(&mut state, online(), at(400)).is_empty());
-        assert_eq!(
-            health_probe_targets(&mut state, online(), at(550)),
-            vec![speaker.clone()]
-        );
         assert_eq!(
             health_probe_targets(&mut state, online(), at(10_000)),
             online()
         );
-        state.clock_sync_holders.clear();
-        assert!(health_probe_targets(&mut state, online(), at(10_500)).is_empty());
     }
 
     #[test]
     fn clock_sync_handles_are_counted_until_the_last_is_dropped() {
         let peer = DeviceId::new("clock-handle-peer").unwrap();
-        let holders = || {
-            device_health_state()
-                .lock()
-                .unwrap()
-                .clock_sync_holders
-                .get(&peer)
-                .copied()
-        };
+        let held = || with_fabric_clock(|core| core.is_held(&peer));
         let first = hold_fabric_clock_sync(peer.clone());
         let second = hold_fabric_clock_sync(peer.clone());
-        assert_eq!(holders(), Some(2));
+        assert!(held());
         drop(first);
-        assert_eq!(holders(), Some(1));
+        assert!(held());
         assert_eq!(second.peer(), &peer);
         assert!(second.estimate().is_none());
         drop(second);
-        assert_eq!(holders(), None);
+        assert!(!held());
     }
 
     fn provenance_snapshot(

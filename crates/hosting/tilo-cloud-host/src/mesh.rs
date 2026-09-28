@@ -1,6 +1,8 @@
 //! Explicit bilateral grants for bounded Actions; no peer, root or room mutation.
 use super::*;
-use tilo_user_identity::machine_mesh::{MeshChallenge, MeshRequest, verify_request};
+use tilo_user_identity::machine_mesh::{
+    BROKER_ACTIONS_SCOPE, MeshChallenge, MeshRequest, verify_request,
+};
 pub const MESH_ALPN: &[u8] = b"tilo-cloud-mesh-actions/1";
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(crate) struct MeshState {
@@ -152,9 +154,13 @@ impl Store {
         self.ensure_reconciled()?;
         let _ = now;
         let links = link_status(&self.state.mesh, &self.state.machine_id);
-        // Links and grants are kept; no operation is delegated over a link yet.
+        let remote_actions = if links.iter().any(|link| link["active"] == true) {
+            vec![BROKER_ACTIONS_SCOPE]
+        } else {
+            Vec::<&str>::new()
+        };
         Ok(
-            serde_json::json!({"version":1,"machine_id":self.state.machine_id,"links":links,"capabilities":{"protocol":"tilo-cloud-mesh-actions/1","remote_actions":Vec::<String>::new(),"agent_execution":false,"private_workspace_access":false,"max_concurrent":8},"runtime_readiness":"requires_live_action_probe"}),
+            serde_json::json!({"version":1,"machine_id":self.state.machine_id,"links":links,"capabilities":{"protocol":"tilo-cloud-mesh-actions/1","remote_actions":remote_actions,"agent_execution":false,"private_workspace_access":false,"max_concurrent":8},"runtime_readiness":"requires_live_action_probe"}),
         )
     }
     fn mesh_peer(&self, id: &str, machine: &str, now: u64) -> Result<MeshChallenge> {
@@ -179,16 +185,18 @@ impl Store {
         if machine != remote.machine_id
             || local.root_public_key != b.root
             || local.host_certificate != b.authority
-            || link.grant.allowed_actions != ["model_complete"]
+            || link.grant.allowed_actions != [BROKER_ACTIONS_SCOPE]
         {
             bail!("mesh scope mismatch")
         }
         tilo_user_identity::verify_device_cert_at(&remote.host_certificate, now)?;
         tilo_user_identity::verify_device_cert_at(&local.host_certificate, now)?;
-        if revocations(&b.revocations)?
-            .is_revoked_at(&local.host_certificate.device_public_key, now)
-        {
+        let revoked = revocations(&b.revocations)?;
+        if revoked.is_revoked_at(&local.host_certificate.device_public_key, now) {
             bail!("local host revoked")
+        }
+        if revoked.is_revoked_at(&remote.host_certificate.device_public_key, now) {
+            bail!("remote host revoked")
         }
         Ok(remote.clone())
     }
@@ -224,6 +232,7 @@ impl Store {
             || call.request.room != format!("mesh:{}", call.link_id)
             || call.request.invocation_id.is_empty()
             || call.request.invocation_id.len() > 128
+            || call.source_device_public_key != cert.device_public_key
         {
             bail!("invalid mesh action identity")
         }
@@ -231,7 +240,25 @@ impl Store {
         if &peer.host_certificate != cert {
             bail!("mesh host certificate mismatch")
         }
-        bail!("no operation is delegated over machine links")
+        Ok(())
+    }
+
+    /// Run a mesh-authenticated broker action on this host.
+    ///
+    /// The wire room is `mesh:{link_id}`; execution remaps to the local workspace
+    /// room and attributes the call to the source device for ordinary permission checks.
+    pub(crate) fn mesh_execute(
+        &mut self,
+        cert: &DeviceCert,
+        call: &MeshAction,
+        now: u64,
+    ) -> Result<ActionReceipt> {
+        self.mesh_authorize(cert, call, now)?;
+        // Recheck link activity and revocations immediately before the broker runs.
+        self.mesh_peer(&call.link_id, &call.source_machine_id, now)?;
+        let mut request = call.request.clone();
+        request.room = self.state.room.clone();
+        self.action(call.source_device_public_key, &request, now)
     }
 }
 use iroh::protocol::{AcceptError, ProtocolHandler};
@@ -327,8 +354,7 @@ impl Handler {
     }
     async fn respond(&self, cert: &DeviceCert, call: &MeshAction) -> Result<ActionReceipt> {
         let now = tilo_delivery_protocol::clock::now_ns();
-        Store::open(&self.root, &self.machine)?.mesh_authorize(cert, call, now)?;
-        bail!("no operation is delegated over machine links")
+        Store::open(&self.root, &self.machine)?.mesh_execute(cert, call, now)
     }
 }
 /// Serve the mesh endpoint under the machine's mesh identity.

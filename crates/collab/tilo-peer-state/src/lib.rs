@@ -41,6 +41,7 @@ pub mod durability;
 pub mod topology;
 
 pub mod desktop_command;
+pub mod document_import;
 pub mod owner_commit;
 
 pub mod retained_proof;

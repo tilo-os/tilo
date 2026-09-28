@@ -8,8 +8,10 @@
     reason = "test fixtures: a failed lookup is the assertion"
 )]
 
-use automerge::AutoCommit;
+use automerge::transaction::Transactable as _;
+use automerge::{AutoCommit, ObjId, PatchAction, Prop, ROOT, ReadDoc as _};
 use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::commands::{DesktopCommand, TabLocation, apply_command};
 use tilo_desktop_model::desktop_doc;
 use tilo_desktop_model::{
@@ -306,4 +308,288 @@ fn shortcuts_are_seeded_saved_replaced_and_deleted() {
         WorkspaceId(9),
         &shortcut("x", "X")
     ));
+}
+
+/// [`tree`] plus workspace 2 ("Lab"): strip 3 holds group 30 [300].
+fn two_workspaces() -> DesktopTree {
+    let mut desktop = tree();
+    let mut lab = Workspace::new(WorkspaceId(2), "Lab");
+    lab.room = RoomId::parse("00000000-0000-4000-8000-000000000043").unwrap();
+    let mut strip = Strip::new(StripId(3), "C");
+    strip.window_groups = vec![group(30, &[300])];
+    lab.strips = vec![strip];
+    desktop.workspaces.push(lab);
+    desktop
+}
+
+fn committed_seed(desktop: &DesktopTree) -> AutoCommit {
+    let mut doc = AutoCommit::new();
+    desktop_doc::seed(&mut doc, desktop);
+    doc.commit();
+    doc
+}
+
+fn child(doc: &AutoCommit, parent: &ObjId, prop: impl Into<Prop>) -> ObjId {
+    doc.get(parent, prop).unwrap().unwrap().1
+}
+
+fn workspace_list(doc: &AutoCommit) -> ObjId {
+    child(doc, &ROOT, "workspaces")
+}
+
+/// The object of each workspace entry, in document order.
+fn workspace_entries(doc: &AutoCommit) -> Vec<ObjId> {
+    let list = workspace_list(doc);
+    (0..doc.length(&list))
+        .map(|i| child(doc, &list, i))
+        .collect()
+}
+
+/// The object of the tab entry at `path` = (workspace, strip, group, tab)
+/// positions.
+fn tab_entry(doc: &AutoCommit, path: [usize; 4]) -> ObjId {
+    let [ws, strip, group, tab] = path;
+    let ws = child(doc, &workspace_list(doc), ws);
+    let strip = child(doc, &child(doc, &ws, "strips"), strip);
+    let group = child(doc, &child(doc, &strip, "window_groups"), group);
+    child(doc, &child(doc, &group, "tabs"), tab)
+}
+
+fn names(desktop: &DesktopTree) -> Vec<(u64, String)> {
+    desktop
+        .workspaces
+        .iter()
+        .map(|ws| (ws.id.raw(), ws.name.clone()))
+        .collect()
+}
+
+#[test]
+fn reseeding_an_unchanged_desktop_writes_nothing() {
+    let desktop = two_workspaces();
+    let mut doc = committed_seed(&desktop);
+    let heads = doc.get_heads();
+    desktop_doc::seed(&mut doc, &desktop);
+    assert_eq!(
+        doc.pending_ops(),
+        0,
+        "every write is a history row; an unchanged tree must not produce any"
+    );
+    assert_eq!(doc.commit(), None);
+    assert_eq!(doc.get_heads(), heads);
+}
+
+/// `value` as JSON with every object's keys in reverse order.
+fn reversed_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Object(map) => {
+            let fields: Vec<String> = map
+                .iter()
+                .rev()
+                .map(|(k, v)| format!("{}:{}", serde_json::to_string(k).unwrap(), reversed_json(v)))
+                .collect();
+            format!("{{{}}}", fields.join(","))
+        }
+        other => other.to_string(),
+    }
+}
+
+/// A blob is compared as JSON: a map read back from a peer's bytes may
+/// serialise its keys in another order, and that is not an edit.
+#[test]
+fn reseeding_does_not_rewrite_an_equivalent_blob() {
+    let desktop = tree();
+    let mut doc = committed_seed(&desktop);
+    let tile = serde_json::to_value(&desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile)
+        .unwrap();
+    let reordered = reversed_json(&tile).into_bytes();
+    assert_ne!(reordered, serde_json::to_vec(&tile).unwrap());
+    let entry = tab_entry(&doc, [0, 0, 0, 0]);
+    doc.put(
+        &entry,
+        "tile_json",
+        automerge::ScalarValue::Bytes(reordered),
+    )
+    .unwrap();
+    doc.commit();
+
+    desktop_doc::seed(&mut doc, &desktop);
+    assert_eq!(doc.pending_ops(), 0);
+}
+
+#[test]
+fn a_rename_writes_only_the_name() {
+    let mut desktop = two_workspaces();
+    let mut doc = committed_seed(&desktop);
+    let list = workspace_list(&doc);
+    let entries = workspace_entries(&doc);
+    let tab = tab_entry(&doc, [1, 0, 0, 0]);
+    let before = doc.get_heads();
+
+    desktop.workspaces[0].name = "Studio".into();
+    desktop_doc::seed(&mut doc, &desktop);
+    assert_eq!(
+        doc.pending_ops(),
+        1,
+        "a rename is one put, not a list rewrite"
+    );
+    doc.commit();
+    let after = doc.get_heads();
+    let patches = doc.diff(&before, &after);
+    assert_eq!(patches.len(), 1, "{patches:?}");
+    assert_eq!(patches[0].obj, entries[0]);
+    assert!(
+        matches!(&patches[0].action, PatchAction::PutMap { key, .. } if key == "name"),
+        "{patches:?}"
+    );
+    assert_eq!(workspace_list(&doc), list, "the list object survives");
+    assert_eq!(
+        workspace_entries(&doc),
+        entries,
+        "every entry keeps its object"
+    );
+    assert_eq!(tab_entry(&doc, [1, 0, 0, 0]), tab);
+    assert_eq!(
+        names(&read_back(&doc)),
+        vec![(1, "Studio".into()), (2, "Lab".into())]
+    );
+}
+
+#[test]
+fn seed_splices_inserted_removed_and_reordered_entries() {
+    let mut desktop = two_workspaces();
+    let mut doc = committed_seed(&desktop);
+    let entries = workspace_entries(&doc);
+
+    // Close tab 101, open 102 in group 11, add group 21 to strip 2, add a
+    // third workspace, and put workspace 2 first.
+    let ws = &mut desktop.workspaces[0];
+    ws.strips[0].window_groups[0].tabs.truncate(1);
+    ws.strips[0].window_groups[1].tabs.push(tab(111));
+    ws.strips[1].window_groups.push(group(21, &[210, 211]));
+    desktop
+        .workspaces
+        .push(Workspace::new(WorkspaceId(3), "New"));
+    desktop.workspaces.swap(0, 1);
+    desktop_doc::seed(&mut doc, &desktop);
+    doc.commit();
+
+    let back = read_back(&doc);
+    assert_eq!(
+        names(&back),
+        vec![(2, "Lab".into()), (1, "Desk".into()), (3, "New".into())]
+    );
+    let desk = back
+        .workspaces
+        .iter()
+        .find(|w| w.id == WorkspaceId(1))
+        .unwrap();
+    let desk_layout: Layout = desk
+        .strips
+        .iter()
+        .map(|s| {
+            (
+                s.id.raw(),
+                s.window_groups
+                    .iter()
+                    .map(|g| (g.id, g.tabs.iter().map(|t| t.id).collect()))
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        desk_layout,
+        vec![
+            (1, vec![(10, vec![100]), (11, vec![110, 111])]),
+            (2, vec![(20, vec![200]), (21, vec![210, 211])]),
+        ]
+    );
+    let now = workspace_entries(&doc);
+    assert_ne!(
+        now[0], entries[1],
+        "a list has no move; the entry moved forward is re-inserted"
+    );
+    assert_eq!(
+        now[1], entries[0],
+        "the entry it jumped over keeps its object"
+    );
+    assert_eq!(now.len(), 3);
+
+    // Without a reorder, a splice leaves every surviving object in place.
+    let mut desktop = two_workspaces();
+    let mut doc = committed_seed(&desktop);
+    let desk = workspace_entries(&doc)[0].clone();
+    let untouched_tab = tab_entry(&doc, [0, 0, 0, 0]);
+    let neighbour_tab = tab_entry(&doc, [0, 0, 1, 0]);
+    desktop.workspaces[0].strips[0].window_groups[1]
+        .tabs
+        .push(tab(111));
+    desktop.workspaces.remove(1);
+    desktop_doc::seed(&mut doc, &desktop);
+    assert_eq!(workspace_entries(&doc), vec![desk]);
+    assert_eq!(tab_entry(&doc, [0, 0, 0, 0]), untouched_tab);
+    assert_eq!(tab_entry(&doc, [0, 0, 1, 0]), neighbour_tab);
+    assert_eq!(names(&read_back(&doc)), vec![(1, "Desk".into())]);
+}
+
+#[test]
+fn seed_deletes_fields_and_map_keys_the_tree_dropped() {
+    let mut desktop = tree();
+    let keep = CapOverride::grant(
+        Subject::app("org.example.App"),
+        Scope::FsPath("/srv".into()),
+        Verb::Read,
+    )
+    .with_id("cap-keep");
+    let drop = CapOverride::grant(
+        Subject::app("org.example.App"),
+        Scope::FsPath("/tmp".into()),
+        Verb::Read,
+    )
+    .with_id("cap-drop");
+    desktop.workspaces[0].capabilities = vec![keep.clone(), drop];
+    let mut doc = committed_seed(&desktop);
+    let entry = workspace_entries(&doc)[0].clone();
+    let caps = child(&doc, &entry, "capabilities");
+
+    desktop.workspaces[0].capabilities = vec![keep.clone()];
+    desktop.workspaces[0].owner = None;
+    desktop_doc::seed(&mut doc, &desktop);
+    doc.commit();
+
+    assert_eq!(
+        child(&doc, &entry, "capabilities"),
+        caps,
+        "the map is edited, not replaced"
+    );
+    assert_eq!(
+        doc.keys(&caps).collect::<Vec<_>>(),
+        vec!["cap-keep".to_string()]
+    );
+    assert!(doc.get(&entry, "owner").unwrap().is_none());
+    let back = read_back(&doc);
+    assert_eq!(back.workspaces[0].capabilities, vec![keep]);
+    assert_eq!(back.workspaces[0].owner, None);
+}
+
+/// The reason seeding is a splice: a whole-list rewrite deletes the entry a
+/// peer edited concurrently, so the peer's edit lands on a tombstone.
+#[test]
+fn a_concurrent_edit_to_another_workspace_survives_a_reseed() {
+    let mut local = two_workspaces();
+    let mut doc = committed_seed(&local);
+    let mut peer_doc = doc.fork();
+    let mut peer = two_workspaces();
+
+    peer.workspaces[1].name = "Peer lab".into();
+    desktop_doc::seed(&mut peer_doc, &peer);
+    peer_doc.commit();
+    local.workspaces[0].name = "Studio".into();
+    desktop_doc::seed(&mut doc, &local);
+    doc.commit();
+
+    doc.merge_incoming(&mut peer_doc).unwrap();
+    assert_eq!(
+        names(&read_back(&doc)),
+        vec![(1, "Studio".into()), (2, "Peer lab".into())]
+    );
 }

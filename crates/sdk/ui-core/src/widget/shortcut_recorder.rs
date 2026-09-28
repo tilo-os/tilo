@@ -460,7 +460,7 @@ mod tests {
                 recorder
                     .binding()
                     .keycap_labels(PlatformConventions::new(crate::platform::Platform::MacOs)),
-                ["⌘", "Down"]
+                ["⌘", "↓"]
             );
         }
     }

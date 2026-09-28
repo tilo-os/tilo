@@ -111,17 +111,6 @@ pub trait Apply {
     /// `tilo-install install --allow-self-signed --force <tapp>` as `user`;
     /// returns what it printed.
     fn install_app(&mut self, user: &str, tapp: &std::path::Path) -> Result<String, DaemonError>;
-    /// `user` has runtime bundle `version` in their per-user runtime root.
-    fn has_runtime(&mut self, user: &str, version: &str) -> bool;
-    /// Make the runtime bundle at `bundle` available to `user`: `tilo-install
-    /// runtime install --bundle` as that user unless they already have its
-    /// version, and its publisher in the launcher's runtime trust list when
-    /// that list is in force. Returns what was done.
-    fn install_runtime(
-        &mut self,
-        user: &str,
-        bundle: &std::path::Path,
-    ) -> Result<String, DaemonError>;
     /// Make the kernel in `layer` (already merged into `/usr`) the next boot,
     /// or with `None` put the image's own kernel back (see [`crate::boot`]).
     /// Returns what the next boot starts, and warnings.
@@ -583,23 +572,6 @@ impl Apply for RecordingApply {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         Ok(format!("installed: so.tilo.{name} 0.1.0\n"))
-    }
-    fn install_runtime(
-        &mut self,
-        user: &str,
-        bundle: &std::path::Path,
-    ) -> Result<String, DaemonError> {
-        let version = crate::runtime::bundle_field(bundle, "version")?;
-        self.call(format!("install_runtime {user} {version}"));
-        Ok(format!(
-            "installed runtime bundle: tilo-runtime/{version}\n"
-        ))
-    }
-    fn has_runtime(&mut self, user: &str, version: &str) -> bool {
-        self.call(format!("has_runtime {user} {version}"));
-        self.calls
-            .iter()
-            .any(|call| *call == format!("install_runtime {user} {version}"))
     }
     fn boot_kernel(
         &mut self,

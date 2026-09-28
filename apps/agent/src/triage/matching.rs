@@ -158,6 +158,7 @@ mod tests {
             author: "u_reporter".into(),
             ts,
             text: text.into(),
+            body: Vec::new(),
             edited: false,
             history: vec![],
             parent: None,

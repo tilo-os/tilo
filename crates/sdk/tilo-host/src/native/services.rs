@@ -17,18 +17,28 @@
 //! [`process_environment`] turns launcher variables, XDG paths and
 //! accessibility flags into a [`crate::host::HostEnvironment`].
 
+#[cfg(not(target_os = "android"))]
 use std::sync::{Arc, Mutex, OnceLock};
 
+#[cfg(not(target_os = "android"))]
 use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard, warn_fallback_once};
-use crate::host::{
-    HostServices, MediaSession, MediaSessionFactory, Notifier, SpeechFactory, UriOpener,
-};
+#[cfg(not(target_os = "android"))]
+use crate::host::HostServices;
+use crate::host::{MediaSession, MediaSessionFactory};
 #[cfg(all(windows, feature = "notifications"))]
 use crate::host::{Notification, NotifyError};
+#[cfg(not(target_os = "android"))]
+use crate::host::{Notifier, SpeechFactory, UriOpener};
 use crate::mpris::{MprisConfig, PlayerSnapshot};
 
 /// The native services for this process. `app_id` names the app to the
 /// host's notification service; without one notifications are unavailable.
+#[cfg(target_os = "android")]
+pub use super::android::services;
+
+/// The native services for this process. `app_id` names the app to the
+/// host's notification service; without one notifications are unavailable.
+#[cfg(not(target_os = "android"))]
 pub fn services(app_id: Option<&str>) -> HostServices {
     HostServices {
         clipboard: native_clipboard(),
@@ -48,6 +58,7 @@ pub fn install_default_if_unset(app_id: Option<&str>) -> bool {
     crate::host::install_default_if_unset(|| services(app_id))
 }
 
+#[cfg(not(target_os = "android"))]
 fn native_clipboard() -> Arc<dyn ClipboardBackend> {
     static CLIPBOARD: OnceLock<Arc<NativeClipboard>> = OnceLock::new();
     CLIPBOARD
@@ -202,11 +213,13 @@ static WAYLAND: OnceLock<crate::clipboard::WaylandClipboard> = OnceLock::new();
 /// Order: the app's Wayland connection once attached, else `arboard` when
 /// this process is not a Wayland client, else a process-local buffer that
 /// announces itself in the log.
+#[cfg(not(target_os = "android"))]
 #[derive(Default)]
 struct NativeClipboard {
     local: InProcessClipboard,
 }
 
+#[cfg(not(target_os = "android"))]
 impl NativeClipboard {
     #[cfg(target_os = "linux")]
     fn wayland() -> Option<&'static crate::clipboard::WaylandClipboard> {
@@ -255,10 +268,10 @@ impl NativeClipboard {
 }
 
 /// Stand-in so the non-Linux resolution order reads like the Linux one.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
 struct NoWayland;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
 impl NoWayland {
     fn set_text(&self, _target: ClipboardTarget, _text: &str) -> bool {
         false
@@ -271,6 +284,7 @@ impl NoWayland {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 impl ClipboardBackend for NativeClipboard {
     fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
         if Self::set_shared(target, text) {
@@ -357,6 +371,7 @@ impl ClipboardBackend for NativeClipboard {
 /// `wl_data_device` instead. Construction is skipped rather than attempted
 /// on Wayland because arboard's probe there is slow, and a handle that
 /// fails on every call is worse than no handle.
+#[cfg(not(target_os = "android"))]
 fn arboard_clipboard() -> Option<&'static Mutex<arboard::Clipboard>> {
     static CB: OnceLock<Option<Mutex<arboard::Clipboard>>> = OnceLock::new();
     CB.get_or_init(|| {
@@ -369,6 +384,7 @@ fn arboard_clipboard() -> Option<&'static Mutex<arboard::Clipboard>> {
 }
 
 /// Whether this process is a Wayland client.
+#[cfg(not(target_os = "android"))]
 fn running_on_wayland() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
 }
@@ -377,28 +393,33 @@ fn running_on_wayland() -> bool {
 /// on Unix builds with the `portal` feature (inside the app sandbox there is
 /// no host `xdg-open` to spawn), the platform opener elsewhere. On Windows
 /// that is `ShellExecute` rather than interpreting the URI as a command line.
+#[cfg(not(target_os = "android"))]
 struct DesktopOpener;
 
+#[cfg(not(target_os = "android"))]
 impl UriOpener for DesktopOpener {
-    #[cfg(all(feature = "portal", unix))]
+    #[cfg(all(feature = "portal", freedesktop))]
     fn open(&self, uri: &str) -> std::io::Result<()> {
         super::portal::open_uri(uri)
     }
 
-    #[cfg(not(all(feature = "portal", unix)))]
+    #[cfg(not(all(feature = "portal", freedesktop)))]
     fn open(&self, uri: &str) -> std::io::Result<()> {
         open::that_detached(uri)
     }
 }
 
+#[cfg(not(target_os = "android"))]
 struct SystemSpeech;
 
+#[cfg(not(target_os = "android"))]
 impl SpeechFactory for SystemSpeech {
     fn make(&self) -> Box<dyn tts::Speaker> {
         tts::default_speaker()
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn notifier(app_id: Option<&str>) -> Arc<dyn Notifier> {
     #[cfg(all(windows, feature = "notifications"))]
     if let Some(app_id) = app_id {
@@ -476,6 +497,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn native_services_share_one_round_tripping_clipboard() {
         // phase: native_clipboard_round_trips_with_or_without_a_system_clipboard

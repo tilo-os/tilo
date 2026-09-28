@@ -244,6 +244,17 @@ impl Container {
 }
 
 impl Widget for Container {
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        // This container owns no operation handler: offer each child once.
+        crate::widget::start_in_children(self, op, doc, path)
+    }
+
+    /// Legacy adapter: offered through [`Widget::start_operation`].
     fn start_resource_operation_with_document(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -253,16 +264,11 @@ impl Widget for Container {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        // This container owns no operation handler. Preserve mutable admission
-        // down the retained tree without a second read-only fallback traversal.
-        for child in self.children_mut() {
-            if let Some(started) = child.start_resource_operation_with_document(
-                invocation, kind, type_id, payload, doc, path,
-            )? {
-                return Ok(Some(started));
-            }
-        }
-        Ok(None)
+        self.start_operation(
+            &crate::widget::ResourceOperation::local(invocation, kind, type_id, payload),
+            doc,
+            path,
+        )
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {

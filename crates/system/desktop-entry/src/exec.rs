@@ -15,9 +15,6 @@
 //! they bracket nothing, and an empty pair is removed rather than passed on.
 
 use std::path::Path;
-// `write!` into a `String` cannot fail; the discarded `Result` is the
-// `fmt::Write` contract, not a swallowed error.
-use std::fmt::Write as _;
 
 /// Why an `Exec=` could not become an argv.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -204,23 +201,13 @@ fn strip_empty_forwarding_markers(argv: &[String]) -> Vec<String> {
     out
 }
 
-/// `/home/u/a b.txt` → `file:///home/u/a%20b.txt`. Percent-encodes everything outside the
-/// URL "unreserved" set plus `/` (the separator). Deliberately minimal — exists so `%u` gets
-/// a well-formed URL, not to be a general URL library.
+/// `/home/u/a b.txt` → `file:///home/u/a%20b.txt`, so `%u` gets a well-formed URL. A string
+/// that is already a URL, or a relative path, passes through unchanged.
 pub fn path_to_url(path: &str) -> String {
     if path.contains("://") {
         return path.to_string();
     }
-    let mut out = String::from("file://");
-    for b in path.as_bytes() {
-        let c = *b as char;
-        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~' | '/') {
-            out.push(c);
-        } else {
-            let _ = write!(out, "%{b:02X}");
-        }
-    }
-    out
+    url::Url::from_file_path(path).map_or_else(|()| path.to_string(), String::from)
 }
 
 #[cfg(test)]

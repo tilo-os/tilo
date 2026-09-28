@@ -77,6 +77,12 @@ impl BrokerActionHost {
     }
 }
 
+impl tilo_runtime::mcp::InspectionSource for BrokerActionHost {
+    fn inspection_broker(&self) -> Option<&AppActionBroker> {
+        Some(&self.broker)
+    }
+}
+
 impl ActionHost for BrokerActionHost {
     fn query(
         &self,
@@ -637,3 +643,11 @@ mod tests {
         assert_eq!(tree.write().take_withdrawn_room_records().len(), 1);
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "shortcuts_door_tests.rs"]
+mod shortcuts_door_tests;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "keyboard_shortcuts_door_tests.rs"]
+mod keyboard_shortcuts_door_tests;

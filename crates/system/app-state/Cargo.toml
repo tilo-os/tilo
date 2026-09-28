@@ -21,14 +21,14 @@ atomic-file = { path = "../../../crates/system/atomic-file" }
 cli = { path = "../../runtime/cli" }
 # The storage seam `FsStore` implements and `DocWriter` persists through.
 durable-store = { path = "../durable-store" }
+# The home directory bounds how far up directory syncs reach.
+xdg-paths = { path = "../xdg-paths" }
 
 automerge.workspace = true
 tilo-automerge.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-# The home an app is handed bounds the directories it makes durable.
-xdg-paths = { path = "../xdg-paths" }
 
 [target.'cfg(windows)'.dependencies]
 # Compare volume/file identities through live Windows handles.

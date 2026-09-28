@@ -13,9 +13,10 @@
 //!
 //! Measuring needs audio played and captured at sample-accurate times on
 //! different devices. [`TimedMeasurement`] does that with the timed audio
-//! path: the member plays the sweep at a scheduled instant on this device's
-//! clock, converted through the fabric clock estimate, while this device's
-//! microphone records around it.
+//! path: this device schedules the sweep on its own clock, converts that to
+//! the member's clock through its fabric clock estimate of the member, and
+//! records around it. Without an estimate within the clock's deadline the
+//! member fails with the reason, never a silent skip.
 
 use crate::shell::personal_continuity::DeviceId;
 use crate::shell::speaker_group::{EndpointSelector, SpeakerGroup, SpeakerGroupId, SpeakerTrim};
@@ -80,6 +81,8 @@ pub struct TimedMeasurement {
     result:
         Option<std::sync::mpsc::Receiver<Result<media::calibration::SpeakerMeasurement, String>>>,
     clock_sync: Option<crate::shell::device_fabric_runtime::FabricClockSync>,
+    /// A remote member's sweep, waiting for this device's clock of it.
+    awaiting_clock: Option<(SweepRequest, media::audio::AudioDevice)>,
 }
 
 impl TimedMeasurement {
@@ -90,53 +93,17 @@ impl TimedMeasurement {
             send,
             result: None,
             clock_sync: None,
+            awaiting_clock: None,
         }
     }
-}
 
-fn to_f32(sample: i16) -> f32 {
-    f32::from(sample) / 32_768.0
-}
-
-impl MeasurementSource for TimedMeasurement {
-    fn begin(&mut self, request: &SweepRequest) -> Result<(), String> {
-        use crate::shell::speaker_group_runtime::{resolve_local_microphone, resolve_local_output};
-        if request.microphone_device != self.local {
-            return Err(crate::shell::i18n::t(
-                "speaker-calibration-reason-remote-microphone",
-            ));
-        }
-        let microphone = resolve_local_microphone(&self.local, request.microphone)
-            .ok_or_else(|| crate::shell::i18n::t("speaker-calibration-reason-microphone-gone"))?;
+    /// Record around `play_at` on this device's clock and measure the sweep.
+    fn listen(
+        &mut self,
+        microphone: &media::audio::AudioDevice,
+        play_at: i64,
+    ) -> Result<(), String> {
         let sweep = sweep()?;
-        let play_at = media::pw_stream::monotonic_now_ns().saturating_add(SWEEP_LEAD_NS);
-        if request.member == self.local {
-            let sink = resolve_local_output(&self.local, request.output)
-                .ok_or_else(|| crate::shell::i18n::t("speaker-calibration-reason-output-gone"))?;
-            let signal = sweep.signal().to_vec();
-            std::thread::Builder::new()
-                .name("calibration-play".into())
-                .spawn(move || {
-                    let _ = media::pw_stream::TimedAudio::native().play_at(
-                        sink.serial,
-                        SWEEP_RATE,
-                        1,
-                        signal,
-                        play_at,
-                    );
-                })
-                .map_err(|error| {
-                    crate::shell::i18n::t_args(
-                        "speaker-calibration-reason-play-failed",
-                        &[("error", error.to_string().into())],
-                    )
-                })?;
-        } else {
-            self.clock_sync = Some(crate::shell::device_fabric_runtime::hold_fabric_clock_sync(
-                request.member.clone(),
-            ));
-            (self.send)(request, play_at)?;
-        }
         let (sender, receiver) = std::sync::mpsc::channel();
         self.result = Some(receiver);
         let duration_ns = i64::try_from(sweep.signal().len())
@@ -146,13 +113,14 @@ impl MeasurementSource for TimedMeasurement {
             .unwrap_or(0)
             .saturating_add(CAPTURE_PREROLL_NS)
             .saturating_add(CAPTURE_TAIL_NS);
+        let serial = microphone.serial;
         std::thread::Builder::new()
             .name("calibration-listen".into())
             .spawn(move || {
                 let result = media::pw_stream::TimedAudio::native()
                     .capture_window(
                         media::pw_stream::CaptureTarget {
-                            serial: microphone.serial,
+                            serial,
                             monitor_sink: false,
                         },
                         SWEEP_RATE,
@@ -183,7 +151,88 @@ impl MeasurementSource for TimedMeasurement {
         Ok(())
     }
 
+    /// Once the member's clock is known, ask it to play and start
+    /// listening. `None` while the clock is still syncing.
+    fn start_remote_sweep(&mut self) -> Option<Result<(), String>> {
+        use crate::shell::fabric_clock::ClockSyncState;
+        use media::sync_playout::ClockMapping as _;
+        let sync = self.clock_sync.as_ref()?;
+        let estimate = match sync.state() {
+            ClockSyncState::Syncing => return None,
+            ClockSyncState::Failed(reason) => return Some(Err(clock_reason(reason))),
+            ClockSyncState::Ready => sync.estimate()?,
+        };
+        let (request, microphone) = self.awaiting_clock.take()?;
+        let play_at = media::pw_stream::monotonic_now_ns().saturating_add(SWEEP_LEAD_NS);
+        let member_start = estimate.playout_clock().local_to_leader_ns(play_at);
+        Some((self.send)(&request, member_start).and_then(|()| self.listen(&microphone, play_at)))
+    }
+}
+
+fn clock_reason(reason: crate::shell::fabric_clock::ClockSyncFailure) -> String {
+    crate::shell::i18n::t_args(
+        "speaker-calibration-reason-clock",
+        &[("reason", crate::shell::i18n::t(reason.message_key()).into())],
+    )
+}
+
+fn to_f32(sample: i16) -> f32 {
+    f32::from(sample) / 32_768.0
+}
+
+impl MeasurementSource for TimedMeasurement {
+    fn begin(&mut self, request: &SweepRequest) -> Result<(), String> {
+        use crate::shell::speaker_group_runtime::{resolve_local_microphone, resolve_local_output};
+        if request.microphone_device != self.local {
+            return Err(crate::shell::i18n::t(
+                "speaker-calibration-reason-remote-microphone",
+            ));
+        }
+        let microphone = resolve_local_microphone(&self.local, request.microphone)
+            .ok_or_else(|| crate::shell::i18n::t("speaker-calibration-reason-microphone-gone"))?;
+        if request.member != self.local {
+            let sync =
+                crate::shell::device_fabric_runtime::hold_fabric_clock_sync(request.member.clone());
+            if let crate::shell::fabric_clock::ClockSyncState::Failed(reason) = sync.state() {
+                return Err(clock_reason(reason));
+            }
+            self.clock_sync = Some(sync);
+            self.awaiting_clock = Some((request.clone(), microphone));
+            return Ok(());
+        }
+        let sweep = sweep()?;
+        let play_at = media::pw_stream::monotonic_now_ns().saturating_add(SWEEP_LEAD_NS);
+        let sink = resolve_local_output(&self.local, request.output)
+            .ok_or_else(|| crate::shell::i18n::t("speaker-calibration-reason-output-gone"))?;
+        let signal = sweep.signal().to_vec();
+        std::thread::Builder::new()
+            .name("calibration-play".into())
+            .spawn(move || {
+                let _ = media::pw_stream::TimedAudio::native().play_at(
+                    sink.serial,
+                    SWEEP_RATE,
+                    1,
+                    signal,
+                    play_at,
+                );
+            })
+            .map_err(|error| {
+                crate::shell::i18n::t_args(
+                    "speaker-calibration-reason-play-failed",
+                    &[("error", error.to_string().into())],
+                )
+            })?;
+        self.listen(&microphone, play_at)
+    }
+
     fn poll(&mut self) -> Option<Result<media::calibration::SpeakerMeasurement, String>> {
+        if self.awaiting_clock.is_some() {
+            if let Err(reason) = self.start_remote_sweep()? {
+                self.cancel();
+                return Some(Err(reason));
+            }
+            return None;
+        }
         let result = self.result.as_ref()?.try_recv().ok()?;
         self.result = None;
         self.clock_sync = None;
@@ -192,6 +241,7 @@ impl MeasurementSource for TimedMeasurement {
 
     fn cancel(&mut self) {
         self.result = None;
+        self.awaiting_clock = None;
         self.clock_sync = None;
     }
 }

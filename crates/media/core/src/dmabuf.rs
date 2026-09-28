@@ -71,6 +71,19 @@ pub const DRM_FORMAT_XRGB8888: u32 = fourcc(b'X', b'R', b'2', b'4');
 pub const DRM_FORMAT_ABGR8888: u32 = fourcc(b'A', b'B', b'2', b'4');
 /// 8-bit RGBX in memory order (DRM's `XB24`).
 pub const DRM_FORMAT_XBGR8888: u32 = fourcc(b'X', b'B', b'2', b'4');
+/// 10-bit RGB in one little-endian 32-bit word, red in the low bits, two
+/// padding bits on top (DRM's `XB30`). The HDR10 scanout format.
+pub const DRM_FORMAT_XBGR2101010: u32 = fourcc(b'X', b'B', b'3', b'0');
+/// `XB30` with the top two bits as alpha (DRM's `AB30`).
+pub const DRM_FORMAT_ABGR2101010: u32 = fourcc(b'A', b'B', b'3', b'0');
+/// 10-bit RGB, blue in the low bits (DRM's `XR30`).
+pub const DRM_FORMAT_XRGB2101010: u32 = fourcc(b'X', b'R', b'3', b'0');
+/// `XR30` with the top two bits as alpha (DRM's `AR30`).
+pub const DRM_FORMAT_ARGB2101010: u32 = fourcc(b'A', b'R', b'3', b'0');
+/// Half-float RGBA, red first in memory (DRM's `AB4H`).
+pub const DRM_FORMAT_ABGR16161616F: u32 = fourcc(b'A', b'B', b'4', b'H');
+/// Half-float RGBX, red first in memory (DRM's `XB4H`).
+pub const DRM_FORMAT_XBGR16161616F: u32 = fourcc(b'X', b'B', b'4', b'H');
 
 /// The YCbCr→RGB matrix the samples were encoded with. `Identity` means the
 /// samples are already RGB and need no conversion.

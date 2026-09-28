@@ -426,6 +426,27 @@ impl<D> InnerBackend<D> {
         self.dispatch_all_clients(data)
     }
 
+    pub fn dispatch_client_bounded(
+        &mut self,
+        data: &mut D,
+        _client_id: InnerClientId,
+        _request_limit: usize,
+    ) -> std::io::Result<usize> {
+        self.dispatch_all_clients(data)
+    }
+
+    pub fn dispatch_ready_clients_bounded(
+        &mut self,
+        data: &mut D,
+        _request_limit: usize,
+    ) -> std::io::Result<usize> {
+        self.dispatch_all_clients(data)
+    }
+
+    pub fn has_pending_client_dispatch(&self) -> bool {
+        false
+    }
+
     pub fn dispatch_all_clients(&mut self, data: &mut D) -> std::io::Result<usize> {
         let state = self.state.clone() as Arc<Mutex<dyn ErasedState + Send>>;
         let display = self.display_ptr;

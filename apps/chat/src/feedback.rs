@@ -294,6 +294,7 @@ mod tests {
             author: "u_a".into(),
             ts,
             text: id.into(),
+            body: Vec::new(),
             edited: false,
             history: vec![],
             parent: None,

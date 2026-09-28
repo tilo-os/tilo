@@ -11,21 +11,12 @@ use tilo_desktop::search::{
     WINDOWS_PROVIDER_ID, WindowAction, WindowRowKind, window_rows, window_rows_revision,
     windows_provider_name,
 };
-use ui::search::{FieldWeight, RankField};
+use ui::search::{FieldWeight, ListIndex};
 
 use crate::shell::chrome_state::Chrome;
 use crate::shell::search::action_api::{ActionArgs, ActionError};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 use crate::shell::state::{GroupId, TabId, WorkspaceId};
-
-/// The shared ranker over a window's names, every one of which names it.
-fn score(needle: &str, fields: &[&str]) -> Option<i32> {
-    let fields: Vec<RankField<'_>> = fields
-        .iter()
-        .map(|field| RankField::new(field, FieldWeight::TITLE))
-        .collect();
-    crate::shell::search::rank_fields(needle, &fields)
-}
 
 fn close_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
@@ -89,17 +80,26 @@ fn close_tab(chrome: &Chrome, expected_group: GroupId, tab_id: TabId) -> Result<
         .map_err(|_| refused(tab_id))
 }
 
-/// Moves through the one cross-workspace move, the same one a dragged
-/// overview preview takes.
-fn move_tab(
+/// Moves or copies through the one cross-workspace transfer, the same one a
+/// dragged overview preview takes. A client window's document crosses only
+/// after the person at this desktop agrees on the sheet this puts up, so an
+/// agent asking gets exactly what a person dragging gets.
+fn transfer_tab(
     chrome: &Chrome,
     expected_group: GroupId,
     tab_id: TabId,
     target: WorkspaceId,
+    mode: crate::shell::window_transfer::TransferMode,
 ) -> Result<(), ActionError> {
     tab_in_group(chrome, expected_group, tab_id)?;
-    crate::shell::window_actions::move_tab_to_workspace(&mut chrome.borrow_mut(), tab_id, target)
-        .map_err(|err| ActionError::Refused(err.user_message()))
+    crate::shell::window_actions::transfer_tab_to_workspace(
+        &mut chrome.borrow_mut(),
+        tab_id,
+        target,
+        mode,
+    )
+    .map(|_| ())
+    .map_err(|err| ActionError::Refused(err.user_message()))
 }
 
 /// Closes every tab and remembers the group as one close, so a single
@@ -138,11 +138,12 @@ fn close_group(chrome: &Chrome, group_id: GroupId) -> Result<(), ActionError> {
 fn contract(action: WindowAction) -> tilo_actions::ActionContract {
     match action {
         WindowAction::CloseGroup { .. } | WindowAction::CloseTab { .. } => close_contract(),
-        WindowAction::MoveTab { .. } => move_contract(),
+        WindowAction::MoveTab { .. } | WindowAction::CopyTab { .. } => move_contract(),
     }
 }
 
 fn invoke(chrome: &Chrome, action: WindowAction) -> Result<(), ActionError> {
+    use crate::shell::window_transfer::TransferMode;
     match action {
         WindowAction::CloseGroup { group } => close_group(chrome, group),
         WindowAction::CloseTab { group, tab } => close_tab(chrome, group, tab),
@@ -150,24 +151,27 @@ fn invoke(chrome: &Chrome, action: WindowAction) -> Result<(), ActionError> {
             group,
             tab,
             workspace,
-        } => move_tab(chrome, group, tab, workspace),
+        } => transfer_tab(chrome, group, tab, workspace, TransferMode::Move),
+        WindowAction::CopyTab {
+            group,
+            tab,
+            workspace,
+        } => transfer_tab(chrome, group, tab, workspace, TransferMode::Copy),
     }
 }
 
-pub struct DesktopWindowsProvider;
+#[derive(Default)]
+pub struct DesktopWindowsProvider {
+    /// The rows' names, indexed while they stay the same.
+    ranker: ListIndex,
+}
 
 static KINDS: std::sync::LazyLock<Vec<ResourceKind>> =
     std::sync::LazyLock::new(|| vec![ResourceKind::Tab, ResourceKind::WindowGroup]);
 
 impl DesktopWindowsProvider {
     pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for DesktopWindowsProvider {
-    fn default() -> Self {
-        Self::new()
+        Self::default()
     }
 }
 
@@ -194,9 +198,21 @@ impl SearchProvider for DesktopWindowsProvider {
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         let tree = ctx.chrome.tree();
-        let rows = window_rows(&tree.desktop, |fields| score(ctx.needle, fields));
+        // Every row is listed with its names, each of which names it; ranking
+        // them together keeps the matches.
+        let names = std::cell::RefCell::new(Vec::new());
+        let rows = window_rows(&tree.desktop, |fields| {
+            names.borrow_mut().push(
+                fields
+                    .iter()
+                    .map(|field| ((*field).to_owned(), FieldWeight::TITLE))
+                    .collect(),
+            );
+            Some(0)
+        });
         drop(tree);
-        rows.into_iter()
+        let rows = rows
+            .into_iter()
             .map(|row| {
                 let action = row.action;
                 SearchResult {
@@ -220,7 +236,8 @@ impl SearchProvider for DesktopWindowsProvider {
                     on_begin_invoke: None,
                 }
             })
-            .collect()
+            .collect();
+        crate::shell::search::rank_rows(&self.ranker, ctx.needle, rows, &names.into_inner())
     }
 
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
@@ -440,25 +457,59 @@ mod tests {
             action.title(),
             "Move tab “Profilfehler aufgetreten” to workspace “Elsewhere”"
         );
+        let tabs_in = |chrome: &Chrome, workspace: usize| -> Vec<(TabId, TileContent)> {
+            chrome.borrow().tree().desktop.workspaces[workspace]
+                .strips
+                .iter()
+                .flat_map(|strip| strip.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .map(|tab| (tab.id, tab.tile.clone()))
+                .collect()
+        };
+
+        // An agent asking with nobody at the desktop to agree gets a refusal,
+        // and nothing moves.
+        chrome.borrow_mut().window_transfers.set_attended(|| false);
+        assert!(action.invoke(&mut doc, &ROOT, &chrome, []).is_err());
+        assert_eq!(tabs_in(&chrome, 1), []);
+
+        // With someone there, the sheet asks first. This window keeps its
+        // work only in its running process, so nothing can travel: the sheet
+        // offers a new window there instead, and never closes this one.
+        let queue = crate::shell::portal_dialog::PortalDialogQueue::default();
+        let profiles = tempfile::tempdir().unwrap();
+        {
+            let mut state = chrome.borrow_mut();
+            state.window_transfers.set_attended(|| true);
+            state.window_transfers.set_dialog_queue(queue.clone());
+            state
+                .window_transfers
+                .set_data_home(profiles.path().to_path_buf());
+        }
         action
             .invoke(&mut doc, &ROOT, &chrome, [])
-            .expect("move accepted");
+            .expect("the sheet is up");
+        assert_eq!(tabs_in(&chrome, 1), [], "nothing changes before the answer");
+        let mut sheet = crate::shell::portal_dialog::PortalDialogController::new(queue);
+        assert!(sheet.pump());
+        let view = sheet.view().expect("the transfer sheet");
+        assert_eq!(view.choices().len(), 1, "only a new window can be offered");
+        assert!(view.detail().contains("Elsewhere"));
+        assert!(sheet.confirm());
+        crate::shell::window_transfer::tick(&mut chrome.borrow_mut());
 
-        let mut state = chrome.borrow_mut();
-        let tree = state.tree();
-        let home: Vec<TabId> = tree.desktop.workspaces[0].strips[0]
-            .window_groups
-            .iter()
-            .flat_map(|group| group.tabs.iter().map(|tab| tab.id))
-            .collect();
-        assert_eq!(home, [1, 2]);
-        let moved = &tree.desktop.workspaces[1].strips[0].window_groups[0].tabs[0];
-        assert_eq!(moved.id, 3);
+        let home: Vec<TabId> = tabs_in(&chrome, 0).into_iter().map(|(id, _)| id).collect();
+        assert_eq!(home, [1, 2, 3], "the original window stays where it is");
+        let opened = tabs_in(&chrome, 1);
+        assert_eq!(opened.len(), 1);
         assert!(
-            matches!(&moved.tile, TileContent::LocalApp { note, .. } if note.is_empty()),
-            "the client relaunches in the destination rather than crossing sandboxes"
+            matches!(&opened[0].1, TileContent::LocalApp { app_id, note, .. }
+                if app_id == "com.google.Chrome" && note.is_empty()),
+            "a new window of the same app opens in the destination"
         );
-        drop(tree);
-        assert_eq!(state.take_surface_close_requests(), [503]);
+        assert!(
+            chrome.borrow_mut().take_surface_close_requests().is_empty(),
+            "a window whose state cannot travel is never asked to close"
+        );
     }
 }

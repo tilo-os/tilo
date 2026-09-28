@@ -7,6 +7,9 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use serde_json::{Value, json};
+
+mod json_stdout;
 
 #[derive(Parser)]
 #[command(
@@ -19,6 +22,11 @@ use clap::{Parser, Subcommand, ValueEnum};
                   use `add`, `locale`, `check`, `scenario`, `dev`, `test`, `run`, `shot`, `inspect`, and `package` from anywhere inside the app. Use `ui` to construct validated serialized screens."
 )]
 struct Cli {
+    /// Write one JSON document describing the result to stdout. Progress and
+    /// tool output move to stderr, and nothing prompts.
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -53,28 +61,6 @@ enum Command {
     /// Create and edit validated serialized UI object graphs.
     Ui(UiArgs),
     /// Build, assemble, sign, and verify an installable Tilo package.
-    ///
-    /// Apps are built thin, as releases are: `os/scripts/build-thin-apps.sh`
-    /// compiles the app with the `thin-app` profile and its `thin` feature,
-    /// `-C prefer-dynamic` against the shared `runtime-dylib`, resolved with
-    /// the default app collection. A thin app only loads against the runtime
-    /// it was linked with, so that runtime is baked into a signed bundle at
-    /// `<runtime-out>/tilo-runtime/0.0.0-local+<hash>/`, and the packaged
-    /// manifest names that version instead of the released one; it can never
-    /// shadow the system runtime other apps use.
-    ///
-    /// Install both:
-    ///   tilo-install runtime install --bundle <runtime-out>/tilo-runtime/<version>
-    ///   tilo-install install --allow-self-signed <package>
-    ///
-    /// The launcher accepts the bundle only from a publisher in
-    /// /etc/tilo/runtime-bundle-trusted-publishers.txt (when that list is
-    /// non-empty); the publisher is in <runtime-out>/runtime-bundle-publisher.hex.
-    ///
-    /// Thin packaging runs from a Tilo checkout (apps/<name>); set CARGO to
-    /// build with a Cargo drop-in. `--fat` builds a self-contained binary with
-    /// plain Cargo instead, for apps outside the Tilo tree.
-    #[command(verbatim_doc_comment)]
     Package(PackageArgs),
 }
 
@@ -514,37 +500,37 @@ struct PackageArgs {
     #[arg(long)]
     identity: Option<PathBuf>,
 
-    /// Cargo profile used to build the declared entrypoints [default: thin-app, or release with --fat].
+    /// Cargo profile used to build the declared entrypoints. Defaults to
+    /// `thin-app`, or `release` with `--static`.
     #[arg(long)]
     profile: Option<String>,
 
-    /// Build one self-contained binary with plain Cargo instead of a thin
-    /// one against the shared runtime. For apps outside the Tilo tree; a fat
-    /// UI app is usually over the 5 MiB package limit.
+    /// Link the toolkit and `libstd` into the binary instead of against the
+    /// copies the OS ships. The result is far over the application size limit;
+    /// use it for local experiments only.
+    #[arg(long = "static")]
+    static_link: bool,
+
+    /// The system to build for: a thin Tilo OS app, or one self-contained
+    /// Windows or macOS executable with the toolkit linked in.
+    #[arg(long, value_enum, default_value_t = PlatformArg::Tilo)]
+    platform: PlatformArg,
+
+    /// CPU architecture to build for. Defaults to the host's.
+    #[arg(long, value_enum)]
+    arch: Option<ArchArg>,
+
+    /// Rust target triple passed to Cargo; overrides the one --platform and
+    /// --arch pick (for example `x86_64-pc-windows-gnu`).
     #[arg(long)]
-    fat: bool,
-
-    /// Directory the matching runtime bundle is written to, as
-    /// `tilo-runtime/<version>/` plus `runtime-bundle-publisher.hex`
-    /// [default: `runtime/` beside the package]. Relative to the app root unless absolute.
-    #[arg(long, conflicts_with = "fat")]
-    runtime_out: Option<PathBuf>,
-
-    /// Signing identity for the runtime bundle. Without it the bundle is signed
-    /// with `<runtime-out>/identity.json`, created on first use and reused.
-    #[arg(long, conflicts_with = "fat")]
-    runtime_identity: Option<PathBuf>,
-
-    /// Rust target triple passed to Cargo (--fat only).
-    #[arg(long, requires = "fat")]
     target: Option<String>,
 
-    /// Comma-separated Cargo features of the app enabled for the package build.
+    /// Comma-separated Cargo features enabled for the package build.
     #[arg(long, value_delimiter = ',')]
     features: Vec<String>,
 
-    /// Disable the app's default Cargo features (--fat only).
-    #[arg(long, requires = "fat")]
+    /// Disable the app's default Cargo features.
+    #[arg(long)]
     no_default_features: bool,
 
     /// Replace an existing output package after the new package verifies successfully.
@@ -557,7 +543,9 @@ struct NewArgs {
     /// Cargo package name, for example `reading-list`.
     name: Option<String>,
 
-    /// Reverse-DNS application id. Defaults to `so.tilo.<name>`.
+    /// Reverse-DNS application id. Defaults to `so.tilo.<name>` in the Tilo
+    /// workspace and `local.dev.<name>` elsewhere; publishing needs a
+    /// namespace you have verified.
     #[arg(long)]
     id: Option<String>,
 
@@ -573,9 +561,20 @@ struct NewArgs {
     #[arg(long)]
     directory: Option<PathBuf>,
 
-    /// Override the discovered toolkit `ui` crate (or set `TILO_UI_PATH`).
-    #[arg(long)]
+    /// Build against the toolkit `ui` crate of this Tilo checkout (or set
+    /// `TILO_UI_PATH`).
+    #[arg(long, conflicts_with_all = ["sdk_git", "sdk_rev"])]
     ui_path: Option<PathBuf>,
+
+    /// Build a standalone app against this Tilo git repository. Without a
+    /// checkout nearby, the default is <https://code.tilo.so/tilo/tilo.git>.
+    #[arg(long, value_name = "URL")]
+    sdk_git: Option<String>,
+
+    /// Pin the SDK repository to this commit. Defaults to the commit this
+    /// `tilo-app` was built from.
+    #[arg(long, value_name = "COMMIT")]
+    sdk_rev: Option<String>,
 
     /// Print the files that would be created without writing them.
     #[arg(long, conflicts_with = "dev")]
@@ -641,10 +640,26 @@ enum ComponentTemplateArg {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => return report_usage_error(&error),
+    };
+    let json = if cli.json {
+        match json_stdout::JsonStdout::claim() {
+            Ok(stdout) => Some(stdout),
+            Err(error) => {
+                eprintln!("tilo-app: reserving stdout for --json: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
+    let interactive = json.is_none();
+    let name = cli.command.name();
     let result = match cli.command {
-        Command::New(args) => run_new(args),
-        Command::Add(args) => run_add(args),
+        Command::New(args) => run_new(args, interactive),
+        Command::Add(args) => run_add(args, interactive),
         Command::Locale(args) => run_locale(args),
         Command::Scenario(args) => run_scenario(args),
         Command::Doctor(args) => run_doctor(args),
@@ -658,16 +673,107 @@ fn main() -> ExitCode {
         Command::Ui(args) => run_ui(args),
         Command::Package(args) => run_package(args),
     };
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
+    let code = match &result {
+        Ok(_) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("tilo-app: {error:#}");
             ExitCode::FAILURE
         }
+    };
+    if let Some(stdout) = json {
+        let document = match result {
+            Ok(report) => serde_json::json!({"ok": true, "command": name, "result": report}),
+            Err(error) => serde_json::json!({
+                "ok": false,
+                "command": name,
+                "error": format!("{error:#}"),
+                "causes": error.chain().map(ToString::to_string).collect::<Vec<_>>(),
+                "result": error
+                    .downcast_ref::<Failed>()
+                    .or_else(|| error.chain().find_map(|cause| cause.downcast_ref::<Failed>()))
+                    .map(|failed| &failed.report),
+            }),
+        };
+        if let Err(error) = stdout.emit(&document) {
+            eprintln!("tilo-app: writing --json result: {error}");
+            return ExitCode::FAILURE;
+        }
+    }
+    code
+}
+
+/// Help and version stay human text; any other usage error is reported as a
+/// JSON document when `--json` was requested, so a caller never has to parse
+/// clap's prose to learn that its invocation was wrong.
+fn report_usage_error(error: &clap::Error) -> ExitCode {
+    use clap::error::ErrorKind;
+
+    let informational = matches!(
+        error.kind(),
+        ErrorKind::DisplayHelp
+            | ErrorKind::DisplayVersion
+            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    );
+    let wants_json = std::env::args_os().skip(1).any(|arg| arg == "--json");
+    if informational || !wants_json {
+        error.exit();
+    }
+    let document = json!({
+        "ok": false,
+        "command": Value::Null,
+        "error": error.kind().to_string(),
+        "usage": error.render().to_string(),
+    });
+    println!("{document}");
+    ExitCode::from(2)
+}
+
+/// A command that ran to completion but whose verdict is failure. The report
+/// still describes what happened, so `--json` includes it.
+#[derive(Debug)]
+struct Failed {
+    message: String,
+    report: Value,
+}
+
+impl std::fmt::Display for Failed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
     }
 }
 
-fn run_scenario(args: ScenarioArgs) -> Result<()> {
+impl std::error::Error for Failed {}
+
+fn failed(message: impl Into<String>, report: Value) -> anyhow::Error {
+    Failed {
+        message: message.into(),
+        report,
+    }
+    .into()
+}
+
+impl Command {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::New(_) => "new",
+            Self::Add(_) => "add",
+            Self::Locale(_) => "locale",
+            Self::Scenario(_) => "scenario",
+            Self::Doctor(_) => "doctor",
+            Self::Check(_) => "check",
+            Self::Certify(_) => "certify",
+            Self::Run(_) => "run",
+            Self::Test(_) => "test",
+            Self::Dev(_) => "dev",
+            Self::Shot(_) => "shot",
+            Self::Inspect(_) => "inspect",
+            Self::Ui(_) => "ui",
+            Self::Package(_) => "package",
+        }
+    }
+}
+
+fn run_scenario(args: ScenarioArgs) -> Result<Value> {
     match args.command {
         ScenarioCommand::Run {
             name,
@@ -689,8 +795,15 @@ fn run_scenario(args: ScenarioArgs) -> Result<()> {
     }
 }
 
-fn execute_scenario_plan(plan: &tilo_app_cli::ScenarioSuitePlan) -> Result<()> {
+fn execute_scenario_plan(plan: &tilo_app_cli::ScenarioSuitePlan) -> Result<Value> {
     let outcome = plan.execute()?;
+    let mut report = outcome.to_json();
+    if let Some(fields) = report.as_object_mut() {
+        fields.insert(
+            "artifacts".into(),
+            json!(plan.artifact_dir().map(|path| path.display().to_string())),
+        );
+    }
     for name in &outcome.passed {
         println!("✓ {name}");
     }
@@ -702,14 +815,17 @@ fn execute_scenario_plan(plan: &tilo_app_cli::ScenarioSuitePlan) -> Result<()> {
     }
     if outcome.failed.is_empty() {
         println!("{} scenario(s) passed", outcome.passed.len());
-        Ok(())
+        Ok(report)
     } else {
         let total = outcome.passed.len().saturating_add(outcome.failed.len());
-        anyhow::bail!("{} of {} scenario(s) failed", outcome.failed.len(), total)
+        Err(failed(
+            format!("{} of {} scenario(s) failed", outcome.failed.len(), total),
+            report,
+        ))
     }
 }
 
-fn run_locale(args: LocaleArgs) -> Result<()> {
+fn run_locale(args: LocaleArgs) -> Result<Value> {
     match args.command {
         LocaleCommand::Sync {
             locale,
@@ -753,17 +869,21 @@ fn run_locale(args: LocaleArgs) -> Result<()> {
                     "Use --prune for stale units and --reset-variables for mismatched patterns"
                 );
             }
-            Ok(())
+            Ok(outcome.to_json())
         }
     }
 }
 
-fn run_add(args: AddArgs) -> Result<()> {
+fn run_add(args: AddArgs, interactive: bool) -> Result<Value> {
     let Some(command) = args.command else {
+        anyhow::ensure!(
+            interactive,
+            "an artifact subcommand is required with --json; use `tilo-app add screen`, `tilo-app add component`, `tilo-app add scenario`, or `tilo-app add locale`"
+        );
         let start = std::env::current_dir()?;
         let outcome = tilo_app_cli::add_app_artifact_interactive(&start)?;
         print_add_outcome(&outcome);
-        return Ok(());
+        return Ok(outcome.to_json());
     };
     let (artifact, options) = match command {
         AddCommand::Screen {
@@ -852,7 +972,7 @@ fn run_add(args: AddArgs) -> Result<()> {
         dry_run: options.dry_run,
     })?;
     print_add_outcome(&outcome);
-    Ok(())
+    Ok(outcome.to_json())
 }
 
 fn print_add_outcome(outcome: &tilo_app_cli::AddOutcome) {
@@ -872,17 +992,23 @@ fn print_add_outcome(outcome: &tilo_app_cli::AddOutcome) {
     }
 }
 
-fn run_ui(args: UiArgs) -> Result<()> {
-    match args.command {
+fn run_ui(args: UiArgs) -> Result<Value> {
+    let report = match args.command {
         UiCommand::Edit { file, builder } => {
             let _ = tilo_app_cli::load_ui_graph(&file)?;
             tilo_app_cli::ui_builder_plan(&file, builder)?.execute()?;
+            json!({"file": file, "action": "edit"})
         }
         UiCommand::Init { file, title, force } => {
             tilo_app_cli::init_ui_graph(&file, &title, force)?;
             println!("Created {}", file.display());
+            json!({"file": file, "action": "create"})
         }
-        UiCommand::Tree { file } => print!("{}", tilo_app_cli::ui_graph_tree(&file)?),
+        UiCommand::Tree { file } => {
+            let tree = tilo_app_cli::ui_graph_tree(&file)?;
+            print!("{tree}");
+            json!({"file": file, "tree": tree})
+        }
         UiCommand::Validate { file } => {
             let document = tilo_app_cli::load_ui_graph(&file)?;
             println!(
@@ -890,10 +1016,12 @@ fn run_ui(args: UiArgs) -> Result<()> {
                 document.nodes().len(),
                 document.version
             );
+            json!({"file": file, "valid": true, "nodes": document.nodes().len(), "version": document.version})
         }
         UiCommand::Format { file } => {
             tilo_app_cli::format_ui_graph(&file)?;
             println!("Formatted {}", file.display());
+            json!({"file": file, "action": "format"})
         }
         UiCommand::Insert {
             file,
@@ -902,15 +1030,14 @@ fn run_ui(args: UiArgs) -> Result<()> {
             source,
         } => {
             let node = read_ui_node(source)?;
-            tilo_app_cli::edit_ui_graph(
+            ui_graph_edit(
                 &file,
                 tilo_app_cli::UiGraphEdit::Insert {
                     parent,
                     index,
                     node,
                 },
-            )?;
-            println!("Updated {}", file.display());
+            )?
         }
         UiCommand::Component {
             file,
@@ -930,26 +1057,18 @@ fn run_ui(args: UiArgs) -> Result<()> {
             },
         )?,
         UiCommand::Remove { file, id } => {
-            tilo_app_cli::edit_ui_graph(&file, tilo_app_cli::UiGraphEdit::Remove { id })?;
-            println!("Updated {}", file.display());
+            ui_graph_edit(&file, tilo_app_cli::UiGraphEdit::Remove { id })?
         }
         UiCommand::Replace { file, id, source } => {
             let node = read_ui_node(source)?;
-            tilo_app_cli::edit_ui_graph(&file, tilo_app_cli::UiGraphEdit::Replace { id, node })?;
-            println!("Updated {}", file.display());
+            ui_graph_edit(&file, tilo_app_cli::UiGraphEdit::Replace { id, node })?
         }
         UiCommand::Move {
             file,
             id,
             parent,
             index,
-        } => {
-            tilo_app_cli::edit_ui_graph(
-                &file,
-                tilo_app_cli::UiGraphEdit::Move { id, parent, index },
-            )?;
-            println!("Updated {}", file.display());
-        }
+        } => ui_graph_edit(&file, tilo_app_cli::UiGraphEdit::Move { id, parent, index })?,
         UiCommand::Set {
             file,
             id,
@@ -965,28 +1084,33 @@ fn run_ui(args: UiArgs) -> Result<()> {
                 (None, true) => tilo_app_cli::UiGraphEdit::UnsetProperty { id, property },
                 _ => anyhow::bail!("choose exactly one of --value or --unset"),
             };
-            tilo_app_cli::edit_ui_graph(&file, graph_edit)?;
-            println!("Updated {}", file.display());
+            ui_graph_edit(&file, graph_edit)?
         }
         UiCommand::Apply { file, edits } => run_ui_apply(&file, &edits)?,
-    }
-    Ok(())
+    };
+    Ok(report)
 }
 
-fn run_ui_component(file: &Path, request: tilo_app_cli::UiComponentInsert) -> Result<()> {
+fn ui_graph_edit(file: &Path, edit: tilo_app_cli::UiGraphEdit) -> Result<Value> {
+    tilo_app_cli::edit_ui_graph(file, edit)?;
+    println!("Updated {}", file.display());
+    Ok(json!({"file": file, "action": "update"}))
+}
+
+fn run_ui_component(file: &Path, request: tilo_app_cli::UiComponentInsert) -> Result<Value> {
     let id = tilo_app_cli::insert_ui_component(file, request)?;
     println!("Inserted {id} in {}", file.display());
-    Ok(())
+    Ok(json!({"file": file, "action": "insert", "id": id}))
 }
 
-fn run_ui_apply(file: &Path, edits: &Path) -> Result<()> {
+fn run_ui_apply(file: &Path, edits: &Path) -> Result<Value> {
     let source = std::fs::read_to_string(edits)
         .with_context(|| format!("reading UI graph edits {}", edits.display()))?;
     let edits = tilo_app_cli::parse_ui_graph_edits(&source)?;
     let count = edits.len();
     tilo_app_cli::edit_ui_graph_batch(file, edits)?;
     println!("Applied {count} edits to {}", file.display());
-    Ok(())
+    Ok(json!({"file": file, "action": "apply", "edits": count}))
 }
 
 fn parse_ui_property_value(source: String) -> serde_json::Value {
@@ -1004,27 +1128,48 @@ fn read_ui_node(source: NodeSourceArgs) -> Result<tilo_ui_graph::UiNode> {
     tilo_app_cli::parse_ui_node(&source)
 }
 
-fn run_package(args: PackageArgs) -> Result<()> {
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum PlatformArg {
+    Tilo,
+    Windows,
+    Macos,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ArchArg {
+    #[value(name = "x86_64")]
+    X86_64,
+    Aarch64,
+}
+
+fn run_package(args: PackageArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    tilo_app_cli::package_app(
+    let outcome = tilo_app_cli::package_app(
         &path,
         &tilo_app_cli::PackageRequest {
             output: args.output,
             identity: args.identity,
             profile: args.profile,
+            static_link: args.static_link,
             target: args.target,
+            platform: match args.platform {
+                PlatformArg::Tilo => tilo_app_cli::PackagePlatform::Tilo,
+                PlatformArg::Windows => tilo_app_cli::PackagePlatform::Windows,
+                PlatformArg::Macos => tilo_app_cli::PackagePlatform::Macos,
+            },
+            arch: args.arch.map(|arch| match arch {
+                ArchArg::X86_64 => tilo_app_cli::PackageArch::X86_64,
+                ArchArg::Aarch64 => tilo_app_cli::PackageArch::Aarch64,
+            }),
             features: args.features,
             no_default_features: args.no_default_features,
             force: args.force,
-            fat: args.fat,
-            runtime_out: args.runtime_out,
-            runtime_identity: args.runtime_identity,
         },
     )?;
-    Ok(())
+    Ok(outcome.to_json())
 }
 
-fn run_dev(args: DevArgs) -> Result<()> {
+fn run_dev(args: DevArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
     tilo_app_cli::dev_app(
         &path,
@@ -1033,12 +1178,14 @@ fn run_dev(args: DevArgs) -> Result<()> {
             watch_ui: !args.app_only,
             debounce: Duration::from_millis(args.debounce_ms.get()),
         },
-    )
+    )?;
+    Ok(json!({"stopped": true}))
 }
 
-fn run_shot(args: ShotArgs) -> Result<()> {
+fn run_shot(args: ShotArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    tilo_app_cli::plan_app_shot(
+    let output = args.output.clone();
+    let plan = tilo_app_cli::plan_app_shot(
         &path,
         tilo_app_cli::ShotRequest {
             output: args.output,
@@ -1046,13 +1193,20 @@ fn run_shot(args: ShotArgs) -> Result<()> {
             scenario: args.scenario,
             forwarded: args.forwarded,
         },
-    )?
-    .execute()
+    )?;
+    plan.execute()?;
+    Ok(json!({"app_dir": plan.app_dir, "output": plan.app_dir.join(output)}))
 }
 
-fn run_inspect(args: InspectArgs) -> Result<()> {
+fn run_inspect(args: InspectArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    tilo_app_cli::plan_app_inspection(
+    let artifacts = json!({
+        "output": args.output,
+        "dump": args.dump,
+        "targets": args.targets,
+        "audit_report": args.audit_report,
+    });
+    let plan = tilo_app_cli::plan_app_inspection(
         &path,
         tilo_app_cli::InspectRequest {
             output: args.output,
@@ -1063,8 +1217,9 @@ fn run_inspect(args: InspectArgs) -> Result<()> {
             audit: args.audit,
             audit_report: args.audit_report,
         },
-    )?
-    .execute()
+    )?;
+    plan.execute()?;
+    Ok(json!({"app_dir": plan.app_dir, "relative_to_app_dir": artifacts}))
 }
 
 fn parse_viewport(raw: &str) -> std::result::Result<(u32, u32), String> {
@@ -1085,41 +1240,50 @@ fn parse_viewport(raw: &str) -> std::result::Result<(u32, u32), String> {
     Ok((width, height))
 }
 
-fn run_app_task(args: AppTaskArgs, task: tilo_app_cli::AppTask) -> Result<()> {
+fn run_app_task(args: AppTaskArgs, task: tilo_app_cli::AppTask) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    tilo_app_cli::plan_app_task(&path, task, &args.forwarded)?.execute()
+    let plan = tilo_app_cli::plan_app_task(&path, task, &args.forwarded)?;
+    plan.execute()?;
+    Ok(json!({"app_dir": plan.app_dir}))
 }
 
-fn run_doctor(args: DoctorArgs) -> Result<()> {
+fn run_doctor(args: DoctorArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
     let report = tilo_app_cli::doctor_app(&path)?;
     println!("{}", report.summary());
     if !report.is_ready() {
-        anyhow::bail!("app checks failed");
+        return Err(failed("app checks failed", report.to_json()));
     }
-    Ok(())
+    Ok(report.to_json())
 }
 
-fn run_check(args: CheckArgs) -> Result<()> {
+fn run_check(args: CheckArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
     if args.lints.all {
         return lint_workspace(&path);
     }
+    let mut stages = Vec::new();
     println!("[check] lint: {}", tilo_app_cli::portability::LINT);
     let lint = tilo_app_cli::lint_portability(&path)?;
     print!("{}", lint.render());
+    stages.push(json!({"stage": "lint", "passed": lint.passed(), "report": lint.to_json()}));
     if !lint.passed() {
-        anyhow::bail!("lint `{}` failed", tilo_app_cli::portability::LINT);
+        return Err(failed(
+            format!("lint `{}` failed", tilo_app_cli::portability::LINT),
+            json!({"stages": stages}),
+        ));
     }
     if args.lints.lint {
-        return Ok(());
+        return Ok(json!({"stages": stages}));
     }
 
     println!("[check] app structure");
     let report = tilo_app_cli::doctor_app(&path)?;
     println!("{}", report.summary());
+    stages
+        .push(json!({"stage": "doctor", "passed": report.is_ready(), "report": report.to_json()}));
     if !report.is_ready() {
-        anyhow::bail!("app checks failed");
+        return Err(failed("app checks failed", json!({"stages": stages})));
     }
 
     let format_mode = if args.fix {
@@ -1133,14 +1297,28 @@ fn run_check(args: CheckArgs) -> Result<()> {
     } else {
         println!("[check] Rust formatting");
     }
-    quality.format.execute()?;
-    println!("[check] app-local Clippy");
-    quality.clippy.execute()?;
-    println!("[check] Rust tests and generated accessibility contract");
-    quality.test.execute()?;
-
-    println!("[check] Tilo-native runtime certification");
-    certify_one(&path)?;
+    let tool_stages: [CheckStage<'_>; 4] = [
+        ("format", "Rust formatting", &|| quality.format.execute()),
+        ("clippy", "app-local Clippy", &|| quality.clippy.execute()),
+        (
+            "test",
+            "Rust tests and generated accessibility contract",
+            &|| quality.test.execute(),
+        ),
+        ("certify", "Tilo-native runtime certification", &|| {
+            certify_one(&path)
+        }),
+    ];
+    for (index, (stage, label, run)) in tool_stages.iter().enumerate() {
+        if index > 0 {
+            println!("[check] {label}");
+        }
+        if let Err(error) = run() {
+            stages.push(json!({"stage": stage, "passed": false}));
+            return Err(error.context(failed(format!("{label} failed"), json!({"stages": stages}))));
+        }
+        stages.push(json!({"stage": stage, "passed": true}));
+    }
 
     if !args.no_scenarios {
         println!("[check] isolated accessibility-audited scenarios");
@@ -1151,17 +1329,33 @@ fn run_check(args: CheckArgs) -> Result<()> {
             artifacts: args.artifacts,
             audit: true,
         })?;
-        execute_scenario_plan(&plan)?;
+        match execute_scenario_plan(&plan) {
+            Ok(report) => {
+                stages.push(json!({"stage": "scenarios", "passed": true, "report": report}));
+            }
+            Err(error) => {
+                let report = error
+                    .downcast_ref::<Failed>()
+                    .map(|failed| failed.report.clone());
+                stages.push(json!({"stage": "scenarios", "passed": false, "report": report}));
+                return Err(failed(format!("{error:#}"), json!({"stages": stages})));
+            }
+        }
     }
     println!("All app checks passed");
-    Ok(())
+    Ok(json!({"stages": stages}))
 }
 
-fn lint_workspace(start: &Path) -> Result<()> {
+/// A `check` stage: its JSON name, its progress label, and the work.
+type CheckStage<'a> = (&'static str, &'static str, &'a dyn Fn() -> Result<()>);
+
+fn lint_workspace(start: &Path) -> Result<Value> {
     let apps = tilo_app_cli::portability::workspace_apps(start)?;
-    let mut failed = Vec::new();
+    let mut failures = Vec::new();
+    let mut reports = Vec::new();
     for app in &apps {
         let report = tilo_app_cli::portability::lint_app(app)?;
+        reports.push(report.to_json());
         if report.passed() {
             continue;
         }
@@ -1171,23 +1365,27 @@ fn lint_workspace(start: &Path) -> Result<()> {
             app.display()
         );
         println!("{}", report.render());
-        failed.push(app.display().to_string());
+        failures.push(app.display().to_string());
     }
-    if !failed.is_empty() {
-        anyhow::bail!(
-            "lint `{}` failed for {} of {} app(s): {}",
-            tilo_app_cli::portability::LINT,
-            failed.len(),
-            apps.len(),
-            failed.join(", ")
-        );
+    let summary = json!({"apps": reports});
+    if !failures.is_empty() {
+        return Err(failed(
+            format!(
+                "lint `{}` failed for {} of {} app(s): {}",
+                tilo_app_cli::portability::LINT,
+                failures.len(),
+                apps.len(),
+                failures.join(", ")
+            ),
+            summary,
+        ));
     }
     println!(
         "lint `{}` passed for {} app(s)",
         tilo_app_cli::portability::LINT,
         apps.len()
     );
-    Ok(())
+    Ok(summary)
 }
 
 fn certify_one(path: &Path) -> Result<()> {
@@ -1204,12 +1402,12 @@ fn certify_one(path: &Path) -> Result<()> {
     clippy::too_many_lines,
     reason = "workspace certification deliberately keeps discovery, one unified build, and execution in one auditable flow"
 )]
-fn run_certify(args: CertifyArgs) -> Result<()> {
+fn run_certify(args: CertifyArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
     if !args.workspace {
         certify_one(&path)?;
         println!("Tilo-native certification passed");
-        return Ok(());
+        return Ok(json!({"certified": [path]}));
     }
 
     let apps = path.join("apps");
@@ -1415,7 +1613,7 @@ fn run_certify(args: CertifyArgs) -> Result<()> {
         }
     }
     println!("Certified {} graphical Tilo applications", app_dirs.len());
-    Ok(())
+    Ok(json!({"certified": app_dirs}))
 }
 
 struct ResponsiveAcceptanceRun {
@@ -1524,7 +1722,7 @@ fn responsive_acceptance_runs(app_root: &Path) -> Vec<ResponsiveAcceptanceRun> {
     ]
 }
 
-fn run_new(args: NewArgs) -> Result<()> {
+fn run_new(args: NewArgs, interactive: bool) -> Result<Value> {
     let start_dev = args.dev;
     let request = tilo_app_cli::NewAppRequest {
         name: args.name,
@@ -1543,9 +1741,16 @@ fn run_new(args: NewArgs) -> Result<()> {
         }),
         directory: args.directory,
         ui_path: args.ui_path,
+        sdk_git: args.sdk_git,
+        sdk_rev: args.sdk_rev,
         dry_run: args.dry_run,
     };
-    let outcome = tilo_app_cli::create_app_interactive(request)?;
+    let outcome = if interactive {
+        tilo_app_cli::create_app_interactive(request)?
+    } else {
+        tilo_app_cli::create_app(request)?
+    };
+    let report = outcome.to_json();
     if start_dev {
         println!("{}", outcome.headline());
         println!("\nStarting live development; press Ctrl-C to stop.");
@@ -1556,10 +1761,11 @@ fn run_new(args: NewArgs) -> Result<()> {
                 watch_ui: true,
                 debounce: Duration::from_millis(150),
             },
-        )
+        )?;
+        Ok(report)
     } else {
         println!("{}", outcome.summary());
-        Ok(())
+        Ok(report)
     }
 }
 
@@ -2230,7 +2436,6 @@ mod tests {
                 "publisher.json",
                 "--profile",
                 "distribution",
-                "--fat",
                 "--target",
                 "x86_64-unknown-linux-gnu",
                 "--features",
@@ -2245,8 +2450,7 @@ mod tests {
             assert_eq!(package.path, Some(PathBuf::from("apps/demo/src")));
             assert_eq!(package.output, Some(PathBuf::from("dist/demo-dev.tapp")));
             assert_eq!(package.identity, Some(PathBuf::from("publisher.json")));
-            assert_eq!(package.profile.as_deref(), Some("distribution"));
-            assert!(package.fat);
+            assert_eq!(package.profile, Some("distribution".into()));
             assert_eq!(package.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
             assert_eq!(package.features, ["sqlite", "telemetry"]);
             assert!(package.no_default_features);
@@ -2257,46 +2461,8 @@ mod tests {
                 panic!("expected package command");
             };
             assert_eq!(defaults.profile, None);
-            assert!(!defaults.fat);
+            assert!(!defaults.static_link);
             assert!(!defaults.force);
-        }
-    }
-
-    #[test]
-    fn package_is_thin_unless_asked_for_a_fat_binary() {
-        let thin = Cli::try_parse_from([
-            "tilo-app",
-            "package",
-            "apps/chat",
-            "--runtime-out",
-            "/work/runtime",
-            "--runtime-identity",
-            "runtime.json",
-        ])
-        .expect("thin package CLI");
-        let Command::Package(thin) = thin.command else {
-            panic!("expected package command");
-        };
-        assert!(!thin.fat);
-        assert_eq!(thin.runtime_out, Some(PathBuf::from("/work/runtime")));
-        assert_eq!(thin.runtime_identity, Some(PathBuf::from("runtime.json")));
-
-        // Cross targets and dropped default features would link a runtime
-        // other than the one the thin build bakes, so they need --fat.
-        for fat_only in [
-            &["--target", "aarch64-unknown-linux-gnu"][..],
-            &["--no-default-features"][..],
-        ] {
-            let args = ["tilo-app", "package"].iter().chain(fat_only);
-            assert!(Cli::try_parse_from(args).is_err(), "accepted {fat_only:?}");
-        }
-        // A fat binary links no runtime to bake.
-        for thin_only in [
-            &["--runtime-out", "runtime"][..],
-            &["--runtime-identity", "key.json"][..],
-        ] {
-            let args = ["tilo-app", "package", "--fat"].iter().chain(thin_only);
-            assert!(Cli::try_parse_from(args).is_err(), "accepted {thin_only:?}");
         }
     }
 

@@ -1,5 +1,8 @@
 mod action_directory_identity;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
+mod resource_operation;
+pub(crate) use resource_operation::start_without_document_writes;
+pub use resource_operation::{OperationRequest, ResourceOperation, start_in_children};
 
 use crate::dnd::DragPayload;
 use crate::permissions::PermissionScope;
@@ -30,6 +33,17 @@ pub const DISABLED_ALPHA: f32 = 0.45;
 pub enum ResourceOperationStart {
     Completed(tilo_actions::ActionOutput),
     Accepted,
+}
+
+impl ResourceOperationStart {
+    /// The output of an operation that finished on return; `None` while it
+    /// is still pending.
+    pub fn completed(self) -> Option<tilo_actions::ActionOutput> {
+        match self {
+            Self::Completed(output) => Some(output),
+            Self::Accepted => None,
+        }
+    }
 }
 
 /// Machine-readable classification of a control's activation path.
@@ -740,6 +754,15 @@ pub trait Widget {
         None
     }
 
+    /// Whether this widget presents its document's History itself, so the
+    /// host must not add the shared standalone History control beside it —
+    /// one document gets one History surface.
+    fn provides_document_history(&self) -> bool {
+        self.children()
+            .into_iter()
+            .any(|child| child.provides_document_history())
+    }
+
     /// Framework lifecycle traversal, independent of visible presentation children.
     /// Borrowed surfaces and retained children cannot escape this callback.
     #[doc(hidden)]
@@ -1205,8 +1228,8 @@ pub trait Widget {
 
     /// Effect/view operation type ids this widget can actually dispatch.
     ///
-    /// Implementors that override `invoke_resource_operation(_v2)` must list
-    /// their locally handled types here. The host combines these declarations
+    /// Implementors of [`Self::start_operation`] must list their locally
+    /// handled types here, beside it. The host combines these declarations
     /// across the retained tree and refuses to publish an action whose type has
     /// no handler, preventing a catalogue entry that can only fail at runtime.
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -2127,10 +2150,63 @@ pub trait Widget {
         false
     }
 
-    /// Perform an exported non-document operation owned by this widget.
-    /// Containers inherit recursive routing; an application overrides only
-    /// for the effect/view types it publishes and returns `Ok(true)` when it
-    /// handled the payload. Document operations never enter this hook.
+    /// Admit an exported effect or view operation: the one entry every
+    /// handler implements. Document operations never enter it.
+    ///
+    /// Return `Ok(None)` to decline so routing continues;
+    /// [`ResourceOperationStart::Completed`] with the output the action's
+    /// `ActionContract` promises when the work is done on return; or
+    /// [`ResourceOperationStart::Accepted`] for work that later reports
+    /// through [`Self::poll_resource_operation`]. Declare every handled type
+    /// in [`Self::local_resource_operation_handlers`].
+    ///
+    /// Read the operation through [`ResourceOperation::unscoped`] unless the
+    /// handler honours a required invocation's custody; a custody-aware
+    /// handler reads it through [`ResourceOperation::with_custody`], retains
+    /// the scope with any job it starts and uses its checked callbacks at each
+    /// later effect or document mutation. Hand operations a widget does not
+    /// own to [`start_in_children`], which is also the default.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first admission or synchronous-operation error.
+    fn start_operation(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        // Widgets that still override the legacy hooks below are reached
+        // through their adapter chain; a required operation never is. The
+        // legacy chains disagreed: an override of the read-only start could
+        // decline a type its synchronous handler answers, so both are offered.
+        let Some(request) = op.unscoped() else {
+            return start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = self.start_resource_operation_with_document(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .invoke_resource_operation_v2(
+                request.kind,
+                request.type_id,
+                request.payload,
+                doc,
+                path,
+            )?
+            .map(ResourceOperationStart::Completed))
+    }
+
+    /// Legacy adapter for [`Self::start_operation`]; the repository policy
+    /// ratchets its remaining overrides to zero. Returns `Ok(true)` when the
+    /// widget handled the payload.
     ///
     /// # Errors
     ///
@@ -2155,9 +2231,7 @@ pub trait Widget {
         Ok(false)
     }
 
-    /// V2 operation route with a typed result. Existing widgets inherit the
-    /// legacy adapter; migrated operations override this method and return the
-    /// output promised by their `ActionContract`.
+    /// Legacy adapter for [`Self::start_operation`] with a typed result.
     ///
     /// # Errors
     ///
@@ -2175,11 +2249,7 @@ pub trait Widget {
             .map(|handled| handled.then(tilo_actions::ActionOutput::default))
     }
 
-    /// Admit an exported non-document operation with a stable invocation id.
-    ///
-    /// Existing synchronous handlers inherit this adapter. A background or
-    /// streaming handler overrides it, records `invocation`, and returns
-    /// [`ResourceOperationStart::Accepted`].
+    /// Legacy read-only adapter for [`Self::start_operation`].
     ///
     /// # Errors
     ///
@@ -2209,25 +2279,12 @@ pub trait Widget {
             .map(|result| result.map(ResourceOperationStart::Completed))
     }
 
-    /// Admit an operation that may need to commit a document follow-up after
-    /// completing device I/O. The mutable document is deliberately available
-    /// only at this top-level admission boundary: ordinary effect handlers
-    /// inherit the read-only adapter above, while a compound operation can
-    /// perform its effect and dispatch the exact replayable metadata action in
-    /// one host-owned turn instead of publishing a permanently disabled UI.
+    /// Legacy mutable adapter for [`Self::start_operation`].
     ///
-    /// The default offers the operation to every retained child with the
-    /// mutable document first, so a handler nested under any container —
-    /// including one that only reports [`children_mut`](Self::children_mut) —
-    /// receives mutable admission. When no child starts it, the widget's own
-    /// read-only admission ([`Self::start_resource_operation`]) runs, which
-    /// keeps an existing read-only override on this widget working.
-    ///
-    /// That fallback offers the operation to children a second time, read-only;
-    /// a child that declined the mutable offer declines again, so the result is
-    /// the same. Pure layout containers that own no handler (`Column`, `Row`,
-    /// `Container`, `TileHost`) override this to stop after the mutable pass and
-    /// offer each handler exactly once.
+    /// The default offers the operation to every retained child through
+    /// [`Self::start_operation`] first, then falls back to this widget's own
+    /// read-only adapter; a child that declined the first offer declines the
+    /// read-only one again.
     ///
     /// # Errors
     ///
@@ -2242,10 +2299,9 @@ pub trait Widget {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
+        let op = ResourceOperation::local(invocation, kind, type_id, payload);
         for child in self.children_mut() {
-            if let Some(started) = child.start_resource_operation_with_document(
-                invocation, kind, type_id, payload, doc, path,
-            )? {
+            if let Some(started) = child.start_operation(&op, doc, path)? {
                 return Ok(Some(started));
             }
         }
@@ -2258,35 +2314,6 @@ pub trait Widget {
         &self,
     ) -> &'static [crate::semantic_document_read::RegisteredSemanticReader] {
         &[]
-    }
-
-    /// Required hosted operations enter here with immutable original-caller
-    /// custody. Async implementations must retain `scope` with their own job
-    /// and use its checked callbacks at each later effect or document mutation.
-    /// The default never calls an unscoped handler, even speculatively.
-    fn start_resource_operation_scoped(
-        &mut self,
-        scope: &crate::invocation_scope::ResourceInvocationScope,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        scope.check()?;
-        for child in self.children_mut() {
-            // A nested canonical owner is an independent destination. Its
-            // handler must be selected by that owner's checked dispatch frame.
-            if child.has_separate_document_owner() {
-                continue;
-            }
-            if let Some(started) =
-                child.start_resource_operation_scoped(scope, kind, type_id, payload, doc, path)?
-            {
-                return Ok(Some(started));
-            }
-        }
-        Ok(None)
     }
 
     /// Poll one admitted operation without blocking the UI thread.
@@ -2859,6 +2886,8 @@ pub use layout_info::{
     Density, Effective, FieldLayout, FormLayout, LabelPlacement, LayoutInfo, LayoutOrigin,
     ManualConflict, ManualLayout, PageLayout, SectionLayout,
 };
+mod embedded;
+pub use embedded::Embedded;
 mod manual;
 pub use manual::{
     ChildMeasurement, Manual, ManualContext, ManualInvalidation, ManualPolicy, MeasureConstraint,
@@ -2938,7 +2967,7 @@ pub use rich_text_editor::{RichBlockStyle, RichTextEditor};
 pub mod block_editor;
 pub use block_editor::{
     Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CursorPlacement, DocumentPosition,
-    DocumentSelection, PresenceKeyFn, TransclusionPreview, legacy_block_id,
+    DocumentSelection, EditScope, PresenceKeyFn, TransclusionPreview, legacy_block_id,
 };
 pub mod slash_menu;
 pub use slash_menu::SlashMenu;
@@ -3740,16 +3769,16 @@ pub(crate) mod control_result_probe {
         ) {
             self.observed.results.borrow_mut().push(result.clone());
         }
-        fn start_resource_operation(
+        fn start_operation(
             &mut self,
-            _: tilo_actions::InvocationId,
-            _: tilo_actions::OperationKind,
-            _: &str,
-            payload: &[u8],
-            _: &AutoCommit,
+            op: &ResourceOperation<'_>,
+            _: &mut AutoCommit,
             _: &ObjId,
         ) -> Result<Option<ResourceOperationStart>, String> {
-            if let Ok(text) = serde_json::from_slice::<String>(payload) {
+            let Some(request) = op.unscoped() else {
+                return Ok(None);
+            };
+            if let Ok(text) = serde_json::from_slice::<String>(request.payload) {
                 self.observed.payloads.borrow_mut().push(text);
             }
             self.observed

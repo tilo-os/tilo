@@ -42,7 +42,8 @@ class WpeArtifactTests(unittest.TestCase):
             (self.assets / name).write_bytes(data)
             script.extend((f'{variable}={name}', f'{variable}_SHA256={wpe.sha(data)}'))
         (self.repo / 'os/dev/build-wpe.sh').write_text('\n'.join(script) + '\n')
-        (self.repo / 'os/Containerfile').write_text('FROM scratch\n')
+        (self.repo / 'os/Containerfile.wpe').write_text('FROM scratch\n')
+        (self.repo / 'os/Containerfile').write_text('FROM scratch AS os\n')
         self.buildroot = 'registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:' + '1' * 64
         self.inputs = self.dependencies()
         self.config = wpe.canonical({'architecture': 'amd64', 'os': 'linux'})
@@ -64,7 +65,9 @@ class WpeArtifactTests(unittest.TestCase):
         with self.subTest(phase="dependency_key_ignores_unrelated_sources_and_records_actual_assets"):
             (self.repo / 'app.rs').write_text('new app')
             self.assertEqual(self.dependencies(), self.inputs)
-            (self.repo / 'os/Containerfile').write_text('FROM different\n')
+            (self.repo / 'os/Containerfile').write_text('FROM unrelated-os-edit\n')
+            self.assertEqual(self.dependencies(), self.inputs)
+            (self.repo / 'os/Containerfile.wpe').write_text('FROM different-wpe-recipe\n')
             self.assertNotEqual(self.dependencies(), self.inputs)
             (self.assets / 'fdo-1.tar.xz').write_text('tampered')
             with self.assertRaises(ValueError):
@@ -224,7 +227,7 @@ class WpeArtifactTests(unittest.TestCase):
                 export.assert_called_once_with('sha256:' + '3' * 64, self.inputs, 6, 'a' * 40, '42', '1',
                                                source_completed_stage_id=self.identity)
             def changed(_):
-                (self.repo / 'os/Containerfile').write_text('changed while building')
+                (self.repo / 'os/Containerfile.wpe').write_text('changed while building')
                 return self.identity
             with patch.object(wpe, 'verify_source'), patch.object(wpe, '_build_stage', side_effect=changed), \
                  patch.object(wpe, '_export_stage') as export:

@@ -4,6 +4,10 @@
 # Auf diesem Desktop fortsetzen, was du gerade auf einem anderen Gerät getan hast.
 continuity-continue = { $app } von { $device } fortsetzen
 continuity-continue-subtitle = Den Tab fokussieren, den du gerade auf { $device } verwendet hast
+continuity-bringing-record = Sein Dokument wird von einem anderen Gerät geholt …
+record-not-kept-here = Dieses Dokument wird auf diesem Gerät nicht aufbewahrt.
+record-too-large-to-bring = Dieses Dokument ist zu groß, um es herüberzuholen.
+record-offset-past-end = Diesen Teil des Dokuments gibt es nicht.
 continuity-dismiss-title = „{ $app } von { $device } fortsetzen“ ausblenden
 continuity-dismiss-subtitle = Ausgeblendet, bis du auf { $device } wieder den Tab wechselst
 continuity-other-device = deinem anderen Gerät
@@ -38,11 +42,14 @@ display-confirm-keep = Behalten
 display-confirm-revert = Zurücksetzen
 display-rejected = Diese Anordnung konnte nicht angewendet werden: { $reason }
 
-# Eine Änderung eines Anzeigewerkzeugs (kanshi, wlr-randr) behalten oder zurücksetzen
-display-confirm-tool-title = Die von { $tool } angewendeten Anzeigeeinstellungen behalten?
-display-confirm-tool-unknown-title = Die von einem Werkzeug angewendeten Anzeigeeinstellungen behalten?
-display-confirm-always = Änderungen von { $tool } immer behalten
-display-confirm-a11y-description = Ein Anzeigewerkzeug hat deine Bildschirme geändert. Eingabe behält die Änderung, Escape stellt die vorherige Anordnung wieder her.
+# Eine riskante Änderung eines Anzeigewerkzeugs (kanshi, wlr-randr) behalten oder
+# zurücksetzen: eine, die einen Bildschirm schwarz lassen oder den benutzten ausschalten kann
+display-confirm-tool-title = Die Anzeigeänderung von { $tool } behalten?
+display-confirm-tool-unknown-title = Diese Anzeigeänderung behalten?
+display-confirm-always = Behalten und bei { $tool } nicht mehr fragen
+display-confirm-a11y-description = Ein Anzeigewerkzeug hat einen Bildschirm geändert, den du gerade benutzt, oder einen Modus gewählt, den er noch nie gezeigt hat – dabei kann er schwarz bleiben. Eingabe behält die Änderung; Escape oder Abwarten stellt die vorherige Anordnung wieder her.
+display-tool-reapply-refused = { $tool } wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
+display-tool-reapply-refused-unknown = Ein Anzeigewerkzeug wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
 
 # Drahtlose Empfänger, der untere Bereich desselben Blatts
 wireless-heading = Drahtlose Bildschirme
@@ -69,14 +76,6 @@ wireless-protocols = Miracast · Google Cast · AirPlay · FCast
 # Bildschirme identifizieren: die Karte auf jedem Bildschirm
 display-identify-builtin = Eingebauter Bildschirm
 display-identify-unnamed = Bildschirm { $number }
-
-# Der Fensterwechsler (Alt+Tab).
-window-switcher-title = Fenster wechseln
-window-switcher-description = Fenster in diesem Arbeitsbereich, zuletzt verwendete zuerst. Halte Alt gedrückt und drücke Tab oder die Pfeiltasten zum Bewegen, lass Alt los zum Wechseln oder drücke Escape, um zu bleiben.
-window-switcher-app-title = Fenster dieser App wechseln
-window-switcher-app-description = Fenster dieser App in diesem Arbeitsbereich, zuletzt verwendete zuerst. Halte Alt gedrückt und drücke ` zum Bewegen, lass Alt los zum Wechseln oder drücke Escape, um zu bleiben.
-window-switcher-untitled = Unbenanntes Fenster
-window-switcher-caption-paged = { $title } ({ $position } von { $count })
 
 # Die Fensterreihe des aktuellen Arbeitsbereichs in der Übersicht.
 overview-windows-title = Fenster in diesem Arbeitsbereich
@@ -636,17 +635,6 @@ a11y-workspace-name = Name des Arbeitsbereichs
 a11y-workspace-settings-content = Inhalt der Arbeitsbereichseinstellungen
 a11y-at-a-glance = Auf einen Blick
 
-# Barrierefreiheitsbaum: aufbewahrte Benachrichtigungen
-a11y-notifications-none = Keine aufbewahrten Benachrichtigungen.
-a11y-notifications-description = Neueste Zeilen { $first } bis { $last } von { $total }, nach App gruppiert. Mit Pfeil nach oben und unten wählst du eine Benachrichtigung, mit Bild auf und Bild ab springst du um eine Seite, mit Pos1 oder Ende zur neuesten oder ältesten aufbewahrten Benachrichtigung. Eingabe öffnet die gewählte Benachrichtigung oder klappt ihre App-Gruppe ein, Entf verwirft sie.
-a11y-notifications-list = Aufbewahrte Benachrichtigungen
-a11y-notifications-clear = Alle Benachrichtigungen löschen
-a11y-notifications-clear-description = Löscht den aufbewahrten Benachrichtigungsverlauf dieser Sitzung. Acht Sekunden lang kannst du das rückgängig machen.
-a11y-notifications-cleared = Benachrichtigungen gelöscht
-a11y-notifications-undo = Löschen der Benachrichtigungen rückgängig machen
-a11y-notifications-undo-description = Stellt die gelöschten Benachrichtigungen in ihrer ursprünglichen Reihenfolge wieder her. Drücke Eingabe oder Leertaste.
-a11y-notifications = Benachrichtigungen
-
 # Barrierefreiheitsbaum: Verlauf der Zwischenablage
 a11y-clipboard-data = Daten der Zwischenablage
 a11y-clipboard-item-description = Von { $source }; { $age }; { $bytes } Byte; { $pinned ->
@@ -817,22 +805,6 @@ follow-stop = Beenden
 # Filterchips der Suche
 search-filter-all = Alle
 
-# Schnelleinstellungen: Benachrichtigungsverlauf
-qs-notifications-title = Benachrichtigungen
-qs-notifications-empty = Keine neuen Benachrichtigungen
-qs-notifications-cleared = Benachrichtigungen gelöscht
-qs-notifications-clear-all = Alle löschen
-qs-notifications-position = Neueste { $first }–{ $last } von { $total }
-qs-notifications-count = { $count ->
-        [one] { $count } Benachrichtigung
-       *[other] { $count } Benachrichtigungen
-    }
-qs-notifications-source-system = System
-qs-notifications-newer = ↑ Neuere
-qs-notifications-at-newest = Neueste erreicht
-qs-notifications-older = ↓ Ältere
-qs-notifications-at-oldest = Älteste erreicht
-
 # Schnelleinstellungen: Zeilen für Geräte und Medien
 qs-devices-mic-other = Mikrofon · von hier aufnehmen
 qs-devices-mic-current = Aktuelles Mikrofon
@@ -898,6 +870,11 @@ qs-devices-speakers-playing = { $count ->
         [one] { $count } Lautsprecher spielt · auswählen zum Beenden
        *[other] { $count } Lautsprecher spielen · auswählen zum Beenden
     }
+qs-devices-speaker-syncing = { $playing } spielen, { $syncing } gleichen die Uhr ab… · auswählen zum Beenden
+qs-devices-speaker-clock-failed = { $count ->
+        [one] { $count } Lautsprecher kann nicht synchron spielen: { $reason } · auswählen zum Beenden
+       *[other] { $count } Lautsprecher können nicht synchron spielen: { $reason } · auswählen zum Beenden
+    }
 qs-devices-speaker-setup-note = Stereopaar oder Raumlautsprecher · öffnet Einstellungen → Lautsprecher
 qs-devices-speaker-membership-note = eingerichtet auf { $leader } · auswählen zum Austreten
 qs-devices-another-certified = Ein anderes zertifiziertes Gerät
@@ -908,6 +885,8 @@ qs-devices-certified-device = zertifiziertes Gerät
 qs-devices-audio-awaiting = wartet auf Freigabe mit { $peer } · auswählen zum Beenden
 qs-devices-audio-streaming = streamt mit { $peer } · auswählen zum Beenden
 qs-devices-audio-interrupted = unterbrochen mit { $peer } · auswählen zum Verwerfen
+qs-devices-audio-syncing = gleicht die Uhr mit { $peer } ab… · auswählen zum Beenden
+qs-devices-audio-clock-failed = kann mit { $peer } nicht synchron spielen: { $reason } · auswählen zum Beenden
 qs-devices-capture-share = { $input } dieses Geräts teilen
 qs-devices-capture-requested = { $source } hat das für { $app } angefragt · einmal erlauben oder ablehnen
 qs-devices-capture-use-remote = Entfernte Eingabe verwenden: { $input }
@@ -999,26 +978,6 @@ qs-wifi-protected = Dieses Netzwerk ist geschützt
 
 # Aufbewahrter Verlauf: Quellen und Schweregrade
 history-this-device = Dieses Gerät
-history-severity-info = Information
-history-severity-warning = Warnung
-history-severity-error = Fehler
-history-source-system = System
-history-notification-description = { $severity }. Von { $source }. { $time }
-history-notification-description-body = { $severity }. Von { $source }. { $time }. { $body }
-
-# Zeilen der Benachrichtigungszentrale
-notification-center-group-description = { $count } Benachrichtigungen. Eingabe zum { $expanded ->
-        [yes] Einklappen
-       *[no] Ausklappen
-    }, Entf, um alle zu verwerfen.
-notification-center-dismiss-all = Alle von { $app } verwerfen
-notification-center-dismiss = Verwerfen
-notification-center-hand-to = An { $agent } übergeben
-notification-center-hand-to-description = Übergibt diese Benachrichtigung als Aufgabe an den Agenten des Arbeitsbereichs.
-notification-center-group-count = { $count ->
-        [one] { $count } Benachrichtigung
-       *[other] { $count } Benachrichtigungen
-    }
 
 # On-screen display for the hardware keys
 osd-play = Wiedergabe
@@ -1060,13 +1019,6 @@ status-other-displays-a11y = Weitere Bildschirme
 
 # Notification toasts
 notification-source-caption = { $app } · Von { $device }
-notification-lock-count = { $count ->
-    [one] 1 Benachrichtigung
-   *[other] { $count } Benachrichtigungen
-}
-notification-dnd-held = { $status } · { $count } zurückgehalten
-notification-stack-a11y = Benachrichtigungen
-notification-group-system = System
 notification-app-host-apps = Host-Apps
 notification-app-power = Energie
 notification-remote-input-stopped = Fernsteuerung beendet
@@ -1213,82 +1165,6 @@ portal-capture-default-microphone = Standardmikrofon
 portal-capture-default-camera = Standardkamera
 portal-capture-primary-display = Hauptbildschirm
 portal-capture-system-audio = Systemaudio
-
-# People panel, as assistive technology reads it
-a11y-shell-people = Personen
-a11y-shell-people-description = Live-Anwesenheit im Arbeitsbereich, aktuelle Tätigkeit, Absicht und Datenschutz für den Status
-a11y-shell-people-screen-visible = Jetzt sichtbarer Bildschirm: { $exposure }
-a11y-shell-people-here-now = Jetzt anwesend
-a11y-shell-people-agent = Agent
-a11y-shell-people-invited = Eingeladen, derzeit nicht anwesend
-a11y-shell-people-present = Jetzt anwesend
-a11y-shell-people-now = Jetzt: { $activity }
-a11y-shell-people-intent = Absicht: { $status }
-a11y-shell-people-intent-inferred = Absicht, abgeleitet: { $status }
-a11y-shell-status-name = Dein Zusammenarbeitsstatus
-a11y-shell-status-inferred = Auf diesem Gerät aus letzten Aktionen abgeleitet
-a11y-shell-status-set = Lege fest, woran du gerade arbeitest
-a11y-shell-status-automatic = Automatischer Status
-a11y-shell-status-manual = Nur manueller Status
-a11y-shell-status-off = Status ausblenden
-a11y-shell-status-automatic-description = Einen kurzen Status lokal aus den letzten Aktionen im Arbeitsbereich ableiten
-a11y-shell-status-manual-description = Nur selbst eingegebenen Text teilen
-a11y-shell-status-off-description = Keinen Status in diesem Arbeitsbereich veröffentlichen
-a11y-shell-follow-collaborator = Mitwirkender Person folgen
-a11y-shell-follow = { $name } folgen
-a11y-shell-follow-description = Die Live-Ansicht dieser Person im Arbeitsbereich spiegeln
-a11y-shell-people-previous = Vorherige Personen
-a11y-shell-people-previous-description = Die vorherigen Personen in diesem Arbeitsbereich anzeigen
-a11y-shell-people-next = Weitere Personen
-a11y-shell-people-next-description = Die nächsten Personen in diesem Arbeitsbereich anzeigen
-a11y-shell-invite = Personen einladen
-a11y-shell-invite-description = Eine authentifizierte Einladung in den Arbeitsbereich erstellen
-a11y-shell-join = Arbeitsbereich beitreten
-a11y-shell-join-description = Mit einer authentifizierten Einladung verbinden
-a11y-shell-workspace-activity = Aktivität im Arbeitsbereich
-a11y-shell-workspace-activity-description = Gruppierte Ergebnisse prüfen und sehen, was in deiner Abwesenheit passiert ist
-
-# Empty-workspace launchpad
-a11y-shell-launchpad-title = Gemeinsam etwas schaffen
-a11y-shell-launchpad-description = Wähle eine gemeinsame Unterhaltung, Notizen, Aufgaben, ein Meeting, eine Einladung oder die Aktivität im Arbeitsbereich.
-a11y-shell-launchpad-open-app = App öffnen
-a11y-shell-launchpad-discuss = Besprechen
-a11y-shell-launchpad-notes = Notizen
-a11y-shell-launchpad-tasks = Aufgaben
-a11y-shell-launchpad-meet = Meeting planen
-a11y-shell-launchpad-invite = Personen einladen
-a11y-shell-launchpad-activity = Auf dem Laufenden bleiben
-a11y-shell-launchpad-discuss-detail = Die gemeinsame Unterhaltung öffnen
-a11y-shell-launchpad-notes-detail = Gemeinsam Ideen aufschreiben
-a11y-shell-launchpad-tasks-detail = Arbeit im Kalender planen
-a11y-shell-launchpad-meet-detail = Chat öffnen, dann einen Sprach- oder Videoanruf starten
-a11y-shell-launchpad-invite-detail = Jemanden in diesen Arbeitsbereich holen
-a11y-shell-launchpad-activity-detail = Sehen, was sich geändert hat und warum
-
-# Workspace wheel
-a11y-shell-wheel = Arbeitsbereichsrad
-a11y-shell-wheel-switch = Zu { $workspace } wechseln
-a11y-shell-wheel-add = Arbeitsbereich hinzufügen
-
-# The emoji picker (Super+. by default)
-emoji-picker-title = Emoji
-emoji-picker-search = Emoji suchen
-emoji-picker-groups = Emoji-Kategorien
-emoji-picker-recent = Zuletzt verwendet
-emoji-picker-results = Passende Emoji
-emoji-picker-no-results = Keine Emoji gefunden
-emoji-picker-hint = Eingabe fügt ein · Esc schließt
-emoji-picker-hint-tones = Eingabe fügt ein · Umschalt+Eingabe wählt einen Hautton
-emoji-picker-tones = Hauttöne
-emoji-picker-tones-hint = Rechtsklick, langes Drücken oder Umschalt+Eingabe für Hauttöne
-emoji-picker-a11y-description = Tippen Sie, um zu suchen. Die Pfeiltasten wechseln zwischen den Emoji, Tab wechselt die Kategorie, Eingabe fügt das markierte Emoji in das Textfeld ein, in dem Sie geschrieben haben, Umschalt+Eingabe wählt einen Hautton, Escape schließt.
-# Ein Emoji in einem Hautton: „Daumen hoch, mittlerer Hautton“.
-emoji-picker-toned = { $name }, { $tone }
-emoji-picker-tone-light = heller Hautton
-emoji-picker-tone-medium-light = mittelheller Hautton
-emoji-picker-tone-medium = mittlerer Hautton
-emoji-picker-tone-medium-dark = mitteldunkler Hautton
-emoji-picker-tone-dark = dunkler Hautton
 
 # Die eigenen Texte der Shell: Anmerkungen zu jedem Teil jeder App,
 # Auswählen, Aufzeichnen und Prüfen vor dem Senden.
@@ -2248,312 +2124,6 @@ peer-sync-token-characters = { $token } · { $count ->
 }
 peer-sync-token-incomplete = Noch keine vollständige Einladung
 
-# Arbeitsbereichseinstellungen: Berechtigungsrollen und Eigentum an der Aktionstür
-workspace-settings-roles-resource = Berechtigungsrollen von { $workspace }
-workspace-settings-role-save = Berechtigungsrolle erstellen oder aktualisieren
-workspace-settings-role-save-placeholder = Rollenname
-workspace-settings-role-save-description = Speichere eine wiederverwendbare Rolle mit minimalen Rechten aus App-, Aktions-, Datei-, Ressourcen- oder Arbeitsbereichsregeln.
-workspace-settings-role-assign = Berechtigungsrolle zuweisen
-workspace-settings-role-assign-placeholder = Rolle und Mitwirkende
-workspace-settings-role-assign-description = Weise einer Person, Anwendung oder einem Agenten eine gespeicherte Rolle mit minimalen Rechten zu.
-workspace-settings-role-assign-named = { $role } zuweisen
-workspace-settings-role-assign-named-placeholder = Identität der mitwirkenden Person
-workspace-settings-app-action-placeholder = App und Aktion
-workspace-settings-app-action-grant = Einer App die Aktion einer anderen App erlauben
-workspace-settings-app-action-grant-description = Erlaube einer Anwendung in diesem Arbeitsbereich, eine Aktion zu verwenden, die eine andere Anwendung bereitstellt.
-workspace-settings-app-action-revoke = Einer App die Aktion einer anderen App entziehen
-workspace-settings-app-action-revoke-description = Nimm in diesem Arbeitsbereich jede Freigabe zurück, mit der eine Anwendung die Aktion einer anderen Anwendung verwenden darf.
-workspace-settings-ownership-resource = Eigentum an { $workspace }
-workspace-settings-ownership-propose = Eigentumsübertragung vorschlagen
-workspace-settings-ownership-propose-placeholder = Identität der empfangenden Person
-workspace-settings-ownership-propose-description = Deine Signatur erlaubt die sofortige Übertragung des Eigentums, wenn genau diese Administratorin oder dieser Administrator vor Ablauf annimmt.
-workspace-settings-ownership-accept = Eigentum am Arbeitsbereich annehmen
-workspace-settings-ownership-accept-description = Mit der Annahme wird das Eigentum sofort übertragen; allgemeine Rollensteuerungen können diese Aktion nicht ausführen.
-workspace-settings-ownership-accept-phrase = Eigentum annehmen
-workspace-settings-ownership-cancel = Eigentumsübertragung abbrechen
-workspace-settings-ownership-cancel-description = Ziehe das offene Angebot zurück, bevor die empfangende Person es annimmt.
-
-# Arbeitsbereichseinstellungen: Tabs und Rahmen
-workspace-settings-title = Arbeitsbereichseinstellungen
-workspace-settings-close = Einstellungen schließen
-workspace-settings-tab-general = Allgemein
-workspace-settings-tab-people = Personen
-workspace-settings-tab-agents = Agenten
-workspace-settings-tab-privacy-security = Datenschutz & Sicherheit
-workspace-settings-tab-privacy = Datenschutz
-workspace-settings-tab-apps-files = Apps & Dateien
-workspace-settings-tab-apps = Apps
-workspace-settings-close-hint = Esc zum Schließen
-workspace-settings-edit-hint = Eingabetaste zum Speichern · Esc zum Abbrechen
-
-# Arbeitsbereichseinstellungen: Rollen
-workspace-settings-role-owner = Eigentümer
-workspace-settings-role-editor = Bearbeiter
-workspace-settings-role-commenter = Kommentator
-workspace-settings-role-viewer = Betrachter
-workspace-settings-role-blocked = Gesperrt
-workspace-settings-role-admin = Admin
-workspace-settings-role-guest = Gast
-workspace-settings-role-owner-preview = Kann Personen, Berechtigungen und Einstellungen des Arbeitsbereichs verwalten.
-workspace-settings-role-editor-preview = Kann geteilte Arbeit ansehen, kommentieren und bearbeiten.
-workspace-settings-role-commenter-preview = Kann geteilte Arbeit ansehen und kommentieren, aber nicht bearbeiten.
-workspace-settings-role-viewer-preview = Kann geteilte Arbeit ansehen, aber weder kommentieren noch bearbeiten.
-workspace-settings-role-blocked-preview = Kein Zugriff auf diesen Arbeitsbereich.
-
-# Arbeitsbereichseinstellungen: worauf sich eine Berechtigung bezieht, für sich allein
-workspace-settings-scope-workspace = dieser Arbeitsbereich
-workspace-settings-scope-app = die App { $app }
-workspace-settings-scope-workspace-files = Dateien des Arbeitsbereichs
-workspace-settings-scope-workspace-folder = „{ $folder }“ in diesem Arbeitsbereich
-workspace-settings-scope-path = Dateien unter { $path }
-workspace-settings-scope-record = eine geteilte Datei ({ $id })
-workspace-settings-scope-agent = den Agenten { $agent } bedienen
-workspace-settings-scope-camera = die Kamera
-workspace-settings-scope-microphone = das Mikrofon
-workspace-settings-scope-screencast = Bildschirmaufnahme
-workspace-settings-scope-remote-desktop = Fernsteuerung von Zeiger und Tastatur
-workspace-settings-scope-any-host = ein beliebiger Netzwerkhost
-workspace-settings-scope-host = Netzwerkhost { $host }
-workspace-settings-scope-action = „{ $action }“ in { $app }
-workspace-settings-scope-resource-type = { $kind ->
-    [note] jede Notiz
-    [file] jede Datei
-    [cluster] jeder gespeicherte Cluster
-    [kanban] jedes Board
-   *[chat-log] jeder Chatverlauf
-}
-workspace-settings-scope-resource-instance = ein Dokument ({ $id })
-
-# Arbeitsbereichseinstellungen: worauf sich eine Berechtigung bezieht, als Objekt am Satzanfang (Akkusativ)
-workspace-settings-scope-workspace-object = Diesen Arbeitsbereich
-workspace-settings-scope-app-object = Die App { $app }
-workspace-settings-scope-workspace-files-object = Dateien des Arbeitsbereichs
-workspace-settings-scope-workspace-folder-object = „{ $folder }“ in diesem Arbeitsbereich
-workspace-settings-scope-path-object = Dateien unter { $path }
-workspace-settings-scope-record-object = Eine geteilte Datei ({ $id })
-workspace-settings-scope-agent-object = den Agenten { $agent } bedienen
-workspace-settings-scope-camera-object = Die Kamera
-workspace-settings-scope-microphone-object = Das Mikrofon
-workspace-settings-scope-screencast-object = Bildschirmaufnahme
-workspace-settings-scope-remote-desktop-object = Fernsteuerung von Zeiger und Tastatur
-workspace-settings-scope-any-host-object = Einen beliebigen Netzwerkhost
-workspace-settings-scope-host-object = Netzwerkhost { $host }
-workspace-settings-scope-action-object = „{ $action }“ in { $app }
-workspace-settings-scope-resource-type-object = { $kind ->
-    [note] Jede Notiz
-    [file] Jede Datei
-    [cluster] Jeden gespeicherten Cluster
-    [kanban] Jedes Board
-   *[chat-log] Jeden Chatverlauf
-}
-workspace-settings-scope-resource-instance-object = Ein Dokument ({ $id })
-
-# Arbeitsbereichseinstellungen: was eine Berechtigung erlaubt
-workspace-settings-allows-control = { $what } steuern
-workspace-settings-allows-use = { $what } verwenden
-workspace-settings-allows-reach = { $what } erreichen
-workspace-settings-allows-run = { $what } ausführen
-workspace-settings-allows-administer = { $what } verwalten
-workspace-settings-allows-edit = { $what } bearbeiten
-workspace-settings-allows-comment = { $what } kommentieren
-workspace-settings-allows-invite = Andere einladen: { $what }
-workspace-settings-allows-view = { $what } ansehen
-
-# Arbeitsbereichseinstellungen: wie lange eine Freigabe gilt und wer sie erteilt hat
-workspace-settings-expiry-once = Einmal
-workspace-settings-expiry-session = Sitzung
-workspace-settings-expiry-until = Bis
-workspace-settings-expiry-always = Immer
-workspace-settings-granted-by-person = erteilt von { $id }
-workspace-settings-granted-by-app = erteilt von der App { $app }
-workspace-settings-granted-by-agent = erteilt von Agent { $id }
-workspace-settings-granted-by-token = erteilt über Token { $id }
-workspace-settings-granted-by-workspace = erteilt vom Arbeitsbereich { $id }
-workspace-settings-permission-detail = { $allows } · { $grantor }
-
-# Arbeitsbereichseinstellungen: für wen eine Berechtigung gilt
-workspace-settings-section-apps = Apps
-workspace-settings-section-app-actions = App-Aktionen
-workspace-settings-section-people = Personen
-workspace-settings-section-agents = Agenten
-workspace-settings-section-roles = Rollen
-workspace-settings-section-other = Sonstige
-workspace-settings-subject-role = alle mit der Rolle { $role }
-workspace-settings-subject-token = Token { $id }
-workspace-settings-subject-workspace = Arbeitsbereich { $id }
-
-# Arbeitsbereichseinstellungen: was der Freigabe-Editor erlauben kann
-workspace-settings-grant-camera = Kamera
-workspace-settings-grant-microphone = Mikrofon
-workspace-settings-grant-screencast = Bildschirmaufnahme
-workspace-settings-grant-remote-control = Fernsteuerung
-workspace-settings-grant-network = Netzwerkzugriff
-workspace-settings-grant-read-files = Dateien des Arbeitsbereichs lesen
-workspace-settings-grant-edit-files = Dateien des Arbeitsbereichs bearbeiten
-workspace-settings-grant-create-roles = Berechtigungsrollen erstellen
-workspace-settings-grant-assign-roles = Berechtigungsrollen zuweisen
-
-# Arbeitsbereichseinstellungen: Agentenprofile
-workspace-settings-preset-observer = Beobachter
-workspace-settings-preset-contributor = Mitwirkender
-workspace-settings-preset-operator = Operator
-workspace-settings-preset-custom = Benutzerdefiniert
-workspace-settings-preset-observer-hint = Nur Lesen auf Bereichen, die du auswählst
-workspace-settings-preset-contributor-hint = Lesen und Schreiben nur auf Bereichen, die du auswählst
-workspace-settings-preset-operator-hint = Nur freigegebene App-Aktionen ausführen
-workspace-settings-preset-custom-hint = Jede eingeschränkte Berechtigung prüfen
-
-# Arbeitsbereichseinstellungen: Tab „Personen“
-workspace-settings-members-count = { $count ->
-    [one] 1 Person teilt diesen Arbeitsbereich
-   *[other] { $count } Personen teilen diesen Arbeitsbereich
-}
-workspace-settings-members-help = Wer entfernt wird, erhält keine Synchronisierung und Änderungen mehr; bereits heruntergeladene Kopien bleiben bei der Person.
-workspace-settings-ownership = Eigentum
-workspace-settings-you-manage = Von dir verwaltet
-workspace-settings-view-only = Nur ansehen
-workspace-settings-members-empty-title = Sonst ist niemand in diesem Arbeitsbereich
-workspace-settings-members-empty-detail = Erstelle im Tab „Allgemein“ eine signierte Einladung, um jemanden hinzuzufügen.
-workspace-settings-people-header = PERSONEN
-workspace-settings-ownership-offered = { $owner } hat dir das Eigentum angeboten. Sieh dir den Arbeitsbereich an und nimm ausdrücklich an, bevor das Angebot abläuft.
-workspace-settings-ownership-waiting = Warte darauf, dass { $recipient } das Eigentum ausdrücklich annimmt. Bis dahin kannst du abbrechen.
-workspace-settings-ownership-pending = Die Eigentumsübertragung an { $recipient } wartet auf die Annahme durch diese Person.
-workspace-settings-you = Du
-workspace-settings-member-detail = { $count ->
-    [0] { $role } · keine zusätzlichen Berechtigungen
-    [one] { $role } · 1 zusätzliche Berechtigung
-   *[other] { $role } · { $count } zusätzliche Berechtigungen
-}
-workspace-settings-remove = Entfernen
-workspace-settings-owner-only = Nur der Eigentümer des Arbeitsbereichs kann Berechtigungen ändern.
-
-# Arbeitsbereichseinstellungen: Tab „Agenten“
-workspace-settings-agents-count = { $count ->
-    [one] 1 mitwirkender Agent
-   *[other] { $count } mitwirkende Agenten
-}
-workspace-settings-agents-help = Agenten sind sichtbar nicht-menschliche Mitwirkende. Die Zulassung gewährt keine allgemeinen Rechte im Arbeitsbereich.
-workspace-settings-add-agent = Agent hinzufügen
-workspace-settings-recording-toggle = Mitglieder dürfen aufzeichnen
-workspace-settings-agent-delegated = Zeichnet für ein Mitglied auf · gesteuert über „Mitglieder dürfen aufzeichnen“
-workspace-settings-add-triage-agent = Sichtungsagent hinzufügen
-workspace-settings-agent-triage-note = Der Sichtungsagent des Tilo-Teams hilft hier, Meldungen zu sortieren
-workspace-settings-triage-direct-rooms = Sichtung in Direkträumen
-workspace-settings-agents-empty-title = Keine Agenten haben Zugriff
-workspace-settings-agents-empty-detail = Beginne mit einem sicheren Profil und prüfe dann jeden einzelnen Bereich.
-workspace-settings-agents-header = AGENTEN
-workspace-settings-service-member = Dienstmitglied · { $access ->
-    [admin] verwaltet
-    [write] liest und bearbeitet
-    [comment] liest und kommentiert
-   *[read] liest
-} Ende-zu-Ende-verschlüsselte Inhalte · { $until } · Gerät { $device }
-workspace-settings-service-until-removed = bis zur Entfernung
-workspace-settings-service-ends-soon = Zugriff endet in weniger als einer Minute
-workspace-settings-service-ends-minutes = Zugriff endet in { $minutes } Min.
-workspace-settings-service-ends-hours = Zugriff endet in { $hours } Std.
-workspace-settings-badge-service = DIENST
-workspace-settings-badge-agent = AGENT
-workspace-settings-agent-detail = { $count ->
-    [0] { $admission } · keine eingeschränkten Berechtigungen – Prüfung erforderlich
-    [one] { $admission } · Profil { $profile } · 1 eingeschränkte Berechtigung
-   *[other] { $admission } · Profil { $profile } · { $count } eingeschränkte Berechtigungen
-}
-workspace-settings-admitted = Zugelassen
-workspace-settings-review-access = Zugriff prüfen
-workspace-settings-revoke = Entziehen
-workspace-settings-admission-admin = Zulassung als Admin
-workspace-settings-admission-write = Zulassung zum Schreiben
-workspace-settings-admission-comment = Zulassung zum Kommentieren
-workspace-settings-admission-read = Zulassung zum Lesen
-
-# Arbeitsbereichseinstellungen: Tab „Apps & Dateien“
-workspace-settings-unavailable-app = Nicht verfügbare App
-workspace-settings-apps-empty-title = Keine Dateiverknüpfungen installiert
-workspace-settings-apps-empty-detail = Apps erscheinen hier, sobald sie unterstützte Dateitypen angeben.
-workspace-settings-apps-intro-title = Standards ohne Bindung
-workspace-settings-apps-intro-detail = Der Arbeitsbereich gibt eine Grundlage vor; jede Person kann ausdrücklich etwas anderes wählen.
-workspace-settings-apps-header = STANDARDANWENDUNGEN
-workspace-settings-workspace-choice = Wahl des Arbeitsbereichs
-workspace-settings-your-choice = Deine Wahl
-workspace-settings-follow-personal = Persönlichen Standards folgen
-workspace-settings-use-workspace-choice = Wahl des Arbeitsbereichs verwenden
-workspace-settings-use-personal-default = Meinen persönlichen Standard verwenden
-workspace-settings-apps-file-types = { $count ->
-    [one] 1 Dateityp
-   *[other] { $count } Dateitypen
-}
-workspace-settings-apps-custom-rules = { $count ->
-    [one] 1 eigene Regel
-   *[other] { $count } eigene Regeln
-}
-
-# Arbeitsbereichseinstellungen: Tab „Datenschutz & Sicherheit“
-workspace-settings-permissions-intro-title = Zugriff ist ausdrücklich und widerrufbar
-workspace-settings-permissions-intro-detail = Freigaben werden von der App-Sandbox durchgesetzt und bleiben auf diesen Arbeitsbereich beschränkt.
-workspace-settings-active-grants = { $count ->
-    [one] 1 aktive Freigabe
-   *[other] { $count } aktive Freigaben
-}
-workspace-settings-permissions-empty-title = Keine Berechtigungen erteilt
-workspace-settings-permissions-empty-detail = Apps erhalten nichts, bis es hier erteilt oder in einer Abfrage erlaubt wird.
-workspace-settings-more = +{ $count } weitere
-workspace-settings-who = Wer
-workspace-settings-who-agent = Wer · AGENT (nur dieser Bereich; kein allgemeiner Zugriff auf den Arbeitsbereich)
-workspace-settings-nobody-to-grant = Noch niemand, dem du etwas erteilen kannst – lade jemanden ein oder öffne hier eine App.
-workspace-settings-what-it-allows = Was es erlaubt
-workspace-settings-grant-header = BERECHTIGUNG ERTEILEN
-workspace-settings-saved-roles = { $count ->
-    [one] 1 GESPEICHERTE ROLLE · VERWALTEN
-   *[other] { $count } GESPEICHERTE ROLLEN · VERWALTEN
-}
-workspace-settings-expiry-caption = Gültigkeit
-workspace-settings-grant = Erteilen
-
-# Arbeitsbereichseinstellungen: Bestätigungsdialoge
-workspace-settings-role-sheet-title = Zugriff auf den Arbeitsbereich wählen
-workspace-settings-role-sheet-description = { $person } ist derzeit { $role }. Wähle genau, was diese Person tun kann.
-workspace-settings-remove-sheet-title = Diese Person entfernen?
-workspace-settings-remove-sheet-description = Die Person erhält keine Synchronisierung und Änderungen mehr. Heruntergeladene Kopien bleiben auf ihren Geräten.
-workspace-settings-revoke-sheet-title = Diese Berechtigung entziehen?
-workspace-settings-revoke-sheet-description = Die ausgewählte Berechtigung gilt sofort nicht mehr. Prüfe zuerst ihre Aktivität, wenn du unsicher bist.
-workspace-settings-keep-access = Zugriff behalten
-workspace-settings-review-activity = Zuerst Aktivität prüfen
-workspace-settings-remove-person = Person entfernen
-workspace-settings-no-changes = Es werden keine Änderungen vorgenommen.
-workspace-settings-open-history = Öffne vor der Entscheidung den Verlauf des Arbeitsbereichs.
-workspace-settings-remove-person-detail = Dadurch verliert die Person ihre Berechtigungen im Arbeitsbereich.
-workspace-settings-keep-permission = Berechtigung behalten
-workspace-settings-revoke-permission = Berechtigung entziehen
-workspace-settings-revoke-permission-detail = Dadurch wird die ausgewählte Berechtigung sofort entfernt.
-
-# Arbeitsbereichseinstellungen: Tab „Allgemein“
-workspace-settings-workspace-fallback = Arbeitsbereich
-workspace-settings-identity-caption = Arbeitsbereich · { $role }
-workspace-settings-current-workspace = AKTUELLER ARBEITSBEREICH
-workspace-settings-role-policy-line = { $role } · Einstellungen und Richtlinien bleiben bei diesem Arbeitsbereich
-workspace-settings-identity-title = Identität des Arbeitsbereichs
-workspace-settings-identity-description = Dieser Name erscheint in der oberen Leiste, in Einladungen und in geteilten Aktivitäten.
-workspace-settings-rename-admin-only = Nur Administratoren des Arbeitsbereichs können ihn umbenennen.
-workspace-settings-invite-hint = Wähle eine Person und eine Rolle; Tilo signiert eine Einladung, die eine Stunde gilt.
-workspace-settings-invite-admin-only = Nur verwaltende Administratoren können Einladungen in den Arbeitsbereich erstellen.
-workspace-settings-invite-create = Erstellen
-workspace-settings-invite-title = Personen einladen
-workspace-settings-invite-description = Einladungen binden Arbeitsbereich, Rolle der empfangenden Person, Ablauf und die Identität dieses Geräts.
-workspace-settings-glance-title = Auf einen Blick
-workspace-settings-stat-members = { $count ->
-    [one] Mitglied
-   *[other] Mitglieder
-}
-workspace-settings-stat-grants = { $count ->
-    [one] gezielte Freigabe
-   *[other] gezielte Freigaben
-}
-workspace-settings-stat-app-rules = { $count ->
-    [one] App-Regel
-   *[other] App-Regeln
-}
-
 # Übrige Shell-Hinweise: Dokumente öffnen, Herkunft von Host-Apps, Ruhestatus, Zusammenarbeit
 doc-open-failed = { $name } konnte nicht geöffnet werden
 doc-open-unnamed-file = Datei
@@ -2575,30 +2145,7 @@ state-notice-unreadable-body = Die Datei konnte nicht gelesen werden. Es wurde n
 state-notice-newer-detail = { $path } wurde von einer neueren Tilo-Version geschrieben (Layout { $found }; diese Version versteht { $understood }). Die Datei wurde nicht verändert und nichts wurde darüber geschrieben – diese Sitzung läuft ohne Speichern, das ist also ausgeschlossen. Aktualisiere erneut oder wechsle auf die neuere Version, um wieder an deine Arbeitsbereiche zu kommen.
 state-notice-unreadable-detail = { $path } ist vorhanden, konnte aber nicht gelesen werden ({ $error }). Die Datei wurde nicht verändert, und diese Sitzung läuft ohne Speichern, das ist also ausgeschlossen.
 
-# Personen-Popover
-people-panel-here-now = { $count } gerade hier
-people-panel-screen-visible = Bildschirm gerade sichtbar
-people-panel-only-you = Nur du bist hier
-people-panel-status-typing = Gib einen Status ein und drücke dann die Eingabetaste
-people-panel-status-empty = Lege fest, woran du gerade arbeitest …
-people-panel-own-status = Du · { $status }
-people-panel-sharing-auto = ✦ Automatisch
-people-panel-sharing-manual = Manuell
-people-panel-sharing-hidden = Verborgen
-people-panel-agent-tag = Agent
-people-panel-invited-tag = eingeladen
-people-panel-following = Du folgst
-people-panel-following-activity = Du folgst · { $activity }
-people-panel-viewing = Sieht sich { $title } an
-people-panel-follow = Folgen
-people-panel-stop-following = Beenden
-people-panel-invite = Einladen
-people-panel-join = Beitreten
-
 # Arbeitsbereichsübersicht: wer in einem Raum ist und was er teilt
-overview-empty-window = Leeres Fenster
-overview-access-nobody = Niemand hat Zugriff
-overview-access-private = Nur für dich
 overview-access-shared-one = Geteilt mit { $name }
 overview-access-shared-two = Geteilt mit { $first } und { $second }
 overview-access-shared-many = { $count ->
@@ -2609,12 +2156,6 @@ overview-items-shared = { $count ->
     [one] 1 Element geteilt
    *[other] { $count } Elemente geteilt
 }
-overview-presence-you = Du bist hier
-overview-presence-you-and-one = Du und { $name } seid hier
-overview-presence-you-and-many = Du und { $count } weitere Personen seid hier
-overview-presence-one = { $name } ist hier
-overview-presence-many = { $count } Personen sind hier
-overview-collaborators-here = { $count } Mitwirkende sind hier
 
 # Fenster und Dokumente, die die Shell anzeigt
 shell-window-restoring = Dieses Fenster wird wiederhergestellt …
@@ -2634,10 +2175,67 @@ window-move-unknown-workspace = Dieser Arbeitsbereich existiert nicht mehr.
 window-move-same-workspace = Das Fenster ist bereits in diesem Arbeitsbereich.
 window-move-pinned = Dieses Fenster gehört zu seinem Arbeitsbereich und kann nicht verschoben werden.
 window-move-document-refused = Das Arbeitsbereichsdokument hat die Änderung nicht angenommen, daher wurde nichts verschoben.
+window-move-hosted-workspace = Diesen Arbeitsbereich führt sein Besitzer, und dieses Gerät erreicht ihn gerade nicht, daher können keine Fenster hinein- oder herausgebracht werden.
+window-move-not-permitted = In diesem Arbeitsbereich darfst du diese App nicht öffnen.
+window-move-already-moving = Dieses Fenster wird bereits verschoben.
+window-move-nobody-to-confirm = Zum Verschieben eines Fensters muss die Person an diesem Desktop zustimmen, was mitgeht, und es ist niemand da.
+window-transfer-title = „{ $window }“ nach { $to } verschieben?
+window-transfer-carries = Das Dokument in „{ $window }“ geht mit seinem vollständigen Bearbeitungsverlauf nach { $to }, und das Fenster öffnet sich dort so, wie du es verlassen hast.
+window-transfer-move-detail = Verschieben: Es verlässt { $from }; der Verlauf dort vermerkt, dass es nach { $to } verschoben wurde.
+window-transfer-copy-detail = Kopieren: { $to } erhält eine eigene Kopie mit dem bisherigen Verlauf, das Original bleibt in { $from }, und ab dann ändern sich beide getrennt.
+window-transfer-access-only-you = In { $from } kannst nur du es öffnen.
+window-transfer-access-others = In { $from } können { $people } es gerade öffnen. Nach dem Verschieben verlieren sie den Zugriff; nach dem Kopieren behalten sie das Original.
+window-transfer-access-destination = In { $to } entscheiden die Mitglieder und Berechtigungen dieses Arbeitsbereichs, wer es öffnen kann.
+window-transfer-grants-stay = Was diese App in { $from } darf, bleibt dort und kommt nicht mit: { $grants }.
+window-transfer-move-blocked = Verschieben ist nicht möglich, weil ein anderes Fenster in { $from } dieses Dokument noch zeigt. Schließe es zuerst oder erstelle eine Kopie.
+window-transfer-choice-move = Verschieben – { $from } hat es danach nicht mehr
+window-transfer-choice-copy = Kopieren – { $from } behält das Original
+window-transfer-confirm = Weiter
+window-transfer-fresh-title = „{ $window }“ kann seine Arbeit nicht nach { $to } mitnehmen
+window-transfer-fresh-detail = Diese App hält deine Arbeit nur im laufenden Programm, daher kann nichts davon in einen anderen Arbeitsbereich wechseln. „{ $window }“ bleibt unverändert in { $from } geöffnet. Stattdessen kannst du in { $to } ein neues, leeres Fenster der App öffnen.
+window-transfer-choice-fresh = Neues Fenster in { $to } öffnen
+window-transfer-fresh-confirm = Öffnen
+window-transfer-failed-title = „{ $window }“ konnte nicht verschoben werden
+window-transfer-failed-detail = { $reason } Es ging nichts verloren: Das Dokument ist weiterhin in { $from }.
+window-transfer-failed-busy = Die App hat das Dokument noch geöffnet.
+window-transfer-failed-record = Das Dokument der App konnte nicht gelesen werden.
+window-transfer-failed-storage = Der Speicher der App war nicht erreichbar.
+window-transfer-failed-timeout = Die App hat im anderen Arbeitsbereich nicht rechtzeitig ein Fenster geöffnet.
+window-transfer-failed-closed = Das neue Fenster wurde geschlossen, bevor es sich geöffnet hat.
+window-transfer-reopen-failed = Das Dokument ist hier, aber die App hat kein Fenster geöffnet. Öffne es erneut, um weiterzumachen.
+window-transfer-bringing-edits = Deine letzten Änderungen werden übernommen …
+window-transfer-receipt-copied = „{ $window }“ aus { $from } hierher kopiert
+window-transfer-receipt-moved-out = „{ $window }“ nach { $to } verschoben
+window-transfer-receipt-moved-in = „{ $window }“ aus { $from } hierher verschoben
+window-transfer-lost-title = „{ $window }“ wurde während des Verschiebens geschlossen
+window-transfer-lost-detail = Die App wurde unerwartet beendet, daher fehlen eventuell Änderungen aus ihren letzten Sekunden. Alles, was sie gespeichert hatte, ist jetzt in { $to }.
+window-transfer-late-edits-title = Deine letzten Änderungen in „{ $window }“ sind mitgekommen
+window-transfer-late-edits-detail = Änderungen, die in { $from } während des Verschiebens gemacht wurden, wurden dem Dokument hinzugefügt.
+window-transfer-move-needs-window = Zum Verschieben muss das Fenster in { $from } geöffnet sein, damit es das Original dort als verschoben markieren kann. Öffne es zuerst oder erstelle eine Kopie.
+window-transfer-owner-accepts = { $to } führt sein Besitzer, der das Dokument annehmen muss, bevor es dort geöffnet wird.
+window-transfer-awaiting-owner = Warte darauf, dass der Besitzer von { $to } es annimmt …
+window-transfer-too-large-hosted = Es ist noch zu groß, um es nach { $to } zu verschieben.
+window-transfer-proposal-failed = { $to } hat es nicht angenommen: { $reason }
+window-transfer-declined = Der Besitzer von { $to } hat es abgelehnt.
+window-transfer-owner-timeout = Der Besitzer von { $to } hat nicht rechtzeitig geantwortet.
+window-transfer-kept-as-copy-title = „{ $window }“ wurde kopiert, nicht verschoben
+window-transfer-kept-as-copy-detail = Es hat sich in { $from } geändert, während der Besitzer von { $to } entschied, daher bleiben beide. { $to } hat es so, wie es beim Verschieben war.
+window-transfer-not-retired-title = „{ $window }“ ist noch in { $from }
+window-transfer-not-retired-detail = Sein Fenster wurde geschlossen, bevor es das Dokument als verschoben markieren konnte, daher bleibt das Original auch in { $from }.
+window-transfer-late-edits-stay-title = Deine letzten Änderungen sind in { $from } geblieben
+window-transfer-late-edits-stay-detail = Änderungen, die in { $from } kurz vor dem Schließen des Fensters gemacht wurden, stehen dort im Verlauf des Dokuments, nicht in { $to }.
+document-import-title = „{ $title }“ in { $to } annehmen?
+document-import-detail = { $person } möchte „{ $title }“ ({ $app }) samt Verlauf nach { $to } verschieben. Alle in { $to } können es dann öffnen.
+document-import-accept = In { $to } annehmen
+document-import-decline = Ablehnen
+document-import-confirm = Antworten
+document-import-someone = Jemand
+document-import-answer-failed-title = Deine Antwort zu „{ $title }“ hat seinen Arbeitsbereich nicht erreicht
+window-transfer-moved-away-title = „{ $window }“ wurde in einen anderen Arbeitsbereich verschoben
+window-transfer-moved-away-to = { $person } hat es nach { $to } verschoben, wo es sich jetzt für dich öffnet. Was du hier siehst, ist der Stand beim Verschieben; hier kann es nicht mehr bearbeitet werden.
+window-transfer-moved-away-elsewhere = { $person } hat es in einen Arbeitsbereich verschoben, in dem du nicht bist. Was du hier siehst, ist der Stand beim Verschieben; hier kann es nicht mehr bearbeitet werden.
 
 # Startfläche für leere Arbeitsbereiche und die Standardbefehle
-launchpad-keyboard-hint = Pfeiltasten bewegen  ·  Eingabetaste öffnet  ·  Super+N zeigt alle Apps
-launchpad-subtitle = Wähle, wie du beginnen möchtest. Inhalte des Arbeitsbereichs werden synchronisiert; deine Anordnung und Bedienelemente bleiben lokal.
 global-search-create-workspace = Arbeitsbereich erstellen
 global-search-rename-workspace = Arbeitsbereich umbenennen
 global-search-switch-workspace = Arbeitsbereich wechseln …
@@ -2671,7 +2269,6 @@ pad-map-dial-zoom = Zoomen
 pad-map-dial-brush-size = Pinselgröße
 pad-map-dial-volume = Lautstärke
 pad-map-dial-brightness = Helligkeit
-workspace-settings-sheet-keyboard-hint = ↑ ↓ zum Auswählen · Eingabetaste zum Bestätigen · Esc zum Abbrechen
 
 # Gerätefremde Ansichten, Dokumente öffnen, Identitätssicherung und Einladungen
 peer-view-surface-title = Entfernte Oberfläche #{ $id }
@@ -2778,6 +2375,13 @@ speaker-calibration-reason-microphone-gone = dieses Mikrofon ist nicht mehr verb
 speaker-calibration-reason-output-gone = der Ausgang dieses Lautsprechers ist nicht mehr verbunden
 speaker-calibration-reason-play-failed = das Messsignal konnte nicht abgespielt werden: { $error }
 speaker-calibration-reason-listen-failed = die Aufnahme konnte nicht gestartet werden: { $error }
+speaker-calibration-reason-clock = die Uhr dieses Lautsprechers konnte nicht abgeglichen werden: { $reason }
+clock-sync-failure-media-disabled = die Medien-Übergabe ist auf diesem Gerät ausgeschaltet
+clock-sync-failure-no-reply = das andere Gerät hat auf den Uhrabgleich nicht geantwortet
+now-playing-speakers-playing = Spielt auf { $group }
+now-playing-speakers-connecting = { $group }: verbindet…
+now-playing-speakers-syncing = { $group }: Uhren werden abgeglichen…
+now-playing-speakers-clock-failed = { $group }: kann nicht synchron spielen – { $reason }
 speaker-calibration-failed = { $speaker } konnte nicht gemessen werden: { $reason }
 speaker-calibration-cancelled = Die Kalibrierung wurde abgebrochen
 

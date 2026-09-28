@@ -1843,65 +1843,14 @@ impl Widget for TileHost {
         }
     }
 
-    fn start_resource_operation_scoped(
+    fn start_operation(
         &mut self,
-        scope: &crate::invocation_scope::ResourceInvocationScope,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        scope.check()?;
-        if !matches!(&self.content, TileContent::App(_)) {
-            return Ok(None);
-        }
-        if !self.history_lifetime.active.get() {
-            return Err("The current document owner is closed".into());
-        }
-        let live = self.resolve_record()?;
-        let owner = self.history_owner();
-        let TileContent::App(app) = &mut self.content else {
-            return Ok(None);
-        };
-        let started = if let (Some(live), Some(binding)) = (live, &self.binding) {
-            binding
-                .store
-                .with_checked(&live, |document| {
-                    scope.with_document_mutation(document, |document| {
-                        app.start_resource_operation_scoped(
-                            scope, kind, type_id, payload, document, &ROOT,
-                        )
-                    })
-                })
-                .map_err(|error| error.to_string())??
-        } else {
-            scope.with_document_mutation(doc, |doc| {
-                app.start_resource_operation_scoped(scope, kind, type_id, payload, doc, path)
-            })?
-        };
-        if matches!(
-            started,
-            Some(crate::widget::ResourceOperationStart::Accepted)
-        ) && let Some(owner) = owner
-        {
-            self.retained_invocations
-                .insert(scope.invocation(), owner.clone());
-            self.owner_bound_work = true;
-            self.owner_bound_custody.get_or_insert(owner);
-        }
-        Ok(started)
-    }
-
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let (_, scope) = op.with_custody();
+        op.check()?;
         if !matches!(&self.content, TileContent::App(_)) {
             return Ok(None);
         }
@@ -1911,32 +1860,57 @@ impl Widget for TileHost {
         // Resolve a requested legacy binding before exposing any document.
         // Failure must not advance/announce its scope or fall back to the host.
         let live = self.resolve_record()?;
-        self.announce_scope();
+        if scope.is_none() {
+            self.announce_scope();
+        }
         let owner = self.history_owner();
         let TileContent::App(app) = &mut self.content else {
             return Ok(None);
         };
-        if let (Some(live), Some(binding)) = (live, &self.binding) {
-            let started = binding
+        let mut start = |document: &mut AutoCommit, root: &ObjId| match scope {
+            Some(scope) => scope.with_document_mutation(document, |document| {
+                app.start_operation(op, document, root)
+            }),
+            None => app.start_operation(op, document, root),
+        };
+        let started = match live.zip(self.binding.as_ref()) {
+            Some((live, binding)) => binding
                 .store
-                .with_checked(&live, |document| {
-                    app.start_resource_operation_with_document(
-                        invocation, kind, type_id, payload, document, &ROOT,
-                    )
-                })
-                .map_err(|error| error.to_string())??;
-            if matches!(
-                started,
-                Some(crate::widget::ResourceOperationStart::Accepted)
-            ) && let Some(owner) = owner
-            {
-                self.retained_invocations.insert(invocation, owner.clone());
-                self.owner_bound_work = true;
-                self.owner_bound_custody.get_or_insert(owner);
-            }
-            return Ok(started);
+                .with_checked(&live, |document| start(document, &ROOT))
+                .map_err(|error| error.to_string())??,
+            // Unbound local work is polled straight from the app rather than
+            // through retained owner custody.
+            None if scope.is_none() => return start(doc, path),
+            None => start(doc, path)?,
+        };
+        if matches!(
+            started,
+            Some(crate::widget::ResourceOperationStart::Accepted)
+        ) && let Some(owner) = owner
+        {
+            self.retained_invocations
+                .insert(op.invocation(), owner.clone());
+            self.owner_bound_work = true;
+            self.owner_bound_custody.get_or_insert(owner);
         }
-        app.start_resource_operation_with_document(invocation, kind, type_id, payload, doc, path)
+        Ok(started)
+    }
+
+    /// Legacy adapter: offered through [`Widget::start_operation`].
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        self.start_operation(
+            &crate::widget::ResourceOperation::local(invocation, kind, type_id, payload),
+            doc,
+            path,
+        )
     }
 
     fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {

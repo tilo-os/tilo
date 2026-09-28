@@ -323,7 +323,7 @@ fn kind_color(kind: ToastKind, theme: &Theme) -> vello::peniko::Color {
 //
 // One immediate-mode painter for a toast/notification card, shared by the
 // retained [`ToastStack`] (in-app toasts) and the shell's OS-notification
-// stack (`shell::shell::notification::NotificationStack`) — HIG §8: extend
+// stack (`tilo_desktop::notifications::NotificationStack`) — HIG §8: extend
 // the widget, don't fork it.
 
 const CARD_ACCENT_BAR_W: f64 = 4.0;

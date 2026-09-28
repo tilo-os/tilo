@@ -29,6 +29,7 @@ pub(crate) fn definition(app: &str) -> Option<&'static ApplicationDefinition> {
             record_kind: original.record_kind.clone(),
             required: original.required.clone(),
             optional: original.optional.clone(),
+            opens: original.opens,
             create: factory,
         }
     }))
@@ -126,16 +127,17 @@ impl Widget for Probe {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["probe.effect"]
     }
-    fn start_resource_operation_scoped(
+    fn start_operation(
         &mut self,
-        scope: &ui::invocation_scope::ResourceInvocationScope,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        _: &[u8],
+        op: &ui::widget::ResourceOperation<'_>,
         _: &mut AutoCommit,
         _: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect || type_id != "probe.effect" {
+        let (request, Some(scope)) = op.with_custody() else {
+            return Ok(None);
+        };
+        if request.kind != tilo_actions::OperationKind::Effect || request.type_id != "probe.effect"
+        {
             return Ok(None);
         }
         scope.with_effect(|| {

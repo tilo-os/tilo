@@ -413,7 +413,7 @@ activity-capability-every-type = jede Ressource vom Typ { $kind }
 activity-capability-one-artifact = ein Artefakt
 activity-capability-one-shared-file = eine geteilte Datei
 activity-capability-network = Netzwerk { $host }
-activity-capability-agent = den Agenten { $agent } bedienen
+activity-capability-scope-agent = den Agenten { $agent } bedienen
 activity-capability-role = { $role ->
         [owner] Eigentümer
         [editor] Bearbeitende
@@ -436,13 +436,13 @@ desktop-view-review-activity = Arbeitsbereich-Aktivität ansehen
 desktop-view-explore-activity = Arbeitsbereich-Aktivität erkunden
 desktop-view-replay-activity = Arbeitsbereich-Aktivität wiedergeben
 
-
 ## Desktop window search
 search-provider-desktop-windows = Fenster auf dem Desktop
 search-badge-tab = Tab
 search-badge-window-group = Fenstergruppe
 search-window-move-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ verschieben
 search-window-move-tab-detail = App { $app } · aus dem Arbeitsbereich „{ $workspace }“ · Gruppe { $group } · Tab { $tab }
+search-window-copy-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ kopieren
 search-window-group-untitled = Fenstergruppe { $group }
 search-window-close-group = Fenstergruppe „{ $group }“ schließen
 search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $group } · { $count ->
@@ -451,3 +451,467 @@ search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste
 }
 search-window-close-tab = Tab „{ $tab }“ schließen
 search-window-close-tab-detail = App { $app } · Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $group } · Tab { $tab }
+
+# Notifications: banner stack and notification centre
+drill-in-back = Zurück
+a11y-notifications-none = Keine aufbewahrten Benachrichtigungen.
+a11y-notifications-description = Neueste Zeilen { $first } bis { $last } von { $total }, nach App gruppiert. Mit Pfeil nach oben und unten wählst du eine Benachrichtigung, mit Bild auf und Bild ab springst du um eine Seite, mit Pos1 oder Ende zur neuesten oder ältesten aufbewahrten Benachrichtigung. Eingabe öffnet die gewählte Benachrichtigung oder klappt ihre App-Gruppe ein, Entf verwirft sie.
+a11y-notifications-list = Aufbewahrte Benachrichtigungen
+a11y-notifications-clear = Alle Benachrichtigungen löschen
+a11y-notifications-clear-description = Löscht den aufbewahrten Benachrichtigungsverlauf dieser Sitzung. Acht Sekunden lang kannst du das rückgängig machen.
+a11y-notifications-cleared = Benachrichtigungen gelöscht
+a11y-notifications-undo = Löschen der Benachrichtigungen rückgängig machen
+a11y-notifications-undo-description = Stellt die gelöschten Benachrichtigungen in ihrer ursprünglichen Reihenfolge wieder her. Drücke Eingabe oder Leertaste.
+a11y-notifications = Benachrichtigungen
+notification-center-title = Benachrichtigungen
+notification-center-empty = Keine neuen Benachrichtigungen
+notification-center-cleared = Benachrichtigungen gelöscht
+notification-center-clear-all = Alle löschen
+notification-center-position = Neueste { $first }–{ $last } von { $total }
+notification-center-count = { $count ->
+        [one] { $count } Benachrichtigung
+       *[other] { $count } Benachrichtigungen
+    }
+notification-center-newer = ↑ Neuere
+notification-center-at-newest = Neueste erreicht
+notification-center-older = ↓ Ältere
+notification-center-at-oldest = Älteste erreicht
+history-severity-info = Information
+history-severity-warning = Warnung
+history-severity-error = Fehler
+history-source-system = System
+history-notification-description = { $severity }. Von { $source }. { $time }
+history-notification-description-body = { $severity }. Von { $source }. { $time }. { $body }
+notification-center-group-description = { $count } Benachrichtigungen. Eingabe zum { $expanded ->
+        [yes] Einklappen
+       *[no] Ausklappen
+    }, Entf, um alle zu verwerfen.
+notification-center-dismiss-all = Alle von { $app } verwerfen
+notification-center-dismiss = Verwerfen
+notification-center-hand-to = An { $agent } übergeben
+notification-center-hand-to-description = Übergibt diese Benachrichtigung als Aufgabe an den Agenten des Arbeitsbereichs.
+notification-center-group-count = { $count ->
+        [one] { $count } Benachrichtigung
+       *[other] { $count } Benachrichtigungen
+    }
+notification-lock-count = { $count ->
+    [one] 1 Benachrichtigung
+   *[other] { $count } Benachrichtigungen
+}
+notification-dnd-held = { $status } · { $count } zurückgehalten
+notification-stack-a11y = Benachrichtigungen
+notification-group-system = System
+notification-center-undo = Rückgängig
+notification-app-failed-title = Eine App konnte nicht geöffnet werden
+notification-service-unavailable = Das ist auf diesem Desktop noch nicht verfügbar
+
+# Workspace settings
+workspace-settings-roles-resource = Berechtigungsrollen von { $workspace }
+workspace-settings-role-save = Berechtigungsrolle erstellen oder aktualisieren
+workspace-settings-role-save-placeholder = Rollenname
+workspace-settings-role-save-description = Speichere eine wiederverwendbare Rolle mit minimalen Rechten aus App-, Aktions-, Datei-, Ressourcen- oder Arbeitsbereichsregeln.
+workspace-settings-role-assign = Berechtigungsrolle zuweisen
+workspace-settings-role-assign-placeholder = Rolle und Mitwirkende
+workspace-settings-role-assign-description = Weise einer Person, Anwendung oder einem Agenten eine gespeicherte Rolle mit minimalen Rechten zu.
+workspace-settings-role-assign-named = { $role } zuweisen
+workspace-settings-role-assign-named-placeholder = Identität der mitwirkenden Person
+workspace-settings-app-action-placeholder = App und Aktion
+workspace-settings-app-action-grant = Einer App die Aktion einer anderen App erlauben
+workspace-settings-app-action-grant-description = Erlaube einer Anwendung in diesem Arbeitsbereich, eine Aktion zu verwenden, die eine andere Anwendung bereitstellt.
+workspace-settings-app-action-revoke = Einer App die Aktion einer anderen App entziehen
+workspace-settings-app-action-revoke-description = Nimm in diesem Arbeitsbereich jede Freigabe zurück, mit der eine Anwendung die Aktion einer anderen Anwendung verwenden darf.
+workspace-settings-ownership-resource = Eigentum an { $workspace }
+workspace-settings-ownership-propose = Eigentumsübertragung vorschlagen
+workspace-settings-ownership-propose-placeholder = Identität der empfangenden Person
+workspace-settings-ownership-propose-description = Deine Signatur erlaubt die sofortige Übertragung des Eigentums, wenn genau diese Administratorin oder dieser Administrator vor Ablauf annimmt.
+workspace-settings-ownership-accept = Eigentum am Arbeitsbereich annehmen
+workspace-settings-ownership-accept-description = Mit der Annahme wird das Eigentum sofort übertragen; allgemeine Rollensteuerungen können diese Aktion nicht ausführen.
+workspace-settings-ownership-accept-phrase = Eigentum annehmen
+workspace-settings-ownership-cancel = Eigentumsübertragung abbrechen
+workspace-settings-ownership-cancel-description = Ziehe das offene Angebot zurück, bevor die empfangende Person es annimmt.
+workspace-settings-title = Arbeitsbereichseinstellungen
+workspace-settings-close = Einstellungen schließen
+workspace-settings-tab-general = Allgemein
+workspace-settings-tab-people = Personen
+workspace-settings-tab-agents = Agenten
+workspace-settings-tab-privacy-security = Datenschutz & Sicherheit
+workspace-settings-tab-privacy = Datenschutz
+workspace-settings-tab-apps-files = Apps & Dateien
+workspace-settings-tab-apps = Apps
+workspace-settings-close-hint = Esc zum Schließen
+workspace-settings-edit-hint = Eingabetaste zum Speichern · Esc zum Abbrechen
+workspace-settings-role-owner = Eigentümer
+workspace-settings-role-editor = Bearbeiter
+workspace-settings-role-commenter = Kommentator
+workspace-settings-role-viewer = Betrachter
+workspace-settings-role-blocked = Gesperrt
+workspace-settings-role-admin = Admin
+workspace-settings-role-guest = Gast
+workspace-settings-role-owner-preview = Kann Personen, Berechtigungen und Einstellungen des Arbeitsbereichs verwalten.
+workspace-settings-role-editor-preview = Kann geteilte Arbeit ansehen, kommentieren und bearbeiten.
+workspace-settings-role-commenter-preview = Kann geteilte Arbeit ansehen und kommentieren, aber nicht bearbeiten.
+workspace-settings-role-viewer-preview = Kann geteilte Arbeit ansehen, aber weder kommentieren noch bearbeiten.
+workspace-settings-role-blocked-preview = Kein Zugriff auf diesen Arbeitsbereich.
+workspace-settings-scope-workspace = dieser Arbeitsbereich
+workspace-settings-scope-app = die App { $app }
+workspace-settings-scope-workspace-files = Dateien des Arbeitsbereichs
+workspace-settings-scope-workspace-folder = „{ $folder }“ in diesem Arbeitsbereich
+workspace-settings-scope-path = Dateien unter { $path }
+workspace-settings-scope-record = eine geteilte Datei ({ $id })
+workspace-settings-scope-agent = den Agenten { $agent } bedienen
+workspace-settings-scope-camera = die Kamera
+workspace-settings-scope-microphone = das Mikrofon
+workspace-settings-scope-screencast = Bildschirmaufnahme
+workspace-settings-scope-remote-desktop = Fernsteuerung von Zeiger und Tastatur
+workspace-settings-scope-any-host = ein beliebiger Netzwerkhost
+workspace-settings-scope-host = Netzwerkhost { $host }
+workspace-settings-scope-action = „{ $action }“ in { $app }
+workspace-settings-scope-resource-type = { $kind ->
+    [note] jede Notiz
+    [file] jede Datei
+    [cluster] jeder gespeicherte Cluster
+    [kanban] jedes Board
+   *[chat-log] jeder Chatverlauf
+}
+workspace-settings-scope-resource-instance = ein Dokument ({ $id })
+workspace-settings-scope-workspace-object = Diesen Arbeitsbereich
+workspace-settings-scope-app-object = Die App { $app }
+workspace-settings-scope-workspace-files-object = Dateien des Arbeitsbereichs
+workspace-settings-scope-workspace-folder-object = „{ $folder }“ in diesem Arbeitsbereich
+workspace-settings-scope-path-object = Dateien unter { $path }
+workspace-settings-scope-record-object = Eine geteilte Datei ({ $id })
+workspace-settings-scope-agent-object = den Agenten { $agent } bedienen
+workspace-settings-scope-camera-object = Die Kamera
+workspace-settings-scope-microphone-object = Das Mikrofon
+workspace-settings-scope-screencast-object = Bildschirmaufnahme
+workspace-settings-scope-remote-desktop-object = Fernsteuerung von Zeiger und Tastatur
+workspace-settings-scope-any-host-object = Einen beliebigen Netzwerkhost
+workspace-settings-scope-host-object = Netzwerkhost { $host }
+workspace-settings-scope-action-object = „{ $action }“ in { $app }
+workspace-settings-scope-resource-type-object = { $kind ->
+    [note] Jede Notiz
+    [file] Jede Datei
+    [cluster] Jeden gespeicherten Cluster
+    [kanban] Jedes Board
+   *[chat-log] Jeden Chatverlauf
+}
+workspace-settings-scope-resource-instance-object = Ein Dokument ({ $id })
+workspace-settings-allows-control = { $what } steuern
+workspace-settings-allows-use = { $what } verwenden
+workspace-settings-allows-reach = { $what } erreichen
+workspace-settings-allows-run = { $what } ausführen
+workspace-settings-allows-administer = { $what } verwalten
+workspace-settings-allows-edit = { $what } bearbeiten
+workspace-settings-allows-comment = { $what } kommentieren
+workspace-settings-allows-invite = Andere einladen: { $what }
+workspace-settings-allows-view = { $what } ansehen
+workspace-settings-expiry-once = Einmal
+workspace-settings-expiry-session = Sitzung
+workspace-settings-expiry-until = Bis
+workspace-settings-expiry-always = Immer
+workspace-settings-granted-by-person = erteilt von { $id }
+workspace-settings-granted-by-app = erteilt von der App { $app }
+workspace-settings-granted-by-agent = erteilt von Agent { $id }
+workspace-settings-granted-by-token = erteilt über Token { $id }
+workspace-settings-granted-by-workspace = erteilt vom Arbeitsbereich { $id }
+workspace-settings-permission-detail = { $allows } · { $grantor }
+workspace-settings-section-apps = Apps
+workspace-settings-section-app-actions = App-Aktionen
+workspace-settings-section-people = Personen
+workspace-settings-section-agents = Agenten
+workspace-settings-section-roles = Rollen
+workspace-settings-section-other = Sonstige
+workspace-settings-subject-role = alle mit der Rolle { $role }
+workspace-settings-subject-token = Token { $id }
+workspace-settings-subject-workspace = Arbeitsbereich { $id }
+workspace-settings-grant-camera = Kamera
+workspace-settings-grant-microphone = Mikrofon
+workspace-settings-grant-screencast = Bildschirmaufnahme
+workspace-settings-grant-remote-control = Fernsteuerung
+workspace-settings-grant-network = Netzwerkzugriff
+workspace-settings-grant-read-files = Dateien des Arbeitsbereichs lesen
+workspace-settings-grant-edit-files = Dateien des Arbeitsbereichs bearbeiten
+workspace-settings-grant-create-roles = Berechtigungsrollen erstellen
+workspace-settings-grant-assign-roles = Berechtigungsrollen zuweisen
+workspace-settings-preset-observer = Beobachter
+workspace-settings-preset-contributor = Mitwirkender
+workspace-settings-preset-operator = Operator
+workspace-settings-preset-custom = Benutzerdefiniert
+workspace-settings-preset-observer-hint = Nur Lesen auf Bereichen, die du auswählst
+workspace-settings-preset-contributor-hint = Lesen und Schreiben nur auf Bereichen, die du auswählst
+workspace-settings-preset-operator-hint = Nur freigegebene App-Aktionen ausführen
+workspace-settings-preset-custom-hint = Jede eingeschränkte Berechtigung prüfen
+workspace-settings-members-count = { $count ->
+    [one] 1 Person teilt diesen Arbeitsbereich
+   *[other] { $count } Personen teilen diesen Arbeitsbereich
+}
+workspace-settings-members-help = Wer entfernt wird, erhält keine Synchronisierung und Änderungen mehr; bereits heruntergeladene Kopien bleiben bei der Person.
+workspace-settings-ownership = Eigentum
+workspace-settings-you-manage = Von dir verwaltet
+workspace-settings-view-only = Nur ansehen
+workspace-settings-members-empty-title = Sonst ist niemand in diesem Arbeitsbereich
+workspace-settings-members-empty-detail = Erstelle im Tab „Allgemein“ eine signierte Einladung, um jemanden hinzuzufügen.
+workspace-settings-people-header = PERSONEN
+workspace-settings-ownership-offered = { $owner } hat dir das Eigentum angeboten. Sieh dir den Arbeitsbereich an und nimm ausdrücklich an, bevor das Angebot abläuft.
+workspace-settings-ownership-waiting = Warte darauf, dass { $recipient } das Eigentum ausdrücklich annimmt. Bis dahin kannst du abbrechen.
+workspace-settings-ownership-pending = Die Eigentumsübertragung an { $recipient } wartet auf die Annahme durch diese Person.
+workspace-settings-you = Du
+workspace-settings-member-detail = { $count ->
+    [0] { $role } · keine zusätzlichen Berechtigungen
+    [one] { $role } · 1 zusätzliche Berechtigung
+   *[other] { $role } · { $count } zusätzliche Berechtigungen
+}
+workspace-settings-remove = Entfernen
+workspace-settings-owner-only = Nur der Eigentümer des Arbeitsbereichs kann Berechtigungen ändern.
+workspace-settings-agents-count = { $count ->
+    [one] 1 mitwirkender Agent
+   *[other] { $count } mitwirkende Agenten
+}
+workspace-settings-agents-help = Agenten sind sichtbar nicht-menschliche Mitwirkende. Die Zulassung gewährt keine allgemeinen Rechte im Arbeitsbereich.
+workspace-settings-add-agent = Agent hinzufügen
+workspace-settings-recording-toggle = Mitglieder dürfen aufzeichnen
+workspace-settings-agent-delegated = Zeichnet für ein Mitglied auf · gesteuert über „Mitglieder dürfen aufzeichnen“
+workspace-settings-add-triage-agent = Sichtungsagent hinzufügen
+workspace-settings-agent-triage-note = Der Sichtungsagent des Tilo-Teams hilft hier, Meldungen zu sortieren
+workspace-settings-triage-direct-rooms = Sichtung in Direkträumen
+workspace-settings-agents-empty-title = Keine Agenten haben Zugriff
+workspace-settings-agents-empty-detail = Beginne mit einem sicheren Profil und prüfe dann jeden einzelnen Bereich.
+workspace-settings-agents-header = AGENTEN
+workspace-settings-service-member = Dienstmitglied · { $access ->
+    [admin] verwaltet
+    [write] liest und bearbeitet
+    [comment] liest und kommentiert
+   *[read] liest
+} Ende-zu-Ende-verschlüsselte Inhalte · { $until } · Gerät { $device }
+workspace-settings-service-until-removed = bis zur Entfernung
+workspace-settings-service-ends-soon = Zugriff endet in weniger als einer Minute
+workspace-settings-service-ends-minutes = Zugriff endet in { $minutes } Min.
+workspace-settings-service-ends-hours = Zugriff endet in { $hours } Std.
+workspace-settings-badge-service = DIENST
+workspace-settings-badge-agent = AGENT
+workspace-settings-agent-detail = { $count ->
+    [0] { $admission } · keine eingeschränkten Berechtigungen – Prüfung erforderlich
+    [one] { $admission } · Profil { $profile } · 1 eingeschränkte Berechtigung
+   *[other] { $admission } · Profil { $profile } · { $count } eingeschränkte Berechtigungen
+}
+workspace-settings-admitted = Zugelassen
+workspace-settings-review-access = Zugriff prüfen
+workspace-settings-revoke = Entziehen
+workspace-settings-admission-admin = Zulassung als Admin
+workspace-settings-admission-write = Zulassung zum Schreiben
+workspace-settings-admission-comment = Zulassung zum Kommentieren
+workspace-settings-admission-read = Zulassung zum Lesen
+workspace-settings-unavailable-app = Nicht verfügbare App
+workspace-settings-apps-empty-title = Keine Dateiverknüpfungen installiert
+workspace-settings-apps-empty-detail = Apps erscheinen hier, sobald sie unterstützte Dateitypen angeben.
+workspace-settings-apps-intro-title = Standards ohne Bindung
+workspace-settings-apps-intro-detail = Der Arbeitsbereich gibt eine Grundlage vor; jede Person kann ausdrücklich etwas anderes wählen.
+workspace-settings-apps-header = STANDARDANWENDUNGEN
+workspace-settings-workspace-choice = Wahl des Arbeitsbereichs
+workspace-settings-your-choice = Deine Wahl
+workspace-settings-follow-personal = Persönlichen Standards folgen
+workspace-settings-use-workspace-choice = Wahl des Arbeitsbereichs verwenden
+workspace-settings-use-personal-default = Meinen persönlichen Standard verwenden
+workspace-settings-apps-file-types = { $count ->
+    [one] 1 Dateityp
+   *[other] { $count } Dateitypen
+}
+workspace-settings-apps-custom-rules = { $count ->
+    [one] 1 eigene Regel
+   *[other] { $count } eigene Regeln
+}
+workspace-settings-permissions-intro-title = Zugriff ist ausdrücklich und widerrufbar
+workspace-settings-permissions-intro-detail = Freigaben werden von der App-Sandbox durchgesetzt und bleiben auf diesen Arbeitsbereich beschränkt.
+workspace-settings-active-grants = { $count ->
+    [one] 1 aktive Freigabe
+   *[other] { $count } aktive Freigaben
+}
+workspace-settings-permissions-empty-title = Keine Berechtigungen erteilt
+workspace-settings-permissions-empty-detail = Apps erhalten nichts, bis es hier erteilt oder in einer Abfrage erlaubt wird.
+workspace-settings-more = +{ $count } weitere
+workspace-settings-who = Wer
+workspace-settings-who-agent = Wer · AGENT (nur dieser Bereich; kein allgemeiner Zugriff auf den Arbeitsbereich)
+workspace-settings-nobody-to-grant = Noch niemand, dem du etwas erteilen kannst – lade jemanden ein oder öffne hier eine App.
+workspace-settings-what-it-allows = Was es erlaubt
+workspace-settings-grant-header = BERECHTIGUNG ERTEILEN
+workspace-settings-saved-roles = { $count ->
+    [one] 1 GESPEICHERTE ROLLE · VERWALTEN
+   *[other] { $count } GESPEICHERTE ROLLEN · VERWALTEN
+}
+workspace-settings-expiry-caption = Gültigkeit
+workspace-settings-grant = Erteilen
+workspace-settings-role-sheet-title = Zugriff auf den Arbeitsbereich wählen
+workspace-settings-role-sheet-description = { $person } ist derzeit { $role }. Wähle genau, was diese Person tun kann.
+workspace-settings-remove-sheet-title = Diese Person entfernen?
+workspace-settings-remove-sheet-description = Die Person erhält keine Synchronisierung und Änderungen mehr. Heruntergeladene Kopien bleiben auf ihren Geräten.
+workspace-settings-revoke-sheet-title = Diese Berechtigung entziehen?
+workspace-settings-revoke-sheet-description = Die ausgewählte Berechtigung gilt sofort nicht mehr. Prüfe zuerst ihre Aktivität, wenn du unsicher bist.
+workspace-settings-keep-access = Zugriff behalten
+workspace-settings-review-activity = Zuerst Aktivität prüfen
+workspace-settings-remove-person = Person entfernen
+workspace-settings-no-changes = Es werden keine Änderungen vorgenommen.
+workspace-settings-open-history = Öffne vor der Entscheidung den Verlauf des Arbeitsbereichs.
+workspace-settings-remove-person-detail = Dadurch verliert die Person ihre Berechtigungen im Arbeitsbereich.
+workspace-settings-keep-permission = Berechtigung behalten
+workspace-settings-revoke-permission = Berechtigung entziehen
+workspace-settings-revoke-permission-detail = Dadurch wird die ausgewählte Berechtigung sofort entfernt.
+workspace-settings-workspace-fallback = Arbeitsbereich
+workspace-settings-identity-caption = Arbeitsbereich · { $role }
+workspace-settings-current-workspace = AKTUELLER ARBEITSBEREICH
+workspace-settings-role-policy-line = { $role } · Einstellungen und Richtlinien bleiben bei diesem Arbeitsbereich
+workspace-settings-identity-title = Identität des Arbeitsbereichs
+workspace-settings-identity-description = Dieser Name erscheint in der oberen Leiste, in Einladungen und in geteilten Aktivitäten.
+workspace-settings-rename-admin-only = Nur Administratoren des Arbeitsbereichs können ihn umbenennen.
+workspace-settings-invite-hint = Wähle eine Person und eine Rolle; Tilo signiert eine Einladung, die eine Stunde gilt.
+workspace-settings-invite-admin-only = Nur verwaltende Administratoren können Einladungen in den Arbeitsbereich erstellen.
+workspace-settings-invite-create = Erstellen
+workspace-settings-invite-title = Personen einladen
+workspace-settings-invite-description = Einladungen binden Arbeitsbereich, Rolle der empfangenden Person, Ablauf und die Identität dieses Geräts.
+workspace-settings-glance-title = Auf einen Blick
+workspace-settings-stat-members = { $count ->
+    [one] Mitglied
+   *[other] Mitglieder
+}
+workspace-settings-stat-grants = { $count ->
+    [one] gezielte Freigabe
+   *[other] gezielte Freigaben
+}
+workspace-settings-stat-app-rules = { $count ->
+    [one] App-Regel
+   *[other] App-Regeln
+}
+
+# People popover
+a11y-shell-people = Personen
+a11y-shell-people-description = Live-Anwesenheit im Arbeitsbereich, aktuelle Tätigkeit, Absicht und Datenschutz für den Status
+a11y-shell-people-screen-visible = Jetzt sichtbarer Bildschirm: { $exposure }
+a11y-shell-people-here-now = Jetzt anwesend
+a11y-shell-people-agent = Agent
+a11y-shell-people-invited = Eingeladen, derzeit nicht anwesend
+a11y-shell-people-present = Jetzt anwesend
+a11y-shell-people-now = Jetzt: { $activity }
+a11y-shell-people-intent = Absicht: { $status }
+a11y-shell-people-intent-inferred = Absicht, abgeleitet: { $status }
+a11y-shell-status-name = Dein Zusammenarbeitsstatus
+a11y-shell-status-inferred = Auf diesem Gerät aus letzten Aktionen abgeleitet
+a11y-shell-status-set = Lege fest, woran du gerade arbeitest
+a11y-shell-status-automatic = Automatischer Status
+a11y-shell-status-manual = Nur manueller Status
+a11y-shell-status-off = Status ausblenden
+a11y-shell-status-automatic-description = Einen kurzen Status lokal aus den letzten Aktionen im Arbeitsbereich ableiten
+a11y-shell-status-manual-description = Nur selbst eingegebenen Text teilen
+a11y-shell-status-off-description = Keinen Status in diesem Arbeitsbereich veröffentlichen
+a11y-shell-follow-collaborator = Mitwirkender Person folgen
+a11y-shell-follow = { $name } folgen
+a11y-shell-follow-description = Die Live-Ansicht dieser Person im Arbeitsbereich spiegeln
+a11y-shell-people-previous = Vorherige Personen
+a11y-shell-people-previous-description = Die vorherigen Personen in diesem Arbeitsbereich anzeigen
+a11y-shell-people-next = Weitere Personen
+a11y-shell-people-next-description = Die nächsten Personen in diesem Arbeitsbereich anzeigen
+a11y-shell-invite = Personen einladen
+a11y-shell-invite-description = Eine authentifizierte Einladung in den Arbeitsbereich erstellen
+a11y-shell-join = Arbeitsbereich beitreten
+a11y-shell-join-description = Mit einer authentifizierten Einladung verbinden
+a11y-shell-workspace-activity-description = Gruppierte Ergebnisse prüfen und sehen, was in deiner Abwesenheit passiert ist
+
+# Empty-workspace launchpad
+launchpad-title = Gemeinsam etwas schaffen
+launchpad-description = Wähle eine gemeinsame Unterhaltung, Notizen, Aufgaben, ein Meeting, eine Einladung oder die Aktivität im Arbeitsbereich.
+launchpad-open-app = App öffnen
+launchpad-discuss = Besprechen
+launchpad-notes = Notizen
+launchpad-tasks = Aufgaben
+launchpad-meet = Meeting planen
+launchpad-invite = Personen einladen
+launchpad-activity = Auf dem Laufenden bleiben
+launchpad-discuss-detail = Die gemeinsame Unterhaltung öffnen
+launchpad-notes-detail = Gemeinsam Ideen aufschreiben
+launchpad-tasks-detail = Arbeit im Kalender planen
+launchpad-meet-detail = Chat öffnen, dann einen Sprach- oder Videoanruf starten
+launchpad-invite-detail = Jemanden in diesen Arbeitsbereich holen
+launchpad-activity-detail = Sehen, was sich geändert hat und warum
+
+# Empty-workspace launchpad: the keyboard hint under the cards
+launchpad-keyboard-hint = Pfeiltasten bewegen  ·  Eingabe öffnet  ·  Super+N zeigt alle Apps
+
+# Peers arriving in and leaving a workspace, batched into one toast
+peer-toast-joined-one = { $name } ist beigetreten
+peer-toast-left-one = { $name } hat verlassen
+peer-toast-joined-many = { $count } Personen sind beigetreten
+peer-toast-left-many = { $count } Personen haben verlassen
+peer-toast-overflow = { $first }, { $second }, { $third } und { $rest } weitere
+
+# Moved from the shell catalogue with the code that uses them
+people-panel-here-now = { $count } gerade hier
+people-panel-screen-visible = Bildschirm gerade sichtbar
+people-panel-only-you = Nur du bist hier
+people-panel-status-typing = Gib einen Status ein und drücke dann die Eingabetaste
+people-panel-status-empty = Lege fest, woran du gerade arbeitest …
+people-panel-own-status = Du · { $status }
+people-panel-sharing-auto = ✦ Automatisch
+people-panel-sharing-manual = Manuell
+people-panel-sharing-hidden = Verborgen
+people-panel-agent-tag = Agent
+people-panel-invited-tag = eingeladen
+people-panel-following = Du folgst
+people-panel-following-activity = Du folgst · { $activity }
+people-panel-viewing = Sieht sich { $title } an
+people-panel-follow = Folgen
+people-panel-stop-following = Beenden
+people-panel-invite = Einladen
+people-panel-join = Beitreten
+launchpad-subtitle = Wähle, wie du beginnen möchtest. Inhalte des Arbeitsbereichs werden synchronisiert; deine Anordnung und Bedienelemente bleiben lokal.
+workspace-settings-sheet-keyboard-hint = ↑ ↓ zum Auswählen · Eingabetaste zum Bestätigen · Esc zum Abbrechen
+
+# The emoji picker (Super+. by default)
+emoji-picker-title = Emoji
+emoji-picker-search = Emoji suchen
+emoji-picker-groups = Emoji-Kategorien
+emoji-picker-recent = Zuletzt verwendet
+emoji-picker-results = Passende Emoji
+emoji-picker-no-results = Keine Emoji gefunden
+emoji-picker-hint = Eingabe fügt ein · Esc schließt
+emoji-picker-hint-tones = Eingabe fügt ein · Umschalt+Eingabe wählt einen Hautton
+emoji-picker-tones = Hauttöne
+emoji-picker-tones-hint = Rechtsklick, langes Drücken oder Umschalt+Eingabe für Hauttöne
+emoji-picker-a11y-description = Tippen Sie, um zu suchen. Die Pfeiltasten wechseln zwischen den Emoji, Tab wechselt die Kategorie, Eingabe fügt das markierte Emoji in das Textfeld ein, in dem Sie geschrieben haben, Umschalt+Eingabe wählt einen Hautton, Escape schließt.
+
+# Ein Emoji in einem Hautton: „Daumen hoch, mittlerer Hautton“.
+emoji-picker-toned = { $name }, { $tone }
+emoji-picker-tone-light = heller Hautton
+emoji-picker-tone-medium-light = mittelheller Hautton
+emoji-picker-tone-medium = mittlerer Hautton
+emoji-picker-tone-medium-dark = mitteldunkler Hautton
+emoji-picker-tone-dark = dunkler Hautton
+
+# Der Fensterwechsler (Alt+Tab).
+window-switcher-title = Fenster wechseln
+window-switcher-description = Fenster in diesem Arbeitsbereich, zuletzt verwendete zuerst. Halte Alt gedrückt und drücke Tab oder die Pfeiltasten zum Bewegen, lass Alt los zum Wechseln oder drücke Escape, um zu bleiben.
+window-switcher-app-title = Fenster dieser App wechseln
+window-switcher-app-description = Fenster dieser App in diesem Arbeitsbereich, zuletzt verwendete zuerst. Halte Alt gedrückt und drücke ` zum Bewegen, lass Alt los zum Wechseln oder drücke Escape, um zu bleiben.
+window-switcher-untitled = Unbenanntes Fenster
+window-switcher-caption-paged = { $title } ({ $position } von { $count })
+
+# Workspace wheel
+a11y-shell-wheel = Arbeitsbereichsrad
+a11y-shell-wheel-switch = Zu { $workspace } wechseln
+a11y-shell-wheel-add = Arbeitsbereich hinzufügen
+
+# Workspace overview
+overview-empty-window = Leeres Fenster
+overview-untitled = Ohne Titel
+overview-access-nobody = Niemand hat Zugriff
+overview-access-private = Nur für Sie
+overview-access-one = Geteilt mit { $name }
+overview-access-two = Geteilt mit { $name } und { $other }
+overview-access-many = Geteilt mit { $name } und { $count } weiteren
+overview-shares = { $count ->
+        [one] 1 Element geteilt
+       *[other] { $count } Elemente geteilt
+    }
+overview-presence-you = Sie sind hier
+overview-presence-you-and-one = Sie und { $name } sind hier
+overview-presence-you-and-many = Sie und { $count } weitere sind hier
+overview-presence-one = { $name } ist hier
+overview-presence-many = { $count } Personen sind hier
+overview-collaborators-here = { $count } Mitwirkende sind hier

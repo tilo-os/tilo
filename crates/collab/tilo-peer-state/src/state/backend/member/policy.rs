@@ -13,6 +13,11 @@ pub(super) struct NativePolicy {
     caps: Vec<CapOverride>,
     identity: GovernedIdentity,
 }
+impl NativePolicy {
+    pub(super) fn caps_mut(&mut self) -> &mut Vec<CapOverride> {
+        &mut self.caps
+    }
+}
 impl Policy for NativePolicy {
     fn owner(&self) -> Option<&str> {
         self.owner.as_deref()

@@ -511,6 +511,7 @@ fn inline_mark_rank(mark: &InlineMark) -> u8 {
         InlineMark::Link { .. } => 5,
         InlineMark::Transclusion { .. } => 6,
         InlineMark::ExternalLink { .. } => 7,
+        InlineMark::Mention { .. } => 8,
     }
 }
 

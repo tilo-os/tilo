@@ -3,13 +3,15 @@
 //! indexes the resource for search.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use tilo_resource::{Resource, SearchEntry};
+use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
 use ui_core::automerge::{AutoCommit, ObjId};
 use ui_core::permissions::{LivePermissions, PermissionScope};
 use ui_core::presence::PresenceCtx;
 use ui_core::record::RecordSaveStatus;
-use ui_core::search::{SearchProvider, SearchResult, fuzzy_score};
+use ui_core::search::{SearchProvider, SearchResult};
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
 use ui_core::vello::kurbo::Affine;
@@ -39,6 +41,8 @@ pub(crate) struct ResourceRoot<R: Resource> {
     write: Option<PermissionScope>,
     stages: Stages,
     content: Element,
+    /// The resource's search entries at one live revision, indexed.
+    search: std::cell::RefCell<Option<(u64, Arc<IndexedEntries>)>>,
 }
 
 impl<R: Resource> ResourceRoot<R> {
@@ -72,6 +76,7 @@ impl<R: Resource> ResourceRoot<R> {
             write: None,
             stages,
             content,
+            search: std::cell::RefCell::new(None),
         }
     }
 
@@ -122,10 +127,32 @@ impl<R: Resource> ResourceRoot<R> {
     }
 }
 
+/// A resource's search entries and their index, keyed by position.
+struct IndexedEntries {
+    entries: Vec<SearchEntry>,
+    index: SearchIndex,
+}
+
+impl IndexedEntries {
+    fn new(entries: Vec<SearchEntry>) -> Self {
+        // Entry titles are names a person half remembers: typos match too.
+        let mut index = SearchIndex::new(Matching::LOOSE);
+        index.replace_all(entries.iter().enumerate().map(|(at, entry)| {
+            Document::new(at as u64)
+                .field(entry.title.as_str(), FieldWeight::TITLE)
+                .field(entry.text.as_str(), FieldWeight::BODY)
+        }));
+        if let Err(error) = index.commit() {
+            tracing::warn!(%error, "could not index resource search entries");
+        }
+        Self { entries, index }
+    }
+}
+
 /// A search provider over one snapshot of the resource's entries.
 struct ResourceSearch {
     name: &'static str,
-    entries: Vec<SearchEntry>,
+    indexed: Arc<IndexedEntries>,
 }
 
 impl SearchProvider for ResourceSearch {
@@ -138,25 +165,24 @@ impl SearchProvider for ResourceSearch {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        let mut hits: Vec<SearchResult> = self
-            .entries
-            .iter()
-            .filter_map(|entry| {
-                let score =
-                    fuzzy_score(query, &entry.title).or_else(|| fuzzy_score(query, &entry.text))?;
-                let mut hit = SearchResult::new(
-                    self.name,
-                    entry.title.clone(),
-                    entry.anchor.clone().unwrap_or_default(),
+        self.indexed
+            .index
+            .search(query, Page::first(limit))
+            .hits
+            .into_iter()
+            .filter_map(|hit| {
+                let entry = self.indexed.entries.get(usize::try_from(hit.key).ok()?)?;
+                Some(
+                    SearchResult::new(
+                        self.name,
+                        entry.title.clone(),
+                        entry.anchor.clone().unwrap_or_default(),
+                    )
+                    .with_preview(entry.text.clone())
+                    .with_score(hit.rank.unwrap_or(0)),
                 )
-                .with_preview(entry.text.clone());
-                hit.score = score;
-                Some(hit)
             })
-            .collect();
-        hits.sort_by_key(|hit| std::cmp::Reverse(hit.score));
-        hits.truncate(limit);
-        hits
+            .collect()
     }
 }
 
@@ -303,9 +329,21 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
     }
 
     fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
+        let revision = self.live.revision();
+        let indexed = {
+            let mut cached = self.search.borrow_mut();
+            match cached.as_ref() {
+                Some((at, indexed)) if *at == revision => Arc::clone(indexed),
+                _ => {
+                    let indexed = Arc::new(IndexedEntries::new(R::search(&self.live.get())));
+                    *cached = Some((revision, Arc::clone(&indexed)));
+                    indexed
+                }
+            }
+        };
         let mut providers: Vec<Box<dyn SearchProvider>> = vec![Box::new(ResourceSearch {
             name: R::LABEL,
-            entries: R::search(&self.live.get()),
+            indexed,
         })];
         providers.extend(self.content.search_providers());
         providers

@@ -410,3 +410,91 @@ fn bounded_current_member_refuses_a_small_governance_limit_without_changing_peer
     );
     assert_eq!(peer.durable().unwrap(), bytes);
 }
+fn make_foreign(peer: &mut StatePeer, source: &[u8; 32]) {
+    let mut identity = row(peer, source);
+    identity.device_cert.capabilities.foreign = true;
+    tilo_user_identity::sign_device_cert(
+        &mut identity.device_cert,
+        &SigningKey::from_bytes(&[1; 32]),
+    )
+    .unwrap();
+    peer.core.certificates.insert(
+        *source,
+        VerifiedCertificate::historical_typed(identity.device_cert.clone()).unwrap(),
+    );
+    replace_row(peer, source, serde_json::to_vec(&identity).unwrap());
+}
+fn put_capability(peer: &mut StatePeer, key: &str, cap: &CapOverride) {
+    let room = peer.core.room_doc.as_mut().unwrap();
+    let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
+    room.put(
+        &caps,
+        key,
+        automerge::ScalarValue::Bytes(serde_json::to_vec(cap).unwrap()),
+    )
+    .unwrap();
+    room.commit();
+}
+fn assert_member(peer: &StatePeer, source: [u8; 32], now: SystemTime, role: Role, cap: Verb) {
+    let person = hex::encode(row(peer, &source).device_cert.user_public_key);
+    let restriction = CapOverride::new(
+        Subject::person(person.as_str()),
+        Scope::Workspace,
+        collab_types::caps::Effect::Restrict,
+        cap,
+    );
+    let (legacy_role, legacy_caps, _) = peer.permissions(source, now).unwrap();
+    assert_eq!(legacy_role, role);
+    assert_eq!(legacy_caps.last(), Some(&restriction));
+    let restored = restore(peer, now, &PeerLimits::default());
+    let read = restored.read();
+    let member = read.member(source, now).unwrap();
+    assert_eq!(member.role(), role);
+    assert_eq!(member.capabilities().last(), Some(&restriction));
+}
+#[test]
+fn a_foreign_device_acts_with_at_most_the_workspace_cap() {
+    let (mut peer, source, now) = fixture();
+    let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
+    let room = peer.core.room_doc.as_mut().unwrap();
+    room.put(ROOT, "owner", person.as_str()).unwrap();
+    room.commit();
+    assert_eq!(peer.permissions(source, now).unwrap().0, Role::Owner);
+
+    make_foreign(&mut peer, &source);
+    assert_member(&peer, source, now, Role::Editor, Verb::Write);
+
+    put_capability(
+        &mut peer,
+        collab_types::foreign_device::FOREIGN_DEVICE_CAP_ID,
+        &collab_types::foreign_device::foreign_device_cap(Verb::Read),
+    );
+    assert_member(&peer, source, now, Role::Viewer, Verb::Read);
+    assert!(
+        peer.check_document_read(source, "app", "record", now)
+            .is_ok()
+    );
+}
+#[test]
+fn a_foreign_device_is_not_capped_in_the_room_it_governs() {
+    let (mut peer, source, now) = fixture();
+    let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
+    let room = peer.core.room_doc.as_mut().unwrap();
+    room.put(ROOT, "owner", person.as_str()).unwrap();
+    room.commit();
+    make_foreign(&mut peer, &source);
+    assert_eq!(peer.permissions(source, now).unwrap().0, Role::Editor);
+
+    peer.core.authority = row(&peer, &source).device_cert;
+    let (role, caps, _) = peer.permissions(source, now).unwrap();
+    assert_eq!(role, Role::Owner);
+    assert!(
+        caps.iter()
+            .all(|cap| cap.effect != collab_types::caps::Effect::Restrict)
+    );
+    let restored = restore(&peer, now, &PeerLimits::default());
+    assert_eq!(
+        restored.read().member(source, now).unwrap().role(),
+        Role::Owner
+    );
+}

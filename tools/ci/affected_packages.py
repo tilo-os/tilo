@@ -43,11 +43,12 @@ from ci import suites as path_suites
 # These catch repository contracts outside a changed crate's dependency edges.
 ALWAYS_PACKAGES = {"collab-types", "pkg", "qdoc", "qdoc-codecs"}
 EXTERNAL_ASSET_MANIFEST = "os/external-assets/github-assets.tsv"
-# Snapshot pins CI publishes and signs. A pull request that changes only these
-# changes no code: check.yml's `pins` job proves each changed pin is the signed
-# snapshot published for this source (os/dev/verify-snapshot-pins.sh) instead
-# of the Rust and security suites, which main runs after the merge.
-PIN_FILES = ("os/rpms-snapshot.env", "os/kernel-snapshot.env")
+# Snapshot pins CI publishes and signs (kernel only; RPM snapshots resolve by
+# fingerprint). A pull request that changes only these changes no code:
+# check.yml's `pins` job proves each changed pin is the signed snapshot
+# published for this source (os/dev/verify-snapshot-pins.sh) instead of the
+# Rust and security suites, which main runs after the merge.
+PIN_FILES = ("os/kernel-snapshot.env",)
 # Audited developer/CI prose, not compiled documentation or runtime contracts.
 # Keep this explicit: crates/sdk/ui-core/CHARTS.md is included by Rust, docs/app-development.md
 # is inspected by tilo-app, and docs/packaging.md is a packaging contract input.
@@ -100,7 +101,12 @@ QUALITY_ONLY_HELPERS = {
 # file in the mandatory repository-policy suite. A file missing from this exact
 # map retains native Rust checks.
 QUALITY_ONLY_CONTROL_INPUTS = {
-    "os/rpms-snapshot.env": (
+    "os/dev/rpm-snapshot-fingerprint.py": (
+        "os/tests/test_rpm_snapshot_fingerprint.py",
+        "tools/tests/test_rpm_pin_contract.py",
+    ),
+    "os/dev/resolve-rpm-snapshot.sh": (
+        "os/tests/test_rpm_snapshot_fingerprint.py",
         "tools/tests/test_rpm_pin_contract.py",
     ),
     ".forgejo/workflows/build-builder-image.yml": (
@@ -129,7 +135,7 @@ QUALITY_ONLY_CONTROL_INPUTS = {
         "tools/tests/test_ci_queue_relief.py",
         "os/tests/test_builder_candidate_workflow.py",
     ),
-    ".forgejo/workflows/tilo-relay.yaml": (
+    ".forgejo/workflows/release-relay.yml": (
         "tools/tests/test_workflow_package_paths.py",
         "tools/tests/test_workflow_applicability.py",
         "os/tests/workflow_dependency_invariants.sh",
@@ -199,8 +205,17 @@ UNRECORDED_TEST_SECONDS = 20
 # this many recorded seconds, so a large tested set runs its suites on several
 # runners instead of queueing them on one. Each test job links only its own
 # packages' tests; the type-check shards above are unaffected.
-TEST_SHARD_SECONDS = 1_000
+TEST_SHARD_SECONDS = 500
 MAX_TEST_SHARDS = 4
+# A tested package heavier than this (structural cost plus weighted recorded
+# test seconds) runs on several test jobs of its own, each executing one
+# `nextest --partition count:K/N` slice of its tests. Every partition still
+# builds the package's whole test binaries, so only the test part divides: the
+# package gets the fewest partitions that bring cost + test weight / N under the
+# target, and none when its build alone exceeds it. Test groups and
+# threads-required limits apply per job, so each partition keeps them.
+TEST_PARTITION_WEIGHT = 1_000
+MAX_TEST_PARTITIONS = 3
 # Suites whose tests fsync heavily: fs's durability, checked-restore and
 # release-matrix tests over real FUSE (with fs-native and private-fs), and the
 # host suites that commit a durable Store, owner journal or relay journal on
@@ -517,6 +532,39 @@ def balance(names: set[str], packages: dict[str, dict], shard_count: int,
     return result
 
 
+def test_partitions(names: set[str], packages: dict[str, dict],
+                    test_seconds: dict[str, int] | None) -> dict[str, int]:
+    """Partition count for each package too heavy for one test job."""
+    split = {}
+    for name in names:
+        cost = package_cost(packages[name])
+        tests = TEST_SECOND_WEIGHT * expected_test_seconds(name, test_seconds)
+        if cost + tests <= TEST_PARTITION_WEIGHT or cost >= TEST_PARTITION_WEIGHT:
+            continue
+        room = TEST_PARTITION_WEIGHT - cost
+        split[name] = min(MAX_TEST_PARTITIONS, (tests + room - 1) // room)
+    return split
+
+
+def partition_shards(split: dict[str, int], packages: dict[str, dict],
+                     test_seconds: dict[str, int] | None) -> list[dict]:
+    """One dedicated test shard per partition, heaviest package first."""
+    test_seconds = test_seconds or {}
+    rows = []
+    for name in sorted(split, key=lambda n: (-test_seconds.get(n, 0), n)):
+        count = split[name]
+        for index in range(1, count + 1):
+            rows.append({
+                "shard": 0,
+                "packages": f"-p {name}",
+                "package_count": 1,
+                "estimated_cost": package_cost(packages[name]),
+                "recorded_test_seconds": test_seconds.get(name, 0) // count,
+                "partition": f"count:{index}/{count}",
+            })
+    return rows
+
+
 def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int) -> int:
     total_cost = sum(package_cost(packages[name]) for name in names)
     cost_limited = max(1, (total_cost + SHARD_COST_BUDGET - 1) // SHARD_COST_BUDGET)
@@ -527,6 +575,24 @@ def useful_test_shard_count(names: set[str], test_seconds: dict[str, int]) -> in
     total = sum(expected_test_seconds(name, test_seconds) for name in names)
     time_limited = max(1, (total + TEST_SHARD_SECONDS - 1) // TEST_SHARD_SECONDS)
     return min(MAX_TEST_SHARDS, max(1, len(names)), time_limited)
+
+
+def android_apps(packages: dict[str, dict]) -> set[str]:
+    """Apps that opt into the Android host by declaring an `<app>-android` example."""
+    return {
+        name for name, package in packages.items()
+        if any(target.get("name") == f"{name}-android" and "example" in target.get("kind", ())
+               for target in package.get("targets", ()))
+    }
+
+
+def browser_crates(packages: dict[str, dict]) -> set[str]:
+    """Crates that build for the browser: they depend on `wasm-bindgen`."""
+    return {
+        name for name, package in packages.items()
+        if any(dependency.get("name") == "wasm-bindgen" and dependency.get("kind") is None
+               for dependency in package.get("dependencies", ()))
+    }
 
 
 def make_plan(
@@ -678,15 +744,21 @@ def make_plan(
         for shard in balance(selected, packages, effective_shards, test_seconds):
             check_rows.append({**shard, "arch": arch, "runner": runner, "check_runner": runner})
     # Test shards cover the tested packages and scoped readers, split by
-    # recorded test time.
+    # recorded test time. Packages too heavy for one job run partitioned on
+    # dedicated shards, which start first; the rest balance around them.
     test_units = (tested | scoped_tests.keys()) & selected
-    test_shards = balance(test_units, packages,
-                          useful_test_shard_count(test_units, test_seconds or {}), test_seconds,
-                          TEST_SHARD_APART)
+    split = test_partitions(tested & selected, packages, test_seconds)
+    whole_units = test_units - split.keys()
+    test_shards = partition_shards(split, packages, test_seconds) + [
+        {**shard, "partition": ""} for shard in balance(
+            whole_units, packages, useful_test_shard_count(whole_units, test_seconds or {}),
+            test_seconds, TEST_SHARD_APART)]
+    for index, shard in enumerate(test_shards, 1):
+        shard["shard"] = index
     if selected and not test_shards:
         # Keep the aggregate's test result applicable: one row whose steps skip.
         test_shards = [{"shard": 1, "packages": "", "package_count": 0,
-                        "estimated_cost": 0, "recorded_test_seconds": 0}]
+                        "estimated_cost": 0, "recorded_test_seconds": 0, "partition": ""}]
     matrix = []
     for arch, runner in runners.items():
         for shard in test_shards:
@@ -708,6 +780,8 @@ def make_plan(
     # runs and pushes to main (all_suites) run every one of them.
     suites = (path_suites.select(suite_manifest, changes, run_all=force_full or all_suites)
               if suite_manifest is not None and not pin_only else [])
+    android = sorted(android_apps(packages) & selected)
+    wasm = sorted(browser_crates(packages) & selected)
     return {
         "full": full,
         "rust_required": bool(selected),
@@ -716,6 +790,14 @@ def make_plan(
         "pins_required": pin_only,
         "pins": pins if pin_only else [],
         "suites": suites,
+        # Selected apps with an Android host example; check.yml's `android`
+        # job type-checks them for the Android targets.
+        "android_required": bool(android),
+        "android": android,
+        # Selected browser crates; check.yml's `wasm` job type-checks them for
+        # wasm32-unknown-unknown, a target no other job builds.
+        "wasm_required": bool(wasm),
+        "wasm": wasm,
         "reason": reason,
         "changed_files": changes,
         "selected_count": len(selected),
@@ -761,6 +843,10 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"suites={' '.join(plan['suites'])}\n")
         handle.write(f"pins_required={'true' if plan['pins_required'] else 'false'}\n")
         handle.write(f"pins={' '.join(plan['pins'])}\n")
+        handle.write(f"android_required={'true' if plan['android_required'] else 'false'}\n")
+        handle.write(f"android_packages={' '.join(f'-p {name}' for name in plan['android'])}\n")
+        handle.write(f"wasm_required={'true' if plan['wasm_required'] else 'false'}\n")
+        handle.write(f"wasm_packages={' '.join(f'-p {name}' for name in plan['wasm'])}\n")
         handle.write(f"selected_count={plan['selected_count']}\n")
         handle.write(f"workspace_count={plan['workspace_count']}\n")
         handle.write(f"estimated_cost={plan['estimated_cost']}\n")

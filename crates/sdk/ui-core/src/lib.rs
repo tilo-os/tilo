@@ -108,6 +108,8 @@
 
 pub mod a11y;
 pub mod a11y_tree;
+#[cfg(all(feature = "native", target_os = "android"))]
+mod accesskit_android_adapter;
 pub mod accesskit_bridge;
 pub mod action_host;
 pub mod action_palette;
@@ -175,6 +177,7 @@ pub mod image_store;
 pub mod ime;
 pub mod input;
 pub mod interaction;
+pub mod keycaps;
 pub mod launch;
 pub mod live_collaboration;
 pub mod local_state;
@@ -288,6 +291,7 @@ pub use interaction::{
     ControllerFamily, InputAvailability, InputDevice, InputModality, InteractionEnvironment,
     KeyboardFamily, PointerPrecision,
 };
+pub use keycaps::{KeycapLanguage, Keycaps};
 pub use local_state::{
     LatestRequest, LatestTask, LocalState, LocalStateWriter, RequestCompletion, TaskCompletion,
 };
@@ -308,7 +312,7 @@ pub use reorder::{
     DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop, ReorderMotion,
 };
 pub use search::{
-    FnProvider, SearchGroup, SearchProvider, SearchRegistry, SearchResult, fuzzy_score,
+    FnProvider, ListIndex, SearchGroup, SearchProvider, SearchRegistry, SearchResult,
 };
 pub use selection::{KeySelection, SelectionModel};
 pub use state::{

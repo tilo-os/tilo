@@ -50,13 +50,17 @@ containerfile="$repo/os/Containerfile"
 # /usr/libexec/tilo-account-credential. The finished-rootfs UI toolkit gate is
 # a deliberate addition. The runtime NetworkManager resolver symlink is
 # restored after bootc transient cleanup, before split/ukify seal the rootfs.
+# The build-only DNF/RPM clock shim and transaction-state cleaner add their
+# explicit rootfs COPY rows; the shim and wrappers are removed before sealing.
+# joycond's binary, unit and modules-load snippet (through desktop-binaries)
+# and its Joy-Con-scoped udev rule are deliberate additions.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=293d34f2d75631d323fb09f912762bdaa7f8611b8cd8cea8dc5602236a16e499
+expected_contract=5eeaa9c081923dd8a1cbb4458a8094b08876f234688fd87575ec43e98ae1a710
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -92,9 +96,10 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # /usr/lib/systemd/user units into one COPY removes two.
 # A build-only resolver placeholder and a final COPY restore the runtime
 # symlink outside the cleanup RUN, keeping BuildKit's DNS mount out of /run.
-# Keep the current 143-instruction bound exact and reviewed.
-[ "$instructions" -le 143 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 143)" >&2
+# The fixed-clock build adds an ARG, four COPYs, and an early path assertion.
+# Keep the current 149-instruction bound exact and reviewed.
+[ "$instructions" -le 149 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 149)" >&2
   exit 1
 }
 

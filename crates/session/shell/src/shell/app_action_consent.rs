@@ -88,7 +88,7 @@ pub fn set_session_attended(attended: bool) {
     SESSION_ATTENDED.store(attended, Ordering::Relaxed);
 }
 
-fn session_attended() -> bool {
+pub(crate) fn session_attended() -> bool {
     SESSION_ATTENDED.load(Ordering::Relaxed)
 }
 

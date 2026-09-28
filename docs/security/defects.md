@@ -530,7 +530,7 @@ Observed twice:
   not been buildable from `main` all morning, and nothing about it was specific to any of those
   commits.
 
-`docs/supply-chain.md` claims builds are reproducible across time. `os/rpms-snapshot.env` +
+`docs/supply-chain.md` claims builds are reproducible across time. `set-<fingerprint>` resolution +
 `os/Containerfile.rpms` genuinely deliver that for the package set, but the base underneath
 evaporates, so a rebuild weeks later does not merely differ — it does not run. Supply-chain
 integrity rests on the pin being real rather than aspirational: a pin that reliably fails is one
@@ -554,7 +554,7 @@ Two adjacent holes in the same guarantee were found alongside it:
   written (it hardcodes the `tilo/fedora-bootc` destination and asserts an `ostree.linux` label
   fedora-minimal does not carry). Parameterise that workflow over source/destination, mirror
   fedora-minimal, and add a second ref to `os/base-snapshot.env` that
-  `.forgejo/workflows/tilo-relay.yaml` passes alongside `BASE_REF`.
+  `.forgejo/workflows/release-relay.yml` passes alongside `BASE_REF`.
 - `os/Containerfile`'s `wpe-builder` stage installs its build deps with `dnf builddep
   webkitgtk6.0` against live Fedora repos, a deliberate exception noted in the file. That much is
   still open. The stage was also **entirely broken**, and unpinned turned out to mean unwatched in

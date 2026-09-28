@@ -1168,6 +1168,16 @@ impl SettingsApp {
                         let _ = enabled;
                         Ok(())
                     }
+                    crate::actions::DisplayOperation::SetSdrBrightness { connector, value } => {
+                        let output = output(&connector)?;
+                        if !output.descriptor.hdr {
+                            return Err("HDR is not available for that output".into());
+                        }
+                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                            return Err("SDR brightness must be between 0 and 1".into());
+                        }
+                        Ok(())
+                    }
                     crate::actions::DisplayOperation::SetVrr { connector, enabled } => {
                         let output = output(&connector)?;
                         if !output.descriptor.vrr {

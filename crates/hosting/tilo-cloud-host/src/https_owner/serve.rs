@@ -26,24 +26,78 @@ struct PreparedCloud {
 }
 impl PreparedCloud {
     async fn prepare(config_path: &Path, ready_path: &Path) -> Result<Self> {
+        let (config, ready_directory, ready_name, parent) =
+            Self::load_operator(config_path, ready_path)?;
+        let transport = PreparedTransport::load_explicit(&config.transport_config).await?;
+        Self::finish(
+            config,
+            transport,
+            ready_directory,
+            ready_name,
+            ready_path,
+            &parent,
+        )
+    }
+
+    /// Prepare using already-bound TCP and UDP sockets for the transport
+    /// origin. Production binds via [`Self::prepare`]; tests hand the
+    /// listeners in so the origin is never released.
+    #[cfg(test)]
+    async fn prepare_bound(
+        config_path: &Path,
+        ready_path: &Path,
+        tcp: std::net::TcpListener,
+        udp: std::net::UdpSocket,
+    ) -> Result<Self> {
+        let (config, ready_directory, ready_name, parent) =
+            Self::load_operator(config_path, ready_path)?;
+        let transport =
+            PreparedTransport::load_explicit_bound(&config.transport_config, tcp, udp).await?;
+        Self::finish(
+            config,
+            transport,
+            ready_directory,
+            ready_name,
+            ready_path,
+            &parent,
+        )
+    }
+
+    fn load_operator(
+        config_path: &Path,
+        ready_path: &Path,
+    ) -> Result<(OperatorConfig, StorageDirectory, OsString, PathBuf)> {
         let config = OperatorConfig::load(config_path)?;
         ensure!(
             ready_path.is_absolute(),
             "absolute owner-only ready path required"
         );
-        let parent = ready_path.parent().context("ready directory missing")?;
+        let parent = ready_path
+            .parent()
+            .context("ready directory missing")?
+            .to_owned();
         let ready_name = ready_path
             .file_name()
             .context("ready filename missing")?
             .to_owned();
-        let ready_directory = StorageDirectory::open(parent)?;
+        let ready_directory = StorageDirectory::open(&parent)?;
         ready_directory.validate_privacy(Privacy::OwnerOnly)?;
         match std::fs::symlink_metadata(ready_path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
             Err(error) => return Err(error.into()),
             Ok(_) => bail!("ready destination already exists"),
         }
-        let transport = PreparedTransport::load_explicit(&config.transport_config).await?;
+        Ok((config, ready_directory, ready_name, parent))
+    }
+
+    fn finish(
+        config: OperatorConfig,
+        transport: PreparedTransport,
+        ready_directory: StorageDirectory,
+        ready_name: OsString,
+        ready_path: &Path,
+        parent: &Path,
+    ) -> Result<Self> {
         transport.ensure_store_separate(&config.state_root)?;
         transport.ensure_store_separate(parent)?;
         Ok(Self {
@@ -271,7 +325,31 @@ impl Https {
         root: &Path,
         machine: &str,
     ) -> Result<Self> {
-        let prepared = PreparedCloud::prepare(config_path, ready_path).await?;
+        Self::from_prepared(
+            PreparedCloud::prepare(config_path, ready_path).await?,
+            root,
+            machine,
+        )
+    }
+
+    /// Like [`Self::prepare`], but the transport origin is already bound.
+    #[cfg(test)]
+    pub(crate) async fn prepare_bound(
+        config_path: &Path,
+        ready_path: &Path,
+        root: &Path,
+        machine: &str,
+        tcp: std::net::TcpListener,
+        udp: std::net::UdpSocket,
+    ) -> Result<Self> {
+        Self::from_prepared(
+            PreparedCloud::prepare_bound(config_path, ready_path, tcp, udp).await?,
+            root,
+            machine,
+        )
+    }
+
+    fn from_prepared(prepared: PreparedCloud, root: &Path, machine: &str) -> Result<Self> {
         ensure!(
             std::fs::canonicalize(&prepared.config.state_root)? == std::fs::canonicalize(root)?
                 && prepared.config.machine_id == machine,
@@ -436,15 +514,23 @@ impl Https {
 
 /// Cloud HTTPS with its own agent runtime and no relay: the delivery half of
 /// `serve`, wired exactly as the host wires it, for component tests.
+/// Serve with optional pre-bound transport sockets. When present, the origin
+/// is never released between reservation and listen.
 #[cfg(test)]
-pub(crate) async fn serve_until(
+pub(crate) async fn serve_until_bound(
     config_path: &Path,
     ready_path: &Path,
+    sockets: Option<(std::net::TcpListener, std::net::UdpSocket)>,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> Result<()> {
     let config = OperatorConfig::load(config_path)?;
     let (root, machine) = (config.state_root.clone(), config.machine_id.clone());
-    let https = Https::prepare(config_path, ready_path, &root, &machine).await?;
+    let https = match sockets {
+        Some((tcp, udp)) => {
+            Https::prepare_bound(config_path, ready_path, &root, &machine, tcp, udp).await?
+        }
+        None => Https::prepare(config_path, ready_path, &root, &machine).await?,
+    };
     // No relay here: this component stands for a host whose relay replay completed.
     crate::owner_cell::mark_governance_reconciled(&root);
     let mut agents = crate::agent_runtime::CloudAgentRuntime::start_with_policy_time(
@@ -483,19 +569,35 @@ pub(crate) async fn serve_until(
 }
 /// Component composition without the agent execution owner.
 #[cfg(test)]
-pub(in crate::https_owner) async fn serve_broker_only_until(
+pub(in crate::https_owner) async fn serve_broker_only_until_bound(
     config_path: &Path,
     ready_path: &Path,
+    sockets: Option<(std::net::TcpListener, std::net::UdpSocket)>,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> Result<()> {
     let config = OperatorConfig::load(config_path)?;
-    let https = Https::prepare(
-        config_path,
-        ready_path,
-        &config.state_root,
-        &config.machine_id,
-    )
-    .await?;
+    let https = match sockets {
+        Some((tcp, udp)) => {
+            Https::prepare_bound(
+                config_path,
+                ready_path,
+                &config.state_root,
+                &config.machine_id,
+                tcp,
+                udp,
+            )
+            .await?
+        }
+        None => {
+            Https::prepare(
+                config_path,
+                ready_path,
+                &config.state_root,
+                &config.machine_id,
+            )
+            .await?
+        }
+    };
     // No relay here: this component stands for a host whose relay replay completed.
     crate::owner_cell::mark_governance_reconciled(&config.state_root);
     let source = https.source().clone();

@@ -1,13 +1,14 @@
-//! `CommandPalette` primitive — a fuzzy-matching searchable command list.
+//! `CommandPalette` primitive — a searchable command list that narrows as you type.
 //!
 //! Enter invokes the selected entry's `on_select` with the CRDT handle and
 //! root path directly — there is no message layer.
 
-use crate::search::fuzzy_score;
+use crate::search::ListIndex;
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashSet;
 use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_search::FieldWeight;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Color;
@@ -251,23 +252,28 @@ impl CommandEntry {
         self.shortcut
             .as_ref()
             .map(|shortcut| shortcut.label(platform))
-            .or_else(|| self.keybinding.clone())
+            .or_else(|| self.free_text_keycaps().map(|caps| caps.join("+")))
     }
 
     fn keycap_labels(&self, platform: PlatformConventions) -> Option<Vec<String>> {
         self.shortcut
             .as_ref()
             .map(|shortcut| shortcut.keycap_labels(platform))
-            .or_else(|| {
-                self.keybinding.as_ref().map(|binding| {
-                    binding
-                        .split('+')
-                        .map(str::trim)
-                        .filter(|part| !part.is_empty())
-                        .map(str::to_owned)
-                        .collect()
-                })
-            })
+            .or_else(|| self.free_text_keycaps())
+    }
+
+    /// A free-text keybinding (`Super+H`), one cap per `+`-separated part,
+    /// each in the legends of the active keyboard layout.
+    fn free_text_keycaps(&self) -> Option<Vec<String>> {
+        let keycaps = crate::keycaps::active();
+        self.keybinding.as_ref().map(|binding| {
+            binding
+                .split('+')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(|part| keycaps.token(part))
+                .collect()
+        })
     }
 
     #[must_use]
@@ -333,17 +339,6 @@ impl CommandEntry {
         }
         entry.action_address = Some(ActionAddress::new(&fa.resource_id.0, &fa.action.id));
         entry
-    }
-
-    /// Case-insensitive subsequence match over label *or* description. Empty
-    /// query always matches.
-    fn matches(&self, query: &str) -> bool {
-        if fuzzy_score(query, &self.label).is_some() {
-            return true;
-        }
-        self.description
-            .as_deref()
-            .is_some_and(|d| fuzzy_score(query, d).is_some())
     }
 }
 
@@ -420,6 +415,9 @@ type EntryFilter = Box<dyn Fn(&CommandEntry) -> bool + Send + Sync>;
 )]
 pub struct CommandPalette {
     entries: Vec<CommandEntry>,
+    /// Labels and descriptions of `entries`, indexed while they stay the
+    /// same.
+    entry_index: ListIndex,
     query: String,
     /// Hint shown while the main query is empty. Hosts use this to name the
     /// resource being searched (files, commands, applications, ...).
@@ -490,6 +488,7 @@ impl CommandPalette {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
+            entry_index: ListIndex::default(),
             query: String::new(),
             query_placeholder: "Search\u{2026}".to_string(),
             query_selection: crate::text_selection::Selection::collapsed(0),
@@ -1981,13 +1980,30 @@ impl CommandPalette {
 
     fn rebuild(&mut self) {
         self.visible.clear();
+        let matching = (!self.bypass_fuzzy).then(|| {
+            self.entry_index.ranks(
+                &self.query,
+                self.entries.iter().map(|entry| {
+                    [
+                        (entry.label.as_str(), FieldWeight::TITLE),
+                        (
+                            entry.description.as_deref().unwrap_or_default(),
+                            FieldWeight::SUBTITLE,
+                        ),
+                    ]
+                }),
+            )
+        });
         for (i, e) in self.entries.iter().enumerate() {
             if let Some(f) = &self.filter
                 && !f(e)
             {
                 continue;
             }
-            if !self.bypass_fuzzy && !e.matches(&self.query) {
+            if matching
+                .as_ref()
+                .is_some_and(|ranks| ranks.get(i).is_none_or(Option::is_none))
+            {
                 continue;
             }
             self.visible.push(i);
@@ -2755,19 +2771,7 @@ mod tests {
     }
 
     #[test]
-    fn fuzzy_score_matches_subsequences_and_empty_queries() {
-        fn fuzzy_score_empty_query_matches_everything() {
-            assert_eq!(fuzzy_score("", "anything"), Some(0));
-        }
-
-        fn fuzzy_score_subsequence_matches() {
-            assert!(fuzzy_score("ren", "Rename Workspace").is_some());
-        }
-
-        fn fuzzy_score_non_subsequence_is_none() {
-            assert_eq!(fuzzy_score("xyz", "Rename Workspace"), None);
-        }
-
+    fn typing_narrows_the_list_with_feedback() {
         fn typing_filters_visible_entries() {
             let mut p = CommandPalette::new();
             p.push(CommandEntry::new("a", "Alpha"));
@@ -2821,9 +2825,6 @@ mod tests {
                 && child.description.as_deref() == Some("Try fewer words, or widen the scope")));
         }
 
-        fuzzy_score_empty_query_matches_everything();
-        fuzzy_score_subsequence_matches();
-        fuzzy_score_non_subsequence_is_none();
         typing_filters_visible_entries();
         empty_search_exposes_feedback_and_recovery();
     }

@@ -4,7 +4,7 @@
 //! notifications are chrome too: this module makes the compositor own
 //! `org.freedesktop.Notifications` so `libnotify`/freedesktop-API calls
 //! render as OS-drawn, OS-themed toasts (see
-//! [`crate::shell::notification::NotificationStack`]) instead of app-drawn windows.
+//! [`tilo_desktop::notifications::NotificationStack`]) instead of app-drawn windows.
 //!
 //! The zbus service runs async on a tokio runtime; the toast queue lives
 //! on [`crate::shell::chrome_state::ChromeState`], an `Rc<RefCell<…>>`
@@ -30,6 +30,7 @@ use crate::priority_contacts::ContactProjection;
 #[cfg(target_os = "linux")]
 use crate::priority_contacts::PriorityContactRegistry;
 use std::collections::{HashMap, HashSet, VecDeque};
+use tilo_desktop::notifications::ContinuityNotificationId;
 #[cfg(target_os = "linux")]
 use zbus::interface;
 #[cfg(target_os = "linux")]
@@ -86,12 +87,6 @@ pub enum NotificationSharing {
 pub const MAX_CONTINUITY_NOTIFICATION_TTL_MS: u64 = 15 * 60 * 1_000;
 const MAX_CONTINUITY_NOTIFICATIONS: usize = 128;
 const MAX_CONTINUITY_ACTIONS: usize = 16;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ContinuityNotificationId {
-    pub epoch: [u8; 16],
-    pub token: [u8; 16],
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContinuityNotificationProjection {
@@ -234,7 +229,7 @@ impl CloseReason {
 }
 
 /// One notification that crossed the bridge from a `Notify` call, before
-/// it is mapped into a [`crate::shell::notification::Notification`] toast by the chrome pump.
+/// it is mapped into a [`tilo_desktop::notifications::Notification`] toast by the chrome pump.
 #[derive(Clone, Debug)]
 pub struct IncomingNotification {
     /// The notification id — either freshly allocated (`replaces_id == 0`) or the app-supplied id it is replacing.

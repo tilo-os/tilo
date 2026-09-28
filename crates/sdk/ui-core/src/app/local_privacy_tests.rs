@@ -99,14 +99,15 @@ impl Widget for LocalEffectProbe {
         &[EFFECT_TYPE]
     }
 
-    fn invoke_resource_operation_v2(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        _: &[u8],
-        _: &automerge::AutoCommit,
+        op: &crate::widget::ResourceOperation<'_>,
+        _: &mut automerge::AutoCommit,
         _: &automerge::ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(crate::widget::OperationRequest { kind, type_id, .. }) = op.unscoped() else {
+            return Ok(None);
+        };
         assert!(matches!(
             kind,
             tilo_actions::OperationKind::Effect | tilo_actions::OperationKind::View
@@ -114,7 +115,9 @@ impl Widget for LocalEffectProbe {
         assert_eq!(type_id, EFFECT_TYPE);
         self.operations.set(self.operations.get().saturating_add(1));
         self.captured.borrow().as_ref().unwrap().wake();
-        Ok(Some(tilo_actions::ActionOutput::default()))
+        Ok(Some(crate::widget::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        )))
     }
 
     fn continuable(&self) -> Option<&dyn crate::widget::Continuable> {

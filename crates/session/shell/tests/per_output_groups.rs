@@ -32,8 +32,8 @@ use shell::compositor::backend::{
 };
 use shell::compositor::frame::FrameBuilder;
 use shell::shell::state::{
-    AppKind, GroupId, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceId, WorkspaceTree, compose_id,
+    AppKind, GroupId, PeerOrigin, RoomId, Strip, StripId, Tab, TileContent, WindowGroup,
+    WindowWidth, Workspace, WorkspaceId, WorkspaceTree, compose_id,
 };
 use ui::widget::Widget as _;
 use vello::kurbo::{Point, Rect};
@@ -583,7 +583,8 @@ fn the_chord_moves_the_focused_group_to_the_neighbouring_display() {
             Some(1),
             "{fixture}: focus went along"
         );
-        // It lands after the group last focused on that display.
+        // It takes its place in the strip's order among that display's
+        // groups; the shared order itself is untouched.
         let on_second: Vec<GroupId> = desk
             .fb
             .host()
@@ -594,7 +595,7 @@ fn the_chord_moves_the_focused_group_to_the_neighbouring_display() {
             .expect("second display");
         assert_eq!(
             on_second,
-            vec![ON_SECOND[0], moving, ON_SECOND[1], ON_SECOND[2]],
+            vec![moving, ON_SECOND[0], ON_SECOND[1], ON_SECOND[2]],
             "{fixture}"
         );
         assert_eq!(
@@ -666,15 +667,12 @@ fn unplugging_hands_groups_on_and_replugging_takes_them_back() {
         }
         assert_eq!(
             desk.strip_order(),
-            vec![
-                ON_PRIMARY[0],
-                ON_PRIMARY[1],
-                ON_SECOND[0],
-                ON_SECOND[1],
-                ON_SECOND[2],
-                ON_PRIMARY[2]
-            ],
-            "{fixture}: in their own order, after the remaining display's focused group"
+            ON_PRIMARY
+                .iter()
+                .chain(ON_SECOND.iter())
+                .copied()
+                .collect::<Vec<_>>(),
+            "{fixture}: the strip's own order"
         );
         let dump = desk.state_dump();
         assert_eq!(
@@ -898,6 +896,84 @@ fn the_partition_is_never_replicated() {
     }
 }
 
+/// A collaborator's device holding the same room, fed whatever this device
+/// publishes for it.
+struct Collaborator {
+    tree: WorkspaceTree,
+    room: RoomId,
+}
+
+impl Collaborator {
+    fn of(desk: &Desk) -> Self {
+        let room = RoomId::parse(ROOM).expect("room");
+        let mut tree = WorkspaceTree::default();
+        tree.set_salt_override(SALT.wrapping_add(1));
+        let ws = tree.append_empty_workspace("Joined");
+        assert!(tree.set_room(ws, room));
+        let mut collaborator = Self { tree, room };
+        collaborator.receive(desk);
+        collaborator
+    }
+
+    /// Take in everything `desk` publishes for the room now, after
+    /// mirroring its cache into its documents the way any later edit does.
+    fn receive(&mut self, desk: &Desk) {
+        let changes = {
+            let chrome = desk.fb.chrome();
+            let mut tree = chrome.tree_mut();
+            tree.seed_doc_from_cache();
+            tree.export_room_changes_since(self.room, &[])
+                .expect("the room is published")
+        };
+        self.tree
+            .apply_room_changes(self.room, &changes, &PeerOrigin::peer_id("docked-laptop"))
+            .expect("the room's changes apply");
+    }
+
+    fn strip_order(&self) -> Vec<GroupId> {
+        self.tree
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|w| &w.strips)
+            .find(|s| s.id == STRIP)
+            .map(|s| s.window_groups.iter().map(|g| g.id).collect())
+            .unwrap_or_default()
+    }
+}
+
+#[test]
+fn display_changes_never_reorder_a_collaborators_strip() {
+    let shared: Vec<GroupId> = ON_PRIMARY.iter().chain(ON_SECOND.iter()).copied().collect();
+    for fixture in ["docked-laptop", "vertical-stack"] {
+        let mut desk = Desk::fixture(fixture);
+        let mut collaborator = Collaborator::of(&desk);
+        assert_eq!(collaborator.strip_order(), shared, "{fixture}: in sync");
+
+        // Unplugged: the monitor's groups join the panel.
+        desk.focus(ON_PRIMARY[0]);
+        desk.unplug_all_but_primary();
+        collaborator.receive(&desk);
+        assert_eq!(collaborator.strip_order(), shared, "{fixture}: unplug");
+        assert_eq!(desk.strip_order(), shared, "{fixture}: unplug");
+
+        // Replugged, then a group sent to the other display.
+        desk.replug();
+        desk.focus(ON_SECOND[1]);
+        desk.focus(ON_PRIMARY[2]);
+        let chord = ModifiersState::SUPER | ModifiersState::CONTROL | ModifiersState::SHIFT;
+        desk.press(NamedKey::ArrowRight, chord);
+        assert_eq!(desk.display_of(ON_PRIMARY[2]), Some(1), "{fixture}: moved");
+        collaborator.receive(&desk);
+        assert_eq!(
+            collaborator.strip_order(),
+            shared,
+            "{fixture}: move to display"
+        );
+        assert_eq!(desk.strip_order(), shared, "{fixture}: move to display");
+    }
+}
+
 /// Each group lies on the display its monitor is connected as, and is laid
 /// out within it.
 fn assert_groups_on_their_monitors(desk: &mut Desk, what: &str) {
@@ -1074,4 +1150,69 @@ fn dragging_a_group_onto_another_display_moves_it_there() {
             }
         }
     }
+}
+
+/// `output` mirrored onto another connector as output `id`: the same
+/// logical rectangle and the same place in the scene, as the backend lays
+/// out a `mirror_of` pair.
+fn mirrored(output: &Output, id: u32, monitor: (&str, &str, &str, &str)) -> Output {
+    let mut mirror = output.clone();
+    mirror.id = OutputId(id);
+    mirror.identity = identity(monitor);
+    mirror
+}
+
+const PROJECTOR: (&str, &str, &str, &str) = ("HDMI-1", "Tilo", "Test Projector", "J-0001");
+
+/// A projector mirroring the panel shows the same image: one display to
+/// the partition, not a second lane laid over the first.
+#[test]
+fn a_mirrored_pair_is_one_display() {
+    let panel = parse_output_spec("1920x1080").expect("spec").remove(0);
+    let outputs = vec![panel.clone(), mirrored(&panel, 1, MONITOR)];
+    let mut desk = Desk::across(outputs);
+    let displays = desk.fb.chrome().tree().desktop.outputs.displays.clone();
+    assert_eq!(
+        displays.iter().map(|d| d.id).collect::<Vec<_>>(),
+        vec![0],
+        "the mirror is not a display of its own: {displays:?}"
+    );
+    assert!(!desk.fb.host().is_partitioned(), "one image, one row");
+    let panel = desk.display(0);
+    for (id, rect, display) in desk.layout() {
+        assert_eq!(display, None, "{id} is in a partitioned row");
+        assert!(
+            rect.width() > 0.0 && rect.y1 <= panel.y1 + 0.5,
+            "{id} is laid out on the shared image: {rect:?}"
+        );
+    }
+    let bars = desk.fb.host().top_bar_rects();
+    assert!(
+        bars.iter().all(|b| b.2),
+        "no compact bar over the mirrored image: {bars:?}"
+    );
+}
+
+/// A mirrored pair beside a third monitor: two displays, and the mirror
+/// gets neither a lane nor a compact bar over the image it copies.
+#[test]
+fn a_mirrored_pair_beside_a_monitor_is_two_displays() {
+    let mut outputs = with_monitors(parse_output_spec("1920x1080,1920x1080").expect("spec"));
+    let projector = mirrored(&outputs[0], 2, PROJECTOR);
+    outputs.push(projector);
+    let desk = Desk::with_tree(tree(), outputs);
+    let displays = desk.fb.chrome().tree().desktop.outputs.displays.clone();
+    assert_eq!(
+        displays.iter().map(|d| d.id).collect::<Vec<_>>(),
+        vec![0, 1],
+        "{displays:?}"
+    );
+    let bars = desk.fb.host().top_bar_rects();
+    let compact: Vec<u32> = bars.iter().filter(|b| !b.2).map(|b| b.0).collect();
+    assert_eq!(compact, vec![1], "{bars:?}");
+    assert_eq!(
+        desk.fb.host().display_partition_summary(),
+        vec![(0, ON_PRIMARY.to_vec()), (1, ON_SECOND.to_vec())],
+        "each monitor keeps its own windows"
+    );
 }

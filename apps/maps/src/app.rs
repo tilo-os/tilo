@@ -157,9 +157,9 @@ struct AccessibilityTarget {
 fn stable_access_key(id: &str) -> u64 {
     // FNV-1a keeps accessibility child identity stable across responsive
     // reordering without depending on a process-random hash seed.
-    id.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3)
-    })
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, id.as_bytes());
+    std::hash::Hasher::finish(&hasher)
 }
 
 #[allow(

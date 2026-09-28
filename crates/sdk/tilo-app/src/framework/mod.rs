@@ -75,6 +75,10 @@
 
 mod app;
 mod controls;
+// In-place reload swaps native code into a running process; a browser build
+// has neither the thin shared library nor the host that loads it.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod dev_reload;
 mod dispatch;
 mod each;
 mod live;

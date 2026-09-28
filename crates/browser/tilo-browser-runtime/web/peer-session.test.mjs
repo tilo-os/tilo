@@ -75,9 +75,9 @@ test('presented frames without pending writes neither publish nor recompute peer
 });
 test('a write arriving during publication gets a following persistence barrier',{timeout:1000},async t=>{
  const f=fixture();let revision=0,durable=0;const committed=[],second=deferred();
- f.runtime.peer_pending_writes=()=>JSON.stringify(revision>durable?[{revision:String(revision)}]:[]);
+ f.runtime.peer_pending_batch_bytes=()=>revision>durable?{id:`1:${revision}`,writes:[{key:'{"type":"record"}',revision:String(revision),bytes:new Uint8Array([revision]),actor:null}],records:[]}:{id:'0',writes:[],records:[]};
  f.storage.commit=async writes=>{committed.push(Number(writes[0].revision));};
- f.runtime.acknowledge_storage=(_profile,_device,value)=>{durable=Number(value);if(durable===2)second.resolve();};
+ f.runtime.acknowledge_peer_storage_batch=(_id,raw)=>{const value=JSON.parse(raw);if(value.result.ok){durable=Number(value.batchId.split(':')[1]);if(durable===2)second.resolve();}};
  f.runtime.peer_committed=()=>{if(durable===1&&revision===1){revision=2;f.status({phase:'ready',persistenceNeeded:true});}};
  const peer=await f.connect();t.after(()=>peer.dispose());
  revision=1;const first=peer.retryPersistence();await second.promise;await first;
@@ -96,8 +96,6 @@ test('typed persistence batches keep binary bytes and exact revisions through co
  const write={key:'{"type":"admission","workspace":"room"}',bytes:new Uint8Array([0,128,255]),actor:new Uint8Array([2,4]),revision:'9007199254740993'};
  f.storage.epoch='test-epoch';
  f.runtime.peer_pending_batch_bytes=()=>pending?{id:'1:1',writes:[write],records:[]}:{id:'0',writes:[],records:[]};
- f.runtime.peer_pending_batch=()=>{throw Error('numeric JSON batch must not be used when binary API is available');};
- f.runtime.peer_pending_writes=()=>{throw Error('legacy writes must not be used');};
  f.storage.commit=async writes=>{
   assert.equal(acknowledged,false);assert.equal(writes.length,1);
   assert(writes[0].bytes instanceof Uint8Array);assert.deepEqual([...writes[0].bytes],[0,128,255]);
@@ -118,7 +116,7 @@ function fixture({enroll,recoveryClock,initialStatus,acquireStorage,createMedia,
   peer_request_sync(id,generation){assert(peers.has(id));syncs.push([id,generation]);},
   peer_refresh_status(id){assert(peers.has(id));if(refreshStatus)statusCallback(JSON.stringify(refreshStatus()));},
   async close_peer(id){closed.push(id);peers.delete(id);},async disconnect_peer(id){assert(peers.has(id));},
-  peer_pending_writes(id){assert(peers.has(id),'closed peer');return JSON.stringify(pendingWrite?[{revision:1}]:[]);},acknowledge_storage(){pendingWrite=false;},peer_committed(id){assert(peers.has(id));if(publishFailure)throw Error('relay unavailable');if(commitStatus)statusCallback(JSON.stringify(commitStatus()));},
+  peer_pending_batch_bytes(id){assert(peers.has(id),'closed peer');return pendingWrite?{id:'1:1',writes:[{key:'{"type":"record"}',revision:'1',bytes:new Uint8Array([1]),actor:null}],records:[]}:{id:'0',writes:[],records:[]};},acknowledge_peer_storage_batch(id,raw){assert(peers.has(id));if(JSON.parse(raw).result?.ok)pendingWrite=false;},peer_committed(id){assert(peers.has(id));if(publishFailure)throw Error('relay unavailable');if(commitStatus)statusCallback(JSON.stringify(commitStatus()));},
   suspend_peer(id,value){assert(peers.has(id));value?suspended.add(id):suspended.delete(id);},
   rebind_peer(old,id){rebound.push([old,id]);for(const mount of mounts)mount.id=id;suspended.delete(old);},
  };
@@ -190,7 +188,7 @@ test('setup failure with retained bytes has reachable recovery and releases only
 
 test('each retry refreshes bootstrap with same client key via POST proof; setup errors release ownership',async()=>{
  let held=0,calls=[],attempt=0;
- const runtime={peer_delivery_begin:()=>JSON.stringify({kind:"ready"}),peer_delivery_next:()=>JSON.stringify({kind:"idle"}),peer_delivery_stop(){},identity_request:()=>'{"device_public_key":"client","request_id":"stable"}',identity_complete:(_key,response)=>{assert.equal(response,'challenge');return 'proof';},bind_identity:()=> 'same-key',peer_enrollment:()=>'{"profile":"p","device":"client","room":"r"}',refresh_storage_lease(){},async connect_peer(raw,key,_rows,status){assert.equal(key,'same-key');assert.equal(raw,`bootstrap-${++attempt}`);status('{"phase":"ready","records":[]}');return attempt;},async reconnect_peer(id,raw,key){assert.equal(id,1);assert.equal(key,'same-key');assert.equal(raw,`bootstrap-${++attempt}`);return id;},peer_pending_writes:()=> '[]',peer_committed(){},disconnect_peer(){},close_peer(){},suspend_peer(){},rebind_peer(){}};
+ const runtime={peer_delivery_begin:()=>JSON.stringify({kind:"ready"}),peer_delivery_next:()=>JSON.stringify({kind:"idle"}),peer_delivery_stop(){},identity_request:()=>'{"device_public_key":"client","request_id":"stable"}',identity_complete:(_key,response)=>{assert.equal(response,'challenge');return 'proof';},bind_identity:()=> 'same-key',peer_enrollment:()=>'{"profile":"p","device":"client","room":"r"}',refresh_storage_lease(){},async connect_peer(raw,key,_rows,status){assert.equal(key,'same-key');assert.equal(raw,`bootstrap-${++attempt}`);status('{"phase":"ready","records":[]}');return attempt;},async reconnect_peer(id,raw,key){assert.equal(id,1);assert.equal(key,'same-key');assert.equal(raw,`bootstrap-${++attempt}`);return id;},peer_pending_batch_bytes:()=>({id:'0',writes:[],records:[]}),acknowledge_peer_storage_batch(){},peer_committed(){},disconnect_peer(){},close_peer(){},suspend_peer(){},rebind_peer(){}};
  const connect=createConnectPeer({init:async()=>{},runtime,mountDesktop(){},acquireStorage:async()=>({hydrate:async()=>[],release:async()=>{}}),acquireIdentity:async()=>{held++;return{material:'same-key',save:async()=>{},release:async()=>{held--;}}},fetchEnrollment:async(url,options)=>{calls.push([url,options.method,options.body]);return new Response(url.endsWith('/challenge')?'challenge':`bootstrap-${attempt+1}`);}});
  const peer=await connect();await peer.reconnect();assert.equal(calls.length,4);assert(calls.every(call=>call[1]==='POST'));assert.deepEqual(calls[0],calls[2]);assert.deepEqual(calls[1],calls[3]);await peer.dispose();assert.equal(held,0);
 });
@@ -630,7 +628,8 @@ test('storage failure after renderer joins admission recovery rejects immediatel
  const storageFailure=peer.getSnapshot().health.failures.find(f=>f.scope.kind==='storage');
  assert.equal(storageFailure.code,'storage-transaction-failed');assert.equal(outcome,storageFailure.message,'renderer waiter must reject as soon as saving fails');
  await mounting;await time.tick(60000);assert.equal(f.syncs.length,0);assert.equal(f.mountOptionsSeen.length,1);
- assert.deepEqual(peer.getSnapshot().health.failures.find(f=>f.id===storageFailure.id),storageFailure);
+ const retained=peer.getSnapshot().health.failures.find(f=>f.id===storageFailure.id);
+ assert.ok(retained,'saving failure remains after automatic retries');assert.equal(retained.code,storageFailure.code);assert.deepEqual(retained.recovery,storageFailure.recovery);
  f.setFailCommit(false);await peer.retryPersistence();await peer.dispose();
 });
 test('light reports trigger persistence without a new snapshot; the commit report advances the health generation; identical reports do not notify',async()=>{
@@ -822,7 +821,7 @@ test('renewal asks the host to omit governance history; connect and reconnect en
 
 test('HTTPS delivery starts after the storage lease and teardown retains custody through raw carrier settlement',async()=>{
  const order=[],closed=deferred();let closedStarted=false;
- const f=fixture({createDelivery:()=>({async start(){order.push('delivery-start');},wake(){},close(){closedStarted=true;return closed.promise;}})});
+ const f=fixture({createDelivery:()=>({async start(){order.push('delivery-start');},wake(){},close(){closedStarted=true;return closed.promise;},commitBatch:async()=>{}})});
  f.runtime.peer_bind_storage_epoch=()=>order.push('lease-bound');
  const peer=await f.connect();assert.deepEqual(order,['lease-bound','delivery-start']);
  const closing=peer.dispose();await drain();assert.equal(closedStarted,true);assert.equal(f.counts().held,1);
@@ -848,7 +847,7 @@ test('only the Rust shared-authorization event fences media and remains transien
 test('shared authorization refresh coalesces callers on one retained Peer and joins close custody',async t=>{
  let refresh,requests=0,refreshed=0;const gate=deferred(),material=Uint8Array.of(1,2);
  const f=fixture({identityMaterial:material,enroll:async(_url,options)=>{if(options.signal){requests++;if(requests===1)await gate.promise;}return new Response('{raw}');},
- createDelivery:()=>({start:async()=>{},wake(){},close:async()=>{},refreshAuthorization:async()=>{refreshed++;}}),
+ createDelivery:()=>({start:async()=>{},wake(){},close:async()=>{},commitBatch:async()=>{},refreshAuthorization:async()=>{refreshed++;}}),
  createMedia:options=>{refresh=options.refreshHint;return{mediaV1:{version:1},initialize:async()=>true,supported:()=>true,dispose:async()=>{}};}});
  f.runtime.peer_media_bootstrap=()=>{};f.runtime.peer_media_update_hint=()=>{};
  const peer=await f.connect();t.after(async()=>{gate.resolve();await peer.dispose();});
@@ -860,7 +859,7 @@ test('shared authorization refresh coalesces callers on one retained Peer and jo
 test('a completed shared authorization refresh clears the connection failure its expiry reported',async t=>{
  let refresh,deliveryOptions;
  const f=fixture({identityMaterial:Uint8Array.of(1,2),enroll:async()=>new Response('{raw}'),
- createDelivery:options=>{deliveryOptions=options;return{start:async()=>{},wake(){},close:async()=>{},refreshAuthorization:async()=>{}};},
+ createDelivery:options=>{deliveryOptions=options;return{start:async()=>{},wake(){},close:async()=>{},commitBatch:(writes)=>options.commit(writes),refreshAuthorization:async()=>{}};},
  createMedia:options=>{refresh=options.refreshHint;return{mediaV1:{version:1},initialize:async()=>true,supported:()=>true,dispose:async()=>{}};}});
  f.runtime.peer_media_bootstrap=()=>{};f.runtime.peer_media_update_hint=()=>{};
  const peer=await f.connect();t.after(()=>peer.dispose());
@@ -871,7 +870,7 @@ test('a completed shared authorization refresh clears the connection failure its
 });
 test('final session detach follows media custody and is absent from ordinary reconnect',async()=>{
  const gate=deferred();let detaches=0,mediaStops=0;
- const f=fixture({createMedia:()=>({mediaV1:{version:1},initialize:async()=>true,supported:()=>true,dispose(){mediaStops++;return gate.promise;}}),createDelivery:()=>({start:async()=>true,wake(){},close:async()=>{},detach:async()=>{assert.equal(mediaStops,1);detaches++;}})});
+ const f=fixture({createMedia:()=>({mediaV1:{version:1},initialize:async()=>true,supported:()=>true,dispose(){mediaStops++;return gate.promise;}}),createDelivery:()=>({start:async()=>true,wake(){},close:async()=>{},commitBatch:async()=>{},detach:async()=>{assert.equal(mediaStops,1);detaches++;}})});
  f.runtime.peer_media_bootstrap=()=>{};
  const peer=await f.connect();await peer.reconnect();assert.equal(detaches,0);assert.equal(mediaStops,0);
  const closing=peer.dispose();await drain();assert.equal(detaches,0);assert.equal(f.counts().held,1);
@@ -886,7 +885,7 @@ test('an offline report during a slow first handshake does not close the initial
  // delivery is still starting. The recovery attempt must wait, not reconnect.
  const time=clock(),started=deferred();let starts=0,closes=0;
  const offline={phase:'incomplete',records:[],health:{transport:{phase:'offline',authenticated:false,generation:'0'},admission:{phase:'syncing',requiredRecords:[],pendingPrerequisites:1,progressRevision:'0'}}};
- const f=fixture({recoveryClock:time,initialStatus:offline,createDelivery:()=>({async start(){starts++;await started.promise;},wake(){},close:async()=>{closes++;}})});
+ const f=fixture({recoveryClock:time,initialStatus:offline,createDelivery:()=>({async start(){starts++;await started.promise;},wake(){},close:async()=>{closes++;},commitBatch:async()=>{}})});
  const connecting=f.connect();
  await time.tick(20000);
  assert.equal(starts,1);assert.equal(closes,0,'no recovery attempt closed the handshake in progress');
@@ -898,7 +897,7 @@ test('an offline report during a slow first handshake does not close the initial
 });
 test('a local save failure retries on bounded backoff, pauses delivery reconnects, and resumes once saving succeeds',async()=>{
  const time=clock();let delivery,starts=0,closes=0,commits=0;
- const f=fixture({recoveryClock:time,createDelivery:options=>{delivery=options;return{async start(){starts++;},wake(){},close:async()=>{closes++;}};}});
+ const f=fixture({recoveryClock:time,createDelivery:options=>{delivery=options;return{async start(){starts++;},wake(){},close:async()=>{closes++;},commitBatch:(writes,batch)=>options.commit(writes)};}});
  const commit=f.storage.commit;f.storage.commit=async(...args)=>{commits++;return commit(...args);};
  const peer=await f.connect();assert.equal(starts,1);
  f.setFailCommit(true);f.status({phase:'ready',persistenceNeeded:true});await drain();
@@ -925,19 +924,19 @@ test('a local save failure retries on bounded backoff, pauses delivery reconnect
 });
 test('a non-storage persistence error retries quietly without the storage banner',async()=>{
  const time=clock(),f=fixture({recoveryClock:time}),peer=await f.connect();
- const acknowledge=f.runtime.acknowledge_storage;let refusals=0;
- f.setFailCommit(false);f.runtime.acknowledge_storage=()=>{refusals++;throw Error('runtime ack refused');};
+ const acknowledge=f.runtime.acknowledge_peer_storage_batch;let refusals=0;
+ f.setFailCommit(false);f.runtime.acknowledge_peer_storage_batch=()=>{refusals++;throw Error('runtime ack refused');};
  await assert.rejects(peer.retryPersistence(),/runtime ack refused/);
  let snapshot=peer.getSnapshot();
  assert(!snapshot.health.failures.some(failure=>failure.scope.kind==='storage'));assert.notEqual(snapshot.persistence,'failed');
- f.runtime.acknowledge_storage=acknowledge;await time.tick(1000);
+ f.runtime.acknowledge_peer_storage_batch=acknowledge;await time.tick(1000);
  assert.equal(refusals,1);await assert.doesNotReject(peer.retryPersistence());
  snapshot=peer.getSnapshot();assert(!snapshot.health.failures.some(failure=>failure.scope.kind==='storage'));
  await peer.dispose();
 });
 test('a descriptor renewed during the handshake reconnects at once with a fresh enrollment and shows no failure',async()=>{
  const time=clock();let delivery,starts=0;
- const f=fixture({recoveryClock:time,createDelivery:options=>{delivery=options;return{async start(){starts++;},wake(){},close:async()=>{}};}});
+ const f=fixture({recoveryClock:time,createDelivery:options=>{delivery=options;return{async start(){starts++;},wake(){},close:async()=>{},commitBatch:(writes)=>options.commit(writes)};}});
  const peer=await f.connect();assert.equal(starts,1);const attempts=f.counts().attempts;
  delivery.onError(Error('descriptor-renewed: the host renewed its delivery descriptor during this handshake'));await drain();
  const snapshot=peer.getSnapshot();
@@ -947,7 +946,7 @@ test('a descriptor renewed during the handshake reconnects at once with a fresh 
 });
 test('a refused read-only request never reaches membership recovery (the delivery client keeps it)',async()=>{
  const time=clock();let delivery,starts=0;
- const f=fixture({recoveryClock:time,createDelivery:options=>{delivery=options;return{async start(){starts++;},wake(){},close:async()=>{}};}});
+ const f=fixture({recoveryClock:time,createDelivery:options=>{delivery=options;return{async start(){starts++;},wake(){},close:async()=>{},commitBatch:(writes)=>options.commit(writes)};}});
  const peer=await f.connect();const attempts=f.counts().attempts;
  // A read retry only reports availability; no onError, so no reconnect or re-enrollment.
  delivery.onReadAvailability({route:'catalogue',available:false,retrying:true,attempt:1,status:403});await drain();await time.tick(30000);
@@ -956,7 +955,7 @@ test('a refused read-only request never reaches membership recovery (the deliver
 });
 test('a refused event stream (403) is never shown as lost device authorization and keeps recovering',async()=>{
  const time=clock();let delivery,starts=0;
- const f=fixture({recoveryClock:time,createDelivery:options=>{delivery=options;return{async start(){starts++;},wake(){},close:async()=>{}};}});
+ const f=fixture({recoveryClock:time,createDelivery:options=>{delivery=options;return{async start(){starts++;},wake(){},close:async()=>{},commitBatch:(writes)=>options.commit(writes)};}});
  const peer=await f.connect();const attempts=f.counts().attempts;
  delivery.onError(Object.assign(Error('Delivery HTTP 403'),{status:403,terminal:false,sessionRefused:true}));await drain();
  let snapshot=peer.getSnapshot();

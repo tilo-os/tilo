@@ -24,7 +24,14 @@ use tilo_user_identity::{
     verify_enrollment_token, verify_revocation_entry,
 };
 
-const PORT: u16 = 45_831;
+/// Well-known UDP port every nearby-pairing listener binds and every
+/// soliciting device broadcasts to. Broadcast discovery has no channel to
+/// advertise a port before the first datagram, so the rendezvous must be
+/// fixed. It stays below Linux's ephemeral range (32768-60999) so an outgoing
+/// socket can never be auto-assigned it and block a listener, and inside the
+/// 1025-65535 range the desktop firewall zone accepts. IANA leaves it
+/// unassigned and no common service uses it.
+const NEARBY_PORT: u16 = 23_831;
 const MAX_PACKET: usize = 60 * 1024;
 const RESPONSE_DOMAIN: &[u8] = b"tilo-host-enrollment-response-v1\0";
 const PAIR_DOMAIN: &[u8] = b"tilo-nearby-home-peer-offer-v1\0";
@@ -1047,22 +1054,22 @@ fn valid_solicitation(solicitation: &PairSolicitation) -> bool {
         && tilo_relay::valid_home_peer_label(&solicitation.label)
 }
 
-/// Bind the well-known LAN-discovery port without making an already-running
+/// Bind a LAN-discovery listener on `port` without making an already-running
 /// discovery view or approval sheet prevent another Tilo surface from joining
 /// the same nearby-device flow.  UDP broadcast is deliberately delivered to
 /// every reuse-port listener; each recipient still has to authenticate the
 /// encrypted offer or enrollment request before it can act on it.
-fn bind_pair_listener() -> anyhow::Result<UdpSocket> {
+fn bind_pair_listener(port: u16) -> anyhow::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
     #[cfg(unix)]
     socket.set_reuse_port(true)?;
-    socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, PORT).into())?;
+    socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port).into())?;
     Ok(socket.into())
 }
 
 fn discover(timeout: u64, kind: EnrollmentKind) -> anyhow::Result<()> {
-    let socket = bind_pair_listener()?;
+    let socket = bind_pair_listener(NEARBY_PORT)?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
     let deadline = deadline_after(socket_timeout(timeout))?;
     let mut packet = vec![0_u8; MAX_PACKET];
@@ -1562,6 +1569,7 @@ fn join(
         Some(home_peer_output),
         None,
         None,
+        NEARBY_PORT,
     )
 }
 
@@ -1579,6 +1587,7 @@ fn join_with_token(
     home_peer_output: Option<&std::path::Path>,
     identity_dir: Option<&std::path::Path>,
     requester_lease: Option<tilo_relay::ProcessLease>,
+    port: u16,
 ) -> anyhow::Result<()> {
     validate_requester(requester_lease)?;
     let token = decode_enrollment_token(token_text).context("decode enrollment token")?;
@@ -1609,7 +1618,7 @@ fn join_with_token(
     socket.set_broadcast(true)?;
     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
     let deadline = deadline_after(socket_timeout(timeout))?;
-    let destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, PORT);
+    let destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, port);
     let mut reply = vec![0_u8; MAX_PACKET];
     while std::time::Instant::now() < deadline {
         validate_requester(requester_lease)?;
@@ -1816,6 +1825,7 @@ fn pair(
     identity_dir: Option<&std::path::Path>,
     status_file: Option<&std::path::Path>,
     requester_lease: Option<tilo_relay::ProcessLease>,
+    port: u16,
 ) -> anyhow::Result<()> {
     if kind == EnrollmentKind::PersonalDevice && requester_lease.is_none() {
         bail!("personal-device pairing requires a live first-use requester");
@@ -1855,7 +1865,7 @@ fn pair(
     let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))?;
     socket.set_broadcast(true)?;
     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
-    let destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, PORT);
+    let destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, port);
     let deadline = deadline_after(socket_timeout(timeout))?;
     let mut reply = vec![0_u8; MAX_PACKET];
     while std::time::Instant::now() < deadline {
@@ -1885,6 +1895,7 @@ fn pair(
                     home_peer_output,
                     identity_dir,
                     requester_lease,
+                    port,
                 )?;
                 if let Some(path) = status_file {
                     atomic_file::write_with_mode(
@@ -1922,7 +1933,10 @@ struct ApprovalOptions<'a> {
     expected_device: Option<&'a str>,
     expected_service: Option<&'a str>,
     kind: EnrollmentKind,
-    ready: Option<&'a std::sync::mpsc::Sender<()>>,
+    /// Port the listener binds; 0 lets the OS choose one.
+    port: u16,
+    /// Receives the bound listener port once the approver is listening.
+    ready: Option<&'a std::sync::mpsc::Sender<u16>>,
 }
 
 struct ApprovalIdentity {
@@ -2398,10 +2412,10 @@ fn directory_writable(path: &std::path::Path) -> bool {
 
 fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
     let identity = load_approval_identity(options)?;
-    let socket = bind_pair_listener()?;
+    let socket = bind_pair_listener(options.port)?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
     if let Some(ready) = options.ready {
-        let _ = ready.send(());
+        let _ = ready.send(socket.local_addr()?.port());
     }
     let mut packet = vec![0_u8; MAX_PACKET];
     let pending = receive_approval_request(&socket, &mut packet, options, &identity)?;
@@ -2458,6 +2472,7 @@ fn approve_without_files(
         expected_device,
         expected_service,
         kind,
+        port: NEARBY_PORT,
         ready: None,
     })
 }
@@ -2505,6 +2520,7 @@ fn run() -> anyhow::Result<()> {
             None,
             None,
             None,
+            NEARBY_PORT,
         ),
         Command::PairDevice {
             identity_root,
@@ -2526,6 +2542,7 @@ fn run() -> anyhow::Result<()> {
                 requester_pid,
                 requester_start_time,
             )),
+            NEARBY_PORT,
         ),
         Command::Approve {
             identity_root,
@@ -2546,6 +2563,7 @@ fn run() -> anyhow::Result<()> {
             expected_device: expected_device.as_deref(),
             expected_service: expected_service.as_deref(),
             kind: EnrollmentKind::HomePeer,
+            port: NEARBY_PORT,
             ready: None,
         }),
         Command::PairRoomHost {
@@ -2561,6 +2579,7 @@ fn run() -> anyhow::Result<()> {
             None,
             None,
             None,
+            NEARBY_PORT,
         ),
         Command::ApproveRoomHost {
             identity_root,
@@ -2774,6 +2793,7 @@ mod tests {
                 expected_device: None,
                 expected_service: None,
                 kind: EnrollmentKind::HomePeer,
+                port: 0,
                 ready: None,
             };
             assert_eq!(expected_pair(&options).unwrap(), None);
@@ -3183,6 +3203,7 @@ mod tests {
                     Some(identity_dir.path()),
                     None,
                     Some(lease),
+                    0,
                 )
                 .is_err()
             );
@@ -3305,10 +3326,13 @@ mod tests {
                 expected_device: None,
                 expected_service: None,
                 kind: EnrollmentKind::RoomHost,
+                // An OS-assigned port keeps concurrent tests off each other's
+                // listeners and off the well-known port.
+                port: 0,
                 ready: Some(&ready_tx),
             })
         });
-        ready_rx
+        let port = ready_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("approval listener became ready");
         let host = tempfile::tempdir().unwrap();
@@ -3321,6 +3345,7 @@ mod tests {
             None,
             None,
             None,
+            port,
         )
         .unwrap();
         approval.join().unwrap().unwrap();
@@ -3385,10 +3410,13 @@ mod tests {
                 expected_device: None,
                 expected_service: None,
                 kind: EnrollmentKind::HomePeer,
+                // An OS-assigned port keeps concurrent tests off each other's
+                // listeners and off the well-known port.
+                port: 0,
                 ready: Some(&ready_tx),
             })
         });
-        ready_rx
+        let port = ready_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("approval listener became ready");
         let server = tempfile::tempdir().unwrap();
@@ -3402,6 +3430,7 @@ mod tests {
             None,
             None,
             None,
+            port,
         )
         .unwrap();
         approval.join().unwrap().unwrap();
@@ -3464,6 +3493,7 @@ mod tests {
             expected_device: None,
             expected_service: None,
             kind: EnrollmentKind::HomePeer,
+            port: 0,
             ready: None,
         };
         let Err(error) = load_approval_identity(&options) else {
@@ -3524,8 +3554,7 @@ mod tests {
         .unwrap();
 
         // Seed the new device's key so the approval pins exactly this device:
-        // every nearby pairing on the host shares one broadcast port, and an
-        // unpinned approver answers whichever device solicits first.
+        // an unpinned approver answers whichever device solicits first.
         let new_root = tempfile::tempdir().unwrap();
         let new_identities = tempfile::tempdir().unwrap();
         let new_device = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
@@ -3550,26 +3579,29 @@ mod tests {
                 expected_device: Some(&expected_device),
                 expected_service: Some(&expected_service),
                 kind: EnrollmentKind::PersonalDevice,
+                // An OS-assigned port keeps concurrent tests off each other's
+                // listeners and off the well-known port.
+                port: 0,
                 ready: Some(&ready_tx),
             })
         });
-        match ready_rx.recv_timeout(tilo_test_env::hang_bound()) {
-            Ok(()) => {}
+        let port = match ready_rx.recv_timeout(tilo_test_env::hang_bound()) {
+            Ok(port) => port,
             // An approver that ended before listening dropped the sender; its
-            // own error names why, such as the shared pairing port.
+            // own error names why.
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 panic!("the approver ended before listening: {:?}", approval.join())
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 panic!("the approval listener did not become ready within the hang bound")
             }
-        }
+        };
         // Other nearby-pairing surfaces on this host (an open discovery
-        // view, another approval sheet) share the well-known port. Which of
+        // view, another approval sheet) share the approver's port. Which of
         // them the kernel hands a unicast datagram must not decide whether
         // the enrollment completes.
         let _other_surfaces: Vec<UdpSocket> =
-            (0..3).map(|_| bind_pair_listener().unwrap()).collect();
+            (0..3).map(|_| bind_pair_listener(port).unwrap()).collect();
         let requester = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
         pair(
             new_root.path(),
@@ -3580,6 +3612,7 @@ mod tests {
             Some(new_identities.path()),
             None,
             Some(requester),
+            port,
         )
         .unwrap();
         approval.join().unwrap().unwrap();

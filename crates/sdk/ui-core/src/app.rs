@@ -45,6 +45,10 @@ mod action_directory_snapshot;
 mod bound_record_sync;
 mod close_admission;
 mod document_history;
+mod handoff;
+mod history_actions;
+#[cfg(test)]
+mod history_actions_tests;
 mod model_lifecycle;
 mod participants;
 mod published_invocations;
@@ -61,12 +65,15 @@ use runtime::{
 };
 include!("app/continuation.rs");
 include!("app/dev_session.rs");
+include!("app/dev_library.rs");
 include!("app/actions.rs");
 include!("app/interaction_presence.rs");
 include!("app/accessibility.rs");
 include!("app/collaboration.rs");
 include!("app/persistence.rs");
 include!("app/host.rs");
+#[cfg(all(feature = "native", any(target_os = "android", test)))]
+mod android_text_input;
 #[cfg(feature = "native")]
 mod native_runner;
 #[cfg(all(windows, feature = "native"))]
@@ -124,6 +131,7 @@ mod room_record_launch_tests {
             app_id: room.app_id.clone(),
             cluster_id: room.cluster_id,
             record: None,
+            record_kind: None,
             handle: None,
         }));
         peer.acknowledge_primary(Ok(room));
@@ -184,13 +192,17 @@ mod room_record_launch_tests {
             app_id: room.app_id.clone(),
             cluster_id: room.cluster_id,
             record: continuation.record.clone(),
+            record_kind: None,
             handle: None,
         }));
         peer.acknowledge_primary(Ok(continuation));
         let _ = manager.poll();
         let _ = peer.take_submitted();
 
-        let kept = manager.move_primary_to_record(&RecordId::minted());
+        let kept = manager.move_primary_to_record(&crate::record::RecordCheckout::new(
+            RecordId::minted(),
+            crate::record::RecordKind::new("probe"),
+        ));
         assert_eq!(kept.as_ref(), Some(&room));
         assert!(
             peer.take_submitted().iter().any(
@@ -266,9 +278,15 @@ pub enum UserEvent {
     /// the route and caret, then leave the event loop so the next process can
     /// read them.
     DevSessionStop,
+    /// `tilo-app dev` rebuilt the app. Swap the contents of the windows this
+    /// process already has. Do not open or close any of them.
+    DevSessionReload,
     /// No `WindowEvent` analogue, so accesskit events get their own variant.
     #[cfg(feature = "native")]
     AccessKit(accesskit_winit::WindowEvent),
+    /// The soft keyboard queued edits for the focused field.
+    #[cfg(all(feature = "native", target_os = "android"))]
+    PlatformTextInput,
 }
 
 #[cfg(feature = "native")]
@@ -754,7 +772,7 @@ impl AppConstructionInputs {
             binding,
             Self::production(
                 crate::collaboration::native_initial::take_manager()
-                    .unwrap_or_else(|| CollaborationManager::for_record(&binding.checkout.id)),
+                    .unwrap_or_else(|| CollaborationManager::for_record(&binding.checkout)),
             ),
         )
     }
@@ -2249,6 +2267,27 @@ impl App {
     /// Byte-for-byte the same path as a Ctrl+K palette selection
     /// ([`Self::action_palette_handle_key`]).
 
+    /// Replace the framework view inside the windows this process already has.
+    ///
+    /// Returns whether the running root accepted it. A root that is not the
+    /// framework host leaves the current view in place.
+    #[cfg(feature = "native")]
+    pub(crate) fn install_reloaded_view(
+        &mut self,
+        root: Box<dyn crate::widget::AppWidget>,
+    ) -> bool {
+        let Some(bound) = self
+            .root_widget
+            .as_any_mut()
+            .and_then(|widget| widget.downcast_mut::<crate::widget::BoundAppWidget>())
+        else {
+            return false;
+        };
+        bound.component.root = Some(root);
+        self.needs_sync = true;
+        true
+    }
+
     /// Lets headless tests stand the App up without spinning a winit loop.
     #[doc(hidden)]
     pub fn init_layout(&mut self) {
@@ -3221,6 +3260,7 @@ mod private_continuity_route_tests {
             app_id: route.app_id,
             cluster_id: route.cluster_id,
             record: route.record,
+            record_kind: None,
             handle: None,
         }));
         manager.poll();
@@ -3360,6 +3400,7 @@ mod private_continuity_route_tests {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,
             record: route.record.clone(),
+            record_kind: None,
             handle: None,
         }));
         app.collaboration.manager.poll();
@@ -3390,6 +3431,7 @@ mod private_continuity_route_tests {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,
             record: route.record.clone(),
+            record_kind: None,
             handle: None,
         }));
         app.collaboration.manager.poll();
@@ -3500,23 +3542,21 @@ pub(crate) mod ordinary_confirmation_tests {
             handlers.insert("fixture.control".into());
             handlers
         }
-        fn start_resource_operation_with_document(
+        fn start_operation(
             &mut self,
-            invocation: tilo_actions::InvocationId,
-            kind: tilo_actions::OperationKind,
-            operation: &str,
-            payload: &[u8],
+            op: &crate::widget::ResourceOperation<'_>,
             doc: &mut automerge::AutoCommit,
             path: &automerge::ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-            if operation != "fixture.control" {
-                return self.child.start_resource_operation_with_document(
-                    invocation, kind, operation, payload, doc, path,
-                );
-            }
+            let Some(request) = op
+                .unscoped()
+                .filter(|request| request.type_id == "fixture.control")
+            else {
+                return self.child.start_operation(op, doc, path);
+            };
             self.ledger
                 .borrow_mut()
-                .push(serde_json::from_slice(payload).unwrap());
+                .push(serde_json::from_slice(request.payload).unwrap());
             Ok(Some(crate::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             )))

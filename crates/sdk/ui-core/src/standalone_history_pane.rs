@@ -17,7 +17,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::history::{HistoryEntry, HistoryEntryId};
-use crate::widget::{ActivityTimeline, Button, Row, TaffyTreeExt, Text, Widget};
+use crate::widget::{ActivityTimeline, Button, ModalDialog, Row, TaffyTreeExt, Text, Widget};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HistoryPaneIntent {
@@ -25,11 +25,17 @@ pub enum HistoryPaneIntent {
     ClearSelection,
     Compare(Vec<HistoryEntryId>),
     Close,
+    ReviewRestore,
+    ConfirmRestore,
+    CancelRestore,
 }
 
 enum QueuedIntent {
     Activate(HistoryEntryId),
     Close,
+    ReviewRestore,
+    ConfirmRestore,
+    CancelRestore,
 }
 
 /// The ordinary retained widget tree used by the standalone history host.
@@ -38,6 +44,8 @@ pub struct StandaloneHistoryPane {
     timeline: ActivityTimeline,
     summary: Text,
     summary_value: Rc<RefCell<String>>,
+    restore: Button,
+    review: Option<ModalDialog<Text>>,
     intents: Rc<RefCell<VecDeque<QueuedIntent>>>,
     observed_selection: Option<Vec<HistoryEntryId>>,
     child_nodes: Vec<NodeId>,
@@ -55,6 +63,7 @@ impl StandaloneHistoryPane {
         let intents = Rc::new(RefCell::new(VecDeque::new()));
         let close_intents = Rc::clone(&intents);
         let activate_intents = Rc::clone(&intents);
+        let restore_intents = Rc::clone(&intents);
         let summary_value = Rc::new(RefCell::new("standalone-history-select-hint".to_owned()));
         let summary_source = Rc::clone(&summary_value);
         Self {
@@ -75,6 +84,18 @@ impl StandaloneHistoryPane {
                 .with_id("standalone-history-summary")
                 .with_live(crate::a11y::Politeness::Polite),
             summary_value,
+            restore: Button::new(
+                "standalone-history-restore",
+                "standalone-history-restore",
+                None,
+            )
+            .on_view(move || {
+                restore_intents
+                    .borrow_mut()
+                    .push_back(QueuedIntent::ReviewRestore);
+            })
+            .with_enabled(false),
+            review: None,
             intents,
             observed_selection: None,
             child_nodes: Vec::new(),
@@ -122,7 +143,7 @@ impl StandaloneHistoryPane {
         self.observed_selection = self.selected_ids();
         self.intents
             .borrow_mut()
-            .retain(|intent| matches!(intent, QueuedIntent::Close));
+            .retain(|intent| !matches!(intent, QueuedIntent::Activate(_)));
     }
 
     /// A host-produced, grounded comparison or selection detail. No document
@@ -140,7 +161,54 @@ impl StandaloneHistoryPane {
         self.timeline.clear_row_focus();
         self.intents.borrow_mut().clear();
         self.observed_selection = None;
+        self.review = None;
+        self.restore.set_enabled(false);
         self.set_comparison_summary(None);
+    }
+
+    /// The host decides whether the current selection can be restored; the
+    /// pane never infers write authority from its own state.
+    pub fn set_restore_enabled(&mut self, enabled: bool) {
+        self.restore.set_enabled(enabled);
+    }
+
+    /// Ask the person to confirm returning to the version named `label`.
+    pub fn open_review(&mut self, label: &str) {
+        let confirm = Rc::clone(&self.intents);
+        let cancel = Rc::clone(&self.intents);
+        let dismiss = Rc::clone(&self.intents);
+        self.review = Some(
+            ModalDialog::new(
+                crate::i18n::I18nManager::lookup_plain("standalone-history-restore-title"),
+                Text::new("standalone-history-restore-body")
+                    .with_arg("version", label)
+                    .with_id("standalone-history-restore-body"),
+            )
+            .with_test_id("standalone-history-restore-review")
+            .open(true)
+            .primary_action("standalone-history-restore-confirm", move || {
+                confirm.borrow_mut().push_back(QueuedIntent::ConfirmRestore);
+            })
+            .secondary_action("standalone-history-restore-cancel", move || {
+                cancel.borrow_mut().push_back(QueuedIntent::CancelRestore);
+            })
+            .on_dismiss(move || {
+                dismiss.borrow_mut().push_back(QueuedIntent::CancelRestore);
+            }),
+        );
+    }
+
+    pub fn close_review(&mut self) {
+        self.review = None;
+    }
+
+    pub fn review_is_open(&self) -> bool {
+        self.review.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn review_dialog(&self) -> Option<&ModalDialog<Text>> {
+        self.review.as_ref()
     }
 
     fn selected_ids(&self) -> Option<Vec<HistoryEntryId>> {
@@ -161,6 +229,9 @@ impl StandaloneHistoryPane {
         let queued = self.intents.borrow_mut().pop_front();
         match queued {
             Some(QueuedIntent::Close) => return Some(HistoryPaneIntent::Close),
+            Some(QueuedIntent::ReviewRestore) => return Some(HistoryPaneIntent::ReviewRestore),
+            Some(QueuedIntent::ConfirmRestore) => return Some(HistoryPaneIntent::ConfirmRestore),
+            Some(QueuedIntent::CancelRestore) => return Some(HistoryPaneIntent::CancelRestore),
             Some(QueuedIntent::Activate(id)) => {
                 self.observed_selection = self.selected_ids();
                 return Some(HistoryPaneIntent::Select(id));
@@ -194,18 +265,28 @@ impl Widget for StandaloneHistoryPane {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let header = self.header.build_layout(taffy, theme, node_map);
-        let timeline = self.timeline.build_layout(taffy, theme, node_map);
-        let summary = self.summary.build_layout(taffy, theme, node_map);
-        if let Ok(style) = taffy.style(timeline) {
-            let mut style = style.clone();
-            style.size.height = Dimension::auto();
-            style.min_size.height = Dimension::length(0.0);
-            style.flex_grow = 1.0;
-            style.flex_basis = Dimension::length(0.0);
-            let _ = taffy.set_style(timeline, style);
+        if let Some(dialog) = &mut self.review {
+            self.child_nodes = vec![dialog.build_layout(taffy, theme, node_map)];
+        } else {
+            let header = self.header.build_layout(taffy, theme, node_map);
+            let timeline = self.timeline.build_layout(taffy, theme, node_map);
+            let summary = self.summary.build_layout(taffy, theme, node_map);
+            let restore = self.restore.build_layout(taffy, theme, node_map);
+            if let Ok(style) = taffy.style(timeline) {
+                let mut style = style.clone();
+                style.size.height = Dimension::auto();
+                style.min_size.height = Dimension::length(0.0);
+                style.flex_grow = 1.0;
+                style.flex_basis = Dimension::length(0.0);
+                let _ = taffy.set_style(timeline, style);
+            }
+            if let Ok(style) = taffy.style(restore) {
+                let mut style = style.clone();
+                style.align_self = Some(taffy::AlignSelf::FlexStart);
+                let _ = taffy.set_style(restore, style);
+            }
+            self.child_nodes = vec![header, timeline, summary, restore];
         }
-        self.child_nodes = vec![header, timeline, summary];
         let node = taffy.parent_node(
             Style {
                 flex_direction: taffy::FlexDirection::Column,
@@ -283,10 +364,21 @@ impl Widget for StandaloneHistoryPane {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.header, &self.timeline, &self.summary]
+        if let Some(dialog) = &self.review {
+            return vec![dialog];
+        }
+        vec![&self.header, &self.timeline, &self.summary, &self.restore]
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.header, &mut self.timeline, &mut self.summary]
+        if let Some(dialog) = &mut self.review {
+            return vec![dialog];
+        }
+        vec![
+            &mut self.header,
+            &mut self.timeline,
+            &mut self.summary,
+            &mut self.restore,
+        ]
     }
     fn name(&self) -> &'static str {
         "StandaloneHistoryPane"

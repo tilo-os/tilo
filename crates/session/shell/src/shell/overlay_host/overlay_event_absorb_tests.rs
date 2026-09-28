@@ -1736,7 +1736,7 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
 
         let _ = pump(&mut h, &cursor_moved_at(power.center()));
         assert!(pump(&mut h, &left_button_pressed()));
-        assert!(h.host.power_menu.is_open());
+        assert!(h.host.layers.power_menu.is_open());
         assert!(!h.chrome.borrow().overlays.quick_settings);
     }
 
@@ -1758,7 +1758,7 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
         let _ = pump(&mut h, &cursor_moved_at(painted_power));
         assert!(pump(&mut h, &left_button_pressed()));
         assert!(
-            h.host.power_menu.is_open(),
+            h.host.layers.power_menu.is_open(),
             "clicking the visibly transformed Power tile must open its menu"
         );
         assert!(!h.chrome.borrow().overlays.quick_settings);
@@ -1866,11 +1866,11 @@ fn open_notification_history(h: &mut AbsorbHarness, count: usize, vw: f64, vh: f
         let mut state = h.chrome.borrow_mut();
         for index in 0..count {
             state.push_notification_full(
-                crate::shell::notification::Notification::new(
+                tilo_desktop::notifications::Notification::new(
                     format!("Sync error {index}"),
                     format!("Detailed recovery guidance for retained notification {index}."),
                 )
-                .with_severity(crate::shell::notification::NotificationSeverity::Error),
+                .with_severity(tilo_desktop::notifications::NotificationSeverity::Error),
             );
         }
         state.overlays.quick_settings = true;
@@ -1902,17 +1902,17 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
     )]
     fn notification_history_labels_age_and_severity_concisely() {
         let now = Instant::now();
-        let notification = crate::shell::notification::Notification::new("Backup", "Failed")
-            .with_severity(crate::shell::notification::NotificationSeverity::Warning)
+        let notification = tilo_desktop::notifications::Notification::new("Backup", "Failed")
+            .with_severity(tilo_desktop::notifications::NotificationSeverity::Warning)
             .with_created_at(now - Duration::from_secs(3 * 60));
 
         assert_eq!(
-            notification_history_relative_time(&notification, now),
+            tilo_desktop::notifications::relative_time(&notification, now),
             "3 min ago"
         );
         assert_eq!(
-            notification_severity_label(notification.severity),
-            "Warning"
+            tilo_desktop::notifications::accessible_description(&notification, now),
+            "Warning. From System. 3 min ago. Failed"
         );
     }
 
@@ -1937,7 +1937,8 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
             };
             assert!(pump(&mut h, &wheel), "notification wheel must be consumed");
             assert_eq!(
-                h.host.qs_notification_history_start, 2,
+                h.host.notification_center.first_visible_row(),
+                2,
                 "wheel down reveals older retained errors at {vw}x{vh}"
             );
             assert!(
@@ -1951,15 +1952,15 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
         let mut h = build_harness_sized(1280.0, 720.0);
         open_notification_history(&mut h, 22, 1280.0, 720.0);
         let total = h.chrome.borrow().notification_history().len();
-        let max_start = h.host.qs_notification_max_start(total);
+        let max_start = total.saturating_sub(h.host.qs_notification_visible_rows());
 
         assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::End))));
-        assert_eq!(h.host.qs_notification_history_start, max_start);
+        assert_eq!(h.host.notification_center.first_visible_row(), max_start);
         assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Home))));
-        assert_eq!(h.host.qs_notification_history_start, 0);
+        assert_eq!(h.host.notification_center.first_visible_row(), 0);
         assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::PageDown))));
         assert_eq!(
-            h.host.qs_notification_history_start,
+            h.host.notification_center.first_visible_row(),
             h.host.qs_notification_visible_rows().min(max_start),
             "Page Down advances by exactly the visible card count"
         );
@@ -1992,7 +1993,8 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
         let visible = h.host.qs_notification_visible_rows();
         let start = h
             .host
-            .qs_notification_history_start
+            .notification_center
+            .first_visible_row()
             .min(total.saturating_sub(visible));
         for (item, notification) in retained.children.iter().zip(
             state
@@ -2051,15 +2053,21 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
             theme.tokens.typography.scale.xs,
             theme.tokens.typography.scale.sm,
         );
-        let fits = NotificationHistoryLayout::preferred_height(3, 3, type_px);
-        let short = NotificationHistoryLayout::new(Rect::new(0.0, 0.0, 400.0, fits), type_px);
+        let fits = tilo_desktop::notifications::CenterLayout::preferred_height(3, 3, type_px);
+        let short = tilo_desktop::notifications::CenterLayout::new(
+            Rect::new(0.0, 0.0, 400.0, fits),
+            type_px,
+        );
         assert_eq!(short.visible_rows(3), 3, "every record fits, none is paged");
         assert!(
-            (short.panel.y1 - short.row(2).y1 - qs::PANEL_PAD).abs() < 1e-6,
+            (short.panel().y1 - short.row(2).y1 - qs::PANEL_PAD).abs() < 1e-6,
             "no pager band under a history that fits"
         );
-        let overflows = NotificationHistoryLayout::preferred_height(7, 18, type_px);
-        let long = NotificationHistoryLayout::new(Rect::new(0.0, 0.0, 400.0, overflows), type_px);
+        let overflows = tilo_desktop::notifications::CenterLayout::preferred_height(7, 18, type_px);
+        let long = tilo_desktop::notifications::CenterLayout::new(
+            Rect::new(0.0, 0.0, 400.0, overflows),
+            type_px,
+        );
         assert_eq!(
             long.visible_rows(18),
             7,
@@ -2215,7 +2223,7 @@ fn render_notification_history_accessibility_matrix_at_1x() {
         let panel = h.host.quick_settings_rect();
         let visible = h.host.qs_notification_visible_rows();
         let total = h.chrome.borrow().notification_history().len();
-        let max_start = h.host.qs_notification_max_start(total);
+        let max_start = total.saturating_sub(h.host.qs_notification_visible_rows());
         assert!(visible < total);
         assert!(
             panel.y1 <= f64::from(height) - 16.0,
@@ -2231,7 +2239,7 @@ fn render_notification_history_accessibility_matrix_at_1x() {
             ("middle", max_start / 2),
             ("oldest", max_start),
         ] {
-            h.host.qs_notification_history_start = start;
+            h.host.notification_center.set_first_visible_row(start);
             let scene = paint_scene(&mut h, &theme);
             let mut renderer = OffscreenRenderer::new(width, height);
             renderer.render_png(
@@ -2446,7 +2454,7 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
         );
         expect(
             &rgba,
-            Point::new(layout.panel.x0 + qs::PANEL_PAD / 2.0, row.center().y),
+            Point::new(layout.panel().x0 + qs::PANEL_PAD / 2.0, row.center().y),
             panel_ground,
             &format!("{theme_name}: the padding beside a history row is the Panel ground"),
         );
@@ -2458,7 +2466,7 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
             // Dismissed toasts retire into the history through the
             // same path a real dismissal takes.
             for index in 0..3 {
-                let id = st.push_notification_full(crate::shell::notification::Notification::new(
+                let id = st.push_notification_full(tilo_desktop::notifications::Notification::new(
                     format!("Backup {index} finished"),
                     format!("Snapshot {index} is on the workspace host."),
                 ));
@@ -2478,9 +2486,9 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
         let layout = harness.host.qs_notification_layout();
         assert_eq!(harness.host.qs_notification_visible_rows(), 3);
         assert!(
-            (layout.panel.y1 - layout.row(2).y1 - qs::PANEL_PAD).abs() < 1e-6,
+            (layout.panel().y1 - layout.row(2).y1 - qs::PANEL_PAD).abs() < 1e-6,
             "{theme_name}: a history that fits ends on the panel padding, not a pager band: {:?}",
-            layout.panel
+            layout.panel()
         );
         // The palette over the desktop.
         let mut harness = directory_palette_fixture(vw, vh);
@@ -2561,4 +2569,49 @@ fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
     workspace_lens_promotes_to_one_inset_sheet_on_narrow_outputs();
     compact_shortcut_help_keeps_content_inside_a_comfortable_footer_inset();
     wide_shortcut_help_remains_a_contextual_card();
+}
+
+#[test]
+fn shortcut_guide_tab_stops_only_land_on_painted_bindings() {
+    let (vw, vh) = (1280.0, 800.0);
+    let mut h = build_harness_sized(vw, vh);
+    h.chrome.borrow_mut().overlays.shortcut_help = true;
+    settle(&mut h, vw, vh);
+    let painted: Vec<settings_store::hardware::ShortcutAction> = h
+        .host
+        .shortcut_binding_rects
+        .iter()
+        .map(|(action, _)| *action)
+        .collect();
+    assert!(!painted.is_empty(), "the guide paints its bindings");
+
+    let mut focused = Vec::new();
+    for _ in 0..64 {
+        let mut handled = false;
+        assert!(h.host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Tab),
+            winit::event::Modifiers::default(),
+            false,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        match h.host.shortcut_guide_focus {
+            Some(ShortcutGuideFocus::Binding(action)) => focused.push(action),
+            Some(ShortcutGuideFocus::Done) => break,
+            _ => {}
+        }
+    }
+    let hidden: Vec<_> = focused
+        .iter()
+        .filter(|action| !painted.contains(action))
+        .collect();
+    assert!(
+        hidden.is_empty(),
+        "Tab must never focus a binding the guide does not draw: {hidden:?}"
+    );
+    assert_eq!(
+        focused, painted,
+        "Tab walks the painted bindings in painted order"
+    );
 }

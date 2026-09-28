@@ -11,7 +11,7 @@
 //!
 //! | Gesture                  | Same as                    |
 //! |--------------------------|----------------------------|
-//! | 3-finger swipe up / down | Super+ArrowUp / `ArrowDown` — switch workspace |
+//! | 3-finger swipe up / down | Super+Page Up / Page Down — switch workspace |
 //! | 3-finger swipe left/right| Directly pan the active strip |
 //! | 4-finger swipe up / down | Super+Tab — open / close the overview |
 //! | 3+-finger pinch in / out | open / close the overview |
@@ -211,7 +211,7 @@ pub fn swipe_action(
     let t = config.swipe_threshold;
     // Vertical: workspaces (3 fingers) or the overview (4).
     if ay >= t && ay >= ax * AXIS_DOMINANCE {
-        // Swiping up moves *up* the wheel, the same direction Super+ArrowUp goes (dy is negative when fingers move up).
+        // Swiping up moves *up* the wheel, the same direction Super+Page Up goes (dy is negative when fingers move up).
         let dir = if dy < 0.0 { -1 } else { 1 };
         return Some(match fingers {
             3 => GestureAction::SwitchWorkspace(dir),
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn swipes_resolve_by_axis_threshold_and_finger_count() {
         // Phase `a_three_finger_swipe_up_switches_workspace_the_same_way_the_chord_does`.
-        // Super+ArrowUp is `switch_workspace(-1)`. Swiping up must agree, or the two ways of doing the same thing disagree about which way is up.
+        // Super+Page Up is `switch_workspace(-1)`. Swiping up must agree, or the two ways of doing the same thing disagree about which way is up.
         assert_eq!(
             swipe_action(3, (0.0, -150.0), &cfg()),
             Some(GestureAction::SwitchWorkspace(-1))

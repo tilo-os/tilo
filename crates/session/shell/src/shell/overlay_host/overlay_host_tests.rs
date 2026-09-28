@@ -3,6 +3,7 @@
 use super::*;
 use crate::shell::chrome_state::{ChromeState, WsTab};
 use crate::shell::state::WorkspaceTree;
+use automerge::{ReadDoc as _, ScalarValue, Value};
 
 #[test]
 fn people_overlay_publishes_the_live_roster_and_never_hides_screen_exposure() {
@@ -469,7 +470,7 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         );
         assert_eq!(
             notice.severity,
-            crate::shell::notification::NotificationSeverity::Error
+            tilo_desktop::notifications::NotificationSeverity::Error
         );
         assert_eq!(
             notice.dismiss_after,
@@ -925,8 +926,8 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
 
     fn power_menu_accessibility_paths_focus_and_activate_exact_rows() {
         let mut h = build_harness();
-        h.host.power_menu.open();
-        h.host.power_menu.force_settled_for_visual_test();
+        h.host.layers.power_menu.open();
+        h.host.layers.power_menu.force_settled_for_visual_test();
 
         let semantics = h.host.accessibility().expect("shell semantics");
         assert_eq!(
@@ -946,17 +947,17 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
         );
         assert!(h.host.focus_synthetic_accessibility(&[0, 0]));
         assert_eq!(
-            h.host.power_menu.key(
+            h.host.layers.power_menu.key(
                 &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
                 false
             ),
             PowerMenuClick::Lock
         );
 
-        h.host.power_menu.open();
+        h.host.layers.power_menu.open();
         assert!(h.host.focus_synthetic_accessibility(&[0, 5]));
         assert_eq!(
-            h.host.power_menu.key(
+            h.host.layers.power_menu.key(
                 &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
                 false
             ),
@@ -976,7 +977,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
                 workspace.set_owner(local_user);
             }
             chrome.overlays.ws_settings = true;
-            chrome.ws_settings_tab = crate::shell::workspace_settings::WsTab::Members;
+            chrome.ws_settings_tab = tilo_desktop::workspace_settings::WsTab::Members;
             chrome.overlays.quick_settings = true;
             chrome.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
         }
@@ -1160,6 +1161,38 @@ fn super_chords_open_their_surfaces_once_and_escape_dismisses_the_wheel_first() 
         assert!(!h.chrome.borrow_mut().take_session_lock_request());
     }
 
+    fn typed_session_actions_run_through_the_power_flyouts_executor() {
+        let mut h = build_harness();
+        let mut doc = AutoCommit::new();
+        h.chrome
+            .borrow_mut()
+            .request_session_action(os_actions::SessionAction::Lock);
+        h.host.update(&mut doc, &automerge::ROOT);
+        assert!(
+            h.chrome.borrow_mut().take_session_lock_request(),
+            "a typed lock reaches the compositor lock edge the flyout's Lock row does"
+        );
+
+        h.chrome
+            .borrow_mut()
+            .request_session_action(os_actions::SessionAction::Suspend);
+        h.host.update(&mut doc, &automerge::ROOT);
+        assert!(
+            h.chrome
+                .borrow()
+                .notifications()
+                .iter()
+                .any(|notification| notification.body.contains("suspend")),
+            "without the power service a typed suspend fails visibly, like the row"
+        );
+        assert!(
+            h.chrome
+                .borrow_mut()
+                .take_session_action_requests()
+                .is_empty()
+        );
+    }
+
     fn super_h_opens_and_refocuses_the_recap_without_taking_ctrl_h() {
         let mut h = build_harness();
         let sup = Modifiers::from(ModifiersState::SUPER);
@@ -1284,6 +1317,7 @@ fn super_chords_open_their_surfaces_once_and_escape_dismisses_the_wheel_first() 
     super_s_summons_the_wheel_to_the_pointer_and_toggles_back();
     super_p_opens_the_display_sheet_and_escape_closes_it();
     super_l_requests_the_compositor_lock_once();
+    typed_session_actions_run_through_the_power_flyouts_executor();
     super_h_opens_and_refocuses_the_recap_without_taking_ctrl_h();
     super_shift_h_opens_the_full_history_explorer_directly();
     super_shift_r_opens_recording_setup_then_saves_an_armed_replay();

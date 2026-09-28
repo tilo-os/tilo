@@ -296,10 +296,11 @@ mod tests {
             let publisher = SigningIdentity::generate();
             let packed = signed_package(&publisher);
 
-            // 2,049 references expand beyond 5 MiB while remaining under the
-            // independent 4,096-entry ceiling, so this specifically exercises
-            // the materialized-byte boundary.
-            let repeated_bytes = vec![0x5a; 3072];
+            // 2,049 references expand beyond the materialized limit while
+            // remaining under the independent 4,096-entry ceiling, so this
+            // specifically exercises the materialized-byte boundary.
+            let blob_len = tilo_app_package::MAX_APP_UNPACKED_BYTES / 2048;
+            let repeated_bytes = vec![0x5a; usize::try_from(blob_len).unwrap()];
             let repeated = tilo_app_package::BlobHash::of(&repeated_bytes);
             let mut collection = tilo_app_package::Collection::default();
             for index in 0..=2048 {

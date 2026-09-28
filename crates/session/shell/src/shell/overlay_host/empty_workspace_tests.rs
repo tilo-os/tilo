@@ -1,6 +1,7 @@
 use super::*;
 use crate::shell::build_tilo_overlay_host_with_chrome;
 use crate::shell::state::WorkspaceTree;
+use automerge::{ReadDoc as _, ScalarValue, Value, transaction::Transactable as _};
 use taffy::AvailableSpace;
 
 fn launchpad_labels(widget: &dyn Widget) -> Option<Vec<String>> {
