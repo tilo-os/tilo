@@ -38,14 +38,14 @@ impl ProofSource for Proofs {
     }
 }
 
-fn package(dir: &std::path::Path, key: &SigningKey, id: &str) -> Vec<u8> {
+fn package(dir: &std::path::Path, key: &SigningKey, id: &str, isa: &str) -> Vec<u8> {
     let identity = tilo_app_package::SigningIdentity::from_signing_key(key.clone());
-    let payload = dir.join(id);
+    let payload = dir.join(format!("{id}-{isa}"));
     std::fs::create_dir_all(payload.join("bin")).unwrap();
     std::fs::write(payload.join("bin/editor"), b"published binary").unwrap();
     let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
         "[package]\nid = \"{id}\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
-         [package.isa]\nx86_64 = \"v3\"\n\
+         [package.isa]\n{isa}\n\
          [publisher]\nidentity = \"ed25519:{}\"\nsignature = \"\"\n\
          [sandbox]\nnamespaces = [\"user\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
          [sandbox.net]\nmode = \"off\"\n\
@@ -87,8 +87,10 @@ async fn an_outside_publisher_applies_is_approved_and_publishes() {
     let dir = tmp.path().to_owned();
     tokio::task::spawn_blocking(move || {
         let client = RegistryClient::new(&format!("http://{addr}")).unwrap();
-        let editor = package(&dir, &key, "com.example.editor");
-        let refused = registry_client::publish(&client, &key, &editor, None, None).unwrap_err();
+        let editor = package(&dir, &key, "com.example.editor", "x86_64 = \"v3\"");
+        let editor_arm = package(&dir, &key, "com.example.editor", "aarch64 = \"aarch64\"");
+        let builds = [editor.clone(), editor_arm];
+        let refused = registry_client::publish(&client, &key, &builds, None, None).unwrap_err();
         assert!(format!("{refused:#}").contains("403"), "{refused:#}");
 
         let status = registry_client::apply(
@@ -108,34 +110,54 @@ async fn an_outside_publisher_applies_is_approved_and_publishes() {
             "approved"
         );
 
-        let outside = package(&dir, &key, "org.example.editor");
-        let rejected = registry_client::publish(&client, &key, &outside, None, None).unwrap_err();
+        let outside = package(&dir, &key, "org.example.editor", "x86_64 = \"v3\"");
+        let rejected = registry_client::publish(&client, &key, &[outside], None, None).unwrap_err();
         assert!(
             format!("{rejected:#}").contains("outside this publisher's verified namespaces"),
             "{rejected:#}"
         );
 
-        let published = registry_client::publish(&client, &key, &editor, None, None).unwrap();
-        assert_eq!(published.package_id, "com.example.editor");
-        assert_eq!(published.action, Some(registry_types::EntryAction::Add));
+        let published = registry_client::publish(&client, &key, &builds, None, None).unwrap();
+        assert_eq!(published.len(), 2);
+        assert!(
+            published
+                .iter()
+                .all(|build| build.package_id == "com.example.editor"
+                    && build.action == Some(registry_types::EntryAction::Add))
+        );
         let digest = blake3::hash(&editor).to_hex().to_string();
         assert_eq!(
-            published.url,
-            format!("https://apps.tilo.so/artifacts/{digest}.tapp")
+            published.first().map(|build| build.url.as_str()),
+            Some(format!("https://apps.tilo.so/artifacts/{digest}.tapp").as_str())
         );
         let pending = storage.load_pending_submissions().unwrap();
         let [submission] = pending.as_slice() else {
             panic!("expected one pending submission, got {pending:?}");
         };
+        let mut architectures: Vec<&str> = submission
+            .change
+            .entry
+            .versions
+            .iter()
+            .map(|version| version.target.architecture.as_str())
+            .collect();
+        architectures.sort_unstable();
+        assert_eq!(
+            architectures,
+            ["aarch64", "x86_64"],
+            "one request lists every build"
+        );
         let reviewed = registry_server::review_entry_bytes(
             &storage,
             &submission.change.entry,
             registry_server::InspectionPolicy::default(),
         )
         .unwrap();
-        assert_eq!(
-            reviewed.first().map(|(_, bytes)| bytes.as_slice()),
-            Some(editor.as_slice())
+        assert_eq!(reviewed.len(), 2);
+        assert!(
+            reviewed
+                .iter()
+                .any(|(_, bytes)| bytes.as_slice() == editor.as_slice())
         );
     })
     .await

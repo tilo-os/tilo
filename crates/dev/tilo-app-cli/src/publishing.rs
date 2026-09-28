@@ -154,18 +154,21 @@ pub fn run_publish(args: PublishArgs) -> Result<Value> {
                 .with_context(|| format!("parse {}", path.display()))
         })
         .transpose()?;
+    let bytes = packages
+        .iter()
+        .map(|package| {
+            std::fs::read(package).with_context(|| format!("read {}", package.display()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let outcomes = registry_client::publish(
+        &client,
+        &key,
+        &bytes,
+        args.arch.as_deref(),
+        metadata.as_ref(),
+    )?;
     let mut published = Vec::new();
-    for package in &packages {
-        let bytes =
-            std::fs::read(package).with_context(|| format!("read {}", package.display()))?;
-        let outcome = registry_client::publish(
-            &client,
-            &key,
-            &bytes,
-            args.arch.as_deref(),
-            metadata.as_ref(),
-        )
-        .with_context(|| format!("publish {}", package.display()))?;
+    for (package, outcome) in packages.iter().zip(outcomes) {
         let action = outcome.action.map_or("unchanged", |action| match action {
             registry_types::EntryAction::Add => "add",
             registry_types::EntryAction::Update => "update",
