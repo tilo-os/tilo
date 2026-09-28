@@ -2770,8 +2770,11 @@ impl WgpuEngine {
             if Some(id) == zero_gradient_id {
                 continue;
             }
-            if let Some((_texture, _view)) = self.bind_map.image_map.remove(&id) {
+            if let Some((texture, _view)) = self.bind_map.image_map.remove(&id) {
                 // TODO: have a pool to avoid needless re-allocation
+                // Release it once the submitted work is done; dropping alone
+                // leaves a browser's GPU memory to its garbage collector.
+                texture.destroy();
             }
         }
         Ok(submission)

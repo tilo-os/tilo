@@ -219,3 +219,9 @@ growth, and `Renderer::set_bump_budget_limit` sets it. The per-binding clamp
 alone still let seven buffers reach 128 MiB each; a browser's GPU process has
 a hard memory limit (Safari's is 600 MB), and Safari's was killed at 842 MB
 mid-frame, which hung the macOS window server.
+
+## `vendor/vello/src/wgpu_engine.rs`: transient images are destroyed
+
+A recording's freed images (the per-frame gradient ramp) are destroyed after
+submission instead of only dropped. On WebGPU a dropped texture lives until
+JavaScript collects it: a 60-window soak kept up to 1,100 of them alive.
