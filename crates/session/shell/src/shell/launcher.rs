@@ -2182,7 +2182,7 @@ fn execute_installed_inner(
     ));
     command.env.push((
         "TILO_STARTUP_METRICS_PATH".to_string(),
-        format!("/run/tilo/app/startup-{continuity_instance}.json"),
+        format!("/run/tilo/app/.local/state/startup-{continuity_instance}.json"),
     ));
     attach_continuity_instance(&app.package_id, continuity_instance);
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "continuity staged");
