@@ -666,7 +666,7 @@ impl AppConstructionInputs {
             binding,
             Self::production(
                 crate::collaboration::native_initial::take_manager()
-                    .unwrap_or_else(|| CollaborationManager::for_record(&binding.checkout.id)),
+                    .unwrap_or_else(|| CollaborationManager::for_record(&binding.checkout)),
             ),
         )
     }
@@ -3115,6 +3115,7 @@ mod private_continuity_route_tests {
             app_id: route.app_id,
             cluster_id: route.cluster_id,
             record: route.record,
+            record_kind: None,
             handle: None,
         }));
         manager.poll();
@@ -3254,6 +3255,7 @@ mod private_continuity_route_tests {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,
             record: route.record.clone(),
+            record_kind: None,
             handle: None,
         }));
         app.collaboration.manager.poll();
@@ -3284,6 +3286,7 @@ mod private_continuity_route_tests {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,
             record: route.record.clone(),
+            record_kind: None,
             handle: None,
         }));
         app.collaboration.manager.poll();

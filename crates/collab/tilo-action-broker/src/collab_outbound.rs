@@ -94,7 +94,8 @@ impl PeerPublisher {
             .ok_or("durable owner commit unsupported")?
             .health()
     }
-    /// Commits one request through the installed durable owner.
+    /// Commits one request through the installed durable owner. A document
+    /// write carries the resource kind its app named for the record.
     ///
     /// # Errors
     ///
@@ -102,13 +103,16 @@ impl PeerPublisher {
     pub async fn commit_owner(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        record_kind: Option<String>,
     ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
         let owner = self
             .owner_commit
             .as_ref()
             .ok_or("durable owner commit unsupported")?;
         owner.health()?;
-        let receipt = owner.commit(request.clone()).await?;
+        let receipt = owner
+            .commit_with_record_kind(request.clone(), record_kind)
+            .await?;
         receipt.validate_for(&request)?;
         Ok(receipt)
     }
@@ -437,6 +441,49 @@ mod tests {
                 cluster_id: "77777777-7777-4777-8777-777777777777".into(),
                 presence,
             }],
+        );
+    }
+
+    #[tokio::test]
+    async fn an_owner_commit_carries_the_record_kind_to_the_owner() {
+        use tilo_peer_state::owner_commit::{CommitFuture, OwnerCommitRequest};
+        #[derive(Default)]
+        struct Recording(std::sync::Mutex<Vec<Option<String>>>);
+        impl tilo_peer_state::owner_commit::OwnerCommitService for Recording {
+            fn commit(&self, _: OwnerCommitRequest) -> CommitFuture {
+                Box::pin(async { Err("only commits naming their kind are expected".into()) })
+            }
+            fn commit_with_record_kind(
+                &self,
+                _: OwnerCommitRequest,
+                record_kind: Option<String>,
+            ) -> CommitFuture {
+                self.0.lock().unwrap().push(record_kind);
+                Box::pin(async { Err("recorded".into()) })
+            }
+            fn health(&self) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let owner = Arc::new(Recording::default());
+        let publisher = PeerPublisher::with_optional_owner_commit(None, owner.clone());
+        let request = OwnerCommitRequest {
+            room: "77777777-7777-4777-8777-777777777777".into(),
+            operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                invocation: uuid::Uuid::from_u128(1),
+                redacted: b"{}".to_vec(),
+            },
+        };
+        for kind in [Some("notes.notebook".to_owned()), None] {
+            let error = publisher
+                .commit_owner(request.clone(), kind)
+                .await
+                .unwrap_err();
+            assert_eq!(error, "recorded");
+        }
+        assert_eq!(
+            *owner.0.lock().unwrap(),
+            [Some("notes.notebook".to_owned()), None]
         );
     }
 }

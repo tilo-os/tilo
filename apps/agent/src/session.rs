@@ -4134,6 +4134,7 @@ mod tests {
                     app_id: app.into(),
                     cluster_id: peer::room(),
                     record: record.map(str::to_owned),
+                    record_kind: None,
                     handle: Some(handle.into()),
                 },
             )
