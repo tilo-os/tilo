@@ -3983,6 +3983,89 @@ fn shot_and_inspection_plans_are_built_strictly() {
     }
 }
 
+/// Sizes parse in decimal and binary units, `[budget]` refuses unknown keys, ELF sections are
+/// read without trusting the file, and overruns name what is over and by how much.
+#[test]
+fn package_size_is_reported_against_the_app_budget() {
+    assert_eq!(size::parse_size("4096").unwrap(), 4096);
+    assert_eq!(size::parse_size("1.5 MiB").unwrap(), 1_572_864);
+    assert_eq!(size::parse_size("900KB").unwrap(), 900_000);
+    assert!(size::parse_size("2 GB").is_err());
+    assert!(size::parse_size("MiB").is_err());
+
+    assert_eq!(
+        size::Budget::from_manifest("[package]\nid = \"x\"\n").unwrap(),
+        size::Budget::default()
+    );
+    assert_eq!(
+        size::Budget::from_manifest("[budget]\npackage = \"1 MiB\"\nbinary = 800000\n").unwrap(),
+        size::Budget {
+            package: Some(1024 * 1024),
+            binary: Some(800_000)
+        }
+    );
+    let misspelt = size::Budget::from_manifest("[budget]\npackages = \"1 MiB\"\n").unwrap_err();
+    assert!(format!("{misspelt:#}").contains("unknown budget key"));
+
+    let own = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+    if cfg!(all(
+        target_os = "linux",
+        target_pointer_width = "64",
+        target_endian = "little"
+    )) {
+        let sections = size::elf_sections(&own).expect("this test binary is ELF64");
+        assert!(sections.code > 0 && sections.read_only > 0);
+        assert!(
+            sections.code + sections.read_only + sections.linking + sections.other
+                <= own.len() as u64
+        );
+    }
+    assert_eq!(size::elf_sections(b"not an executable"), None);
+    assert_eq!(size::elf_sections(&own[..64.min(own.len())]), None);
+
+    let temp = tempfile::tempdir().unwrap();
+    let payload = temp.path();
+    std::fs::create_dir_all(payload.join("bin")).unwrap();
+    std::fs::write(payload.join("bin/app"), vec![0; 3000]).unwrap();
+    std::fs::create_dir_all(payload.join("share")).unwrap();
+    std::fs::write(payload.join("share/icon.svg"), vec![0; 100]).unwrap();
+    let budget = size::Budget {
+        package: Some(2000),
+        binary: Some(2500),
+    };
+    let report =
+        size::SizeReport::measure(payload, &[PathBuf::from("bin/app")], 1500, budget).unwrap();
+    assert_eq!(
+        report
+            .files
+            .iter()
+            .map(|file| (file.path.clone(), file.bytes, file.entrypoint))
+            .collect::<Vec<_>>(),
+        [
+            (PathBuf::from("bin/app"), 3000, true),
+            (PathBuf::from("share/icon.svg"), 100, false)
+        ]
+    );
+    assert_eq!(
+        report.overruns(),
+        ["bin/app is 500 B over the binary budget of 2.4 KiB"]
+    );
+    let rendered = report.render();
+    assert!(
+        rendered.contains("75% of the 2.0 KiB budget, 0% of the 8.0 MiB limit"),
+        "{rendered}"
+    );
+    let json = report.to_json();
+    assert_eq!(json["package_bytes"], 1500);
+    assert_eq!(json["over_budget"].as_array().unwrap().len(), 1);
+
+    let over = size::SizeReport::measure(payload, &[], 2001, budget).unwrap();
+    assert_eq!(
+        over.overruns(),
+        ["the package is 1 B over its budget of 2.0 KiB"]
+    );
+}
+
 /// Package specs use the manifest entrypoint and package name, artifact collection is scoped to the
 /// manifest, output is not replaced before building, the payload overlay copies nested files and
 /// rejects symlinks, and profile names are safe Cargo arguments.
@@ -4109,8 +4192,10 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         .expect("identity");
         let identity = pack::load_identity(&identity_path).expect("load identity");
         let output = temp.path().join("reading-list.tapp");
-        let packed =
-            pack::pack_payload(&spec.manifest_path, &payload, &output, &identity).expect("pack");
+        let kinds = resource_kinds::declared_in(&spec.app_dir).expect("resource kinds");
+        assert_eq!(kinds, ["generated.profile"], "the starter's resource");
+        let packed = pack::pack_payload(&spec.manifest_path, kinds, &payload, &output, &identity)
+            .expect("pack");
         assert_eq!(
             packed.bytes,
             std::fs::metadata(&output).expect("tapp").len()
@@ -4119,12 +4204,23 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         let tapp = tilo_app_package::tapp::read(reader, &mut tilo_app_package::DiscardBlobs)
             .expect("decode");
         assert_eq!(tapp.meta.id.to_string(), packed.id);
+        assert_eq!(
+            tapp.meta.manifest.resources.kinds,
+            ["generated.profile"],
+            "the signed manifest declares the app's resource kinds"
+        );
         assert_eq!(tapp.meta.publisher(), identity.public_key_bytes());
         assert!(tapp.missing().is_empty(), "the package carries its payload");
 
-        let again = pack::pack_payload(&spec.manifest_path, &payload, &output, &identity)
-            .err()
-            .expect("an existing output is not overwritten");
+        let again = pack::pack_payload(
+            &spec.manifest_path,
+            Vec::new(),
+            &payload,
+            &output,
+            &identity,
+        )
+        .err()
+        .expect("an existing output is not overwritten");
         assert!(format!("{again:#}").contains("creating"), "{again:#}");
     }
 
@@ -4362,6 +4458,42 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
             format!("{}\n--document\nA file.qdoc\n", temp.path().display())
         );
     }
+}
+
+#[test]
+fn staging_a_reload_library_keeps_only_the_current_and_previous() {
+    let app = tempfile::tempdir().unwrap();
+    let session = dev_session_dir(app.path());
+    std::fs::create_dir_all(&session).unwrap();
+    std::fs::write(session.join("reload.seq"), "6").unwrap();
+    for stale in ["reload-2.so", "reload-6.so"] {
+        std::fs::write(session.join(stale), b"left by an earlier session").unwrap();
+    }
+    std::fs::write(session.join("notes.txt"), b"not a library").unwrap();
+    let built = app.path().join("libapp.so");
+    std::fs::write(&built, b"library").unwrap();
+    let mut staged = Vec::new();
+    for _ in 0..4 {
+        staged.push(stage_dev_reload_library(app.path(), &built).unwrap());
+    }
+    let mut remaining = std::fs::read_dir(&session)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    remaining.sort();
+    let result = std::fs::read_to_string(session.join("reload.path"));
+    std::fs::remove_dir_all(&session).unwrap();
+    assert_eq!(
+        remaining,
+        [
+            "notes.txt",
+            "reload-10.so",
+            "reload-9.so",
+            "reload.path",
+            "reload.seq"
+        ]
+    );
+    assert_eq!(result.unwrap().trim(), staged[3].display().to_string());
 }
 
 #[test]
@@ -5360,4 +5492,117 @@ fn ui_path_accepts_either_sdk_crate() {
             Path::new("../tilo/crates/sdk/tilo-app")
         );
     }
+}
+
+/// The dev loop supplies a runtime host only to an outside app that has none,
+/// and finds it in the checkout the app's `tilo-app` dependency resolves to.
+#[test]
+fn the_dev_loop_supplies_a_runtime_host_only_where_none_serves() {
+    let env = |pairs: &'static [(&'static str, &'static str)]| {
+        move |name: &str| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| OsString::from(value))
+        }
+    };
+    assert!(wants_runtime_host(
+        env(&[("XDG_CURRENT_DESKTOP", "GNOME")]),
+        false
+    ));
+    assert!(
+        !wants_runtime_host(env(&[]), true),
+        "a workspace member builds its own"
+    );
+    assert!(!wants_runtime_host(
+        env(&[("XDG_CURRENT_DESKTOP", "tilo")]),
+        false
+    ));
+    assert!(!wants_runtime_host(
+        env(&[("TILO_RUNTIME_BINARY", "/opt/host")]),
+        false
+    ));
+    assert!(!wants_runtime_host(
+        env(&[("TILO_RUNTIME_STANDALONE", "1")]),
+        false
+    ));
+    assert!(wants_runtime_host(
+        env(&[("TILO_RUNTIME_STANDALONE", "0")]),
+        false
+    ));
+
+    let checkout = tempfile::tempdir().expect("checkout");
+    let tilo_app = checkout.path().join("crates/sdk/tilo-app/Cargo.toml");
+    let runtime = checkout
+        .path()
+        .join("crates/runtime/tilo-runtime/Cargo.toml");
+    for manifest in [&tilo_app, &runtime] {
+        std::fs::create_dir_all(manifest.parent().expect("parent")).expect("crate dir");
+        std::fs::write(manifest, "[package]\n").expect("manifest");
+    }
+    let metadata = serde_json::json!({"packages": [
+        {"name": "tilo-ui", "manifest_path": "/elsewhere/crates/sdk/ui-core/Cargo.toml"},
+        {"name": "tilo-app", "manifest_path": tilo_app},
+    ]});
+    assert_eq!(
+        sdk_root_from_metadata(&metadata).as_deref(),
+        Some(checkout.path())
+    );
+    let without = serde_json::json!({"packages": [
+        {"name": "tilo-app", "manifest_path": "/registry/tilo-app-0.1.0/Cargo.toml"},
+    ]});
+    assert_eq!(sdk_root_from_metadata(&without), None);
+}
+
+/// Only an edit confined to `locales/*.ftl` skips the build; anything else in
+/// the same batch, a removed file, or a nested path still rebuilds.
+#[test]
+fn catalog_only_edits_reload_without_a_build() {
+    let app = Path::new("/apps/demo");
+    assert!(is_locale_catalog(
+        app,
+        Path::new("/apps/demo/locales/en-US.ftl")
+    ));
+    assert!(is_locale_catalog(
+        app,
+        Path::new("/apps/demo/locales/de-DE.FTL")
+    ));
+    assert!(!is_locale_catalog(
+        app,
+        Path::new("/apps/demo/locales/nested/en-US.ftl")
+    ));
+    assert!(!is_locale_catalog(
+        app,
+        Path::new("/apps/demo/src/locales.rs")
+    ));
+    assert!(!is_locale_catalog(
+        app,
+        Path::new("/apps/demo/locales/notes.txt")
+    ));
+    assert!(!is_locale_catalog(
+        app,
+        Path::new("/elsewhere/locales/en-US.ftl")
+    ));
+
+    let stamp = |secs| (SystemTime::UNIX_EPOCH + Duration::from_secs(secs), 10);
+    let before = HashMap::from([
+        (PathBuf::from("/apps/demo/locales/en-US.ftl"), stamp(1)),
+        (PathBuf::from("/apps/demo/src/lib.rs"), stamp(1)),
+        (PathBuf::from("/apps/demo/src/gone.rs"), stamp(1)),
+    ]);
+    let mut after = before.clone();
+    assert!(changed_sources(&before, &after).is_empty());
+    after.insert(PathBuf::from("/apps/demo/locales/en-US.ftl"), stamp(2));
+    after.remove(Path::new("/apps/demo/src/gone.rs"));
+    after.insert(PathBuf::from("/apps/demo/locales/fr-FR.ftl"), stamp(2));
+    let mut changed = changed_sources(&before, &after);
+    changed.sort();
+    assert_eq!(
+        changed,
+        [
+            Path::new("/apps/demo/locales/en-US.ftl"),
+            Path::new("/apps/demo/locales/fr-FR.ftl"),
+            Path::new("/apps/demo/src/gone.rs"),
+        ]
+    );
 }

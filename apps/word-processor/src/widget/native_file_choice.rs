@@ -498,12 +498,14 @@ mod tests {
             .unwrap();
         assert!(matches!(
             widget
-                .start_resource_operation(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                    &payload,
-                    &document,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut document,
                     &automerge::ROOT
                 )
                 .unwrap(),
@@ -530,12 +532,14 @@ mod tests {
         );
         assert!(
             widget
-                .start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                    &payload,
-                    &document,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut document,
                     &automerge::ROOT
                 )
                 .is_err()

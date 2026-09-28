@@ -63,6 +63,7 @@ pub mod change;
 pub mod entry;
 pub mod handshake;
 pub mod moderation;
+pub mod namespace;
 pub mod snapshot;
 pub mod target;
 pub mod verify;
@@ -91,9 +92,10 @@ pub use snapshot::{
     verify_snapshot,
 };
 pub use target::{
-    TILO_OS_PLATFORM, TargetError, WASM_FEATURES, WASM_ISA_BASELINE, WASM32_ARCHITECTURE,
-    WEB_PLATFORM, WEB_RUNTIME_ID_HEX_LEN, WEB_RUNTIME_NAME, WasmIsa, WebRuntime,
-    canonical_wasm_isa, parse_wasm_isa, parse_web_runtime,
+    DESKTOP_PLATFORMS, MACOS_PLATFORM, NATIVE_PLATFORMS, TILO_OS_PLATFORM, TargetError,
+    WASM_FEATURES, WASM_ISA_BASELINE, WASM32_ARCHITECTURE, WEB_PLATFORM, WEB_RUNTIME_ID_HEX_LEN,
+    WEB_RUNTIME_NAME, WINDOWS_PLATFORM, WasmIsa, WebRuntime, canonical_wasm_isa, parse_wasm_isa,
+    parse_web_runtime,
 };
 pub use verify::{VerifyError, verify_change_request, verify_entry_signature};
 

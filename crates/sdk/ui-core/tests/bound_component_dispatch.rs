@@ -626,15 +626,15 @@ impl Widget for Leaf {
         clippy::panic_in_result_fn,
         reason = "callback probe asserts its actual canonical record before returning the toolkit result"
     )]
-    fn start_resource_operation(
+    fn start_operation(
         &mut self,
-        _: tilo_actions::InvocationId,
-        _: tilo_actions::OperationKind,
-        _: &str,
-        _: &[u8],
-        doc: &AutoCommit,
+        op: &tilo_ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         _: &ObjId,
     ) -> Result<Option<tilo_ui::widget::ResourceOperationStart>, String> {
+        if op.unscoped().is_none() {
+            return Ok(None);
+        }
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some(self.record.as_str())
@@ -722,17 +722,28 @@ impl Widget for Root {
         }
     }
 
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &tilo_ui::widget::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<tilo_ui::widget::ResourceOperationStart>, String> {
+        if op.unscoped().is_none() {
+            return tilo_ui::widget::start_in_children(self, op, doc, path);
+        }
         if !LEGACY_MUTABLE.get() {
-            return self.start_resource_operation(invocation, kind, type_id, payload, doc, path);
+            if let Some(started) = tilo_ui::widget::start_in_children(self, op, doc, path)? {
+                return Ok(Some(started));
+            }
+            if let Some(accept) = LEGACY_START.get() {
+                LEGACY_START_CALLS.set(LEGACY_START_CALLS.get().saturating_add(1));
+                return Ok(accept.then(|| {
+                    tilo_ui::widget::ResourceOperationStart::Completed(
+                        tilo_actions::ActionOutput::default(),
+                    )
+                }));
+            }
+            return self.0.start_operation(op, doc, path);
         }
         let marker = doc
             .get(ROOT, "marker")
@@ -745,23 +756,6 @@ impl Widget for Root {
         Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
-    }
-
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        if let Some(accept) = LEGACY_START.get() {
-            LEGACY_START_CALLS.set(LEGACY_START_CALLS.get().saturating_add(1));
-            Ok(accept.then(tilo_actions::ActionOutput::default))
-        } else {
-            self.0
-                .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
-        }
     }
 
     fn sync(&mut self, d: &mut AutoCommit, p: &ObjId) {
@@ -1070,12 +1064,14 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
         let mut outer = AutoCommit::new();
         let invocation = tilo_actions::InvocationId::new();
         assert!(matches!(
-            tile.start_resource_operation(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                "probe",
-                &[],
-                &outer,
+            tile.start_operation(
+                &tilo_ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    "probe",
+                    &[]
+                ),
+                &mut outer,
                 &ROOT
             )
             .unwrap(),
@@ -1264,12 +1260,14 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                 }
 
                 Callback::Start => {
-                    tile.start_resource_operation(
-                        invocation,
-                        tilo_actions::OperationKind::Effect,
-                        "probe",
-                        &[],
-                        &shell,
+                    tile.start_operation(
+                        &tilo_ui::widget::ResourceOperation::local(
+                            invocation,
+                            tilo_actions::OperationKind::Effect,
+                            "probe",
+                            &[],
+                        ),
+                        &mut shell,
                         &ROOT,
                     )
                     .unwrap();
@@ -1465,12 +1463,14 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
             unsafe {
                 bindings.rebuild(&tile, &tree, node, &nodes);
             }
-            tile.start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                "probe",
-                &[],
-                &AutoCommit::new(),
+            tile.start_operation(
+                &tilo_ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    "probe",
+                    &[],
+                ),
+                &mut AutoCommit::new(),
                 &ROOT,
             )
             .unwrap();
@@ -1492,13 +1492,15 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
         let host = ProbeHost::new();
         let mut tile = TileHost::from_component(component(&host, 1));
         let id = tilo_actions::InvocationId::new();
-        let doc = AutoCommit::new();
-        tile.start_resource_operation(
-            id,
-            tilo_actions::OperationKind::Effect,
-            "probe",
-            &[],
-            &doc,
+        let mut doc = AutoCommit::new();
+        tile.start_operation(
+            &tilo_ui::widget::ResourceOperation::local(
+                id,
+                tilo_actions::OperationKind::Effect,
+                "probe",
+                &[],
+            ),
+            &mut doc,
             &ROOT,
         )
         .unwrap();
@@ -2038,11 +2040,13 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
                     ))),
                 ))));
             let result = tree
-                .start_resource_operation_with_document(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    "legacy",
-                    &[],
+                .start_operation(
+                    &tilo_ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        "legacy",
+                        &[],
+                    ),
                     &mut AutoCommit::new(),
                     &ROOT,
                 )
@@ -2095,11 +2099,13 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
                 Box::new(tilo_ui::widget::Container::new().with_child(Box::new(tile))),
             )));
             let mut invoke = || {
-                tree.start_resource_operation_with_document(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    "legacy.mutable",
-                    &[],
+                tree.start_operation(
+                    &tilo_ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        "legacy.mutable",
+                        &[],
+                    ),
                     &mut outer,
                     &outer_path,
                 )
@@ -2183,11 +2189,13 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
         let mut outer = AutoCommit::new();
         outer.put(ROOT, "marker", "outer-A").unwrap();
         let mut invoke = || {
-            tree.start_resource_operation_with_document(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                "legacy.mutable",
-                &[],
+            tree.start_operation(
+                &tilo_ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    "legacy.mutable",
+                    &[],
+                ),
                 &mut outer,
                 &ROOT,
             )

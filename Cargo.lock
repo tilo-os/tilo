@@ -5095,6 +5095,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "greetd-client"
+version = "0.1.0"
+dependencies = [
+ "greetd_ipc",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "greetd_ipc"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5112,7 +5121,7 @@ dependencies = [
  "automerge",
  "bounded-command",
  "console-control",
- "greetd_ipc",
+ "greetd-client",
  "serde_json",
  "taffy",
  "tilo-ui",
@@ -13065,7 +13074,7 @@ dependencies = [
  "futures-util",
  "gbm",
  "getrandom 0.4.3",
- "greeter",
+ "greetd-client",
  "gstreamer-app",
  "hex",
  "image",
@@ -13109,12 +13118,10 @@ dependencies = [
  "serial_test",
  "settings-store",
  "sha2 0.11.0",
- "shell",
  "smithay",
  "smithay-client-toolkit",
  "sysinfo",
  "taffy",
- "tantivy",
  "tar",
  "tempfile",
  "terminal",
@@ -15018,6 +15025,7 @@ dependencies = [
  "iroh",
  "iroh-base",
  "libc",
+ "notes",
  "postcard",
  "qdoc",
  "rcgen",
@@ -15566,9 +15574,14 @@ version = "0.1.0"
 dependencies = [
  "advisory-lock",
  "atomic-file",
+ "base64",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "fs",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "image",
  "launcher",
  "launcher-macos",
  "libc",
@@ -15623,6 +15636,8 @@ version = "0.1.0"
 dependencies = [
  "icu_segmenter",
  "tantivy",
+ "tempfile",
+ "tilo-search",
  "tracing",
  "unicode-normalization",
  "workspace-hack",
@@ -19064,6 +19079,7 @@ dependencies = [
  "libc",
  "libm",
  "linux-raw-sys 0.12.1",
+ "linux-raw-sys 0.4.15",
  "litemap",
  "log",
  "lru 0.16.3",
@@ -19195,9 +19211,6 @@ dependencies = [
  "zeroize",
  "zerotrie",
  "zerovec",
- "zstd",
- "zstd-safe",
- "zstd-sys",
 ]
 
 [[package]]

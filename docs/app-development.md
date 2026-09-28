@@ -684,6 +684,23 @@ persistent identity for updates and publication. `--profile`, `--target`,
 `--features`, and `--no-default-features` expose the corresponding Cargo build
 choices.
 
+Every package run prints where the bytes go: each payload file, largest first,
+with entrypoint binaries split into code, read-only data, dynamic-linking
+tables and the rest, then the signed package against the 8 MiB application
+limit. An app can hold itself to a tighter ceiling in `tilo-app.toml`:
+
+```toml
+[budget]
+package = "1 MiB"   # the signed .tapp
+binary = "900 KiB"  # each entrypoint binary
+```
+
+Sizes are byte counts or strings in B, KB, MB (powers of ten), KiB or MiB
+(powers of two); an unknown key is an error, so a misspelt ceiling cannot
+quietly stop applying. The budget is a build-time check, not package metadata.
+A package over budget fails with the amount it is over, and the previous output
+is left in place. `--json` carries the same breakdown under `size`.
+
 ## The app shape
 
 Keep the binary boring:
@@ -1280,7 +1297,7 @@ command path.
 This is the Tilo application API, not an optional automation adapter. A toolbar
 button, menu item, shortcut, context-menu item, search result, script, and agent
 must converge on the same `ActionBinding` and action address. Do not wire a
-direct callback beside `invoke_resource_operation`; bind the control and let
+direct callback beside `Widget::start_operation`; bind the control and let
 the host invoke that operation handler. Do not add a second socket, command
 enum, hidden test callback, or agent-only implementation. CI runs
 `tools/policy/check_app_resource_action_contract.py`, and the runtime independently
@@ -1379,10 +1396,16 @@ framework view, and imports action types through
 implementation and needs no direct internal actions dependency.
 
 Register document action decoders in `App::action_registry_mut`. Handle every
-effect and view type in `Widget::invoke_resource_operation_v2`, return an
-`ActionOutput`, and declare the locally handled type in
-`Widget::local_resource_operation_handlers`; the legacy unit-returning hook is
-only a compatibility adapter.
+effect and view type in `Widget::start_operation`, the single entry: return
+`Completed` with the promised `ActionOutput` for synchronous work or `Accepted`
+for a job `poll_resource_operation` finishes, and declare the locally handled
+type in `Widget::local_resource_operation_handlers`. Read the request through
+`op.unscoped()`, which hides a hosted invocation that carries its original
+caller's custody; a handler that honours that custody reads it through
+`op.with_custody()` instead and routes every effect and document write through
+the scope. Offer unhandled types to children with
+`ui::widget::start_in_children`. The older `invoke_resource_operation*` and
+`start_resource_operation*` hooks are adapters that CI ratchets to zero.
 Publication refuses duplicate addresses, unsafe confirmation declarations,
 unregistered document actions, empty availability reasons, incoherent job
 contracts, and other contract violations.

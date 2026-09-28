@@ -322,15 +322,15 @@ impl Widget for Probe {
         clippy::panic_in_result_fn,
         reason = "probe asserts canonical admission before returning the toolkit result"
     )]
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        _: tilo_actions::InvocationId,
-        _: tilo_actions::OperationKind,
-        type_id: &str,
-        _: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         doc: &mut automerge::AutoCommit,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(crate::widget::OperationRequest { type_id, .. }) = op.unscoped() else {
+            return Ok(None);
+        };
         if type_id == "bound.view" {
             if COMPOUND_MODE.get() == 1 {
                 self.actions.dispatch(doc, "bound.apply", &FollowUp);

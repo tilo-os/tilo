@@ -185,6 +185,9 @@ pub enum CollabRequest {
         /// files in one room don't merge each other's state; `None` means
         /// one document per `(app, room)`.
         record: Option<String>,
+        /// The resource kind of `record`, named so a host that creates a
+        /// missing record on the app's first write knows what it holds.
+        record_kind: Option<String>,
         /// Name on the caret pill; `None` gets a synthetic `peer-<n>`.
         /// Informational only — never used for routing or grants.
         handle: Option<String>,
@@ -1081,6 +1084,7 @@ impl CollaborationManager {
     pub fn new() -> Self {
         Self::new_scoped(
             continuation_instance_env().map(|instance| format!("continuation:{instance}")),
+            None,
         )
     }
 
@@ -1093,7 +1097,7 @@ impl CollaborationManager {
     )]
     pub(crate) fn switch_native_record(
         &mut self,
-        _record: &crate::record::RecordId,
+        _checkout: &crate::record::RecordCheckout,
     ) -> Result<(), String> {
         Err("native document routes need the broker transport".into())
     }
@@ -1110,18 +1114,18 @@ impl CollaborationManager {
     /// Join through the existing worker; never take the inherited RPC fd twice.
     pub(crate) fn prepare_native_record(
         &mut self,
-        record: &crate::record::RecordId,
+        checkout: &crate::record::RecordCheckout,
     ) -> Option<CommittedDocument> {
         let primary = self.primary_route.accepted.as_ref()?;
         let route = RouteSpec::record(
             primary.route.app_id.clone(),
             primary.route.cluster_id,
-            record.as_str(),
+            checkout.id.as_str(),
         );
         let Backend::Transport(transport) = &mut self.backend else {
             return None;
         };
-        transport.prepare_committed_document(route)
+        transport.prepare_committed_document(route, checkout.kind.as_str())
     }
 }
 
@@ -1148,8 +1152,11 @@ impl CollaborationManager {
     /// don't get handed each other's state. A process with several records
     /// open holds several managers; `tilo_ui::App` swaps its manager on checkout
     /// change.
-    pub fn for_record(record: &crate::record::RecordId) -> Self {
-        Self::new_scoped(Some(record.as_str().to_string()))
+    pub fn for_record(checkout: &crate::record::RecordCheckout) -> Self {
+        Self::new_scoped(
+            Some(checkout.id.as_str().to_string()),
+            Some(checkout.kind.as_str().to_string()),
+        )
     }
 
     pub(crate) fn require_document_authorization(&mut self) {
@@ -1248,7 +1255,7 @@ impl CollaborationManager {
 
     /// Without a built-in transport there is nothing to discover.
     #[cfg(not(feature = "broker-transport"))]
-    fn new_scoped(_record: Option<String>) -> Self {
+    fn new_scoped(_record: Option<String>, _record_kind: Option<String>) -> Self {
         Self::disabled()
     }
 

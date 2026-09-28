@@ -58,6 +58,8 @@ fn ranking_prefers_prefix_then_word_then_substring() {
     let pos = |e: &str| found.iter().position(|f| *f == e).unwrap();
     assert!(pos("🐈") < pos("😸"), "{found:?}");
     assert_eq!(cat.search("pizza", 1)[0].text(), "🍕");
+    // A whole word beats the start of a longer name, and shorter names lead.
+    assert_eq!(cat.search("heart", 1)[0].text(), "❤\u{FE0F}");
     // Keywords count: "+1" is a thumbs-up keyword.
     assert_eq!(cat.search("+1", 1)[0].text(), "👍");
     // Multi-term queries need every term.

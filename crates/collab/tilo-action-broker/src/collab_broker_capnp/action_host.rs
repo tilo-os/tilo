@@ -183,6 +183,24 @@ fn app_open_descriptor(package_id: &str, display_name: &str) -> ActionDescriptor
     }
 }
 
+/// The content an application's open action is asked to show. Its text
+/// argument is a content hash; a typed caller (MCP) sends its argument map
+/// in the canonical envelope, and an empty map is a plain open.
+fn launch_content_hash(argument: Option<&str>) -> &str {
+    let Some(argument) = argument else {
+        return "";
+    };
+    match argument.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX) {
+        Some(json)
+            if serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+                .is_ok_and(|map| map.is_empty()) =>
+        {
+            ""
+        }
+        _ => argument,
+    }
+}
+
 /// Map a broker refusal onto the remote vocabulary. The broker words its
 /// refusals for people; only the distinctions a caller can act on are
 /// recovered, everything else stays a plain refusal.
@@ -1331,7 +1349,7 @@ impl CapnpBrokerState {
                     actor,
                     app_id,
                     crate::services::LaunchContent {
-                        hash: argument.unwrap_or(""),
+                        hash: launch_content_hash(argument),
                         caller: launch,
                     },
                 )
@@ -2043,5 +2061,23 @@ fn bridge_error(error: ActionDirectoryBridgeError) -> ActionHostError {
         other => ActionHostError::Unavailable {
             reason: format!("the action directory is {other:?}"),
         },
+    }
+}
+
+#[cfg(test)]
+mod launch_content_tests {
+    use super::launch_content_hash;
+
+    #[test]
+    fn an_empty_typed_argument_map_opens_without_content() {
+        let empty = format!("{}{{}}", tilo_actions::ARGUMENTS_JSON_PREFIX);
+        assert_eq!(launch_content_hash(Some(&empty)), "");
+        assert_eq!(launch_content_hash(None), "");
+        assert_eq!(launch_content_hash(Some("sha256:abc")), "sha256:abc");
+        let nonempty = format!(
+            "{}{{\"content\":\"x\"}}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX
+        );
+        assert_eq!(launch_content_hash(Some(&nonempty)), nonempty);
     }
 }

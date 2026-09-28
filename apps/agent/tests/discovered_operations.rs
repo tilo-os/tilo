@@ -141,6 +141,7 @@ fn run(
             app_id: APP.into(),
             cluster_id: room,
             record: Some(RECORD.into()),
+            record_kind: None,
             handle: Some("quinten".into()),
         },
     )
@@ -614,6 +615,7 @@ fn connect_word_processor(sock: &std::path::Path, room: Uuid) -> (UnixStream, Au
             app_id: APP.into(),
             cluster_id: room,
             record: Some(RECORD.into()),
+            record_kind: None,
             handle: Some("quinten".into()),
         },
     )
@@ -639,6 +641,7 @@ fn connect_photo_editor(
             app_id: "so.tilo.photos".into(),
             cluster_id: room,
             record: None,
+            record_kind: None,
             handle: Some("photos".into()),
         },
     )

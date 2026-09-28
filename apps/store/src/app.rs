@@ -922,6 +922,8 @@ pub struct StoreApp {
     /// Retained global-search projection. It is rebuilt only after a changed
     /// worker snapshot and resolves palette addresses against live rows.
     search_index: crate::search_provider::StoreSearchIndex,
+    /// The items' names and descriptions, indexed while they stay the same.
+    item_index: ui::search::ListIndex,
     /// Active source-side filter (`All | Tilo | Flatpak | Installed`). Kept
     /// locally: browsing one catalogue must not navigate collaborators.
     active_filter: SourceFilter,
@@ -1029,6 +1031,7 @@ impl StoreApp {
         Self {
             items: Vec::new(),
             search_index: crate::search_provider::StoreSearchIndex::default(),
+            item_index: ui::search::ListIndex::default(),
             active_filter: SourceFilter::All,
             active_category: None,
             query: String::new(),
@@ -1414,7 +1417,7 @@ impl StoreApp {
     /// tests + the detail-sheet reducer both need it.
     pub fn visible_items(&self) -> Vec<&StoreItem> {
         let cat = self.active_category.as_deref();
-        let mut hits: Vec<&StoreItem> = self
+        let hits: Vec<&StoreItem> = self
             .items
             .iter()
             .filter(|i| self.active_filter.accepts(i))
@@ -1422,7 +1425,12 @@ impl StoreApp {
                 Some(c) => i.categories.iter().any(|k| k == c),
                 None => true,
             })
-            .filter(|i| i.matches_query(&self.query))
+            .collect();
+        let ranks = crate::model::relevance(&self.item_index, &self.query, &hits);
+        let mut hits: Vec<(&StoreItem, i32)> = hits
+            .into_iter()
+            .zip(ranks)
+            .filter_map(|(item, rank)| Some((item, rank?)))
             .collect();
         // Ranking: when idle, marked-installed (pinned) apps sort
         // first, then merely-cached, then everything else —
@@ -1430,17 +1438,16 @@ impl StoreApp {
         // refreshes. When a query is active the best fuzzy match wins
         // regardless of install state.
         if self.query.trim().is_empty() {
-            hits.sort_by_key(|i| {
+            hits.sort_by_key(|(i, _)| {
                 (
                     std::cmp::Reverse(i.install_rank()),
                     i.name.to_ascii_lowercase(),
                 )
             });
         } else {
-            let q = self.query.clone();
-            hits.sort_by_cached_key(|i| std::cmp::Reverse(i.relevance(&q)));
+            hits.sort_by_key(|(_, rank)| std::cmp::Reverse(*rank));
         }
-        hits
+        hits.into_iter().map(|(item, _)| item).collect()
     }
 
     /// Category chips: `All` first, then every distinct category

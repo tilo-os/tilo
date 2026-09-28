@@ -8,8 +8,12 @@ use vello::peniko::{BlendMode, Fill};
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 
 use crate::shell::i18n::t;
+use crate::shell::overlay_host::layers::{
+    LayerCx, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer,
+};
 
 /// A Panel opens and closes over the motion token's `base` (HIG §9.7). The
 /// default token: `open`/`close` have no theme in hand, and the menu is
@@ -552,6 +556,82 @@ impl PowerMenu {
                 );
             }
         }
+    }
+}
+
+impl ShellLayer for PowerMenu {
+    fn id(&self) -> LayerId {
+        LayerId::PowerMenu
+    }
+
+    fn is_open(&self) -> bool {
+        PowerMenu::is_open(self)
+    }
+
+    /// Modal for the keyboard: it owns every pressed key so typing cannot
+    /// leak into a hosted or Wayland app behind it, and the conventional
+    /// navigation keys make every action reachable. For the pointer it is a
+    /// flyout: a press outside dismisses it.
+    fn handle_event(&mut self, event: &WindowEvent, cx: &mut LayerCx<'_, '_>) -> Routed {
+        let outcome = match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => self.key(logical_key, cx.event.modifiers.state().shift_key()),
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => match cx.cursor {
+                Some(point) => self.click(cx.viewport, point),
+                None => return Routed::Pass,
+            },
+            _ => return Routed::Pass,
+        };
+        match outcome {
+            PowerMenuClick::Ignored => return Routed::Pass,
+            PowerMenuClick::Consumed => {}
+            PowerMenuClick::Lock => {
+                cx.request(LayerIntent::Session(os_actions::SessionAction::Lock));
+            }
+            PowerMenuClick::Execute(action) => cx.request(LayerIntent::Session(action)),
+        }
+        Routed::Consumed
+    }
+
+    fn draw(&mut self, cx: &mut LayerPaint<'_>) {
+        self.draw(
+            cx.viewport,
+            cx.scene,
+            cx.transform,
+            cx.text_renderer,
+            cx.theme,
+        );
+    }
+
+    fn accessibility(&self, _viewport: Rect) -> Option<ui::a11y::AccessNode> {
+        self.accessibility_snapshot()
+    }
+
+    fn accessibility_rect(&self, viewport: Rect, path: &[usize]) -> Option<Rect> {
+        self.accessibility_rect_for_path(viewport, path)
+    }
+
+    fn focus_accessibility(&mut self, path: &[usize]) -> bool {
+        self.focus_accessibility_path(path)
+    }
+
+    fn dismiss(&mut self) -> bool {
+        self.close()
+    }
+
+    fn is_animating(&self, now: Instant) -> bool {
+        PowerMenu::is_animating(self, now)
     }
 }
 

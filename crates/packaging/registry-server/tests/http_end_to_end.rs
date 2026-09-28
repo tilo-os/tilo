@@ -72,6 +72,7 @@ async fn spawn_server_with(publisher_can_add_new: bool, options: ServeOptions) -
         pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
         can_add_new: publisher_can_add_new,
         note: "test publisher".into(),
+        namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
     });
     storage.save_allowlist(&allow).expect("save allowlist");
 
@@ -834,6 +835,56 @@ async fn unauthorised_change_requests_are_refused_with_403() {
         // pubkey, so verify_change_request refuses before touching disk.
         assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
     }
+}
+
+/// A publisher may name packages only inside its verified namespaces.
+#[tokio::test]
+async fn package_ids_must_lie_in_a_verified_namespace() {
+    let h = spawn_server(true).await;
+    let client = tilo_net::http::client().build().expect("http client");
+    let mut outside = sample_entry(&h.publisher, 100);
+    outside.package_id = "com.acme.editor".into();
+    registry_types::sign_entry(&mut outside, &h.publisher);
+    let resp = client
+        .post(url(h.addr, "/entries"))
+        .json(&sign_change_request(
+            EntryAction::Add,
+            outside,
+            &h.publisher,
+        ))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    assert!(
+        resp.text()
+            .await
+            .unwrap()
+            .contains("outside this publisher's verified namespaces")
+    );
+    assert!(h.storage.load_pending_submissions().unwrap().is_empty());
+
+    let mut allow = h.allowlist.clone();
+    allow.publishers[0].namespaces = vec!["com.acme".into()];
+    h.storage.save_allowlist(&allow).unwrap();
+    let mut acme = sample_entry(&h.publisher, 100);
+    acme.package_id = "com.acme.editor".into();
+    registry_types::sign_entry(&mut acme, &h.publisher);
+    let resp = client
+        .post(url(h.addr, "/entries"))
+        .json(&sign_change_request(EntryAction::Add, acme, &h.publisher))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+    let tilo = sample_entry(&h.publisher, 101);
+    let resp = client
+        .post(url(h.addr, "/entries"))
+        .json(&sign_change_request(EntryAction::Add, tilo, &h.publisher))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
 }
 
 /// A browser page on a configured origin may read the catalogue and blobs;

@@ -25,6 +25,8 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 mod json;
 mod pack;
 pub mod portability;
+mod resource_kinds;
+pub mod size;
 pub mod standalone;
 
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
@@ -503,6 +505,7 @@ pub struct PackageRequest {
 pub struct PackageOutcome {
     pub output: PathBuf,
     pub entrypoints: Vec<PathBuf>,
+    pub size: size::SizeReport,
 }
 
 /// One validated edit to a serialized UI object graph.
@@ -4056,8 +4059,9 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
         || code.contains("ActionForm::new(")
         || code.contains("ui::widget::resource_actions::ActionForm::new(");
     let custom_catalogue = code.contains("fn resources(") && code.contains("ActionSpec::");
-    let custom_invocation =
-        code.contains("invoke_resource_operation") || code.contains("start_resource_operation");
+    let custom_invocation = code.contains("fn start_operation(")
+        || code.contains("invoke_resource_operation")
+        || code.contains("start_resource_operation");
     let custom_operation =
         code.contains("OperationKind::Effect") || code.contains("OperationKind::View");
     let toolkit_surface = toolkit_host && toolkit_descriptor;
@@ -4591,15 +4595,11 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
             spec.app_dir.join("Cargo.toml").display()
         );
     }
-    let profile = request.profile.clone().unwrap_or_else(|| {
-        if request.static_link {
-            "release"
-        } else {
-            "thin-app"
-        }
-        .to_owned()
-    });
-    validate_profile_name(&profile)?;
+    let profile = package_profile(request)?;
+    let budget = std::fs::read_to_string(&spec.manifest_path)
+        .map_err(anyhow::Error::from)
+        .and_then(|source| size::Budget::from_manifest(&source))
+        .with_context(|| format!("reading [budget] from {}", spec.manifest_path.display()))?;
     let output = request.output.as_ref().map_or_else(
         || {
             spec.app_dir
@@ -4657,13 +4657,20 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
     }
 
     let staged_package = staging.path().join("package.tapp");
-    let identity = if let Some(path) = &request.identity {
-        pack::load_identity(&absolute_from(&spec.app_dir, path))?
-    } else {
-        eprintln!("[tilo-app] no --identity supplied; signing with an ephemeral key");
-        tilo_app_package::SigningIdentity::generate()
-    };
-    let packed = pack::pack_payload(&spec.manifest_path, &payload, &staged_package, &identity)?;
+    let identity = signing_identity(&spec.app_dir, request.identity.as_deref())?;
+    let packed = pack::pack_payload(
+        &spec.manifest_path,
+        resource_kinds::declared_in(&spec.app_dir)?,
+        &payload,
+        &staged_package,
+        &identity,
+    )?;
+    let entrypoints: Vec<PathBuf> = spec
+        .entrypoints
+        .iter()
+        .map(|(_, path)| path.clone())
+        .collect();
+    let size = within_budget(&payload, &entrypoints, packed.bytes, budget, &output)?;
     std::fs::rename(&staged_package, &output)
         .with_context(|| format!("publishing package to {}", output.display()))?;
     eprintln!(
@@ -4674,8 +4681,62 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
     );
     Ok(PackageOutcome {
         output,
-        entrypoints: spec.entrypoints.into_iter().map(|(_, path)| path).collect(),
+        entrypoints,
+        size,
     })
+}
+
+fn package_profile(request: &PackageRequest) -> Result<String> {
+    let profile = request.profile.clone().unwrap_or_else(|| {
+        if request.static_link {
+            "release"
+        } else {
+            "thin-app"
+        }
+        .to_owned()
+    });
+    validate_profile_name(&profile)?;
+    Ok(profile)
+}
+
+/// Prints where the staged package's bytes go and refuses it when it exceeds
+/// the app's `[budget]`, before anything replaces `output`.
+fn within_budget(
+    payload: &Path,
+    entrypoints: &[PathBuf],
+    archive: u64,
+    budget: size::Budget,
+    output: &Path,
+) -> Result<size::SizeReport> {
+    let size = size::SizeReport::measure(payload, entrypoints, archive, budget)?;
+    eprintln!("{}", size.render());
+    let overruns = size.overruns();
+    if !overruns.is_empty() {
+        let kept = if output.exists() {
+            "the previous package was kept"
+        } else {
+            "nothing was written"
+        };
+        bail!(
+            "over budget, so {kept} at {}:\n  {}",
+            output.display(),
+            overruns.join("\n  ")
+        );
+    }
+    Ok(size)
+}
+
+/// The publisher identity at `path`, relative to the app, or an ephemeral
+/// one when none is given.
+fn signing_identity(
+    app_dir: &Path,
+    path: Option<&Path>,
+) -> Result<tilo_app_package::SigningIdentity> {
+    let Some(path) = path else {
+        eprintln!("[tilo-app] no --identity supplied; signing with an ephemeral key");
+        return Ok(tilo_app_package::SigningIdentity::generate());
+    };
+    pack::load_identity(&absolute_from(app_dir, path))
 }
 
 fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
@@ -4958,6 +5019,8 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
         watcher.watch_tree(root)?;
     }
     let _signals = DevSignalGuard::install()?;
+    provide_runtime_host(&app_dir);
+    let _runtime = DevRuntimeGuard;
     eprintln!(
         "[tilo-app] watching {}",
         roots
@@ -5047,6 +5110,9 @@ fn rebuild_running_dev_app(
     sources: &mut HashMap<PathBuf, (SystemTime, u64)>,
 ) -> bool {
     drain_until_quiet(events, roots, request.debounce, watcher);
+    if reload_catalogs_without_build(plan, child.as_ref(), roots, sources) {
+        return false;
+    }
     loop {
         if let Some(next) = snapshot_restart_sources(roots) {
             *sources = next;
@@ -5122,6 +5188,75 @@ fn rebuild_running_dev_app(
         }
         return false;
     }
+}
+
+/// A running in-place app reads `locales/*.ftl` from disk on every reload, so
+/// an edit to catalogs alone needs a signal, not a build. Returns whether it
+/// was handled that way.
+fn reload_catalogs_without_build(
+    plan: &CargoPlan,
+    child: Option<&Child>,
+    roots: &[PathBuf],
+    sources: &mut HashMap<PathBuf, (SystemTime, u64)>,
+) -> bool {
+    let Some(running) = child else {
+        return false;
+    };
+    if !app_supports_in_place_reload(&plan.app_dir) {
+        return false;
+    }
+    let Some(next) = snapshot_restart_sources(roots) else {
+        return false;
+    };
+    let app_dir = plan
+        .app_dir
+        .canonicalize()
+        .unwrap_or_else(|_| plan.app_dir.clone());
+    let changed = changed_sources(sources, &next);
+    if changed.is_empty()
+        || !changed.iter().all(|path| is_locale_catalog(&app_dir, path))
+        || !reload_running_dev_app(running)
+    {
+        return false;
+    }
+    *sources = next;
+    eprintln!("[tilo-app] catalogs changed; reloading strings without a build");
+    true
+}
+
+/// Paths added, removed or restamped between two source snapshots.
+fn changed_sources<'a>(
+    before: &'a HashMap<PathBuf, (SystemTime, u64)>,
+    after: &'a HashMap<PathBuf, (SystemTime, u64)>,
+) -> Vec<&'a Path> {
+    let mut changed = after
+        .iter()
+        .filter(|(path, stamp)| before.get(*path) != Some(stamp))
+        .map(|(path, _)| path.as_path())
+        .collect::<Vec<_>>();
+    changed.extend(
+        before
+            .keys()
+            .filter(|path| !after.contains_key(*path))
+            .map(PathBuf::as_path),
+    );
+    changed
+}
+
+/// A Fluent catalog directly under the app's `locales/`.
+fn is_locale_catalog(app_dir: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(app_dir) else {
+        return false;
+    };
+    let mut components = relative.components();
+    components
+        .next()
+        .is_some_and(|first| first.as_os_str() == "locales")
+        && components.next().is_some()
+        && components.next().is_none()
+        && relative
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("ftl"))
 }
 
 /// Drain edits queued while Cargo was compiling. Returning `true` makes the
@@ -5461,6 +5596,8 @@ fn local_dependency(app_dir: &Path, dependency_name: &str) -> Result<Option<Path
 struct DevWatcher {
     inner: RecommendedWatcher,
     watched: HashSet<PathBuf>,
+    /// The OS ran out of watches; the source stamp poll carries on alone.
+    exhausted: bool,
 }
 
 impl DevWatcher {
@@ -5468,16 +5605,29 @@ impl DevWatcher {
         Self {
             inner,
             watched: HashSet::new(),
+            exhausted: false,
         }
     }
 
     fn watch_tree(&mut self, root: &Path) -> Result<()> {
+        if self.exhausted {
+            return Ok(());
+        }
         for directory in source_watch_directories(root)? {
             if !self.watched.insert(directory.clone()) {
                 continue;
             }
             if let Err(error) = self.inner.watch(&directory, RecursiveMode::NonRecursive) {
                 self.watched.remove(&directory);
+                if matches!(error.kind, notify::ErrorKind::MaxFilesWatch) {
+                    self.exhausted = true;
+                    eprintln!(
+                        "[tilo-app] the OS file watch limit is reached (another program holds \
+                         most of fs.inotify.max_user_watches); checking for changes every {} ms instead",
+                        SOURCE_POLL_INTERVAL.as_millis()
+                    );
+                    return Ok(());
+                }
                 return Err(error).with_context(|| format!("watching {}", directory.display()));
             }
         }
@@ -5773,6 +5923,182 @@ fn attach_dev_session_env(command: &mut ProcessCommand, app_dir: &Path) {
         return;
     }
     command.env("TILO_DEV_SESSION", dir);
+    if let Some(runtime) = DEV_RUNTIME.get().and_then(Option::as_ref) {
+        command
+            .env("TILO_RUNTIME_BINARY", &runtime.host)
+            .env("TILO_RUNTIME_PROFILE", &runtime.profile);
+    }
+}
+
+/// The runtime [`provide_runtime_host`] built for this dev session.
+static DEV_RUNTIME: std::sync::OnceLock<Option<DevRuntime>> = std::sync::OnceLock::new();
+
+/// A runtime host and the private profile its daemon serves. The profile is
+/// the session's own: the user's runtime daemon may be any other version, and
+/// an app cannot attach to a daemon that speaks another protocol.
+struct DevRuntime {
+    host: PathBuf,
+    profile: PathBuf,
+}
+
+/// Stops the session's runtime daemon when the dev loop ends, so the next
+/// session's daemon is started from the host that session builds.
+struct DevRuntimeGuard;
+
+impl Drop for DevRuntimeGuard {
+    fn drop(&mut self) {
+        if let Some(runtime) = DEV_RUNTIME.get().and_then(Option::as_ref) {
+            stop_runtime_daemon(&runtime.profile);
+        }
+    }
+}
+
+/// The pid the runtime daemon serving `profile` reports, if one answers.
+fn runtime_daemon_pid(profile: &Path) -> Option<i32> {
+    use std::io::Read as _;
+    let mut stream = std::os::unix::net::UnixStream::connect(profile.join("native.sock")).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .ok()?;
+    stream.write_all(b"{\"native\":\"status\"}\n").ok()?;
+    let mut line = String::new();
+    BufReader::new(stream)
+        .take(16_385)
+        .read_line(&mut line)
+        .ok()?;
+    let status: serde_json::Value = serde_json::from_str(&line).ok()?;
+    i32::try_from(status.get("pid")?.as_u64()?)
+        .ok()
+        .filter(|pid| *pid > 0)
+}
+
+fn stop_runtime_daemon(profile: &Path) {
+    let Some(pid) = runtime_daemon_pid(profile) else {
+        return;
+    };
+    // SAFETY: `pid` is the daemon serving this dev session's private profile,
+    // which only runtime hosts this loop started can have created.
+    if unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
+        eprintln!("[tilo-app] stopped the dev runtime (pid {pid})");
+    }
+}
+
+/// Whether the dev loop has to supply a runtime host. A workspace member finds
+/// the one the workspace builds beside it, a Tilo session serves its own, and
+/// `TILO_RUNTIME_BINARY` or `TILO_RUNTIME_STANDALONE=1` is the user's choice.
+fn wants_runtime_host(var: impl Fn(&str) -> Option<OsString>, workspace_member: bool) -> bool {
+    !workspace_member
+        && var("TILO_RUNTIME_BINARY").is_none()
+        && var("TILO_RUNTIME_STANDALONE").as_deref() != Some("1".as_ref())
+        && var("XDG_CURRENT_DESKTOP").as_deref() != Some("tilo".as_ref())
+}
+
+/// The checkout holding the `tilo-app` crate an app resolves to, from
+/// `cargo metadata`. Its workspace also builds the standalone runtime.
+fn sdk_root_from_metadata(metadata: &serde_json::Value) -> Option<PathBuf> {
+    let manifest = metadata
+        .get("packages")?
+        .as_array()?
+        .iter()
+        .find(|package| {
+            package.get("name").and_then(serde_json::Value::as_str) == Some("tilo-app")
+        })?
+        .get("manifest_path")?
+        .as_str()?;
+    Path::new(manifest)
+        .ancestors()
+        .find(|root| {
+            root.join("crates/runtime/tilo-runtime/Cargo.toml")
+                .is_file()
+        })
+        .map(Path::to_path_buf)
+}
+
+/// Builds `tilo-runtime` from the SDK an outside app uses, so the app can
+/// attach to a runtime that speaks its own protocol version.
+fn provide_runtime_host(app_dir: &Path) {
+    let wanted = wants_runtime_host(
+        |name| std::env::var_os(name),
+        app_is_workspace_member(app_dir),
+    );
+    let host = wanted.then(|| build_runtime_host(app_dir)).and_then(|built| {
+        built
+            .inspect_err(|error| {
+                eprintln!(
+                    "[tilo-app] no runtime host for the app: {error:#}\n\
+                     [tilo-app] set TILO_RUNTIME_BINARY to one, or TILO_RUNTIME_STANDALONE=1 to run without"
+                );
+            })
+            .ok()
+    });
+    let runtime = host.map(|host| {
+        let profile = dev_session_dir(app_dir).join("runtime");
+        // A daemon left by a session that did not stop cleanly runs an older host.
+        stop_runtime_daemon(&profile);
+        DevRuntime { host, profile }
+    });
+    let _ = DEV_RUNTIME.set(runtime);
+}
+
+fn build_runtime_host(app_dir: &Path) -> Result<PathBuf> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let output = ProcessCommand::new(&cargo)
+        .args(["metadata", "--format-version", "1", "--manifest-path"])
+        .arg(app_dir.join("Cargo.toml"))
+        .current_dir(app_dir)
+        .stderr(Stdio::inherit())
+        .output()
+        .context("running cargo metadata")?;
+    if !output.status.success() {
+        bail!("cargo metadata failed with {}", output.status);
+    }
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("parsing cargo metadata")?;
+    let root = sdk_root_from_metadata(&metadata).ok_or_else(|| {
+        anyhow::anyhow!("the app's tilo-app dependency is not in a Tilo checkout")
+    })?;
+    let manifest = root.join("crates/runtime/tilo-runtime/Cargo.toml");
+    eprintln!(
+        "[tilo-app] building the runtime host from {}",
+        root.display()
+    );
+    let mut child = ProcessCommand::new(&cargo)
+        .args([
+            "build",
+            "--locked",
+            "-p",
+            "tilo-runtime",
+            "--bin",
+            "tilo-runtime",
+        ])
+        .arg("--message-format=json-render-diagnostics")
+        .current_dir(&root)
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("starting the runtime host build")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("Cargo build has no artifact stream"))?;
+    let expected = manifest.canonicalize().unwrap_or(manifest);
+    let mut artifacts = HashMap::new();
+    for line in BufReader::new(stdout).lines() {
+        collect_cargo_message(
+            &line.context("reading Cargo artifact stream")?,
+            &expected,
+            &mut artifacts,
+        );
+    }
+    let status = child.wait().context("waiting for the runtime host build")?;
+    if !status.success() {
+        bail!("the runtime host build failed with {status}");
+    }
+    let host = artifacts
+        .remove("tilo-runtime")
+        .ok_or_else(|| anyhow::anyhow!("Cargo did not report the tilo-runtime binary"))?;
+    eprintln!("[tilo-app] runtime host {}", host.display());
+    Ok(host)
 }
 
 fn spawn_dev_child(plan: &CargoPlan) -> Result<Child> {
@@ -6055,7 +6381,28 @@ fn stage_dev_reload_library(app_dir: &Path, library: &Path) -> Result<PathBuf> {
     let pointer = dir.join("reload.path");
     std::fs::write(&pointer, format!("{}\n", destination.display()))
         .with_context(|| format!("writing {}", pointer.display()))?;
+    remove_superseded_reload_libraries(&dir, seq);
     Ok(destination)
+}
+
+/// Drops every staged library older than the one before `current`. An app
+/// that already mapped one keeps it after the file goes; it only ever opens
+/// the library `reload.path` names.
+fn remove_superseded_reload_libraries(dir: &Path, current: u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let superseded = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("reload-")?.strip_suffix(".so"))
+            .and_then(|seq| seq.parse::<u64>().ok())
+            .is_some_and(|seq| seq.saturating_add(1) < current);
+        if superseded {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 fn spawn_thin_dev_binary_reported(

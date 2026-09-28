@@ -764,11 +764,7 @@ fn session_power_actions_respect_inhibitors_and_report_failure() {
             "Editor has an unsaved document",
             tilo_power_mgmt::inhibit::INHIBIT_LOGOUT,
         );
-        assert!(
-            host.apply_power_menu_outcome(PowerMenuClick::Execute(
-                os_actions::SessionAction::Logout
-            ))
-        );
+        assert!(host.apply_layer_intent(LayerIntent::Session(os_actions::SessionAction::Logout)));
         assert_eq!(chrome.borrow().notifications().len(), 1);
         assert!(
             chrome.borrow().notifications()[0]
@@ -780,9 +776,9 @@ fn session_power_actions_respect_inhibitors_and_report_failure() {
             "Call is sharing the screen",
             tilo_power_mgmt::inhibit::INHIBIT_USER_SWITCH,
         );
-        assert!(host.apply_power_menu_outcome(PowerMenuClick::Execute(
-            os_actions::SessionAction::SwitchUser
-        )));
+        assert!(
+            host.apply_layer_intent(LayerIntent::Session(os_actions::SessionAction::SwitchUser))
+        );
         assert_eq!(chrome.borrow().notifications().len(), 2);
         assert!(
             chrome.borrow().notifications()[1]
@@ -792,17 +788,13 @@ fn session_power_actions_respect_inhibitors_and_report_failure() {
     }
 
     fn logout_power_action_publishes_its_edge_before_dispatch_returns() {
-        let (host, _chrome) = host_with_chrome();
+        let (mut host, _chrome) = host_with_chrome();
         let directory = tempfile::tempdir().unwrap();
         let request = directory.path().join("logout-request");
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_SESSION_LOGOUT_REQUEST", &request);
 
-        assert!(
-            host.apply_power_menu_outcome(PowerMenuClick::Execute(
-                os_actions::SessionAction::Logout
-            ))
-        );
+        assert!(host.apply_layer_intent(LayerIntent::Session(os_actions::SessionAction::Logout)));
         assert_eq!(std::fs::read_to_string(&request).unwrap(), "logout\n");
         assert!(os_actions::take_logout_request());
         assert!(!os_actions::take_logout_request());
@@ -814,11 +806,7 @@ fn session_power_actions_respect_inhibitors_and_report_failure() {
         let bridge = tilo_power_mgmt::PowerBridge::new();
         host.set_power_bridge(bridge.clone());
 
-        assert!(
-            host.apply_power_menu_outcome(PowerMenuClick::Execute(
-                os_actions::SessionAction::Suspend
-            ))
-        );
+        assert!(host.apply_layer_intent(LayerIntent::Session(os_actions::SessionAction::Suspend)));
         assert_eq!(
             bridge.drain_commands(),
             vec![tilo_power_mgmt::PowerCommand::Suspend]
@@ -827,13 +815,9 @@ fn session_power_actions_respect_inhibitors_and_report_failure() {
     }
 
     fn suspend_without_the_power_service_reports_failure() {
-        let (host, chrome) = host_with_chrome();
+        let (mut host, chrome) = host_with_chrome();
 
-        assert!(
-            host.apply_power_menu_outcome(PowerMenuClick::Execute(
-                os_actions::SessionAction::Suspend
-            ))
-        );
+        assert!(host.apply_layer_intent(LayerIntent::Session(os_actions::SessionAction::Suspend)));
         assert!(host.drain_session_action_results());
         assert_eq!(chrome.borrow().notifications().len(), 1);
         assert!(chrome.borrow().notifications()[0].body.contains("suspend"));

@@ -9,8 +9,9 @@
 //! - fields are found by substring and prefix as the person types, through
 //!   gram phrases ([`GramTokenizer`]);
 //! - hits rank by the best [`MatchTier`] × [`FieldWeight`] of their fields,
-//!   and each page walks the ranks best first, reading only as many matches
-//!   as it shows;
+//!   one `DisjunctionMaxQuery` of constant scores, collected by `TopDocs`;
+//!   an index may rank tiers its own way ([`Ranks`]) and order hits by
+//!   per-record fast fields ([`SearchIndex::search_scored`]);
 //! - body text follows every field match, ordered by BM25 over its
 //!   ICU-segmented words ([`WordTokenizer`]);
 //! - surfaces that search loosely remembered names opt into typo-tolerant
@@ -29,20 +30,28 @@
 //! assert_eq!(hits[0].rank, Some(100));
 //! ```
 
+#[cfg(feature = "disk")]
+mod disk;
 pub mod fold;
 mod highlight;
 mod index;
+mod list;
 mod query;
 mod tokenizer;
 mod weight;
 
+#[cfg(feature = "disk")]
+pub use disk::{DiskHit, DiskIndex, DiskWriter};
 pub use fold::{fold, fold_char};
 pub use highlight::locate;
-pub use index::{BodyPiece, BodySource, Document, Hit, Hits, Page, SearchIndex};
+pub use index::{BodyPiece, BodySource, Document, Hit, Hits, Page, SearchIndex, Signals};
+pub use list::ListIndex;
 pub use query::Matching;
+/// The engine's error, for callers opening a [`DiskIndex`].
+pub use tantivy::TantivyError;
 pub use tokenizer::{GRAM_WIDTH, GramTokenizer, WordTokenizer};
 pub use weight::{
-    FUZZY_RANK, FieldWeight, INDEXED_WEIGHTS, MAX_FIELD_RANK, MatchTier, SPANNING_RANK,
+    FUZZY_RANK, FieldWeight, INDEXED_WEIGHTS, MAX_FIELD_RANK, MatchTier, Ranks, SPANNING_RANK,
 };
 
 #[cfg(test)]

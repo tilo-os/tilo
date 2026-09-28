@@ -1014,6 +1014,284 @@ async fn catalogue_and_close_work_with_multiple_writers() {
     checked_application_catalogue(true, PublicationFailureFixture::None).await;
 }
 
+/// A document proposed over the relay and accepted by the room's owner:
+/// each step is an ordinary action whose receipt lands in the room's
+/// activity, and only the acceptance creates the record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one proposal followed from the relay through the owner and back"
+)]
+async fn a_document_proposed_over_the_relay_is_created_only_once_the_owner_accepts() {
+    use tilo_delivery_protocol::{
+        peer_actions::{ActionMessage, DirectedAction},
+        transport_v2::EnvelopeV2,
+    };
+    use tilo_peer_state::document_import::{
+        self as import, DecideArgument, DocumentImportDecisionV1, DocumentImportProposalV1,
+        DocumentImportTerms, ImportState, ProposeArgument,
+    };
+    use tilo_relay::{RelayClient, transport::Envelope};
+    use ui::automerge::transaction::Transactable as _;
+    const APP: &str = "so.tilo.notes";
+    let temp = tempfile::tempdir().unwrap();
+    let state = temp.path().join("owner");
+    let ready = temp.path().join("ready.json");
+    let owner = SessionOwner::initialize(&state).unwrap();
+    let mut remote = owner.peer().clone();
+    drop(owner);
+    let (_host, metadata, cap) = start(&state, &ready).await;
+    let origin = metadata["fixture_origin"].as_str().unwrap();
+    let key = SigningKey::from_bytes(&[92; 32]);
+    let complete_request = proof(origin, &cap, &key, 92).await;
+    let (code, bootstrap) = request(
+        origin,
+        "/enrollment/complete",
+        Some(serde_json::to_string(&complete_request).unwrap()),
+        Some(&cap),
+    )
+    .await;
+    assert_eq!(code, 200, "{bootstrap}");
+    let cert: tilo_user_identity::DeviceCert =
+        serde_json::from_value(bootstrap["certificate"].clone()).unwrap();
+    let host_cert: tilo_user_identity::DeviceCert =
+        serde_json::from_value(bootstrap["host_certificate"].clone()).unwrap();
+    let native: tilo_user_identity::DeviceCert =
+        serde_json::from_value(bootstrap["bootstrap"]["directory_author"].clone()).unwrap();
+    let packet: iroh_base::RelayUrl = metadata["packet_relay"].as_str().unwrap().parse().unwrap();
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from(packet)))
+        .bind()
+        .await
+        .unwrap();
+    endpoint.online().await;
+    let client = RelayClient::connect_v2_to_enrolled_home_peer(
+        endpoint,
+        serde_json::from_value(metadata["relay_address"].clone()).unwrap(),
+        cert.user_public_key,
+        host_cert.device_public_key,
+        cert.clone(),
+        key.clone(),
+        tilo_user_identity::RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    let room: uuid::Uuid = metadata["room"].as_str().unwrap().parse().unwrap();
+    client
+        .send(Envelope::Subscribe {
+            workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
+        })
+        .unwrap();
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        loop {
+            let event = client.recv().await.unwrap();
+            if matches!(event, Envelope::Ready { .. }) {
+                break;
+            }
+            apply_state(&mut remote, event);
+        }
+    })
+    .await
+    .unwrap();
+    client
+        .send_action(EnvelopeV2::EnableActions { room })
+        .unwrap();
+    client
+        .send_action(EnvelopeV2::EnableBrokerClient { room })
+        .unwrap();
+    let deadline = tilo_test_env::hang_deadline();
+    let (broker_host, surface) = loop {
+        let request_id = uuid::Uuid::new_v4();
+        client
+            .send_action(EnvelopeV2::Directed(DirectedAction {
+                room,
+                request_id,
+                source: cert.device_public_key,
+                target: native.device_public_key,
+                message: ActionMessage::CatalogueRefresh { scope: None },
+            }))
+            .unwrap();
+        let response = tokio::time::timeout(Duration::from_millis(500), async {
+            loop {
+                match client.recv_action().await.unwrap() {
+                    EnvelopeV2::Delivered { action, .. } if action.request_id == request_id => {
+                        break Some(action.message);
+                    }
+                    EnvelopeV2::Unavailable { request_id: id, .. } if id == request_id => {
+                        break None;
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .ok()
+        .flatten();
+        if let Some(ActionMessage::BrokerCatalogue { host, catalogue }) = response
+            && let Some(surface) = catalogue["surfaces"].as_array().and_then(|surfaces| {
+                surfaces
+                    .iter()
+                    .find(|surface| {
+                        surface["actions"].as_array().is_some_and(|actions| {
+                            actions.iter().any(|a| a["resource"] == import::RESOURCE)
+                        })
+                    })
+                    .cloned()
+            })
+        {
+            break (host, surface);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the owner never published its document import actions"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let invoke = |action: &str, argument: String| {
+        (
+            tilo_actions::InvocationId::new(),
+            action.to_owned(),
+            argument,
+        )
+    };
+    let operation =
+        |(invocation, action, argument): &(tilo_actions::InvocationId, String, String)| {
+            ActionMessage::InvokeBound {
+                host: broker_host,
+                invocation: *invocation,
+                app_peer: surface["peer_id"].as_u64().unwrap().to_string(),
+                app_id: surface["app_id"].as_str().unwrap().into(),
+                record_id: surface["record_id"].as_str().unwrap_or("").into(),
+                resource: import::RESOURCE.into(),
+                action: action.clone(),
+                argument: Some(serde_json::json!({ "import": argument })),
+                confirmation: None,
+                revision: None,
+            }
+        };
+    let label = |remote: &tilo_peer_state::StatePeer, invocation: &tilo_actions::InvocationId| {
+        tilo_peer_state::room::receipt_values(remote.admitted_room().unwrap())
+            .get(&invocation.0.to_string())
+            .and_then(|receipt| {
+                receipt["context"]["action_label"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+    };
+
+    // The member's device proposes a note with history.
+    let record = ui::record::RecordId::minted();
+    let mut doc = ui::automerge::AutoCommit::new();
+    notes::notebook::initialize_empty(&mut doc).unwrap();
+    doc.commit();
+    doc.put(ui::automerge::ROOT, "body", "first draft").unwrap();
+    doc.commit();
+    doc.put(ui::automerge::ROOT, "body", "second draft")
+        .unwrap();
+    doc.commit();
+    assert!(ui::record::init_scoped(
+        &mut doc,
+        &record,
+        &ui::record::RecordKind::new("notes.notebook"),
+        "3f2b1c00-0000-4000-8000-00000000000a",
+        Some(&room.to_string()),
+    ));
+    doc.commit();
+    let bytes = doc.save();
+    let issued = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let proposal = DocumentImportProposalV1::new(
+        &DocumentImportTerms {
+            room: room.to_string(),
+            proposal_id: [7; 32],
+            app: APP.into(),
+            record: record.as_str().into(),
+            title: "Groceries".into(),
+            document: bytes.clone(),
+            issued_unix: issued,
+            expires_unix: issued + 600,
+        },
+        &key,
+    )
+    .unwrap();
+    let proposing = invoke(
+        import::PROPOSE,
+        serde_json::to_string(&ProposeArgument::new(proposal.clone(), &bytes)).unwrap(),
+    );
+    let pending = |remote: &tilo_peer_state::StatePeer| {
+        import::entries(remote.admitted_room().unwrap())
+            .get(&import::key(&[7; 32]))
+            .is_some_and(|entry| entry.decision.is_none())
+    };
+    invoke_and_observe_until(
+        &client,
+        &mut remote,
+        room,
+        &cert,
+        &native,
+        broker_host,
+        proposing.0,
+        operation(&proposing),
+        |remote| pending(remote) && label(remote, &proposing.0).is_some(),
+    )
+    .await;
+    assert!(
+        label(&remote, &proposing.0)
+            .is_some_and(|label| label.ends_with("Propose a document for this workspace")),
+        "the room's activity records it"
+    );
+    assert!(
+        remote.document(APP, record.as_str()).is_none(),
+        "a proposal alone creates nothing"
+    );
+
+    // The enrolled device belongs to the room's owner, who accepts.
+    assert_eq!(
+        remote
+            .permissions(cert.device_public_key, web_time::SystemTime::now())
+            .unwrap()
+            .0,
+        collab_types::Role::Owner
+    );
+    let accepting = invoke(
+        import::ACCEPT,
+        serde_json::to_string(&DecideArgument {
+            proposal_id: [7; 32],
+            decision: DocumentImportDecisionV1::new(&proposal, true, issued, &key).unwrap(),
+        })
+        .unwrap(),
+    );
+    invoke_and_observe_until(
+        &client,
+        &mut remote,
+        room,
+        &cert,
+        &native,
+        broker_host,
+        accepting.0,
+        operation(&accepting),
+        |remote| {
+            remote.document(APP, record.as_str()).is_some() && label(remote, &accepting.0).is_some()
+        },
+    )
+    .await;
+    assert!(
+        label(&remote, &accepting.0)
+            .is_some_and(|label| label.ends_with("Accept a proposed document")),
+        "the room's activity records it"
+    );
+    assert_eq!(
+        import::entries(remote.admitted_room().unwrap())[&import::key(&[7; 32])].state(issued),
+        ImportState::Accepted
+    );
+    let created =
+        ui::automerge::AutoCommit::load(&remote.document(APP, record.as_str()).unwrap()).unwrap();
+    assert_eq!(ui::record::identity(&created).unwrap().id, record);
+    client.close().await;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PublicationFailureFixture {
     None,

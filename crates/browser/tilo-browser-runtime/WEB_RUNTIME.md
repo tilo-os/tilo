@@ -278,6 +278,12 @@ phone.invokeAction(phone.opened.resource, 'highlight-selection');
   chapter when omitted), `start_block`/`end_block` (0-based blocks of that
   chapter: headings and paragraphs, so a Standard Ebooks chapter's first
   paragraph is usually block 1) and optional character offsets.
+- Books' `go-to` takes `chapter` and `block` (the same indices; each
+  defaults as above, `block` to 0) and opens that mount's reader at the page
+  holding the block, selecting nothing and clearing any selection, as
+  showing an annotation does. Each mount has its own position, so call it on
+  every mount: `mount.invokeAction(book, 'go-to', {chapter: 4, block: 3})`.
+  A chapter or block the book does not have is refused.
 
 `open.html` in the dev output exercises this with two mounts (see
 [Building](#building)); put an EPUB next to it as `odyssey.epub`, or pass
@@ -379,6 +385,8 @@ node --test crates/browser/tilo-browser-runtime/web/dylink.test.mjs \
   crates/browser/tilo-browser-runtime/web/open-file.test.mjs \
   crates/browser/tilo-browser-runtime/scripts/web-runtime/bundle-glue.test.mjs
 cargo test --locked -j4 -p tilo-browser-runtime --lib catalog::
+# the wasm32 type check CI runs for every change these builds depend on
+tools/ci/check-wasm.sh
 # after build-web-dev.sh: links every app into the core in Node, checks that
 # each registers and that a module stamped for another ABI is refused
 node crates/browser/tilo-browser-runtime/scripts/web-runtime/smoke.mjs /abs/out

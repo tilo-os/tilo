@@ -446,8 +446,9 @@ impl Catalogue {
 
     /// Up to `limit` emoji matching `query`, best first. Every whitespace
     /// separated term must match the name or a keyword; the name ranks above
-    /// a keyword, and a prefix above a word, above a substring. Ties keep
-    /// Unicode order. In a
+    /// a keyword, and a whole word above the start of a longer word, above a
+    /// substring. Whole-word ties go to the shorter name; others keep Unicode
+    /// order. In a
     /// translated catalogue, emoji that match only in English follow every
     /// native match, ranked the same way.
     #[must_use]

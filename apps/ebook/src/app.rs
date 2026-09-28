@@ -8186,6 +8186,13 @@ impl BooksApp {
         }
         if let Some(jb) = self.pending_jump_block.take() {
             self.page = page_for_block(layout, jb);
+            if mode.is_continuous() {
+                self.scroll_y = layout
+                    .blocks
+                    .iter()
+                    .find(|b| b.index == jb)
+                    .map_or(0.0, |b| f64::from(b.top));
+            }
         }
         self.page = self.page.min(layout.page_count().saturating_sub(1));
         // Spreads align to an even left page so a spread is always (2k, 2k+1).
@@ -9325,7 +9332,7 @@ impl BooksApp {
         b: &crate::paginate::LaidBlock,
     ) {
         match b.kind {
-            LayoutKind::Quote => {
+            LayoutKind::Quote | LayoutKind::Verse { quoted: true } => {
                 let visible: Vec<&crate::paginate::LaidLine> = b
                     .lines
                     .iter()

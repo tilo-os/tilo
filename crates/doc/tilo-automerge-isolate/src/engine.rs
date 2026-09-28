@@ -2,7 +2,9 @@
 //! process on untrusted bytes, and in the caller once the worker has shown
 //! the same work to finish within its limits.
 
-use automerge::{AutoCommit, ChangeHash, LoadOptions, OnPartialLoad, VerificationMode};
+#[cfg(target_os = "linux")]
+use automerge::ChangeHash;
+use automerge::{AutoCommit, LoadOptions, OnPartialLoad, VerificationMode};
 use tilo_automerge::ApplyIncoming as _;
 
 use crate::{Applied, Dependencies, Rejected};
@@ -96,9 +98,12 @@ fn strict() -> LoadOptions<'static> {
 /// Identifies a document's state: its heads, and the dependencies its queued
 /// changes still wait for. Two documents with the same key hold the same
 /// changes, so the worker's copy can stand in for the caller's.
+// Only the Linux worker pool compares document states.
+#[cfg(target_os = "linux")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Key(Vec<u8>);
 
+#[cfg(target_os = "linux")]
 impl Key {
     pub(crate) fn of(doc: &mut AutoCommit) -> Self {
         let mut heads = doc.get_heads();
@@ -139,6 +144,7 @@ impl Key {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn push_hashes(out: &mut Vec<u8>, hashes: &[ChangeHash]) {
     let count = u32::try_from(hashes.len()).unwrap_or(u32::MAX);
     out.extend(count.to_le_bytes());
@@ -150,6 +156,7 @@ fn push_hashes(out: &mut Vec<u8>, hashes: &[ChangeHash]) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn read_hashes(bytes: &[u8]) -> Option<(Vec<ChangeHash>, &[u8])> {
     let (count, mut rest) = bytes.split_first_chunk::<4>()?;
     let count = usize::try_from(u32::from_le_bytes(*count)).ok()?;
