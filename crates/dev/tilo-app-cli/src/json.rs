@@ -151,18 +151,19 @@ impl PortabilityReport {
     /// Every finding with its location, kind and remedy.
     #[must_use]
     pub fn to_json(&self) -> Value {
-        let findings = self
-            .findings
-            .iter()
-            .map(|finding| {
-                json!({
-                    "path": absolute(&finding.path),
-                    "line": finding.line,
-                    "kind": format!("{:?}", finding.kind),
-                    "rule": finding.kind.rule(),
-                    "severity": format!("{:?}", finding.severity),
-                    "what": finding.what,
-                    "help": finding.help,
+        let findings = |findings: &[crate::portability::PortabilityFinding]| {
+            findings
+                .iter()
+                .map(|finding| {
+                    json!({
+                        "path": absolute(&finding.path),
+                        "line": finding.line,
+                        "kind": format!("{:?}", finding.kind),
+                        "rule": finding.kind.rule(),
+                        "severity": format!("{:?}", finding.severity),
+                        "what": finding.what,
+                        "help": finding.help,
+                    })
                 })
                 .collect::<Vec<_>>()
         };

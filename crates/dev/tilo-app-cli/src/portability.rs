@@ -250,6 +250,9 @@ pub struct PortabilityReport {
     pub findings: Vec<PortabilityFinding>,
     /// Sites skipped because their rule does not apply to the app's platforms.
     pub exempt: usize,
+    /// Sites of the web rules (threads, the std clock, std files and sockets),
+    /// whether or not the app declares the web: each makes it native-only.
+    pub web: Vec<PortabilityFinding>,
     /// Number of Rust source files inspected.
     pub files: usize,
 }
@@ -273,11 +276,14 @@ impl PortabilityReport {
         self.declared() || !self.findings.iter().any(|f| f.severity == Severity::Error)
     }
 
-    /// Whether the app can run on the web target: it is portable and calls no
-    /// `std` API the web target lacks.
+    /// Whether the app can run on the web target: it declares the web, has no
+    /// error-level findings, and calls nothing the web rules name, warnings
+    /// included.
     #[must_use]
     pub fn web_capable(&self) -> bool {
-        self.native.is_none() && self.findings.is_empty() && self.web.is_empty()
+        self.platforms.contains(&Platform::Web)
+            && self.web.is_empty()
+            && !self.findings.iter().any(|f| f.severity == Severity::Error)
     }
 
     /// Why the app cannot run on the web target, one line per site; empty
@@ -285,17 +291,34 @@ impl PortabilityReport {
     #[must_use]
     pub fn render_web(&self) -> String {
         let mut out = String::new();
-        if let Some(reason) = &self.native {
-            let _ = writeln!(out, "tilo-app.toml declares the app native: \"{reason}\"");
-        }
-        for finding in self.findings.iter().chain(&self.web) {
+        if !self.platforms.contains(&Platform::Web) {
+            let platforms: Vec<&str> = self.platforms.iter().map(|p| p.as_str()).collect();
             let _ = writeln!(
                 out,
-                "{}:{}: {}",
-                finding.path.display(),
-                finding.line,
-                finding.what
+                "tilo-app.toml's package.platforms leaves out web: [{}]{}",
+                platforms.join(", "),
+                self.platform_reason
+                    .as_deref()
+                    .map(|reason| format!(" (\"{reason}\")"))
+                    .unwrap_or_default()
             );
+        }
+        let errors = self
+            .findings
+            .iter()
+            .filter(|finding| finding.severity == Severity::Error);
+        let mut seen = BTreeSet::new();
+        for finding in errors.chain(&self.web) {
+            if seen.insert((&finding.path, finding.line, finding.kind.rule())) {
+                let _ = writeln!(
+                    out,
+                    "{}:{}: {} {}",
+                    finding.path.display(),
+                    finding.line,
+                    finding.kind.rule(),
+                    finding.what
+                );
+            }
         }
         out
     }
@@ -305,22 +328,13 @@ impl PortabilityReport {
     #[must_use]
     pub fn render(&self) -> String {
         let mut out = self.render_findings();
-        if self.native.is_none() && self.findings.is_empty() && !self.web.is_empty() {
+        if self.passed() && !self.web.is_empty() && self.platforms.contains(&Platform::Web) {
             let _ = writeln!(
                 out,
-                "{LINT}: native-only: {} site(s) use std APIs the web target cannot run:",
+                "{LINT}: native-only: {} site(s) the web rules name; `tilo-app build --platform \
+                 web` refuses the app until they go through the SDK",
                 self.web.len()
             );
-            for finding in &self.web {
-                let _ = writeln!(
-                    out,
-                    "  {}:{}: {}",
-                    finding.path.display(),
-                    finding.line,
-                    finding.what
-                );
-            }
-            let _ = writeln!(out, "  = help: {}", source_help(FindingKind::NativeOnlyStd));
         }
         out
     }
@@ -450,6 +464,16 @@ pub fn lint_app(app_dir: &Path) -> Result<PortabilityReport> {
         );
     }
     let package = &manifest.package;
+    let mut web: Vec<PortabilityFinding> = findings
+        .iter()
+        .filter_map(|finding| {
+            let rule = table.rule(finding.kind.rule())?;
+            (rule.applies == Applies::Web).then(|| PortabilityFinding {
+                severity: rule.severity,
+                ..finding.clone()
+            })
+        })
+        .collect();
     let mut exempt: usize = 0;
     findings.retain_mut(|finding| match table.rule(finding.kind.rule()) {
         Some(rule) if rule.applies_to(package) => {
@@ -465,17 +489,21 @@ pub fn lint_app(app_dir: &Path) -> Result<PortabilityReport> {
             false
         }
     });
-    findings.sort_by(|a, b| {
-        (&a.path, a.line, a.kind.rule(), a.kind).cmp(&(&b.path, b.line, b.kind.rule(), b.kind))
-    });
-    findings
-        .dedup_by(|a, b| a.path == b.path && a.line == b.line && a.kind.rule() == b.kind.rule());
+    for list in [&mut findings, &mut web] {
+        list.sort_by(|a, b| {
+            (&a.path, a.line, a.kind.rule(), a.kind).cmp(&(&b.path, b.line, b.kind.rule(), b.kind))
+        });
+        list.dedup_by(|a, b| {
+            a.path == b.path && a.line == b.line && a.kind.rule() == b.kind.rule()
+        });
+    }
     Ok(PortabilityReport {
         app_dir: app_dir.to_path_buf(),
         platforms: package.platforms().to_vec(),
         platform_reason: package.platform_reason.clone(),
         findings,
         exempt,
+        web,
         files,
     })
 }

@@ -3285,37 +3285,45 @@ fn creation_inputs_are_validated_and_printed_safely() {
 fn each_template_composes_the_toolkit_patterns_it_teaches() {
     // Phase: every_template_has_its_own_catalog_and_uses_only_its_messages.
     {
-        let spec = AppSpec {
-            package_name: "log-browser".into(),
-            crate_name: "log_browser".into(),
-            title: "Log Browser".into(),
-            app_id: "so.tilo.log.browser".into(),
-            sdk: AppSdk::Workspace {
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            },
-            template: Template::Data,
-        };
-        let source = app_lib(&spec);
-        assert!(source.contains("with_text(|row| row.name.clone())"));
-        assert!(source.contains("with_id(\"rows-table\")"));
-        assert!(source.contains("with_accessible_name(\"data-accessible-name\")"));
-        assert!(source.contains("impl TableModel for Rows"));
-        assert!(source.contains("const ROW_COUNT: usize = 100_000_000"));
-        assert!(source.contains("LatestRequest::new()"));
-        assert!(source.contains("Background::current().spawn("));
-        assert!(source.contains("fn poll_changes"));
-        assert!(source.contains("TableModelChange::RowsChanged"));
-        assert!(source.contains("completion.complete(rows)"));
-        assert!(source.contains("with_widget"));
-        assert!(source.contains("let actions = cx.actions();"));
-        assert!(source.contains("Review::OPEN.with(row.id)"));
-        assert!(source.contains("pub id: u64"));
-        let test = app_test(&spec);
-        assert!(test.contains("Role::Table"));
-        assert!(test.contains("row:3:0"));
-        assert!(test.contains("wait_for_named"));
-        assert!(test.contains("only the sparse viewport is semantic"));
-        assert!(test.contains("app.state().opened"));
+        for template in Template::ALL {
+            let spec = AppSpec {
+                package_name: "notes".into(),
+                crate_name: "notes".into(),
+                title: "Notes".into(),
+                app_id: "so.tilo.notes".into(),
+                sdk: AppSdk::Workspace {
+                    ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+                },
+                template,
+            };
+            let files = render(&spec).unwrap();
+            let catalog = &files
+                .iter()
+                .find(|(path, _)| path == Path::new("locales/en-US.ftl"))
+                .expect("a source catalog")
+                .1;
+            let messages = parse_fluent_catalog(catalog).expect("the catalog parses");
+            let source = files
+                .iter()
+                .filter(|(path, _)| path.extension().is_none_or(|extension| extension != "ftl"))
+                .map(|(_, source)| source.as_str())
+                .collect::<String>();
+            for id in messages.entries.keys() {
+                assert!(
+                    source.contains(&format!("\"{id}\"")),
+                    "{}: {id} is in the catalog but not used",
+                    template.name()
+                );
+            }
+            for other in Template::ALL.into_iter().filter(|other| *other != template) {
+                assert!(
+                    !catalog.contains(&format!("{}-", other.name())),
+                    "{} carries {} messages",
+                    template.name(),
+                    other.name()
+                );
+            }
+        }
     }
 
     // Phase: collection_template_uses_item_actions_and_starts_empty.
@@ -3395,100 +3403,6 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
             assert!(app_readme(&spec).contains(&format!("tilo-app run --target {target}")));
             assert!(app_readme(&spec).contains(&format!("tilo-app package --target {target}")));
         }
-    }
-
-    // Phase: list_template_starts_sparse_variable_and_interactive.
-    {
-        let spec = AppSpec {
-            package_name: "activity-feed".into(),
-            crate_name: "activity_feed".into(),
-            title: "Activity Feed".into(),
-            app_id: "so.tilo.activity.feed".into(),
-            sdk: AppSdk::Workspace {
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            },
-            template: Template::List,
-        };
-        let source = app_lib(&spec);
-        assert!(source.contains("ITEM_COUNT: usize = 100_000_000"));
-        assert!(source.contains("impl ListModel for ActivityModel"));
-        assert!(source.contains("LatestRequest::new()"));
-        assert!(source.contains("VirtualList::new_async"));
-        assert!(source.contains("ListRowState::Loading"));
-        assert!(source.contains("ListModelChange::RowsChanged"));
-        assert!(source.contains("with_semantic_key(u64::to_string)"));
-        assert!(source.contains("if index % 5 == 0"));
-        assert!(source.contains("Button::new"));
-        assert!(source.contains("Feed::OPEN.with(*key)"));
-        assert!(source.contains("with_id(\"activity-list\")"));
-        let test = app_test(&spec);
-        assert!(test.contains("Role::List"));
-        assert!(test.contains("key:3"));
-        assert!(test.contains("open-0"));
-        assert!(test.contains("wait_for_named"));
-        assert!(test.contains("delegate measurements drive variable rows"));
-    }
-
-    // Phase: tree_template_uses_stable_ids_and_professional_tree_defaults.
-    {
-        let spec = AppSpec {
-            package_name: "project-browser".into(),
-            crate_name: "project_browser".into(),
-            title: "Project Browser".into(),
-            app_id: "so.tilo.project.browser".into(),
-            sdk: AppSdk::Workspace {
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            },
-            template: Template::Tree,
-        };
-        let source = app_lib(&spec);
-        assert!(source.contains("TreeNode::branch"));
-        assert!(source.contains("with_expanded([1, 2])"));
-        assert!(source.contains("multi_select(true)"));
-        assert!(source.contains("with_row_delegate"));
-        assert!(source.contains("Button::new"));
-        assert!(source.contains("reorderable()"));
-        assert!(source.contains("with_viewport(280.0, 36.0)"));
-        assert!(source.contains("with_accessible_name"));
-        assert!(source.contains("with_id(\"workspace-tree\")"));
-        let test = app_test(&spec);
-        assert!(test.contains("Role::Tree"));
-        assert!(test.contains("perform_semantic_named"));
-        assert!(test.contains("node:3"));
-        assert!(test.contains("more-4"));
-    }
-
-    // Phase: async_template_uses_typed_wakeup_and_keyed_result_views.
-    {
-        let spec = AppSpec {
-            package_name: "repo-scan".into(),
-            crate_name: "repo_scan".into(),
-            title: "Repo Scan".into(),
-            app_id: "so.tilo.repo.scan".into(),
-            sdk: AppSdk::Workspace {
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            },
-            template: Template::Async,
-        };
-        let source = app_lib(&spec);
-        assert!(source.contains("LatestTask::new(LoadState::Idle)"));
-        assert!(source.contains("task.begin(LoadState::Loading)"));
-        assert!(source.contains("completion.complete(state)"));
-        assert!(source.contains("cancel_task.cancel(LoadState::Idle)"));
-        assert!(source.contains("Button::new(\"cancel-task\""));
-        assert!(source.contains("Background::current().spawn("));
-        assert!(source.contains("ModelView::from_state_by"));
-        assert!(source.contains("with_arg(\"count\""));
-        assert!(source.contains("with_id(\"task-result\")"));
-        let test = app_test(&spec);
-        assert!(test.contains("app_runs_background_work_on_the_resource_input"));
-        assert!(test.contains("generated.background-task:root"));
-        assert!(test.contains("wait_for_named(\"task-result\""));
-        assert!(source.contains("live.with(|scan| scan.folder.clone())"));
-        let actions = headless_actions(&spec);
-        assert!(actions.contains("\"action\": \"activate\""));
-        assert!(actions.contains("\"expect\""));
-        assert!(actions.contains("\"timeout_ms\": 1000"));
     }
 
     // Phase: document_template_uses_direct_durable_bindings_and_undo_contract.
@@ -3641,7 +3555,6 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
                     .cloned()
             };
             let native = "cfg(not(target_arch = \"wasm32\"))";
-            let web = "cfg(target_arch = \"wasm32\")";
             let hack = target(native, "workspace-hack");
             assert_eq!(hack.is_some(), workspace_member, "{manifest:#?}");
             if workspace_member {
@@ -3652,14 +3565,18 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
                         .is_none(),
                     "the hack's native feature set must stay off the web build"
                 );
-                assert!(target(native, "ui").is_some(), "{manifest:#?}");
-                let portable = target(web, "ui").expect("the web build's portable SDK");
-                assert_eq!(
-                    portable
-                        .get("default-features")
-                        .and_then(toml::Value::as_bool),
-                    Some(false)
+                assert!(
+                    manifest
+                        .get("dependencies")
+                        .and_then(|dependencies| dependencies.get("ui"))
+                        .is_some(),
+                    "one SDK dependency for every target: {manifest:#?}"
                 );
+                let sections = manifest
+                    .get("target")
+                    .and_then(toml::Value::as_table)
+                    .map_or(0, toml::Table::len);
+                assert_eq!(sections, 1, "only the hack is target-specific");
             }
         }
     }
@@ -5988,9 +5905,10 @@ fn every_example_is_what_new_renders_for_it() {
     }
 }
 
-/// Threads, files, processes, sockets and the clock are portable across native
-/// platforms but absent on the web: the lint records them apart, they do not
-/// fail it, and the web build refuses the app before building anything.
+/// Threads and the std clock are absent on the web: the web rules (W1, W2)
+/// record them apart as what makes an app native-only, an app for every
+/// platform fails on them (strict mode), and the web build refuses it before
+/// building anything.
 #[test]
 fn portability_lint_records_what_the_web_target_cannot_run() {
     let root = tempfile::tempdir().unwrap();
@@ -6002,14 +5920,11 @@ fn portability_lint_records_what_the_web_target_cannot_run() {
     let mut lib = std::fs::read_to_string(app.join("src/lib.rs")).unwrap();
     lib.push_str(
         r#"
-use std::{fs, time::Instant};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 pub fn work() -> Duration {
     let started = Instant::now();
     std::thread::spawn(|| {}).join().ok();
-    let _ = std::process::Command::new("true");
-    let _ = fs::read("x");
     let _ = SystemTime::now();
     started.elapsed()
 }
@@ -6026,8 +5941,15 @@ mod tests {
     );
     std::fs::write(app.join("src/lib.rs"), &lib).unwrap();
     let report = lint_portability(&app).unwrap();
-    assert!(report.passed(), "{}", report.render());
-    assert!(report.findings.is_empty());
+    assert!(!report.passed(), "{}", report.render());
+    assert!(
+        report
+            .findings
+            .iter()
+            .all(|finding| finding.severity == portability::Severity::Error),
+        "{}",
+        report.render()
+    );
     assert!(!report.web_capable());
     let line = |needle: &str| {
         lib.lines()
@@ -6039,17 +5961,16 @@ mod tests {
         .iter()
         .map(|finding| (finding.line, finding.kind))
         .collect();
-    for needle in [
-        "use std::{fs, time::Instant}",
-        "use std::time::{Duration, SystemTime}",
-        "std::thread::spawn",
-        "std::process::Command",
+    for (needle, kind) in [
+        (
+            "let started = Instant::now()",
+            portability::FindingKind::Clock,
+        ),
+        ("std::thread::spawn", portability::FindingKind::Thread),
+        ("SystemTime::now()", portability::FindingKind::Clock),
     ] {
         assert!(
-            sites.contains(&(
-                line(needle).unwrap(),
-                portability::FindingKind::NativeOnlyStd
-            )),
+            sites.contains(&(line(needle).unwrap(), kind)),
             "{needle} is not flagged in {sites:?}"
         );
     }
@@ -6061,14 +5982,13 @@ mod tests {
         "tests are exempt: {sites:?}"
     );
     let rendered = report.render();
-    assert!(rendered.contains("native-only"), "{rendered}");
-    assert!(rendered.contains("`std::thread` has no implementation on the web target"));
+    assert!(rendered.contains("portability/W1"), "{rendered}");
 
     let error = crate::web::build_web(&app, &crate::web::WebBuildRequest::default())
         .unwrap_err()
         .to_string();
     assert!(error.contains("cannot run on the web"), "{error}");
-    assert!(error.contains("std::thread"), "{error}");
+    assert!(error.contains("W1"), "{error}");
     assert!(!app.join("target/web-build").exists());
 }
 

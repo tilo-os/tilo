@@ -22,6 +22,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Result, bail};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
+pub mod android;
 pub mod capability_usage;
 pub mod ci;
 mod dev_reload;
@@ -9320,20 +9321,19 @@ fn cargo_toml(spec: &AppSpec) -> Result<String> {
                 |crates| crates.join("runtime/runtime-dylib"),
             );
             // CI rejects a workspace member that cargo-hakari has not been
-            // told about. The hack's feature set is native, so it and the
-            // full SDK stay off the web build (`build --platform web`), which
-            // links the app against the portable toolkit.
-            let sdk = sdk_path.to_string_lossy();
+            // told about. The hack's feature set is native, so it stays off
+            // the web build (`build --platform web`); the SDK's default
+            // features select nothing there.
             let _ = write!(
                 manifest,
-                "runtime-dylib = {{ path = {runtime:?}, optional = true }}\n\n\
+                "runtime-dylib = {{ path = {runtime:?}, optional = true }}\n\
+                 ui = {{ package = \"tilo-app\", path = {sdk:?} }}\n\n\
                  [target.'cfg(not(target_arch = \"wasm32\"))'.dependencies]\n\
-                 ui = {{ package = \"tilo-app\", path = {sdk:?} }}\n\
+                 # The workspace-hack's native feature set does not build for wasm32.\n\
                  workspace-hack = {{ version = \"0.1\" }}\n\n\
-                 [target.'cfg(target_arch = \"wasm32\")'.dependencies]\n\
-                 ui = {{ package = \"tilo-app\", path = {sdk:?}, default-features = false }}\n\n\
                  [lints]\nworkspace = true\n",
                 runtime = runtime_path.to_string_lossy(),
+                sdk = sdk_path.to_string_lossy(),
             );
         }
         AppSdk::Standalone(standalone) => {
