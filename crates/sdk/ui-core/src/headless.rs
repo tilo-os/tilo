@@ -6114,8 +6114,8 @@ impl FrameHarness {
             self.inspect_node(id, |widget| {
                 crate::presence::capability::presence_payload(widget)
             })
-                .ok()
-                .flatten()
+            .ok()
+            .flatten()
         })
     }
 
