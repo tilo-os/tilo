@@ -34,6 +34,18 @@ MCP client: closing one app or one MCP connection does not stop the daemon or
 the other apps. Only one daemon may own a profile, and private-directory and
 socket checks reject unsafe or competing owners.
 
+The standalone runtime keeps its workspace's files in the profile and shows
+them in `$HOME/Tilo/<workspace>` (`~/Tilo/Home` for a new profile), an ordinary
+folder any program can use. Changes cross both ways within about two seconds:
+a file saved in the folder becomes a version in the workspace's history, and a
+document in a legacy format (`.md`, `.docx`, `.odt`, …) is imported through its
+codec. A file changed on both sides keeps the folder's version; the
+workspace's version stays in its history. Symbolic links in the folder are not
+imported. On Linux, where `/dev/fuse` exists and `fusermount3` is on `PATH`,
+the workspace is mounted at that path instead (visible to this user only), and
+the folder takes over again whenever it cannot be. A profile the Tilo desktop
+serves has neither: the desktop projects its files itself.
+
 ## Assistant connection
 
 Automatic app joining does not install or silently configure an assistant.
