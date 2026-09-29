@@ -32,69 +32,80 @@ pub mod standalone;
 pub mod web;
 
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
-const DATA_APP_TEMPLATE: &str = include_str!("../templates/data.rs");
-const LIST_APP_TEMPLATE: &str = include_str!("../templates/list.rs");
-const TREE_APP_TEMPLATE: &str = include_str!("../templates/tree.rs");
-const GRAPH_APP_TEMPLATE: &str = include_str!("../templates/graph.rs");
-const ASYNC_APP_TEMPLATE: &str = include_str!("../templates/async.rs");
 const DOCUMENT_APP_TEMPLATE: &str = include_str!("../templates/document.rs");
-const QR_APP_TEMPLATE: &str = include_str!("../templates/qr.rs");
-const WORKSPACE_APP_TEMPLATE: &str = include_str!("../templates/workspace.rs");
-/// The graph template as generated before apps started on the framework.
-/// Kept only to recognise, and migrate, apps generated from it.
+const COLLECTION_APP_TEMPLATE: &str = include_str!("../templates/collection.rs");
+const GRAPH_APP_TEMPLATE: &str = include_str!("../templates/graph.rs");
+const STARTER_APP_CATALOG: &str = include_str!("../templates/starter.ftl");
+const DOCUMENT_APP_CATALOG: &str = include_str!("../templates/document.ftl");
+const COLLECTION_APP_CATALOG: &str = include_str!("../templates/collection.ftl");
+const GRAPH_APP_CATALOG: &str = include_str!("../templates/graph.ftl");
 const STARTER_APP_TESTS: &str = include_str!("../templates/tests/starter.rs");
-const DATA_APP_TESTS: &str = include_str!("../templates/tests/data.rs");
-const LIST_APP_TESTS: &str = include_str!("../templates/tests/list.rs");
-const TREE_APP_TESTS: &str = include_str!("../templates/tests/tree.rs");
+const DOCUMENT_APP_TESTS: &str = include_str!("../templates/tests/document.rs");
+const COLLECTION_APP_TESTS: &str = include_str!("../templates/tests/collection.rs");
 const GRAPH_APP_TESTS: &str = include_str!("../templates/tests/graph.rs");
 const GRAPH_SCREEN_TESTS: &str = include_str!("../templates/tests/graph_screen.rs");
-const ASYNC_APP_TESTS: &str = include_str!("../templates/tests/async.rs");
-const DOCUMENT_APP_TESTS: &str = include_str!("../templates/tests/document.rs");
-const QR_APP_TESTS: &str = include_str!("../templates/tests/qr.rs");
-const WORKSPACE_APP_TESTS: &str = include_str!("../templates/tests/workspace.rs");
 const NATIVE_APP_TESTS: &str = include_str!("../templates/tests/native.rs");
 
+/// A starting point `tilo-app new` scaffolds and the author then owns.
+///
+/// Templates are few and small: each is the least code that is a correct Tilo
+/// app of one shape. Programs that teach one concept are examples
+/// (`tilo-app examples`), not templates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Template {
     Starter,
-    Data,
-    List,
-    Tree,
-    Graph,
-    Async,
     Document,
-    Qr,
-    Workspace,
+    Collection,
+    Graph,
 }
 
 impl Template {
-    fn name(self) -> &'static str {
+    /// Every template, in the order `--list-templates` and the prompt show.
+    pub const ALL: [Self; 4] = [Self::Starter, Self::Document, Self::Collection, Self::Graph];
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
         match self {
             Self::Starter => "starter",
-            Self::Data => "data",
-            Self::List => "list",
-            Self::Tree => "tree",
-            Self::Graph => "graph",
-            Self::Async => "async",
             Self::Document => "document",
-            Self::Qr => "qr",
-            Self::Workspace => "workspace",
+            Self::Collection => "collection",
+            Self::Graph => "graph",
         }
     }
 
-    fn description(self) -> &'static str {
+    #[must_use]
+    pub fn description(self) -> &'static str {
         match self {
-            Self::Starter => "Profile resource edited through bound form controls",
-            Self::Data => "Sparse table with retained cell controls",
-            Self::List => "Sparse variable-height retained list",
-            Self::Tree => "Professional hierarchy browser",
-            Self::Graph => "Serialized UI graph and router",
-            Self::Async => "Restartable background task with cancellation",
-            Self::Document => "Durable synchronized editor with undo",
-            Self::Qr => "IME input to accessible generated QR output",
-            Self::Workspace => "Responsive master-detail workspace with durable item editing",
+            Self::Starter => "One resource, one action, one bound field: the smallest correct app",
+            Self::Document => "One collaborative document with a live preview",
+            Self::Collection => "A list of items the user adds, edits, checks off and removes",
+            Self::Graph => "Serialized, live-editable screens above controls bound to the resource",
         }
     }
+
+    fn catalog(self) -> &'static str {
+        match self {
+            Self::Starter => STARTER_APP_CATALOG,
+            Self::Document => DOCUMENT_APP_CATALOG,
+            Self::Collection => COLLECTION_APP_CATALOG,
+            Self::Graph => GRAPH_APP_CATALOG,
+        }
+    }
+}
+
+/// The templates, as `tilo-app new --list-templates --json` reports them.
+#[must_use]
+pub fn templates_json() -> serde_json::Value {
+    Template::ALL
+        .iter()
+        .map(|template| {
+            serde_json::json!({
+                "name": template.name(),
+                "description": template.description(),
+                "default": *template == Template::Starter,
+            })
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -8667,11 +8678,19 @@ fn prompt_component_template(
 }
 
 fn prompt_template(input: &mut impl io::BufRead, output: &mut impl io::Write) -> Result<Template> {
-    writeln!(
-        output,
-        "\nStarter template:\n  1) starter    Profile resource edited through bound form controls\n  2) data       Sparse table with retained cell controls\n  3) list       Sparse variable-height retained list\n  4) tree       Professional hierarchy browser\n  5) graph      Serialized UI graph and router\n  6) async      Restartable background task with cancellation\n  7) document   Durable synchronized editor with undo\n  8) qr         IME input to accessible generated QR output\n  9) workspace  Responsive master-detail app with durable item editing"
-    )
-    .context("showing template choices")?;
+    let mut choices = String::from("\nTemplate:");
+    for (number, template) in (1..).zip(Template::ALL) {
+        let _ = write!(
+            choices,
+            "\n  {number}) {:<11}{}",
+            template.name(),
+            template.description()
+        );
+    }
+    choices.push_str(
+        "\n\nTo start from a complete example instead, run `tilo-app examples` and then\n`tilo-app new NAME --from-example EXAMPLE`.",
+    );
+    writeln!(output, "{choices}").context("showing template choices")?;
     loop {
         let value = prompt(input, output, "Template", Some("1"))?;
         match parse_template(&value) {
@@ -8681,21 +8700,44 @@ fn prompt_template(input: &mut impl io::BufRead, output: &mut impl io::Write) ->
     }
 }
 
-fn parse_template(value: &str) -> Result<Template> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "starter" | "s" => Ok(Template::Starter),
-        "2" | "data" | "d" => Ok(Template::Data),
-        "3" | "list" | "l" => Ok(Template::List),
-        "4" | "tree" | "t" => Ok(Template::Tree),
-        "5" | "graph" | "g" | "builder" => Ok(Template::Graph),
-        "6" | "async" | "a" | "task" => Ok(Template::Async),
-        "7" | "document" | "doc" | "editor" => Ok(Template::Document),
-        "8" | "qr" | "qrcode" | "showcase" => Ok(Template::Qr),
-        "9" | "workspace" | "master-detail" | "professional" => Ok(Template::Workspace),
-        _ => bail!(
-            "unknown template {value:?}; choose 1-9 or `starter`, `data`, `list`, `tree`, `graph`, `async`, `document`, `qr`, or `workspace`"
-        ),
+/// The example that replaced a template earlier versions of `tilo-app` had.
+#[must_use]
+pub fn retired_template_example(name: &str) -> Option<&'static str> {
+    match name {
+        "data" => Some("data-table"),
+        "list" => Some("virtual-list"),
+        "tree" | "workspace" => Some("tree-browser"),
+        "async" => Some("background-task"),
+        "qr" => Some("qr-code"),
+        _ => None,
     }
+}
+
+fn parse_template(value: &str) -> Result<Template> {
+    let value = value.trim().to_ascii_lowercase();
+    if let Ok(index) = value.parse::<usize>()
+        && let Some(template) = index
+            .checked_sub(1)
+            .and_then(|index| Template::ALL.get(index))
+    {
+        return Ok(*template);
+    }
+    if let Some(template) = Template::ALL
+        .into_iter()
+        .find(|template| template.name() == value)
+    {
+        return Ok(template);
+    }
+    if let Some(example) = retired_template_example(&value) {
+        bail!(
+            "the {value} template is now the `{example}` example; run `tilo-app new NAME --from-example {example}`"
+        );
+    }
+    bail!(
+        "unknown template {value:?}; choose 1-{} or one of: {}",
+        Template::ALL.len(),
+        Template::ALL.map(Template::name).join(", ")
+    )
 }
 
 fn validate_package_name(name: &str) -> Result<()> {
@@ -8876,7 +8918,10 @@ fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
         ),
         (PathBuf::from("tilo-app.toml"), app_manifest(spec)),
         (PathBuf::from("README.md"), app_readme(spec)),
-        (PathBuf::from("locales/en-US.ftl"), source_catalog()),
+        (
+            PathBuf::from("locales/en-US.ftl"),
+            spec.template.catalog().to_owned(),
+        ),
     ];
     if spec.template == Template::Graph {
         files.push((PathBuf::from("ui/main.json"), graph_document(spec)?));
@@ -8962,87 +9007,16 @@ fn sdk_path_for_ui(ui_path: &Path) -> PathBuf {
 fn app_lib(spec: &AppSpec) -> String {
     let application = match spec.template {
         Template::Starter => STARTER_APP_TEMPLATE.to_owned(),
-        Template::Data => DATA_APP_TEMPLATE.to_owned(),
-        Template::List => LIST_APP_TEMPLATE.to_owned(),
-        Template::Tree => TREE_APP_TEMPLATE.to_owned(),
+        Template::Document => DOCUMENT_APP_TEMPLATE.to_owned(),
+        Template::Collection => COLLECTION_APP_TEMPLATE.to_owned(),
         Template::Graph => {
             format!("pub mod components;\npub mod screens;\n\n{GRAPH_APP_TEMPLATE}")
         }
-        Template::Async => ASYNC_APP_TEMPLATE.to_owned(),
-        Template::Document => DOCUMENT_APP_TEMPLATE.to_owned(),
-        Template::Qr => QR_APP_TEMPLATE.to_owned(),
-        Template::Workspace => WORKSPACE_APP_TEMPLATE.to_owned(),
     };
     format!(
         "//! {title} application.\n\n/// The application id.\npub const APP_ID: &str = {app_id:?};\n/// The window and launcher title.\npub const APP_TITLE: &str = {title:?};\n\n{GENERATED_LOCALE_SETUP}\n\n{application}\nui::dev_reload_entry!(App);\n",
         title = spec.title,
         app_id = spec.app_id,
-    )
-}
-
-fn source_catalog() -> String {
-    String::from(
-        "starter-title = Your first Tilo app\n\
-starter-profile-title = Profile\n\
-starter-name-label = Your name\n\
-starter-name-placeholder = Type your name\n\
-starter-updates-label = Receive updates\n\
-starter-refresh-label = Refresh interval\n\
-starter-volume-label = Volume\n\
-starter-region-label = Region\n\
-starter-greeting = Hello, { $name }!\n\
-starter-reset = Reset profile\n\
-data-name-column = Name\n\
-data-actions-column = Actions\n\
-data-accessible-name = Results\n\
-data-open = Open\n\
-data-recent = Recently opened: { $rows }\n\
-data-none-opened = No rows opened yet\n\
-list-accessible-name = Activity\n\
-list-open = Open\n\
-list-loading = Loading activity…\n\
-list-last-opened = Last opened: { $activity }\n\
-list-none-opened = Nothing opened yet\n\
-tree-accessible-name = Workspace items\n\
-tree-row-action = Pin\n\
-tree-pinned = Pinned: { $count }\n\
-graph-project-name = Project name\n\
-graph-create = Create\n\
-graph-create-tooltip = Create the project\n\
-task-title = Background work\n\
-task-run = Run task\n\
-task-cancel = Cancel\n\
-task-idle = Start a background task without polling\n\
-task-loading = Loading…\n\
-task-ready = Found { $count } entries\n\
-task-folder-label = Folder\n\
-document-heading = Durable document\n\
-document-title-label = Title\n\
-document-title-placeholder = Untitled\n\
-document-body-label = Body\n\
-document-body-placeholder = Start writing…\n\
-document-preview-heading = Live preview\n\
-qr-title = QR code generator\n\
-qr-input-label = Content\n\
-qr-input-placeholder = Type text or a link\n\
-qr-output-alt = QR code for { $payload }\n\
-qr-reset = Reset QR code\n\
-workspace-root = Workspace\n\
-workspace-projects = Projects\n\
-workspace-archive = Archive\n\
-workspace-desktop-app = Desktop app\n\
-workspace-design-system = Design system\n\
-workspace-first-prototype = First prototype\n\
-workspace-unknown-item = Selected item\n\
-workspace-tree-name = Workspace items\n\
-workspace-navigation-heading = Projects\n\
-workspace-title-label = Title\n\
-workspace-title-placeholder = Untitled item\n\
-workspace-notes-label = Notes\n\
-workspace-notes-placeholder = Add project notes…\n\
-workspace-preview-heading = Live preview\n\
-workspace-back = Back\n\
-workspace-share = Share\n",
     )
 }
 
@@ -9056,14 +9030,9 @@ fn app_main(spec: &AppSpec) -> String {
 fn app_test(spec: &AppSpec) -> String {
     let tests = match spec.template {
         Template::Starter => STARTER_APP_TESTS.to_owned(),
-        Template::Data => DATA_APP_TESTS.to_owned(),
-        Template::List => LIST_APP_TESTS.to_owned(),
-        Template::Tree => TREE_APP_TESTS.to_owned(),
-        Template::Graph => format!("{GRAPH_APP_TESTS}\n{GRAPH_SCREEN_TESTS}"),
-        Template::Async => ASYNC_APP_TESTS.to_owned(),
         Template::Document => DOCUMENT_APP_TESTS.to_owned(),
-        Template::Qr => QR_APP_TESTS.to_owned(),
-        Template::Workspace => WORKSPACE_APP_TESTS.to_owned(),
+        Template::Collection => COLLECTION_APP_TESTS.to_owned(),
+        Template::Graph => format!("{GRAPH_APP_TESTS}\n{GRAPH_SCREEN_TESTS}"),
     };
     // The test sources name the app crate `generated_app`: the template smoke
     // crate runs these same tests against each template under that name.
@@ -9084,29 +9053,14 @@ fn headless_actions(spec: &AppSpec) -> String {
         Template::Starter => String::from(
             "[\n  {\"perform\": {\"target\": \"name-input\", \"action\": \"set_value\", \"value\": \"Ada\"}},\n  {\"perform\": {\"target\": \"name-input\", \"action\": \"focus\"}},\n  {\"expect\": {\"target\": \"name-input\", \"role\": \"text_input\", \"value\": \"Ada\", \"focused\": true}},\n  {\"expect\": {\"target\": \"greeting\", \"role\": \"static_text\", \"name_contains\": \"Ada\"}}\n]\n",
         ),
-        Template::Data => String::from(
-            "[\n  {\"perform\": {\"target\": \"rows-table\", \"action\": \"focus\"}},\n  {\"perform\": {\"target\": \"rows-table\", \"semantic_target\": \"row:3:0\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"rows-table\", \"semantic_target\": \"row:3:0\", \"role\": \"row\", \"selected\": true}}\n]\n",
-        ),
-        Template::List => String::from(
-            "[\n  {\"perform\": {\"target\": \"activity-list\", \"action\": \"focus\"}},\n  {\"wait_for_named\": {\"target\": \"open-0\", \"timeout_ms\": 1000}},\n  {\"perform\": {\"target\": \"activity-list\", \"semantic_target\": \"key:3\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"activity-list\", \"semantic_target\": \"key:3\", \"role\": \"list_item\", \"selected\": true}},\n  {\"perform\": {\"target\": \"open-0\", \"action\": \"activate\"}}\n]\n",
-        ),
-        Template::Tree => String::from(
-            "[\n  {\"perform\": {\"target\": \"workspace-tree\", \"action\": \"focus\"}},\n  {\"perform\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:2\", \"action\": \"collapse\"}},\n  {\"perform\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:2\", \"action\": \"expand\"}},\n  {\"perform\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:3\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:3\", \"role\": \"tree_item\", \"selected\": true}},\n  {\"perform\": {\"target\": \"more-4\", \"action\": \"activate\"}}\n]\n",
-        ),
-        Template::Graph => String::from(
-            "[\n  {\"perform\": {\"target\": \"name-input\", \"action\": \"set_value\", \"value\": \"Atlas\"}},\n  {\"expect\": {\"target\": \"name-preview\", \"role\": \"static_text\", \"name\": \"Atlas\"}},\n  {\"perform\": {\"target\": \"create\", \"action\": \"activate\"}}\n]\n",
-        ),
-        Template::Async => String::from(
-            "[\n  {\"perform\": {\"target\": \"run-task\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"task-result\", \"role\": \"static_text\", \"name_contains\": \"Found\", \"timeout_ms\": 1000}}\n]\n",
-        ),
         Template::Document => String::from(
             "[\n  {\"perform\": {\"target\": \"document-title-input\", \"action\": \"set_value\", \"value\": \"Project Atlas\"}},\n  {\"perform\": {\"target\": \"document-body-input\", \"action\": \"set_value\", \"value\": \"A durable first draft.\"}},\n  {\"expect\": {\"target\": \"document-title-preview\", \"role\": \"heading\", \"name\": \"Project Atlas\"}},\n  {\"expect\": {\"target\": \"document-body-preview\", \"name\": \"A durable first draft.\"}}\n]\n",
         ),
-        Template::Qr => String::from(
-            "[\n  {\"perform\": {\"target\": \"qr-input\", \"action\": \"set_value\", \"value\": \"你好 Rust GUI\"}},\n  {\"expect\": {\"target\": \"qr-input\", \"role\": \"text_input\", \"value\": \"你好 Rust GUI\"}},\n  {\"expect\": {\"target\": \"qr-output\", \"role\": \"image\", \"name_contains\": \"你好 Rust GUI\"}}\n]\n",
+        Template::Collection => String::from(
+            "[\n  {\"perform\": {\"target\": \"draft-input\", \"action\": \"set_value\", \"value\": \"Buy milk\"}},\n  {\"expect\": {\"target\": \"draft-input\", \"role\": \"text_input\", \"value\": \"Buy milk\"}},\n  {\"perform\": {\"target\": \"add\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"draft-input\", \"role\": \"text_input\", \"value\": \"\"}}\n]\n",
         ),
-        Template::Workspace => String::from(
-            "[\n  {\"perform\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:4\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:4\", \"role\": \"tree_item\", \"selected\": true}},\n  {\"expect\": {\"target\": \"workspace-selected-item\", \"role\": \"heading\", \"name\": \"Design system\"}},\n  {\"perform\": {\"target\": \"workspace-title-input\", \"action\": \"set_value\", \"value\": \"Design tokens\"}},\n  {\"expect\": {\"target\": \"workspace-title-preview\", \"role\": \"heading\", \"name\": \"Design tokens\"}}\n]\n",
+        Template::Graph => String::from(
+            "[\n  {\"perform\": {\"target\": \"name-input\", \"action\": \"set_value\", \"value\": \"Atlas\"}},\n  {\"expect\": {\"target\": \"name-preview\", \"role\": \"static_text\", \"name\": \"Atlas\"}},\n  {\"perform\": {\"target\": \"create\", \"action\": \"activate\"}}\n]\n",
         ),
     }
 }
@@ -9242,28 +9196,16 @@ fn app_readme(spec: &AppSpec) -> String {
             "\nOpen the serialized screen with `tilo-app ui edit ui/main.json`. Script or review it with `tilo-app ui tree`, `tilo-app ui set`, `tilo-app ui apply`, `tilo-app ui insert`, `tilo-app ui move`, and `tilo-app ui validate`. Generate, register, and place an app-owned retained component atomically with `tilo-app add component profile-card --mount main --props '{{\"title\":\"Ada\",\"detail\":\"Owner\"}}'`, or mount a document-bound form with `tilo-app add component profile-form --template form --mount main --props '{{\"value_path\":\"profile-name\",\"enabled_path\":\"profile-enabled\"}}'`. The generated component registry makes graph-compatible components available to every generated screen automatically."
         );
     }
-    if spec.template == Template::Async {
-        let _ = writeln!(
-            out,
-            "\nThe folder to scan is resource state: durable, synced and undoable. The task itself is an effect action, so the palette, agents and scripts can start and cancel it too. The `run-task` button creates a `LatestTask` completion capability for its worker, which reads its input from the resource when it starts. Starting again or using `cancel-task` makes older completions stale, so late work cannot overwrite newer UI state. An accepted completion wakes the app automatically, and `ModelView::from_state_by` swaps the loading/result/error subtree by a small structural key."
-        );
-    }
     if spec.template == Template::Document {
         let _ = writeln!(
             out,
-            "\nThe title and body inputs invoke the document's actions; their preview reads the same fields and follows every edit (local, a collaborator's, an undo) with no notification code. Text fields are collaborative text, so concurrent typing merges character by character. `clear` is declared destructive, so it asks for confirmation wherever it is invoked."
+            "\nThe title and body inputs invoke the document's actions; the preview reads the same fields and follows every edit (local, a collaborator's, an undo) with no notification code. Text fields are collaborative text, so concurrent typing merges character by character. `clear` is declared destructive, so it asks for confirmation wherever it is invoked."
         );
     }
-    if spec.template == Template::Qr {
+    if spec.template == Template::Collection {
         let _ = writeln!(
             out,
-            "\nThe input invokes `set-payload` on the resource. `cx.value` follows the payload into a `LocalState<String>`, `ModelView::from_state` rebuilds only the generated QR output when it changes, and the replacement image carries payload-specific alternative text for inspection, tests, and screen readers."
-        );
-    }
-    if spec.template == Template::Workspace {
-        let _ = writeln!(
-            out,
-            "\nThe workspace starter composes a responsive master-detail shell from ordinary retained widgets. Wide windows show navigation and detail together; compact windows expose an accessible Back action and switch between full-width panes through typed `LocalState<NarrowScreen>`. The selection is view state (`cx.local`); `cx.switch` rebuilds only the detail pane when it changes, and the pane's inputs bind to the selected project's fields in the resource. Switching projects therefore needs no synchronization callbacks and preserves independent persisted, collaborative, undoable edits."
+            "\nItems live in a `Collection`, so each has a stable id. Actions that take an item's `&Id` are item actions: the palette and agents see every item as a resource of its own, and a row's context menu offers them. `cx.each` builds one retained row per item, so focus and the caret survive other items changing."
         );
     }
     let _ = writeln!(
@@ -9282,27 +9224,18 @@ fn app_readme(spec: &AppSpec) -> String {
 
 fn readme_action_example(template: Template) -> (&'static str, &'static str, &'static str) {
     match template {
-        Template::Starter => ("generated.profile", "set-name", r#"{"name":"Ada"}"#),
-        Template::Data => ("generated.table", "open", r#"{"id":42}"#),
-        Template::List => ("generated.activity-list", "open", r#"{"id":42}"#),
-        Template::Tree => ("generated.tree", "toggle-pin", r#"{"id":4}"#),
-        Template::Graph => (
-            "generated.graph-project",
-            "set-draft",
-            r#"{"draft":"Launch plan"}"#,
-        ),
-        Template::Async => ("generated.background-task:root", "run", "{}"),
+        Template::Starter => ("generated.greeting", "set-name", r#"{"name":"Ada"}"#),
         Template::Document => (
             "generated.document",
             "set-content",
             r#"{"title":"Plan","body":"Ship it"}"#,
         ),
-        Template::Qr => (
-            "generated.qr-code",
-            "set-payload",
-            r#"{"payload":"https://example.com"}"#,
+        Template::Collection => ("generated.items", "set-draft", r#"{"draft":"Buy milk"}"#),
+        Template::Graph => (
+            "generated.graph-project",
+            "set-draft",
+            r#"{"draft":"Launch plan"}"#,
         ),
-        Template::Workspace => ("generated.workspace-item", "share", r#"{"id":4}"#),
     }
 }
 
