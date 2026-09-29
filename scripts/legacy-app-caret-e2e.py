@@ -133,7 +133,12 @@ def wait_until(description: str, predicate):
     raise Failure(f"timed out waiting for {description}{suffix}")
 
 
-def terminate(process: subprocess.Popen | None) -> None:
+# A SIGKILLed process is only reaped once it leaves the kernel: one blocked
+# in a driver or filesystem call, or being dumped, outlives the signal.
+KILLED_REAP_SECONDS = 30.0
+
+
+def terminate(process: subprocess.Popen | None, record: Path | None = None) -> None:
     if process is None or process.poll() is not None:
         return
     try:
@@ -144,7 +149,15 @@ def terminate(process: subprocess.Popen | None) -> None:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        process.wait(timeout=3)
+        try:
+            process.wait(timeout=KILLED_REAP_SECONDS)
+        except subprocess.TimeoutExpired:
+            if record is not None:
+                record_process_group(process.pid, record)
+            raise Failure(
+                f"{process.args[0]} survived SIGKILL for {KILLED_REAP_SECONDS:.0f}s"
+                + (f"; where it is blocked: {record}" if record is not None else "")
+            ) from None
 
 
 def record_process_group(pgid: int, destination: Path) -> None:
@@ -522,8 +535,8 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
                     pass
             raise
         finally:
-            terminate(app)
-            terminate(compositor)
+            terminate(app, case_artifacts / "app-unreaped.txt")
+            terminate(compositor, case_artifacts / "compositor-unreaped.txt")
             compositor_log.close()
             app_log.close()
             preflight_log.close()
