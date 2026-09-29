@@ -2908,7 +2908,8 @@ mod tests {
         let committed = CommittedAuthority::new(&owner);
         let mut session = Some(host.connect(&owner).await.unwrap());
         let mut replaying = false;
-        tokio::time::timeout(Duration::from_secs(5), async {
+        // Readiness is not what this test measures: wait on the hang bound.
+        tokio::time::timeout(tilo_test_env::hang_bound(), async {
             loop {
                 match session.as_mut().unwrap().recv().await {
                     Some(Inbound::Ready { .. }) => break,
@@ -2986,7 +2987,7 @@ mod tests {
             )
             .unwrap()
         };
-        tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::time::timeout(tilo_test_env::hang_bound(), async {
             loop {
                 match peer.recv().await {
                     Some(Inbound::Ready { .. }) => break,
