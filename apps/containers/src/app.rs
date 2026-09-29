@@ -612,6 +612,20 @@ impl ContainersApp {
         self.actions.dispatch(doc, action);
     }
 
+    /// Hosted edits go through the dispatcher. Standalone edits apply the same
+    /// action into the open transaction the shell commits.
+    pub(crate) fn apply_view(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &crate::resource::ContainersAction,
+    ) {
+        if self.is_hosted() {
+            self.commit_view(doc, action);
+        } else {
+            let _ = ui::tilo_actions::Action::apply(action, doc);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn last_document_action(&self) -> Option<&ui::tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
@@ -1339,7 +1353,7 @@ impl ContainersApp {
             // Run `podman run` off the UI thread; report the result back via a
             // toast streamed through the bg channel, then re-probe.
             self.show_toast(format!("Creating container from {name}…"), false);
-            ViewDoc::clear_create(doc);
+            self.apply_view(doc, &crate::resource::ContainersAction::ClearCreate);
             self.create_open = false;
             self.combo.close();
             if let Some(tx) = self.bg_tx.clone() {
@@ -1363,7 +1377,7 @@ impl ContainersApp {
             }
         } else {
             self.show_toast(format!("podman {}", args.join(" ")), false);
-            ViewDoc::clear_create(doc);
+            self.apply_view(doc, &crate::resource::ContainersAction::ClearCreate);
             self.create_open = false;
             self.combo.close();
         }
@@ -3003,7 +3017,13 @@ impl Widget for ContainersApp {
                     return true;
                 }
                 AccessibilityAction::SetValue(value) => {
-                    ViewDoc::set_create_field(state, field, value);
+                    self.apply_view(
+                        state,
+                        &crate::resource::ContainersAction::SetCreateField {
+                            field: field.key().to_string(),
+                            value: value.clone(),
+                        },
+                    );
                     self.focus_create_field(field);
                     self.refresh_view(state);
                     return true;
@@ -3302,24 +3322,54 @@ impl ContainersApp {
         // `inspect` / `create` / `combo` / `pull` / `collapsed`).
         let scene = std::env::var("TILO_CONTAINERS_DEMO").unwrap_or_default();
         match scene.as_str() {
-            "images" => ViewDoc::set_section(doc, Section::Images),
-            "volumes" => ViewDoc::set_section(doc, Section::Volumes),
-            "distrobox" => ViewDoc::set_section(doc, Section::Distrobox),
+            "images" => self.apply_view(
+                doc,
+                &crate::resource::ContainersAction::SetSection {
+                    section: Section::Images.as_str().into(),
+                },
+            ),
+            "volumes" => self.apply_view(
+                doc,
+                &crate::resource::ContainersAction::SetSection {
+                    section: Section::Volumes.as_str().into(),
+                },
+            ),
+            "distrobox" => self.apply_view(
+                doc,
+                &crate::resource::ContainersAction::SetSection {
+                    section: Section::Distrobox.as_str().into(),
+                },
+            ),
             "create" | "combo" => {
                 self.create_open = true;
                 self.create_focus = CreateField::Image;
-                ViewDoc::set_create_field(doc, CreateField::Name, "web-frontend");
-                ViewDoc::set_create_field(doc, CreateField::Image, "nginx");
-                ViewDoc::set_create_field(doc, CreateField::Ports, "8080:80, 8443:443");
-                ViewDoc::set_create_field(doc, CreateField::Env, "TZ=UTC");
-                ViewDoc::set_create_field(doc, CreateField::Volumes, "site:/usr/share/nginx/html");
+                for (field, value) in [
+                    (CreateField::Name, "web-frontend"),
+                    (CreateField::Image, "nginx"),
+                    (CreateField::Ports, "8080:80, 8443:443"),
+                    (CreateField::Env, "TZ=UTC"),
+                    (CreateField::Volumes, "site:/usr/share/nginx/html"),
+                ] {
+                    self.apply_view(
+                        doc,
+                        &crate::resource::ContainersAction::SetCreateField {
+                            field: field.key().to_string(),
+                            value: value.to_string(),
+                        },
+                    );
+                }
                 if scene == "combo" {
                     // Open the image suggestion dropdown for the shot.
                     self.combo.open = true;
                 }
             }
             "pull" => {
-                ViewDoc::set_section(doc, Section::Images);
+                self.apply_view(
+                    doc,
+                    &crate::resource::ContainersAction::SetSection {
+                        section: Section::Images.as_str().into(),
+                    },
+                );
                 self.pull = Some(PullProgress {
                     reference: "docker.io/library/alpine:3.20".into(),
                     lines: vec![
@@ -3365,8 +3415,18 @@ impl ContainersApp {
                 .find(|c| c.status.is_running())
                 .or_else(|| self.engine.containers.first())
         {
-            ViewDoc::set_selected(doc, Some(&first.id));
-            ViewDoc::set_tab(doc, tab);
+            self.apply_view(
+                doc,
+                &crate::resource::ContainersAction::SetSelected {
+                    id: Some(first.id.clone()),
+                },
+            );
+            self.apply_view(
+                doc,
+                &crate::resource::ContainersAction::SetTab {
+                    tab: tab.as_str().into(),
+                },
+            );
         }
     }
 
@@ -3436,7 +3496,13 @@ impl ContainersApp {
         );
         let after = self.create_input(field).value().to_string();
         if before != after {
-            ViewDoc::set_create_field(doc, field, &after);
+            self.apply_view(
+                doc,
+                &crate::resource::ContainersAction::SetCreateField {
+                    field: field.key().to_string(),
+                    value: after,
+                },
+            );
             self.sync_create_input(field, doc, path);
         }
     }

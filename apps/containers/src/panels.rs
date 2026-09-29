@@ -3431,7 +3431,13 @@ impl ContainersApp {
         if let Some(&idx) = filtered.get(pos)
             && let Some(reference) = options.get(idx)
         {
-            ViewDoc::set_create_field(doc, CreateField::Image, reference);
+            self.apply_view(
+                doc,
+                &crate::resource::ContainersAction::SetCreateField {
+                    field: CreateField::Image.key().to_string(),
+                    value: reference.clone(),
+                },
+            );
         }
         self.combo.close();
     }
@@ -3496,7 +3502,10 @@ impl ContainersApp {
             } else if self.create_open {
                 self.create_open = false;
             } else if ViewDoc::selected(ctx.state).is_some() {
-                ViewDoc::set_selected(ctx.state, None);
+                self.apply_view(
+                    ctx.state,
+                    &crate::resource::ContainersAction::SetSelected { id: None },
+                );
             }
             *ctx.handled = true;
             self.refresh_view(ctx.state);
@@ -3515,19 +3524,39 @@ impl ContainersApp {
             let s = ch.to_lowercase();
             match s.as_str() {
                 "1" => {
-                    ViewDoc::set_section(ctx.state, Section::Containers);
+                    self.apply_view(
+                        ctx.state,
+                        &crate::resource::ContainersAction::SetSection {
+                            section: Section::Containers.as_str().into(),
+                        },
+                    );
                     *ctx.handled = true;
                 }
                 "2" => {
-                    ViewDoc::set_section(ctx.state, Section::Images);
+                    self.apply_view(
+                        ctx.state,
+                        &crate::resource::ContainersAction::SetSection {
+                            section: Section::Images.as_str().into(),
+                        },
+                    );
                     *ctx.handled = true;
                 }
                 "3" => {
-                    ViewDoc::set_section(ctx.state, Section::Volumes);
+                    self.apply_view(
+                        ctx.state,
+                        &crate::resource::ContainersAction::SetSection {
+                            section: Section::Volumes.as_str().into(),
+                        },
+                    );
                     *ctx.handled = true;
                 }
                 "4" => {
-                    ViewDoc::set_section(ctx.state, Section::Distrobox);
+                    self.apply_view(
+                        ctx.state,
+                        &crate::resource::ContainersAction::SetSection {
+                            section: Section::Distrobox.as_str().into(),
+                        },
+                    );
                     *ctx.handled = true;
                 }
                 "/" => {
@@ -3583,7 +3612,13 @@ impl ContainersApp {
                         .get(self.combo.highlight)
                         .and_then(|&idx| options.get(idx))
                     {
-                        ViewDoc::set_create_field(ctx.state, CreateField::Image, reference);
+                        self.apply_view(
+                            ctx.state,
+                            &crate::resource::ContainersAction::SetCreateField {
+                                field: CreateField::Image.key().to_string(),
+                                value: reference.clone(),
+                            },
+                        );
                         self.combo.close();
                     } else {
                         self.submit_create(ctx.state);
