@@ -318,8 +318,8 @@ fn channels(root: &Path) -> BrokerChannels {
     channels
 }
 
-/// The profile's workspace files, mirrored into their folder in this
-/// user's home. Without the folder the host still serves: apps keep their
+/// The profile's workspace files, shown at their folder in this user's
+/// home. Without the folder the host still serves: apps keep their
 /// documents, only the folder view of the files is missing. A profile the
 /// desktop session serves has none: that host projects its files itself.
 fn workspace_files(
@@ -333,9 +333,17 @@ fn workspace_files(
     if !workspace.governs() {
         return None;
     }
-    stage("syncing the workspace folder");
+    stage("showing the workspace files");
     let started = files::folder(&workspace.name()).and_then(|folder| {
-        files::WorkspaceFiles::start(profile, &folder, media.store(), endpoint, author)
+        let projection = files::Projection::for_host();
+        files::WorkspaceFiles::start(
+            profile,
+            &folder,
+            media.store(),
+            endpoint,
+            author,
+            projection,
+        )
     });
     started
         .inspect_err(|error| tracing::warn!(%error, "the workspace folder is unavailable"))
