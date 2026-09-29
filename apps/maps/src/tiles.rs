@@ -1000,11 +1000,13 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
     Ok((decoded.rgba, decoded.width, decoded.height))
 }
 
-/// Default on-disk cache root. Honours `XDG_CACHE_HOME`, falling back to the
-/// bootc-friendly `/var/cache/tilo-maps` location and finally a temp dir.
+/// Default on-disk cache root. Honours `XDG_CACHE_HOME`, falling back to a
+/// temp dir. The page has neither: its root is a bare relative path that
+/// tilo-files refuses there, so tiles stay in memory.
 fn default_cache_dir() -> PathBuf {
     tilo_paths::xdg::cache_home()
-        .unwrap_or_else(std::env::temp_dir)
+        .or_else(tilo_paths::temp_dir)
+        .unwrap_or_default()
         .join("tilo-maps/tiles")
 }
 

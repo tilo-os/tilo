@@ -1551,7 +1551,9 @@ impl AudioBackend {
     #[cfg(all(feature = "audio", feature = "live"))]
     fn begin_stream_download(&mut self, uri: &str, fallback: Option<String>) {
         self.clear_pending();
-        let path = std::env::temp_dir().join(format!(
+        // Without a native temp dir the relative path fails to open, and the
+        // staging reports the stream finished with nothing fetched.
+        let path = tilo_paths::temp_dir().unwrap_or_default().join(format!(
             "tilo-music-stream-{}-{}.bin",
             std::process::id(),
             next_stream_id()

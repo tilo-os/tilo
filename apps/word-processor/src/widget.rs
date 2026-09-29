@@ -14128,7 +14128,7 @@ fn is_dnd_spool_path(path: &std::path::Path) -> bool {
         .filter_map(std::env::var_os)
         .filter(|v| !v.is_empty())
         .any(|dir| path.starts_with(dir))
-        || path.starts_with(std::env::temp_dir())
+        || tilo_paths::temp_dir().is_some_and(|dir| path.starts_with(dir))
 }
 
 #[cfg(test)]

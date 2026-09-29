@@ -412,6 +412,15 @@ pub fn runtime_dir() -> Option<PathBuf> {
     platform::runtime()
 }
 
+/// The system's shared temporary directory (`$TMPDIR` or `/tmp`,
+/// `%TEMP%`), and `None` where there is no native file system (the web),
+/// where `std::env::temp_dir` panics instead. For scratch files that must
+/// have a native path; an app's own scratch space is [`AppPaths::runtime`].
+#[must_use]
+pub fn temp_dir() -> Option<PathBuf> {
+    (availability(Feature::NativePaths) == Availability::Available).then(std::env::temp_dir)
+}
+
 /// Directories the system and the user install fonts into, most general
 /// first, whether or not they exist: the system font trees on Linux and
 /// other Unix (not the user's own), `/System/Library/Fonts`, `/Library/Fonts` and
@@ -967,6 +976,11 @@ mod tests {
     #[cfg(unix)]
     fn home_is(path: &str) -> impl FnOnce() -> Option<PathBuf> + '_ {
         move || Some(PathBuf::from(path))
+    }
+
+    #[test]
+    fn a_native_target_has_the_system_temporary_directory() {
+        assert_eq!(temp_dir(), Some(std::env::temp_dir()));
     }
 
     #[cfg(unix)]
