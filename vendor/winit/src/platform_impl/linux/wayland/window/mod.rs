@@ -587,6 +587,11 @@ impl Window {
     }
 
     #[inline]
+    pub fn server_side_decorations(&self) -> Option<bool> {
+        self.window_state.lock().unwrap().server_side_decorations()
+    }
+
+    #[inline]
     pub fn set_cursor_hittest(&self, hittest: bool) -> Result<(), ExternalError> {
         let surface = self.window.wl_surface();
 
