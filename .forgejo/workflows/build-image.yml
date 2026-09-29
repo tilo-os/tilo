@@ -1303,6 +1303,9 @@ jobs:
       - name: Build and cache the rootfs
         id: rootfs-stage
         if: steps.compile-stages.outcome == 'success'
+        # Cold about 25 minutes. BuildKit's cache export has hung for an hour
+        # (moby/buildkit#6008); bound it so the lane fails and frees its group.
+        timeout-minutes: 60
         continue-on-error: true
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
@@ -1363,6 +1366,9 @@ jobs:
       - name: Build the Tilo image
         id: build
         if: steps.rootfs-stage.outcome == 'success'
+        # The build outputs, split, UKI and export on top of the stages above:
+        # about 10 minutes. A hung push or export fails here instead.
+        timeout-minutes: 30
         continue-on-error: true
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
@@ -1735,6 +1741,7 @@ jobs:
       # collects both architectures. No disk install, no boot.
       - name: Build and publish the dev image
         if: steps.release-mode.outputs.dev-fast == 'true' && steps.dev-image.outcome == 'success'
+        timeout-minutes: 30
         env:
           BUILDER_NAME: ${{ steps.buildx.outputs.name }}
           DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
