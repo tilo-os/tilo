@@ -5,10 +5,11 @@
 //! person who owns the runtime ([`OsSearch`]). Each host search is a thin
 //! adapter over it:
 //!
-//! - GNOME Shell's `org.gnome.Shell.SearchProvider2` and KRunner's
+//! - GNOME Shell's `org.gnome.Shell.SearchProvider2` and `KRunner`'s
 //!   `org.kde.krunner1` ask this index to match over the session bus
 //!   ([`dbus`]); packaging registers them with the files in [`linux_files`].
-//! - Spotlight keeps its own copy, which [`Changes`] keeps in step.
+//! - Spotlight keeps its own copy, which [`Changes`] keeps in step, and
+//!   hands a chosen result back as a user activity (`spotlight`).
 //!
 //! A host hands back only an opaque [`EntryId`]. Opening re-resolves the
 //! resource's opening action as the owner and invokes it through the action
@@ -32,6 +33,8 @@ mod index;
 #[cfg(all(unix, not(target_os = "macos")))]
 pub mod linux_files;
 mod search;
+#[cfg(target_os = "macos")]
+pub mod spotlight;
 
 pub use entry::{EntryId, NotAnEntryId, SearchEntry};
 pub use index::{Changes, ResourceIndex};

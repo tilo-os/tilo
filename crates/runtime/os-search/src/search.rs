@@ -1,6 +1,7 @@
 //! Feeding the index from the action host, and opening what a host search
 //! hands back through the same door the palette and automation use.
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -149,16 +150,16 @@ impl OsSearch {
                     let Some((rank, entry)) = opening(row) else {
                         continue;
                     };
-                    match positions.get(&entry.id) {
-                        Some(&at) => {
-                            if let Some(held) = found.get_mut(at)
+                    match positions.entry(entry.id) {
+                        Entry::Occupied(at) => {
+                            if let Some(held) = found.get_mut(*at.get())
                                 && held.0 < rank
                             {
                                 *held = (rank, entry);
                             }
                         }
-                        None => {
-                            positions.insert(entry.id, found.len());
+                        Entry::Vacant(at) => {
+                            at.insert(found.len());
                             found.push((rank, entry));
                         }
                     }

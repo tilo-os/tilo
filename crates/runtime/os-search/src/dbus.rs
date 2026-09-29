@@ -82,9 +82,13 @@ struct GnomeShell {
     search: Arc<OsSearch>,
 }
 
+#[allow(
+    clippy::unused_self,
+    reason = "the D-Bus interface fixes these signatures, including methods with nothing to do"
+)]
 #[interface(name = "org.gnome.Shell.SearchProvider2")]
 impl GnomeShell {
-    fn get_initial_result_set(&self, terms: Vec<String>) -> Vec<String> {
+    fn get_initial_result_set(&self, terms: Vec<&str>) -> Vec<String> {
         ids(self.search.search(&terms.join(" "), RESULTS))
     }
 
@@ -92,13 +96,14 @@ impl GnomeShell {
     /// the owner lost access to since.
     fn get_subsearch_result_set(
         &self,
-        _previous_results: Vec<String>,
-        terms: Vec<String>,
+        previous_results: Vec<&str>,
+        terms: Vec<&str>,
     ) -> Vec<String> {
+        let _ = previous_results;
         self.get_initial_result_set(terms)
     }
 
-    fn get_result_metas(&self, identifiers: Vec<String>) -> Vec<Properties> {
+    fn get_result_metas(&self, identifiers: Vec<&str>) -> Vec<Properties> {
         identifiers
             .iter()
             .filter_map(|id| self.search.entry(id))
@@ -114,13 +119,16 @@ impl GnomeShell {
             .collect()
     }
 
-    async fn activate_result(&self, identifier: String, _terms: Vec<String>, _timestamp: u32) {
-        open_quietly(&self.search, &identifier).await;
+    async fn activate_result(&self, identifier: &str, terms: Vec<&str>, timestamp: u32) {
+        let _ = (terms, timestamp);
+        open_quietly(&self.search, identifier).await;
     }
 
     /// There is no Tilo search window to hand the terms to outside Tilo;
     /// every result already opens where it lives.
-    fn launch_search(&self, _terms: Vec<String>, _timestamp: u32) {}
+    fn launch_search(&self, terms: Vec<&str>, timestamp: u32) {
+        let _ = (terms, timestamp);
+    }
 }
 
 /// `org.kde.krunner1`.
@@ -128,6 +136,10 @@ struct KRunner {
     search: Arc<OsSearch>,
 }
 
+#[allow(
+    clippy::unused_self,
+    reason = "the D-Bus interface fixes these signatures, including methods with nothing to do"
+)]
 #[interface(name = "org.kde.krunner1")]
 impl KRunner {
     /// Secondary actions on a match: opening is the only one.
@@ -136,9 +148,9 @@ impl KRunner {
     }
 
     #[zbus(name = "Match")]
-    fn find(&self, query: String) -> Vec<(String, String, String, i32, f64, Properties)> {
-        let found = self.search.search(&query, RESULTS);
-        let count = found.len().max(1) as f64;
+    fn find(&self, query: &str) -> Vec<(String, String, String, i32, f64, Properties)> {
+        let found = self.search.search(query, RESULTS);
+        let count = f64::from(u32::try_from(found.len()).unwrap_or(u32::MAX).max(1));
         found
             .into_iter()
             .enumerate()
@@ -148,7 +160,7 @@ impl KRunner {
                     properties.insert("subtext", Value::from(detail));
                 }
                 // Best first, as ranked; KRunner orders by relevance.
-                let relevance = 1.0 - at as f64 / count;
+                let relevance = 1.0 - f64::from(u32::try_from(at).unwrap_or(u32::MAX)) / count;
                 (
                     entry.id.to_string(),
                     entry.title,
@@ -161,8 +173,9 @@ impl KRunner {
             .collect()
     }
 
-    async fn run(&self, match_id: String, _action_id: String) {
-        open_quietly(&self.search, &match_id).await;
+    async fn run(&self, match_id: &str, action_id: &str) {
+        let _ = action_id;
+        open_quietly(&self.search, match_id).await;
     }
 }
 

@@ -23,7 +23,7 @@ impl Changes {
 }
 
 /// Every entry the last walk found, and a text index over them for the
-/// hosts that ask this runtime to match (GNOME Shell, KRunner).
+/// hosts that ask this runtime to match (GNOME Shell, `KRunner`).
 pub struct ResourceIndex {
     entries: BTreeMap<EntryId, SearchEntry>,
     text: tilo_search::SearchIndex,
