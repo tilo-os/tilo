@@ -293,25 +293,47 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             }
             if let (Some(navigation), Some(router)) = (navigate, context.router.as_ref()) {
                 let router = router.clone();
+                // A published view action, so the palette, agents and the
+                // native audit reach navigation as they reach any control. A
+                // button that also writes a document path keeps that path.
+                let bind = |button: Button, navigate: Box<dyn Fn() + 'static>| {
+                    if on_click_path.is_some() {
+                        button.on_click(move || navigate())
+                    } else {
+                        button.on_view(move || navigate())
+                    }
+                };
                 button = match navigation {
                     UiNavigation::Push { route } if router.knows(route) => {
                         let route = route.clone();
-                        button.on_click(move || {
-                            let _ = router.push(route.clone());
-                        })
+                        bind(
+                            button,
+                            Box::new(move || {
+                                let _ = router.push(route.clone());
+                            }),
+                        )
                     }
                     UiNavigation::Replace { route } if router.knows(route) => {
                         let route = route.clone();
-                        button.on_click(move || {
-                            let _ = router.replace(route.clone());
-                        })
+                        bind(
+                            button,
+                            Box::new(move || {
+                                let _ = router.replace(route.clone());
+                            }),
+                        )
                     }
-                    UiNavigation::Back => button.on_click(move || {
-                        let _ = router.back();
-                    }),
-                    UiNavigation::Forward => button.on_click(move || {
-                        let _ = router.forward();
-                    }),
+                    UiNavigation::Back => bind(
+                        button,
+                        Box::new(move || {
+                            let _ = router.back();
+                        }),
+                    ),
+                    UiNavigation::Forward => bind(
+                        button,
+                        Box::new(move || {
+                            let _ = router.forward();
+                        }),
+                    ),
                     UiNavigation::Push { .. } | UiNavigation::Replace { .. } => button,
                 };
             }
@@ -1135,7 +1157,7 @@ impl UiGraphHandle {
 }
 
 fn write_live_graph_atomic(path: &Path, json: &str) -> Result<(), UiGraphError> {
-    atomic_file::write(path, json.as_bytes())
+    tilo_files::native::atomic::write(path, json.as_bytes())
         .map_err(|error| UiGraphError::Io(format!("publishing {}: {error}", path.display())))
 }
 
@@ -3476,7 +3498,7 @@ mod tests {
     }
 
     #[test]
-    fn routed_graph_buttons_drive_history_and_back_without_document_mutations() {
+    fn routed_graph_buttons_publish_navigation_and_leave_the_document_alone() {
         fn screen(id: &str, title: &str, button: UiNode) -> UiDocument {
             UiDocument::new(UiNode::Column {
                 id: id.into(),
@@ -3564,6 +3586,20 @@ mod tests {
             .perform_named("back-home", &Action::Activate)
             .unwrap();
         assert_eq!(handle.current(), "home");
+        assert_eq!(driver.dump_json(), document_before);
+
+        let audit = driver.native_app_audit();
+        assert!(audit.is_certified(), "{:?}", audit.issues);
+        driver
+            .invoke_action(
+                &tilo_actions::ActionAddress::new("tilo.control:open-settings", "invoke"),
+                &serde_json::Map::new(),
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(handle.current(), "settings");
+        assert!(driver.native_app_audit().is_certified());
         assert_eq!(driver.dump_json(), document_before);
     }
 

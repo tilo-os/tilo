@@ -23,7 +23,7 @@
  */
 import {coreRuntime, mountDesktop} from './host.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
-import {colorOf, createRelayLive, relayLiveCarriers} from './relay-live.mjs';
+import {colorOf, createRelayLive, createSpeakers, relayLiveCarriers} from './relay-live.mjs';
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 
@@ -106,24 +106,83 @@ export async function connectRelayPeer({
   const listeners = new Set();
   let snapshot = {phase: 'authenticating'};
   let live;
+  // Agents this device runs publish under their own namespaces: one layer each.
+  const agentLayers = new Map();
+  const layers = () => [...(live ? [live] : []), ...agentLayers.values()];
+  let admitted;
+  const ready = new Promise(resolve => { admitted = resolve; });
   const publish = () => {
     snapshot = JSON.parse(peer.snapshot());
-    live?.pump();
+    if (snapshot.phase === 'ready') admitted();
+    if (live) {
+      const events = JSON.parse(peer.takeDurableEvents());
+      for (const layer of layers()) layer.pump(events);
+    }
     for (const listener of [...listeners]) listener(snapshot);
     onStatus?.(snapshot);
   };
   peer.subscribe(publish);
   peer.joinRoom(room);
+  let hostInfo;
+  const liveOptions = () => relayLiveCarriers(origin, hostInfo, {fetch: fetcher});
   if (liveEnabled) {
-    const {endpoint, carriers} = relayLiveCarriers(origin, JSON.parse(await runtime.hostInfo(post)), {fetch: fetcher});
+    hostInfo = JSON.parse(await runtime.hostInfo(post));
     const key = [...(custodyForWasm.publicKey ?? [])].map(byte => byte.toString(16).padStart(2, '0')).join('');
     live = createRelayLive(peer, runtime, room, {
-      endpoint, carriers, participant: {label: label.slice(0, 32), color: colorOf(key || label)},
+      ...liveOptions(), ready, participant: {label: label.slice(0, 32), color: colorOf(key || label)},
     });
   }
+  const agentLive = agent => {
+    let layer = agentLayers.get(agent);
+    if (!layer) {
+      layer = createRelayLive(peer, runtime, room, {
+        ...liveOptions(), ready, agent, participant: {label: agent.slice(0, 32), color: colorOf(`agent:${agent}`)},
+      });
+      agentLayers.set(agent, layer);
+    }
+    return layer;
+  };
   publish();
   let disposed = false;
-  const dispose = () => { if (disposed) return; disposed = true; listeners.clear(); live?.stop(); peer.dispose(); };
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    listeners.clear();
+    for (const layer of layers()) layer.stop();
+    peer.dispose();
+  };
+  // A mount acts for an agent when it says so (`agent`), or when its author
+  // is the name of an agent this page runs (an agent member of its desktop,
+  // or another mount's `agent`).
+  const agentNames = new Set();
+  const learnAgents = options => {
+    if (typeof options.agent === 'string' && options.agent) agentNames.add(options.agent);
+    for (const workspace of options.local?.workspaces ?? []) {
+      for (const member of workspace?.members ?? []) if (member?.agent && typeof member.name === 'string') agentNames.add(member.name);
+    }
+  };
+  const speakers = createSpeakers();
+  const mountLive = (target, options) => {
+    const speaker = speakers.mount();
+    const current = () => {
+      const agent = typeof options.agent === 'string' && options.agent ? options.agent
+        : agentNames.has(options.author) ? options.author : undefined;
+      return agent ? agentLive(agent) : live;
+    };
+    const input = new AbortController();
+    for (const type of ['pointerdown', 'keydown', 'focusin']) {
+      target.addEventListener(type, () => speaker.claim(current()), {capture: true, passive: true, signal: input.signal});
+    }
+    return {
+      options: {live: () => speaker.view(current()), liveMembers: () => JSON.stringify(current().members())},
+      adopt(mount) {
+        const {invokeAction, cleanup} = mount;
+        mount.invokeAction = (...args) => { speaker.acted(); return invokeAction(...args); };
+        mount.cleanup = async (...args) => { input.abort(); speaker.release(); return cleanup(...args); };
+        return mount;
+      },
+    };
+  };
   signal?.addEventListener('abort', dispose, {once: true});
   const relay = {
     id: peer.id,
@@ -156,17 +215,22 @@ export async function connectRelayPeer({
       });
     },
     /** `host.mjs`'s `mountDesktop` in this room: the mount's records
-     * replicate through the peer, and it shows the room's live presence. */
-    mountDesktop: (target, options = {}) => mountDesktop(target, {
-      ...options, profile, device, room, relay: peer.id,
-      ...(live ? {live: () => live.api, liveMembers: () => JSON.stringify(live.members())} : {}),
-    }),
+     * replicate through the peer, and it shows the room's live presence.
+     * A mount of an agent this page runs publishes as that agent. */
+    async mountDesktop(target, options = {}) {
+      if (!live) return mountDesktop(target, {...options, profile, device, room, relay: peer.id});
+      learnAgents(options);
+      const presence = mountLive(target, options);
+      return presence.adopt(await mountDesktop(target, {...options, profile, device, room, relay: peer.id, ...presence.options}));
+    },
     /** Resolves once every published change is durable on the host. */
     flush: () => peer.flush(),
     reconnect: () => peer.reconnect(),
     /** The room's live plane (`liveV1`: `state`, `memberCount`,
      * `remoteState()`, `onMember`, …), or `undefined` with `live: false`. */
     get live() { return live?.api; },
+    /** The live plane of agent `agent` this page runs, once one of its mounts exists. */
+    agentLive: agent => agentLayers.get(agent)?.api,
     /** The runtime's `WasmPeer`. */
     get peer() { return peer; },
     dispose,

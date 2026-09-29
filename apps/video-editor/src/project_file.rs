@@ -229,7 +229,7 @@ pub fn decode(bytes: &[u8]) -> Result<Project, ProjectFileError> {
 ///
 /// [`ProjectFileError::Io`] when the file cannot be written.
 pub fn save(path: &Path, project: &Project) -> Result<(), ProjectFileError> {
-    std::fs::write(path, encode(project))
+    crate::files::save(path, &encode(project))
         .map_err(|e| ProjectFileError::Io(format!("Could not save: {e}")))
 }
 
@@ -240,8 +240,8 @@ pub fn save(path: &Path, project: &Project) -> Result<(), ProjectFileError> {
 /// [`ProjectFileError::Io`] when the file cannot be read, otherwise whatever
 /// [`decode`] reports for its contents.
 pub fn load(path: &Path) -> Result<Project, ProjectFileError> {
-    let bytes =
-        std::fs::read(path).map_err(|e| ProjectFileError::Io(format!("Could not open: {e}")))?;
+    let bytes = crate::files::read(path)
+        .map_err(|e| ProjectFileError::Io(format!("Could not open: {e}")))?;
     decode(&bytes)
 }
 
@@ -329,7 +329,7 @@ pub mod recents {
         if id.contains('/') || id.contains('\\') || id == "." || id == ".." {
             return None;
         }
-        let base = xdg_paths::xdg::data_home()?;
+        let base = tilo_paths::xdg::data_home()?;
         Some(base.join(id))
     }
 
@@ -345,7 +345,10 @@ pub mod recents {
     /// volume must not permanently forget the project on it.
     pub fn load() -> Vec<PathBuf> {
         let Some(p) = path() else { return Vec::new() };
-        let Ok(text) = std::fs::read_to_string(&p) else {
+        let Some(text) = crate::files::read(&p)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+        else {
             return Vec::new();
         };
         let all: Vec<PathBuf> = serde_json::from_str(&text).unwrap_or_default();
@@ -373,13 +376,10 @@ pub mod recents {
     /// in-memory list is still correct for this session.
     pub fn remember(list: &[PathBuf], entry: &Path) -> Vec<PathBuf> {
         let next = promote(list, entry);
-        if let Some(p) = path() {
-            if let Some(parent) = p.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Ok(text) = serde_json::to_string(&next) {
-                let _ = std::fs::write(&p, text);
-            }
+        if let Some(p) = path()
+            && let Ok(text) = serde_json::to_string(&next)
+        {
+            let _ = crate::files::write(&p, text.as_bytes());
         }
         next
     }

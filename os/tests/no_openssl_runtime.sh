@@ -231,12 +231,12 @@ if inventory_cleanup "$runtime_network" '^systemd-(coredump|networkd|resolved)$'
     "xargs -r dnf --disablerepo='*' remove -y" '^systemd-(coredump|networkd|resolved)$' \
   && grep -Fq 'test "$(readlink /etc/resolv.conf)" = ../run/NetworkManager/resolv.conf' <<<"$runtime_network" \
   && awk '/ln -sfn .*NetworkManager/ { switched=1 } /xargs -r dnf/ { if (!switched) exit 1; removed=1 } END { if (!removed) exit 1 }' <<<"$runtime_network" \
-  && grep -Fq 'rpm -q systemd-networkd' "$repo/os/usr/libexec/tilo-security-audit"; then
+  && grep -Fq 'installed systemd-networkd' "$repo/os/usr/libexec/tilo-security-audit"; then
   ok 'redundant systemd network daemons are removed and audited'
 else
   bad 'systemd network daemons remain in the NetworkManager-owned runtime'
 fi
-grep -Fq 'rpm -q systemd-coredump' "$repo/os/usr/libexec/tilo-security-audit" \
+grep -Fq 'installed systemd-coredump' "$repo/os/usr/libexec/tilo-security-audit" \
   && grep -Fq 'systemd-coredump.socket' "$repo/os/Containerfile" \
   || bad 'runtime can retain process memory through inherited systemd-coredump'
 

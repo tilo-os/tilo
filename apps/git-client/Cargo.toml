@@ -18,6 +18,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -35,7 +36,7 @@ anyhow.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2", "cred"] }
 reqwest = { workspace = true, features = ["blocking"] }
-tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
 russh = { version = "0.63.3", default-features = false, features = ["ring", "flate2"] }
 ssh-agent-client = { path = "../../crates/system/ssh-agent-client" }
 tokio = { workspace = true, features = ["rt", "net", "time"] }

@@ -117,7 +117,7 @@ fn describe(path: &Path, home: &Path, dirs: &UserDirs) -> (String, bool, FavKind
 }
 
 /// The out-of-the-box favourites: Home plus the standard XDG user folders,
-/// using the user's real localized directories (`xdg-paths`). When a specific XDG
+/// using the user's real localized directories (`tilo-paths`). When a specific XDG
 /// dir isn't defined, fall back gracefully to the conventional English
 /// subfolder of `home` so the sidebar is never missing a standard place.
 pub fn defaults(home: &Path, dirs: &UserDirs) -> Vec<Favorite> {

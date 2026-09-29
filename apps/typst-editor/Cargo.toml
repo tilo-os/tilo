@@ -17,6 +17,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
@@ -27,7 +28,7 @@ serde_json.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 
 # Typst compilation + raster rendering. All pinned to the same 0.15
 # series so the `typst` crate instance is unified across compile + render.
@@ -35,9 +36,13 @@ typst = "0.15"
 typst-render = "0.15"
 typst-pdf = "0.15"
 typst-layout = "0.15"
-typst-assets = { version = "0.15", features = ["fonts"] }
 tiny-skia = "0.12"
 comemo = "0.5"
+# Typst's bundled fonts: embedded natively, fetched from the host by a page.
+tilo-typst-fonts = { path = "../../crates/platform/tilo-typst-fonts" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

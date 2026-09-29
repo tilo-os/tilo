@@ -202,7 +202,7 @@ enum PipFeedbackKind {
 
 struct PipFeedback {
     kind: PipFeedbackKind,
-    started: std::time::Instant,
+    started: ui::time::Instant,
     /// Screenshot/debug guidance is deliberately steady: headless rendering
     /// can be queued behind a busy renderer, and must not race the ordinary
     /// short-lived live toast away before it is inspected.
@@ -213,7 +213,7 @@ impl PipFeedback {
     fn transient(kind: PipFeedbackKind) -> Self {
         Self {
             kind,
-            started: std::time::Instant::now(),
+            started: ui::time::now(),
             persistent: false,
         }
     }
@@ -221,9 +221,9 @@ impl PipFeedback {
     fn persistent(kind: PipFeedbackKind) -> Self {
         Self {
             kind,
-            started: std::time::Instant::now()
+            started: ui::time::now()
                 .checked_sub(PIP_FEEDBACK_FADE)
-                .unwrap_or_else(std::time::Instant::now),
+                .unwrap_or_else(ui::time::Instant::now),
             persistent: true,
         }
     }
@@ -720,7 +720,7 @@ pub struct BrowserWidget {
     downloads: Downloads,
     download_picker: Option<(String, ui::portal::PortalChannel)>,
     download_picker_queue: std::collections::VecDeque<(String, String)>,
-    download_save_due: Option<std::time::Instant>,
+    download_save_due: Option<ui::time::Instant>,
     /// Retained full-corpus index. Provider handles are cheap and unchanged
     /// frames compare only the durable corpus revision tokens.
     search_index: crate::search_provider::BrowserSearchIndex,
@@ -757,11 +757,11 @@ pub struct BrowserWidget {
     content_rect: std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>>,
     resource_navigation_invocation: Option<ui::tilo_actions::InvocationId>,
     resource_navigation_result: Option<ui::tilo_actions::InvocationUpdate>,
-    resource_navigation_deadline: Option<std::time::Instant>,
+    resource_navigation_deadline: Option<ui::time::Instant>,
     resource_pip_invocation: Option<ui::tilo_actions::InvocationId>,
     resource_pip_request: Option<u64>,
     resource_pip_result: Option<ui::tilo_actions::InvocationUpdate>,
-    resource_pip_deadline: Option<std::time::Instant>,
+    resource_pip_deadline: Option<ui::time::Instant>,
     page_operation: Option<PageOperation>,
     page_operation_result: Option<ui::tilo_actions::InvocationUpdate>,
     page_request_seq: u32,
@@ -782,7 +782,7 @@ pub struct BrowserWidget {
     pip_request_seq: u64,
     active_pip_probe: Option<u64>,
     active_pip_refresh_probe: Option<u64>,
-    next_pip_refresh_at: Option<std::time::Instant>,
+    next_pip_refresh_at: Option<ui::time::Instant>,
     pip_feedback: Option<PipFeedback>,
     pip_feedback_rect: Rect,
     pip_float_page_rect: Rect,
@@ -2097,7 +2097,7 @@ impl BrowserWidget {
             }
             self.active_pip_element = Some(element);
             self.refresh_active_pip_region();
-            self.next_pip_refresh_at = Some(std::time::Instant::now() + PIP_ELEMENT_REFRESH);
+            self.next_pip_refresh_at = Some(ui::time::now() + PIP_ELEMENT_REFRESH);
             return;
         }
         if self.active_pip_probe != Some(request_id) {
@@ -2145,7 +2145,7 @@ impl BrowserWidget {
         self.pip_page_fallback = false;
         self.published_pip_region = Some(region);
         self.active_pip = true;
-        self.next_pip_refresh_at = Some(std::time::Instant::now() + PIP_ELEMENT_REFRESH);
+        self.next_pip_refresh_at = Some(ui::time::now() + PIP_ELEMENT_REFRESH);
         self.structure_dirty = true;
         self.finish_pip_operation_success(request_id, "Picture in Picture opened.");
     }
@@ -2156,7 +2156,7 @@ impl BrowserWidget {
         }
         let due = self
             .next_pip_refresh_at
-            .is_some_and(|deadline| std::time::Instant::now() >= deadline);
+            .is_some_and(|deadline| ui::time::now() >= deadline);
         if !due {
             return;
         }
@@ -2169,7 +2169,7 @@ impl BrowserWidget {
         };
         self.pip_request_seq = self.pip_request_seq.saturating_add(1);
         self.active_pip_refresh_probe = Some(self.pip_request_seq);
-        self.next_pip_refresh_at = Some(std::time::Instant::now() + PIP_ELEMENT_REFRESH);
+        self.next_pip_refresh_at = Some(ui::time::now() + PIP_ELEMENT_REFRESH);
         self.engine.send(WebViewCommand::RequestMediaElementById {
             request_id: self.pip_request_seq,
             element_id,
@@ -3634,7 +3634,7 @@ impl BrowserWidget {
     fn apply_engine_events(&mut self) {
         if self
             .download_save_due
-            .is_some_and(|due| std::time::Instant::now() >= due)
+            .is_some_and(|due| ui::time::now() >= due)
         {
             self.persist_downloads_now();
             self.download_save_due = None;
@@ -3946,7 +3946,7 @@ impl BrowserWidget {
                     .progress(&id, received_bytes, total_bytes, progress);
                 if self.download_save_due.is_none() {
                     self.download_save_due =
-                        Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
+                        Some(ui::time::now() + std::time::Duration::from_secs(1));
                 }
                 self.structure_dirty = true;
             }
@@ -4233,7 +4233,7 @@ impl BrowserWidget {
         self.menu_direction = None;
     }
 
-    fn tick_back_hold(&mut self, now: std::time::Instant) {
+    fn tick_back_hold(&mut self, now: ui::time::Instant) {
         if let Some(direction) = self.navigation_hold.tick(now) {
             self.request_navigation_history(direction);
         }
@@ -4733,7 +4733,7 @@ impl Widget for BrowserWidget {
         if self.resource_pip_invocation == Some(invocation)
             && self
                 .resource_pip_deadline
-                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+                .is_some_and(|deadline| ui::time::now() >= deadline)
         {
             self.resource_pip_invocation = None;
             self.resource_pip_request = None;
@@ -4753,7 +4753,7 @@ impl Widget for BrowserWidget {
         if self.resource_navigation_invocation == Some(invocation)
             && self
                 .resource_navigation_deadline
-                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+                .is_some_and(|deadline| ui::time::now() >= deadline)
         {
             self.resource_navigation_invocation = None;
             self.resource_navigation_deadline = None;
@@ -4832,7 +4832,7 @@ impl Widget for BrowserWidget {
         if self.credentials.open {
             self.site.close();
         }
-        self.tick_back_hold(std::time::Instant::now());
+        self.tick_back_hold(ui::time::now());
         self.apply_engine_events();
         self.drive_page_operation();
         self.structure_dirty |= self.capabilities.downloads_changed();
@@ -5285,8 +5285,7 @@ impl Widget for BrowserWidget {
                     return;
                 };
                 self.navigation_pointer_down = Some(direction);
-                self.navigation_hold
-                    .press(std::time::Instant::now(), direction);
+                self.navigation_hold.press(ui::time::now(), direction);
                 if self.motion_reduced {
                     // Reduced motion disables the host's animation pump; this
                     // one-shot wake still recognizes a stationary long press.
@@ -5306,7 +5305,7 @@ impl Widget for BrowserWidget {
                 button: MouseButton::Left,
                 ..
             } if self.navigation_pointer_down.is_some() => {
-                self.tick_back_hold(std::time::Instant::now());
+                self.tick_back_hold(ui::time::now());
                 self.navigation_pointer_down = None;
                 if let Some(direction) = self.navigation_hold.release()
                     && navigation_hit == Some(direction)
@@ -5573,7 +5572,7 @@ impl Widget for BrowserWidget {
         true
     }
 
-    fn next_wake_deadline(&self) -> Option<std::time::Instant> {
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         self.site
             .deadline()
             .into_iter()
@@ -6471,13 +6470,13 @@ mod architecture_tests {
         let mut widget = BrowserWidget::new_headless();
         widget.sync(&mut doc, &automerge::ROOT);
         assert_eq!(widget.bookmarks.entries().len(), 1000);
-        let started = std::time::Instant::now();
+        let started = ui::time::now();
         for _ in 0..100 {
             widget.sync(&mut doc, &automerge::ROOT);
         }
         let elapsed = started.elapsed();
         eprintln!("100 browser syncs / 1000 bookmarks: {elapsed:?}");
-        let reference = std::time::Instant::now();
+        let reference = ui::time::now();
         for _ in 0..100 {
             std::hint::black_box(crate::actions::bookmarks_from_doc(&doc));
         }
@@ -7013,8 +7012,7 @@ mod architecture_tests {
                 &mouse(MouseButton::Left, ElementState::Pressed)
             ));
             assert_eq!(engine.current_uri().as_deref(), Some("https://c.test"));
-            widget
-                .tick_back_hold(std::time::Instant::now() + std::time::Duration::from_millis(451));
+            widget.tick_back_hold(ui::time::now() + std::time::Duration::from_millis(451));
             widget.apply_engine_events();
             assert!(widget.back_menu.is_open());
             assert_eq!(
@@ -7104,8 +7102,7 @@ mod architecture_tests {
                 &mut widget,
                 &mouse(MouseButton::Left, ElementState::Pressed)
             ));
-            widget
-                .tick_back_hold(std::time::Instant::now() + std::time::Duration::from_millis(451));
+            widget.tick_back_hold(ui::time::now() + std::time::Duration::from_millis(451));
             widget.apply_engine_events();
 
             assert!(widget.back_menu.is_open());
@@ -7124,8 +7121,7 @@ mod architecture_tests {
                     matches!(command, WebViewCommand::RequestNavigationHistory { .. })
                 })
                 .count();
-            widget
-                .tick_back_hold(std::time::Instant::now() + std::time::Duration::from_millis(900));
+            widget.tick_back_hold(ui::time::now() + std::time::Duration::from_millis(900));
             assert_eq!(
                 engine
                     .commands()
@@ -9184,7 +9180,7 @@ mod tests {
             let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
             w.pip_feedback = Some(PipFeedback {
                 kind: PipFeedbackKind::NoVideo,
-                started: std::time::Instant::now(),
+                started: ui::time::now(),
                 persistent: false,
             });
 
@@ -9201,9 +9197,9 @@ mod tests {
             let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
             w.pip_feedback = Some(PipFeedback {
                 kind: PipFeedbackKind::NoVideo,
-                started: std::time::Instant::now()
+                started: ui::time::now()
                     .checked_sub(PIP_FEEDBACK_LIFETIME + std::time::Duration::from_secs(1))
-                    .unwrap_or_else(std::time::Instant::now),
+                    .unwrap_or_else(ui::time::Instant::now),
                 persistent: false,
             });
             w.pip_feedback_rect = Rect::new(100.0, 80.0, 426.0, 144.0);
@@ -9302,9 +9298,9 @@ mod tests {
                 label: "The active film".into(),
             }));
             w.next_pip_refresh_at = Some(
-                std::time::Instant::now()
+                ui::time::now()
                     .checked_sub(std::time::Duration::from_millis(1))
-                    .unwrap_or_else(std::time::Instant::now),
+                    .unwrap_or_else(ui::time::Instant::now),
             );
             w.poll_active_pip_element();
             assert!(engine.commands().iter().any(|command| matches!(
@@ -9352,7 +9348,7 @@ mod tests {
             let (mut state, root) = synced(&mut w);
             w.pip_feedback = Some(PipFeedback {
                 kind: PipFeedbackKind::NoVideo,
-                started: std::time::Instant::now(),
+                started: ui::time::now(),
                 persistent: false,
             });
             w.pip_feedback_rect = Rect::new(100.0, 80.0, 454.0, 192.0);
@@ -9452,9 +9448,9 @@ mod tests {
                 label: "Temporary video".into(),
             });
             w.next_pip_refresh_at = Some(
-                std::time::Instant::now()
+                ui::time::now()
                     .checked_sub(std::time::Duration::from_millis(1))
-                    .unwrap_or_else(std::time::Instant::now),
+                    .unwrap_or_else(ui::time::Instant::now),
             );
 
             w.poll_active_pip_element();
@@ -10279,10 +10275,7 @@ mod tests {
                     match listener.accept() {
                         Ok((stream, _)) => break stream,
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            assert!(
-                                std::time::Instant::now() < deadline,
-                                "filter worker did not connect"
-                            );
+                            assert!(ui::time::now() < deadline, "filter worker did not connect");
                             std::thread::sleep(std::time::Duration::from_millis(10));
                         }
                         Err(error) => panic!("filter endpoint failed: {error}"),
@@ -10346,7 +10339,7 @@ mod tests {
         let mut document = AutoCommit::new();
         widget.sync(&mut document, &automerge::ROOT);
         let deadline = tilo_test_env::hang_deadline();
-        while !done.exists() && std::time::Instant::now() < deadline {
+        while !done.exists() && ui::time::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(done.exists(), "legacy filter worker did not finish");

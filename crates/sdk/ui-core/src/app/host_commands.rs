@@ -12,7 +12,7 @@ use crate::standalone_history::{HistoryReadContext, StandaloneHistory};
 
 /// Changes whenever a host command's label, enabled state or presence may
 /// have, so the host chrome rebuilds only then.
-#[cfg(all(target_os = "macos", feature = "native"))]
+#[cfg(all(feature = "native", not(target_os = "android")))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HostCommandsKey {
     undo: u64,
@@ -161,7 +161,7 @@ impl App {
         )
     }
 
-    #[cfg(all(target_os = "macos", feature = "native"))]
+    #[cfg(all(feature = "native", not(target_os = "android")))]
     pub(crate) fn host_commands_key(&self) -> HostCommandsKey {
         HostCommandsKey {
             undo: self.state.history_revision(),
@@ -210,9 +210,23 @@ impl App {
         invocation.is_some_and(|invocation| self.invoke_host_command(&invocation))
     }
 
-    /// Only standalone History opens at a change; a framework History has
-    /// no session rows to select.
+    /// The newest changes people made, from whichever History serves this
+    /// app. The document's genesis is a version, not a change anyone made.
     fn recent_changes(&self) -> Vec<RecentChange> {
+        self.history_rows()
+            .iter()
+            .rev()
+            .filter(|entry| !entry.is_genesis())
+            .take(model::RECENT_CHANGES)
+            .map(RecentChange::from_entry)
+            .collect()
+    }
+
+    /// The rows whichever History serves this app lists, in causal order.
+    fn history_rows(&self) -> Vec<crate::widget::HistoryEntry> {
+        if let Some(history) = &self.history {
+            return history.current_entries(&self.state.doc);
+        }
         if !self.history_chrome_enabled {
             return Vec::new();
         }
@@ -234,15 +248,7 @@ impl App {
             &context,
             crate::history_source::AuthorDirectory::new(),
         )
-        .map(|history| {
-            history
-                .rows()
-                .iter()
-                .rev()
-                .take(model::RECENT_CHANGES)
-                .map(RecentChange::from_entry)
-                .collect()
-        })
+        .map(|history| history.rows().to_vec())
         .unwrap_or_default()
     }
 

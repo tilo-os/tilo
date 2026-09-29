@@ -12,7 +12,7 @@
 //! joined a relative value against the process's working directory). So under a relative
 //! `XDG_CONFIG_HOME`, the compositor and power policy read one file while other apps read
 //! another, silently. [`settings_path`] now resolves it once, following the spec, through
-//! the workspace's shared resolver (`xdg-paths`).
+//! the workspace's shared resolver (`tilo-paths`).
 //!
 //! # The shape on disk
 //!
@@ -55,9 +55,12 @@ pub mod keyboard_shortcuts;
 pub mod magnifier;
 pub mod notification_policy;
 pub mod roaming_provenance;
+mod source;
 pub mod system_sounds;
 #[cfg(feature = "watch")]
 pub mod watch;
+
+pub use source::{HostDocument, SettingsSource, install_source, installed_source, merge_section};
 
 /// The file name under the Tilo config root.
 const FILE: &str = "settings.json";
@@ -68,7 +71,7 @@ const FILE: &str = "settings.json";
 /// `$HOME`, and getting that rule wrong in one reader and right in another is what made this
 /// crate necessary.
 pub fn config_root() -> Option<PathBuf> {
-    Some(xdg_paths::xdg::config_home()?.join("tilo"))
+    Some(tilo_paths::xdg::config_home()?.join("tilo"))
 }
 
 /// [`config_root`] from explicit values of `XDG_CONFIG_HOME` and `HOME` instead of the process
@@ -78,7 +81,7 @@ pub fn config_root_from(
     home: Option<&std::ffi::OsStr>,
 ) -> Option<PathBuf> {
     Some(
-        xdg_paths::xdg::Base::Config
+        tilo_paths::xdg::Base::Config
             .resolve_from(xdg_config_home, home)?
             .join("tilo"),
     )
@@ -96,12 +99,34 @@ pub fn settings_path() -> Option<PathBuf> {
 
 /// Read and parse the whole document. Returns an empty object for a missing, unreadable or
 /// malformed file, so callers never distinguish "absent" from "broken" — both mean "use
-/// defaults".
+/// defaults". A host-installed [`SettingsSource`] replaces the file.
 pub fn load() -> Map<String, Value> {
+    if let Some(source) = installed_source() {
+        return source.load();
+    }
     match settings_path() {
         Some(p) => load_at(&p),
         None => Map::new(),
     }
+}
+
+/// Identifies one version of the settings document, for readers that cache it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsStamp {
+    /// The settings file's modification time.
+    Modified(std::time::SystemTime),
+    /// A host-installed source's [`SettingsSource::revision`].
+    Revision(u64),
+}
+
+/// The current [`SettingsStamp`]: the installed source's revision, else the file's
+/// modification time. `None` when there is no readable file.
+pub fn stamp() -> Option<SettingsStamp> {
+    if let Some(source) = installed_source() {
+        return Some(SettingsStamp::Revision(source.revision()));
+    }
+    let modified = std::fs::metadata(settings_path()?).ok()?.modified().ok()?;
+    Some(SettingsStamp::Modified(modified))
 }
 
 /// [`load`] from an explicit path. Exposed so tests can drive a scratch file without
@@ -157,8 +182,12 @@ fn object_section(mut doc: Map<String, Value>, name: &str) -> Map<String, Value>
 /// # Errors
 ///
 /// Returns an error if no config directory is available (see
-/// [`config_root`]), or [`update_section_at`] fails.
+/// [`config_root`]), or [`update_section_at`] fails. With a host-installed
+/// [`SettingsSource`], the source's error.
 pub fn update_section(name: &str, values: Map<String, Value>) -> std::io::Result<()> {
+    if let Some(source) = installed_source() {
+        return source.update_section(name, values);
+    }
     let Some(path) = settings_path() else {
         return Err(std::io::Error::other("no config directory available"));
     };
@@ -176,28 +205,16 @@ pub fn update_section_at(
     values: Map<String, Value>,
 ) -> std::io::Result<()> {
     let mut doc = load_at(path);
-    let entry = doc
-        .entry(name.to_string())
-        .or_insert_with(|| Value::Object(Map::new()));
-    // A section on disk as the wrong type is replaced rather than merged into — there's nothing
-    // to preserve in a value we cannot read.
-    if !entry.is_object() {
-        *entry = Value::Object(Map::new());
-    }
-    if let Some(obj) = entry.as_object_mut() {
-        for (k, v) in values {
-            obj.insert(k, v);
-        }
-    }
+    merge_section(&mut doc, name, values);
     write_atomic(path, &Value::Object(doc))
 }
 
-/// Serialise and replace the document. `atomic_file` does the crash-safe part: a truncated
+/// Serialise and replace the document. `tilo_files::native::atomic` does the crash-safe part: a truncated
 /// `settings.json` would reset every pane at once.
 fn write_atomic(path: &Path, doc: &Value) -> std::io::Result<()> {
     let mut body = serde_json::to_string_pretty(doc).map_err(std::io::Error::other)?;
     body.push('\n');
-    atomic_file::write_creating_parent(path, body.as_bytes())
+    tilo_files::native::atomic::write_creating_parent(path, body.as_bytes())
 }
 
 /// Read a `f64` at `section.key`, clamped into `range`, falling back to `default` when
@@ -294,7 +311,7 @@ mod tests {
         }
         // Phase `the_configured_root_applies_the_same_rules_to_the_process_environment`.
         {
-            let home = xdg_paths::home();
+            let home = tilo_paths::home();
             assert_eq!(
                 config_root(),
                 config_root_from(

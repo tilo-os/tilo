@@ -274,7 +274,7 @@ impl DisplayHardwareSnapshot {
             .ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is unavailable"))?;
         let mut body = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
         body.push(b'\n');
-        atomic_file::write_creating_parent(&path, &body)
+        tilo_files::native::atomic::write_creating_parent(&path, &body)
     }
 }
 
@@ -490,7 +490,7 @@ impl DisplayTransaction {
 /// accepted: falling back to `/tmp` would let another user forge display
 /// capabilities shown by Settings.
 pub fn display_snapshot_path() -> Option<std::path::PathBuf> {
-    xdg_paths::xdg::runtime_dir().map(|path| path.join("tilo/display-state.json"))
+    tilo_paths::xdg::runtime_dir().map(|path| path.join("tilo/display-state.json"))
 }
 
 /// What kind of input device libinput reports, as far as Settings cares:
@@ -586,7 +586,7 @@ impl InputHardwareSnapshot {
     pub fn save_at(&self, path: &std::path::Path) -> std::io::Result<()> {
         let mut body = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
         body.push(b'\n');
-        atomic_file::write_creating_parent(path, &body)
+        tilo_files::native::atomic::write_creating_parent(path, &body)
     }
 
     /// Whether at least one device of `kind` is attached.
@@ -607,7 +607,7 @@ impl InputHardwareSnapshot {
 /// Private session state path for [`InputHardwareSnapshot`]; like
 /// [`display_snapshot_path`] it never falls back to a shared directory.
 pub fn input_snapshot_path() -> Option<std::path::PathBuf> {
-    xdg_paths::xdg::runtime_dir().map(|path| path.join("tilo/input-state.json"))
+    tilo_paths::xdg::runtime_dir().map(|path| path.join("tilo/input-state.json"))
 }
 
 /// `input` key holding per-tablet settings, keyed by [`input_device_key`].
@@ -1682,6 +1682,10 @@ pub enum ShortcutAction {
     AttachTabRight,
     MoveGroupLeft,
     MoveGroupRight,
+    /// Carry the focused window group, whole, into the strip above.
+    MoveGroupToPreviousStrip,
+    /// Carry the focused window group, whole, into the strip below.
+    MoveGroupToNextStrip,
     /// Move the focused window group onto the display to the left of its
     /// own (the previous one in reading order).
     MoveGroupToPreviousDisplay,
@@ -1742,8 +1746,8 @@ impl ShortcutAction {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DesktopControlsConfig {
-    /// Add Super+Ctrl+h/j/k/l and Super+Ctrl+Shift+h/l aliases for window,
-    /// strip and reorder navigation. The ordinary arrow bindings remain
+    /// Add Super+Ctrl+h/j/k/l and Super+Ctrl+Shift+h/j/k/l aliases for
+    /// window and strip navigation and for carrying the focused group. The ordinary arrow bindings remain
     /// available.
     pub vim_mode: bool,
 }
@@ -2257,16 +2261,26 @@ impl Default for ShortcutConfig {
             // means the overview is never opened while changing tabs.
             (ShortcutAction::PreviousTab, ctrl_shift_chord("tab")),
             (ShortcutAction::NextTab, ctrl_chord("tab")),
-            (ShortcutAction::PreviousStrip, super_shift_chord("up")),
-            (ShortcutAction::NextStrip, super_shift_chord("down")),
+            // Arrows move focus across the plane; Shift carries the focused
+            // group the same way (docs/architecture/window-management.md).
+            (ShortcutAction::PreviousStrip, super_chord("up")),
+            (ShortcutAction::NextStrip, super_chord("down")),
             (ShortcutAction::PreviousWorkspace, super_chord("pageup")),
             (ShortcutAction::NextWorkspace, super_chord("pagedown")),
-            (ShortcutAction::ToggleMaximize, super_chord("up")),
+            (ShortcutAction::ToggleMaximize, super_chord("m")),
             (ShortcutAction::DetachTab, super_shift_chord("enter")),
             (ShortcutAction::AttachTabLeft, super_chord("[")),
             (ShortcutAction::AttachTabRight, super_chord("]")),
             (ShortcutAction::MoveGroupLeft, super_shift_chord("left")),
             (ShortcutAction::MoveGroupRight, super_shift_chord("right")),
+            (
+                ShortcutAction::MoveGroupToPreviousStrip,
+                super_shift_chord("up"),
+            ),
+            (
+                ShortcutAction::MoveGroupToNextStrip,
+                super_shift_chord("down"),
+            ),
             // Super+Shift+arrows already reorder within a display; Ctrl
             // widens the same gesture to the neighbouring display.
             (
@@ -2321,6 +2335,15 @@ impl Default for ShortcutConfig {
         }
     }
 }
+
+/// Chords that used to be an action's default, as `(action, modifiers in
+/// sorted order, key)`. Never remove an entry: a settings file written by
+/// any earlier release may still carry it.
+const RETIRED_DEFAULTS: &[(ShortcutAction, &[&str], &str)] = &[
+    (ShortcutAction::PreviousStrip, &["Shift", "Super"], "up"),
+    (ShortcutAction::NextStrip, &["Shift", "Super"], "down"),
+    (ShortcutAction::ToggleMaximize, &["Super"], "up"),
+];
 
 impl ShortcutConfig {
     /// Validate an already assembled table before it becomes live runtime
@@ -2497,12 +2520,28 @@ impl ShortcutConfig {
     /// defaults, then accept a stored override only when it is a valid,
     /// non-reserved, non-conflicting chord.  Bad entries fall back to their
     /// default instead of leaving ambiguous client ownership.
+    ///
+    /// A stored chord that was once the default for its action
+    /// ([`RETIRED_DEFAULTS`]) was saved because [`Self::save`] writes the
+    /// whole table, not because the person chose it; it yields to the
+    /// current default.
     #[must_use]
     pub fn normalise(loaded: Self) -> Self {
         let defaults = Self::default();
         let mut effective = defaults.clone();
         for (action, chord) in loaded.bindings {
             if action == ShortcutAction::Lock {
+                continue;
+            }
+            if RETIRED_DEFAULTS.iter().any(|(retired, modifiers, key)| {
+                *retired == action
+                    && chord.key == *key
+                    && chord
+                        .modifiers
+                        .iter()
+                        .map(String::as_str)
+                        .eq(modifiers.iter().copied())
+            }) {
                 continue;
             }
             if !chord.is_valid_configurable() {
@@ -2847,8 +2886,24 @@ mod tests {
             let cfg = ShortcutConfig::default();
             assert_eq!(
                 cfg.bindings[&ShortcutAction::ToggleMaximize].display(),
-                "Super+Up"
+                "Super+m"
             );
+            for (action, chord) in [
+                (ShortcutAction::FocusPreviousWindow, "Super+Left"),
+                (ShortcutAction::FocusNextWindow, "Super+Right"),
+                (ShortcutAction::PreviousStrip, "Super+Up"),
+                (ShortcutAction::NextStrip, "Super+Down"),
+                (ShortcutAction::MoveGroupLeft, "Super+Shift+Left"),
+                (ShortcutAction::MoveGroupRight, "Super+Shift+Right"),
+                (ShortcutAction::MoveGroupToPreviousStrip, "Super+Shift+Up"),
+                (ShortcutAction::MoveGroupToNextStrip, "Super+Shift+Down"),
+            ] {
+                assert_eq!(
+                    cfg.bindings[&action].display(),
+                    chord,
+                    "arrows move focus and Shift carries the group the same way"
+                );
+            }
             assert_eq!(
                 cfg.bindings[&ShortcutAction::PreviousWorkspace].display(),
                 "Super+Page Up"
@@ -2948,6 +3003,42 @@ mod tests {
             );
             assert!(repaired.validate().is_ok());
         }
+        // Phase `a_table_saved_under_retired_defaults_takes_the_new_ones`.
+        {
+            let mut saved_by_an_older_release = ShortcutConfig::default();
+            for action in [
+                ShortcutAction::MoveGroupToPreviousStrip,
+                ShortcutAction::MoveGroupToNextStrip,
+            ] {
+                saved_by_an_older_release.bindings.remove(&action);
+            }
+            for (action, chord) in [
+                (ShortcutAction::PreviousStrip, "Super+Shift+Up"),
+                (ShortcutAction::NextStrip, "Super+Shift+Down"),
+                (ShortcutAction::ToggleMaximize, "Super+Up"),
+            ] {
+                saved_by_an_older_release
+                    .bindings
+                    .insert(action, KeyChord::parse(chord).unwrap());
+            }
+            assert_eq!(
+                ShortcutConfig::normalise(saved_by_an_older_release.clone()),
+                ShortcutConfig::default(),
+                "an untouched older table is today's defaults"
+            );
+
+            saved_by_an_older_release.bindings.insert(
+                ShortcutAction::NextStrip,
+                KeyChord::parse("Super+J").unwrap(),
+            );
+            let repaired = ShortcutConfig::normalise(saved_by_an_older_release);
+            assert_eq!(
+                repaired.bindings[&ShortcutAction::NextStrip].display(),
+                "Super+j",
+                "a chord the person chose is kept"
+            );
+            assert!(repaired.validate().is_ok());
+        }
         // Phase `saved_shortcuts_reload_as_the_same_valid_effective_config`.
         {
             let dir = tempfile::tempdir().unwrap();
@@ -2966,7 +3057,7 @@ mod tests {
         // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 44);
+            assert_eq!(cfg.bindings.len(), 46);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(

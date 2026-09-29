@@ -3,23 +3,24 @@
 //! Prefetching lyrics / the next queued song / album metadata is only polite on
 //! a **stable, non-metered** connection (home Wi-Fi / ethernet) — never on a
 //! metered cellular link where it would burn the user's data. This module
-//! answers "is the connection metered?" from `NetworkManager` when it's available
-//! (the Tilo default), with an env override for tests + headless boxes and a
-//! sensible default (assume unmetered / stable) when NM can't be reached.
+//! answers "is the connection metered?" from [`tilo_net::status`] (`NetworkManager`
+//! on Linux, the Network Information API in a page), with an env override for
+//! tests + headless boxes and a sensible default (assume unmetered / stable)
+//! when the platform cannot tell.
 
 use std::sync::OnceLock;
 
 /// Whether the active connection is metered (cellular / capped). `false` (i.e.
 /// "stable, prefetch is fine") is the default when the status is unknown.
 pub fn is_metered() -> bool {
-    // Consult NetworkManager once, cached for the process lifetime.
+    // Consult the platform once, cached for the process lifetime.
     static CACHED: OnceLock<bool> = OnceLock::new();
     // Deterministic override first: tests + operators set `TILO_MUSIC_METERED=1`
     // (metered) or `=0` (stable) to force the decision.
     if let Ok(v) = std::env::var("TILO_MUSIC_METERED") {
         return v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes");
     }
-    *CACHED.get_or_init(|| host_info::network::connection_metered().unwrap_or(false))
+    *CACHED.get_or_init(|| tilo_net::status::current().metered.unwrap_or(false))
 }
 
 /// Whether prefetch should run — the inverse of [`is_metered`], named for the

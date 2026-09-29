@@ -65,10 +65,61 @@ impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitServ
             let room = super::state::RoomId::parse(&request.room).ok_or("invalid native room")?;
             if let Some(network) = network {
                 network.check_native_custody(&owner, room)?;
+                // The room's receipts are its governor's to record.
+                if let tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                    redacted,
+                    ..
+                } = &request.operation
+                    && network.governed_elsewhere(room)
+                {
+                    return record_receipt_elsewhere(&network, &owner, room, &request, redacted)
+                        .await;
+                }
             }
             owner.commit_document(request, std::time::SystemTime::now())
         })
     }
+}
+
+/// Have the governor of `room` record an effect receipt this device's broker
+/// produced, and answer with this device's committed view of the room.
+async fn record_receipt_elsewhere(
+    network: &super::network::ShellNetwork,
+    owner: &super::native_workspace_owner::NativeWorkspaceOwner,
+    room: super::state::RoomId,
+    request: &tilo_peer_state::owner_commit::OwnerCommitRequest,
+    redacted: &[u8],
+) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
+    use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand};
+    let bound = serde_json::to_string(&BoundCommand {
+        source: CommandSource {
+            room: room.to_string(),
+            heads: Vec::new(),
+        },
+        command: DesktopCommand::RecordEffectReceipt {
+            receipt_json: String::from_utf8(redacted.to_vec())
+                .map_err(|_| "effect receipt is not JSON text")?,
+        },
+    })
+    .map_err(|error| error.to_string())?;
+    let answer = network.invoke_governor(
+        room,
+        tilo_desktop_model::commands::APP_ID,
+        tilo_desktop_model::commands::RESOURCE,
+        tilo_desktop_model::commands::ACTION,
+        Some(serde_json::json!({ "command": bound })),
+    );
+    tokio::time::timeout(GOVERNED_OPEN_TIMEOUT, answer)
+        .await
+        .map_err(|_| "the workspace host did not record the receipt in time; outcome unknown")?
+        .ok_or("the workspace host stopped before recording the receipt; outcome unknown")??;
+    owner.with_current(room, |view| {
+        Ok(tilo_peer_state::owner_commit::OwnerCommitReceipt {
+            binding: request.binding()?,
+            generation: view.generation(),
+            aggregate_hash: *blake3::hash(&view.peer().durable()?).as_bytes(),
+        })
+    })
 }
 
 pub struct NativeWorkspaceAuthority(pub WorkspaceTreeHandle);
@@ -576,7 +627,34 @@ impl tilo_action_broker::services::KeyboardShortcutServices for NativeKeyboardSh
 /// Workspace governance (permission profiles) applied under the shell's
 /// canonical capability authority. There is no application behind these
 /// actions: the shell validates, mutates, records the effect and persists.
-pub struct NativeWorkspaceGovernance(pub WorkspaceTreeHandle);
+/// With the network, a room another device governs has that governor apply
+/// them, with this device's own authority there.
+pub struct NativeWorkspaceGovernance(
+    pub WorkspaceTreeHandle,
+    pub Option<Arc<super::network::ShellNetwork>>,
+);
+impl NativeWorkspaceGovernance {
+    /// The network and room when another device governs `room`. The native
+    /// owner locks the tree under its own mutex, so this must not be asked
+    /// while the tree is held.
+    fn governor_elsewhere(
+        &self,
+        room: &str,
+    ) -> Option<(&Arc<super::network::ShellNetwork>, super::state::RoomId)> {
+        let room = self
+            .0
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == room)
+            .map(|workspace| workspace.room)?;
+        self.1
+            .as_ref()
+            .filter(|network| network.governed_elsewhere(room))
+            .map(|network| (network, room))
+    }
+}
 impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
     fn app_id(&self) -> &str {
         super::state::WORKSPACE_GOVERNANCE_APP_ID
@@ -606,6 +684,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
     }
     fn invoke(&self, request: &WorkspaceGovernanceRequest<'_>) -> Result<(), String> {
         let actor = request.actor;
+        let elsewhere = self.governor_elsewhere(request.room);
         let mut tree = self.0.write();
         let workspace_index = tree
             .desktop
@@ -660,6 +739,10 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
             return Err("the caller is not allowed to manage permission profiles".into());
         }
         let operation = decode_permission_profile_operation(spec, request.argument)?;
+        if let Some((network, room)) = elsewhere.filter(|(_, room)| *room == workspace.room) {
+            drop(tree);
+            return govern_elsewhere(network, room, operation);
+        }
         let workspace_id = workspace.id;
         apply_permission_profile_operation(
             &mut tree,
@@ -689,6 +772,82 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
         tree.flush_to_disk();
         drop(tree);
         Ok(())
+    }
+}
+
+/// Have the governor of `room` apply a permission-profile `operation` as a
+/// desktop command from this device.
+fn govern_elsewhere(
+    network: &super::network::ShellNetwork,
+    room: super::state::RoomId,
+    operation: tilo_desktop::workspace_settings::PermissionProfileOperation,
+) -> Result<(), String> {
+    use tilo_desktop::workspace_settings::PermissionProfileOperation as Operation;
+    use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand};
+    let command = match operation {
+        Operation::Save {
+            name,
+            description,
+            rules,
+        } => DesktopCommand::SavePermissionProfile {
+            profile_json: serde_json::to_string(&collab_types::PermissionProfile {
+                name,
+                description,
+                rules,
+            })
+            .map_err(|error| error.to_string())?,
+        },
+        Operation::Assign {
+            profile,
+            subject_kind,
+            subject,
+            expires_unix,
+        } => DesktopCommand::AssignPermissionProfile {
+            profile,
+            subject_kind,
+            subject,
+            expires_unix,
+        },
+        Operation::GrantAppAction {
+            app,
+            target_app,
+            action,
+            lifetime,
+        } => DesktopCommand::GrantAppAction {
+            app,
+            target_app,
+            action,
+            lifetime,
+        },
+        Operation::RevokeAppAction {
+            app,
+            target_app,
+            action,
+        } => DesktopCommand::RevokeAppAction {
+            app,
+            target_app,
+            action,
+        },
+    };
+    let bound = serde_json::to_string(&BoundCommand {
+        source: CommandSource {
+            room: room.to_string(),
+            heads: Vec::new(),
+        },
+        command,
+    })
+    .map_err(|error| error.to_string())?;
+    let answer = network.invoke_governor(
+        room,
+        tilo_desktop_model::commands::APP_ID,
+        tilo_desktop_model::commands::RESOURCE,
+        tilo_desktop_model::commands::ACTION,
+        Some(serde_json::json!({ "command": bound })),
+    );
+    match answer.wait_timeout(GOVERNED_OPEN_TIMEOUT) {
+        Ok(Some(result)) => result.map(drop),
+        Ok(None) => Err("the workspace host stopped before applying the change".into()),
+        Err(_) => Err("the workspace host did not apply the change in time".into()),
     }
 }
 
@@ -959,7 +1118,8 @@ pub fn native_services(
             as Arc<dyn NativeDocumentReads>
     });
     let governance = membership.as_ref().map(|tree| {
-        Arc::new(NativeWorkspaceGovernance(tree.clone())) as Arc<dyn WorkspaceGovernanceServices>
+        Arc::new(NativeWorkspaceGovernance(tree.clone(), network.clone()))
+            as Arc<dyn WorkspaceGovernanceServices>
     });
     let shortcut_library = membership.as_ref().map(|tree| {
         Arc::new(NativeShortcutLibrary(tree.clone())) as Arc<dyn ShortcutLibraryServices>
@@ -1026,7 +1186,10 @@ pub(crate) fn test_broker_with_membership(
     let services = HostServices {
         legacy_workspace: Some(authority.clone()),
         launcher: Some(Arc::new(NativeLauncher(Some(membership.clone()), None))),
-        workspace_governance: Some(Arc::new(NativeWorkspaceGovernance(membership.clone()))),
+        workspace_governance: Some(Arc::new(NativeWorkspaceGovernance(
+            membership.clone(),
+            None,
+        ))),
         shortcut_library: Some(Arc::new(NativeShortcutLibrary(membership.clone()))),
         keyboard_shortcuts: Some(Arc::new(NativeKeyboardShortcuts)),
         app_action_grants: Some(Arc::new(NativeAppActionGrants(membership))),

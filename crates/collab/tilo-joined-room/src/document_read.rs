@@ -66,7 +66,9 @@ impl NativeCommittedView {
             read.document_read(reader, app, record, now)
                 .map_err(|error| match error {
                     PeerDocumentReadError::Denied => "the reader may not read that document".into(),
-                    PeerDocumentReadError::Missing => "the room does not hold that document".into(),
+                    PeerDocumentReadError::Missing => {
+                        format!("the room does not hold {app} record {record:?}")
+                    }
                     other => other.to_string(),
                 })?;
         let revision = revision_of(document.heads());

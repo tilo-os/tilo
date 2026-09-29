@@ -3038,14 +3038,14 @@ mod tests {
         doc: &mut AutoCommit,
         pending: impl Fn(&UpdatesPane) -> bool,
     ) {
-        let deadline = std::time::Instant::now() + GATE_TIMEOUT;
+        let deadline = ui::time::now() + GATE_TIMEOUT;
         loop {
             pane.sync(doc, &automerge::ROOT);
             if !pending(pane) {
                 return;
             }
             assert!(
-                std::time::Instant::now() < deadline,
+                ui::time::now() < deadline,
                 "background worker never reported"
             );
             std::thread::sleep(Duration::from_millis(1));

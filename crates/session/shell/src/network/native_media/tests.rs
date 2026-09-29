@@ -127,7 +127,7 @@ async fn own_bootstrap_ack_is_correlated_but_leave_during_owner_fence_wins() {
                 ticket.stop();
             }
         }));
-        let result = registry::finish_owner_bootstrap(&ticket, pending, &response);
+        let result = registry::finish_owner_bootstrap(&ticket, pending, &response, now);
         assert_eq!(result.is_ok(), !leave);
         assert_eq!(
             ticket.live().is_ok(),
@@ -142,7 +142,7 @@ async fn own_bootstrap_ack_is_correlated_but_leave_during_owner_fence_wins() {
                 .begin_bootstrap(room, &hint, &identity.device_signing_key, now)
                 .unwrap();
             let response = test_bootstrap_response(&pending, &hint, now);
-            registry::finish_owner_bootstrap(&ticket, pending, &response).unwrap();
+            registry::finish_owner_bootstrap(&ticket, pending, &response, now).unwrap();
             owner.invalidate_identity(room);
             assert!(ticket.live().is_err());
         }
@@ -183,6 +183,6 @@ async fn revoked_owner_or_wrong_actual_key_cannot_finish_pending_bootstrap() {
         .unwrap();
     let response = test_bootstrap_response(&pending, &hint, now);
     owner.invalidate_identity(room);
-    assert!(registry::finish_owner_bootstrap(&ticket, pending, &response).is_err());
+    assert!(registry::finish_owner_bootstrap(&ticket, pending, &response, now).is_err());
     assert!(ticket.live().is_err());
 }

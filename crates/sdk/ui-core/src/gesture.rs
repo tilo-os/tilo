@@ -24,6 +24,23 @@ pub enum NavDirection {
     Forward,
 }
 
+/// Which [`NavDirection`]s a widget subtree would consume right now.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct NavAvailability {
+    pub back: bool,
+    pub forward: bool,
+}
+
+impl NavAvailability {
+    #[must_use]
+    pub fn or(self, other: Self) -> Self {
+        Self {
+            back: self.back || other.back,
+            forward: self.forward || other.forward,
+        }
+    }
+}
+
 /// Phase of a continuous gesture, mapped from the windowing layer's
 /// touch/scroll phases so this module stays winit-free and unit-testable.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

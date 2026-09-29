@@ -1,6 +1,6 @@
 //! Self-contained From/To editor for the Directions panel.
 
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -195,7 +195,7 @@ impl EndpointEditor {
         self.deadline = if text.trim().is_empty() {
             None
         } else {
-            Some(Instant::now() + SEARCH_DEBOUNCE)
+            Some(ui::time::now() + SEARCH_DEBOUNCE)
         };
         Some(EndpointEffect::Changed { endpoint, text })
     }
@@ -587,7 +587,7 @@ mod tests {
             let mut editor = EndpointEditor::new();
             editor.focus(Endpoint::Origin);
             editor.origin_query = "station".to_string();
-            let now = Instant::now();
+            let now = ui::time::now();
             editor.deadline = Some(now);
             assert_eq!(
                 editor.take_due_search(now),
@@ -603,7 +603,7 @@ mod tests {
         {
             let mut editor = EndpointEditor::new();
             editor.focus(Endpoint::Destination);
-            editor.deadline = Some(Instant::now());
+            editor.deadline = Some(ui::time::now());
             editor.dismiss();
             assert!(!editor.is_focused());
             assert!(!editor.has_pending_query());

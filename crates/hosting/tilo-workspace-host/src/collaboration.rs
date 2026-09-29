@@ -1000,6 +1000,31 @@ impl CollaborationService {
         )
     }
 
+    pub fn set_member_administrator(
+        &self,
+        owner: &mut SessionOwner,
+        administrator: [u8; 32],
+        request: RemoveMemberRequest,
+        now_ns: u64,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        authorize_administrator(
+            owner,
+            administrator,
+            now_ns,
+            request.request_id,
+            "member.administrator.set",
+        )?;
+        self.commit_administration(
+            owner,
+            request.request_id,
+            request_digest(&("member.administrator.set", &request))?,
+            owner
+                .prepare_member_administrator(request.user_public_key, system_time(now_ns))
+                .map_err(|error| CollaborationError::new(error.to_string()))?,
+            now_ns,
+        )
+    }
+
     pub fn remove_member(
         &self,
         owner: &mut SessionOwner,

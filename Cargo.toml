@@ -14,6 +14,8 @@ exclude = [
     "vendor/google-cast-protocol",
     "vendor/libspa-sys",
     "vendor/winit",
+    "crates/forks/winit",
+    "vendor/accesskit_winit",
     "vendor/wgpu-hal",
     "vendor/wayland-backend",
     "vendor/web-transport-quinn",
@@ -118,8 +120,10 @@ members = [
 
     # SDK
     "crates/sdk/font-catalog",
-    "crates/sdk/rt",
+    "crates/sdk/runner-native",
+    "crates/sdk/runner-web",
     "crates/sdk/tilo-app",
+    "crates/sdk/tilo-caps",
     "crates/sdk/tilo-host",
     "crates/sdk/tilo-resource",
     "crates/sdk/tilo-resource-macros",
@@ -160,7 +164,6 @@ members = [
     "crates/doc/bounded-zip",
     "crates/doc/format-host",
     "crates/doc/format-provider-abi",
-    "crates/doc/pdf",
     "crates/doc/qdoc",
     "crates/doc/qdoc-codecs",
     "crates/doc/qdoc-rich-text",
@@ -176,7 +179,6 @@ members = [
     "crates/hosting/tilo-relay-protocol",
 
     # Media
-    "crates/media/core",
     "crates/media/ocr",
     "crates/media/thumbnail",
     "crates/media/vision",
@@ -199,10 +201,41 @@ members = [
     "crates/packaging/registry-web",
     "crates/packaging/registry-web-bindgen",
     "crates/packaging/runtime-bundle",
+    "crates/packaging/runtime-update",
 
     # Examples
+    "examples/apps/background-task",
+    "examples/apps/bound-controls",
+    "examples/apps/counter",
+    "examples/apps/data-table",
+    "examples/apps/graph-screens",
+    "examples/apps/localized",
+    "examples/apps/qr-code",
+    "examples/apps/shared-checklist",
+    "examples/apps/tree-browser",
+    "examples/apps/virtual-list",
     "examples/packaging/hello",
     "examples/packaging/notes-cli",
+
+    # Platform
+    "crates/platform/tilo-appearance",
+    "crates/platform/tilo-capture",
+    "crates/platform/tilo-clipboard",
+    "crates/platform/tilo-clock",
+    "crates/platform/tilo-dialogs",
+    "crates/platform/tilo-files",
+    "crates/platform/tilo-location",
+    "crates/platform/tilo-media",
+    "crates/platform/tilo-net",
+    "crates/platform/tilo-host-search",
+    "crates/platform/tilo-notify",
+    "crates/platform/tilo-paths",
+    "crates/platform/tilo-pdf",
+    "crates/platform/tilo-process",
+    "crates/platform/tilo-rt",
+    "crates/platform/tilo-secrets",
+    "crates/platform/tilo-sandbox",
+    "crates/platform/tilo-typst-fonts",
 
     # Runtime
     "crates/runtime/cli",
@@ -215,6 +248,8 @@ members = [
     "crates/runtime/runtime-identity",
     "crates/runtime/runtime-portal",
     "crates/runtime/runtime-portal-xdg",
+    "crates/runtime/os-search",
+    "crates/runtime/tilo-file-provider",
     "crates/runtime/tilo-identity-host",
     "crates/runtime/tilo-runtime",
     "crates/runtime/ush",
@@ -265,12 +300,10 @@ members = [
     "crates/system/system-extension",
     "crates/system/tilo-bluez",
     "crates/system/tilo-cli",
-    "crates/system/tilo-clock",
     "crates/system/tilo-crypto",
     "crates/system/tilo-dav",
     "crates/system/tilo-oauth",
     "crates/system/tilo-native-certs",
-    "crates/system/tilo-net",
     "crates/system/tilo-rollback",
     "crates/system/tilo-seal",
     "crates/system/tilo-startup-metrics",
@@ -299,6 +332,8 @@ resolver = "2"
 [workspace.package]
 license = "AGPL-3.0-only"
 publish = false
+repository = "https://code.tilo.so/tilo/tilo"
+homepage = "https://tilo.so"
 
 # workspace-hack is never named in code: it only unifies third-party features.
 [workspace.metadata.cargo-machete]
@@ -374,16 +409,20 @@ must_use_candidate = "allow"
 # Prefer the re-exports in `crates/sdk/ui-core/src/lib.rs`. Direct dependencies must use
 # compatible versions to share types such as `vello::Scene`.
 # ---------------------------------------------------------------------------
-vello = "0.9"
-vello_encoding = "0.9"
+# Tilo's vello fork (vendor/PATCHES.md), published under its own names; the
+# libraries keep upstream's names.
+vello = { package = "tilo-vello", version = "0.9.0", path = "vendor/vello" }
+vello_encoding = { package = "tilo-vello-encoding", version = "0.9.0", path = "vendor/vello_encoding" }
 wgpu = "29"
 taffy = "0.10.1"
-# The default `wayland-csd-adwaita` draws titles through ab_glyph and
-# owned_ttf_parser; `-notitle` keeps the client-side frame without that stack.
-winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita-notitle"] }
+# Tilo's winit fork, published as tilo-winit; the library keeps its name.
+# crates.io crates reach it through the `[patch]` facade below. The default
+# `wayland-csd-adwaita` draws titles through ab_glyph and owned_ttf_parser;
+# `-notitle` keeps the client-side frame without that stack.
+winit = { package = "tilo-winit", version = "0.30.13", path = "vendor/winit", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita-notitle"] }
 automerge = "0.12.0"
 # Every AutoCommit that takes in changes goes through its `ApplyIncoming`.
-tilo-automerge = { path = "crates/doc/tilo-automerge" }
+tilo-automerge = { version = "0.1.0", path = "crates/doc/tilo-automerge" }
 tilo-automerge-isolate = { path = "crates/doc/tilo-automerge-isolate" }
 pollster = "0.4.0"
 rustc-hash = "2.1"
@@ -395,7 +434,15 @@ cosmic-text = { version = "0.19.0", default-features = false }
 # Async runtime and networking
 # ---------------------------------------------------------------------------
 tokio = "1.52.3"
-tilo-rt = { path = "crates/sdk/rt" }
+tilo-rt = { version = "0.1.0", path = "crates/platform/tilo-rt" }
+tilo-paths = { version = "0.1.0", path = "crates/platform/tilo-paths" }
+tilo-clipboard = { version = "0.1.0", path = "crates/platform/tilo-clipboard" }
+tilo-dialogs = { version = "0.1.0", path = "crates/platform/tilo-dialogs" }
+tilo-notify = { version = "0.1.0", path = "crates/platform/tilo-notify" }
+tilo-location = { version = "0.1.0", path = "crates/platform/tilo-location" }
+tilo-secrets = { version = "0.1.0", path = "crates/platform/tilo-secrets" }
+tilo-net = { path = "crates/platform/tilo-net" }
+tilo-sandbox = { version = "0.1.0", path = "crates/platform/tilo-sandbox" }
 tokio-util = { version = "0.7.18", features = ["compat"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }
@@ -440,7 +487,9 @@ hex = "0.4.3"
 bytes = "1.11.1"
 flate2 = "1"
 miniz_oxide = "0.8"
-zip = { version = "8.6", default-features = false, features = ["deflate-flate2"] }
+# A standalone build (a published crate) needs flate2 to name its backend;
+# zlib-rs is the one the workspace already links.
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tar = "0.4"
 
 # ---------------------------------------------------------------------------
@@ -752,6 +801,12 @@ lto = false
 # crate; this keeps their dependencies on the same size-oriented setting.
 codegen-units = 1
 
+# tilo-ui is one crate on the critical path of every thin build: at one unit
+# its codegen alone takes about 4.5 of a full collection's 10 minutes. Sixteen
+# cost the shared runtime 1.8% in size; tapp crates stay at one unit.
+[profile.thin-app.package.tilo-ui]
+codegen-units = 16
+
 # The demo profile keeps release optimisation while enabling shell's
 # debug-only test-control surface for recordings.
 [profile.demo]
@@ -791,7 +846,9 @@ libspa-sys = { path = "vendor/libspa-sys" }
 wgpu-hal = { path = "vendor/wgpu-hal" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
 rustls-native-certs = { path = "crates/system/tilo-native-certs" }
-winit = { path = "vendor/winit" }
+# crates.io crates that depend on winit (accesskit_winit, smithay) get the
+# fork through a re-exporting facade, so they share its types.
+winit = { path = "crates/forks/winit" }
 # The pure-Rust server used by Smithay used to panic if a client disappeared
 # from inside a request callback which had just created a child object. OAuth
 # browser launches make that race easy to hit: a probing helper can connect,
@@ -804,11 +861,6 @@ wayland-backend = { path = "vendor/wayland-backend" }
 # across several paragraphs cleared it from the first alone. Keep a mark
 # change on its own object. See vendor/automerge/TILO-PATCH.md.
 automerge = { path = "vendor/automerge" }
-# Vendored vello variants size scratch buffers from the current scene and
-# include the matching shader/encoding changes.
-vello_encoding = { path = "vendor/vello_encoding" }
-vello_shaders = { path = "vendor/vello_shaders" }
-vello = { path = "vendor/vello" }
 # Members depend on `workspace-hack = "0.1"`; this workspace builds the local
 # crate, while workspaces outside it get crates.io's empty stub (.config/hakari.toml).
 workspace-hack = { path = "crates/workspace-hack" }
