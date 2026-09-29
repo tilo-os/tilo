@@ -500,6 +500,24 @@ mod tests {
         ] {
             assert!(SealedCompaction::parse(&op).is_err(), "{why} parses");
         }
+        let mut extended = payload;
+        extended.push(0);
+        assert!(
+            SealedCompaction::parse(&sealed_op(
+                extended,
+                OpClass::Compaction,
+                ContentRetention::Checkpoint
+            ))
+            .is_err(),
+            "trailing bytes"
+        );
+    }
+
+    /// A sealed compaction whose own fields break its contract neither parses nor opens.
+    #[test]
+    fn sealed_compaction_refuses_a_broken_contract() {
+        let compaction =
+            SealedCompaction::new(&[dummy_op(1), dummy_op(2), dummy_op(3)], vec![7]).unwrap();
         for (tampered, why) in [
             (
                 SealedCompaction {
@@ -545,16 +563,5 @@ mod tests {
             assert!(SealedCompaction::parse(&op).is_err(), "{why} parses");
             assert!(sealed_ciphertext(&op).is_err(), "{why} opens");
         }
-        let mut extended = payload;
-        extended.push(0);
-        assert!(
-            SealedCompaction::parse(&sealed_op(
-                extended,
-                OpClass::Compaction,
-                ContentRetention::Checkpoint
-            ))
-            .is_err(),
-            "trailing bytes"
-        );
     }
 }
