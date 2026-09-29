@@ -576,8 +576,8 @@ impl SignInFlow {
     /// [`Self::poll`]. Returns whether it reported before `timeout`.
     #[doc(hidden)]
     pub fn wait_for_test(&mut self, timeout: std::time::Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
-        let remaining = || deadline.saturating_duration_since(std::time::Instant::now());
+        let deadline = ui::time::now() + timeout;
+        let remaining = || deadline.saturating_duration_since(ui::time::now());
         let Stage::Waiting {
             urls,
             launch,

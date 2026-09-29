@@ -18,7 +18,7 @@ use crate::model::{ConnId, LocalProfileDetails};
 /// `$HOME/.local/state`; an empty or relative `XDG_STATE_HOME` is ignored.
 fn path() -> Option<PathBuf> {
     Some(
-        xdg_paths::xdg::state_home()?
+        tilo_paths::xdg::state_home()?
             .join("tilo")
             .join("vpn-local-profiles.json"),
     )
@@ -50,7 +50,7 @@ pub fn save<S: std::hash::BuildHasher>(
         );
     };
     let bytes = serde_json::to_vec(entries).map_err(|error| error.to_string())?;
-    atomic_file::write_private(&path, &bytes).map_err(|error| error.to_string())
+    tilo_files::native::atomic::write_private(&path, &bytes).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

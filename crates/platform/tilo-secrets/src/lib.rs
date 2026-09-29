@@ -492,8 +492,20 @@ fn system_backend() -> Backend {
     Backend::Sync(Arc::new(linux::SecretService))
 }
 
+/// A debug build inside `tools/with-test-environment.sh` (which cargo runs
+/// every test binary in) never reaches the user's login Keychain, just as the
+/// environment gives Linux tests no Secret Service. `TILO_SECRETS_SYSTEM_TEST`
+/// is the explicit request to test the real store.
 #[cfg(target_os = "macos")]
 fn system_backend() -> Backend {
+    if cfg!(debug_assertions)
+        && std::env::var_os("TILO_TEST_ENVIRONMENT").is_some()
+        && std::env::var_os("TILO_SECRETS_SYSTEM_TEST").is_none()
+    {
+        return Backend::Sync(Arc::new(UnsupportedBackend(
+            "the test environment has no login Keychain",
+        )));
+    }
     Backend::Sync(Arc::new(macos::Keychain))
 }
 
@@ -508,21 +520,21 @@ fn system_backend() -> Backend {
     all(target_arch = "wasm32", target_os = "unknown")
 )))]
 fn system_backend() -> Backend {
-    Backend::Sync(Arc::new(UnsupportedBackend))
+    Backend::Sync(Arc::new(UnsupportedBackend(
+        "this platform has no secret store backend",
+    )))
 }
 
-/// A target without a secret store (Windows keeps DPAPI custody in
-/// `secret-vault` for now).
+/// No secret store, and why: a target without one (Windows keeps DPAPI
+/// custody in `secret-vault` for now), or a macOS test environment.
 #[cfg(not(any(
     target_os = "linux",
-    target_os = "macos",
     all(target_arch = "wasm32", target_os = "unknown")
 )))]
-struct UnsupportedBackend;
+struct UnsupportedBackend(&'static str);
 
 #[cfg(not(any(
     target_os = "linux",
-    target_os = "macos",
     all(target_arch = "wasm32", target_os = "unknown")
 )))]
 impl SecretBackend for UnsupportedBackend {
@@ -530,9 +542,7 @@ impl SecretBackend for UnsupportedBackend {
         Protection::Memory
     }
     fn get(&self, _app: &str, _key: &str) -> Result<Option<Secret>, SecretError> {
-        Err(SecretError::Unavailable(
-            "this platform has no secret store backend".into(),
-        ))
+        Err(SecretError::Unavailable(self.0.into()))
     }
     fn put(&self, _app: &str, _key: &str, _value: &[u8], _label: &str) -> Result<(), SecretError> {
         self.get("", "").map(drop)
@@ -699,6 +709,28 @@ mod tests {
             format!("{:?}", Secret::new(b"hunter2".to_vec())),
             "Secret(7 bytes)"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn tests_never_reach_the_login_keychain() {
+        assert!(
+            std::env::var_os("TILO_TEST_ENVIRONMENT").is_some(),
+            "run tests through cargo, whose runner (tools/cargo-runner.sh) starts \
+             them in tools/with-test-environment.sh"
+        );
+        if std::env::var_os("TILO_SECRETS_SYSTEM_TEST").is_some() {
+            return;
+        }
+        let store = SecretStore::for_app("so.tilo.secrets-isolation");
+        assert!(matches!(
+            store.put_blocking("probe", b"x", PutOptions::default()),
+            Err(SecretError::Unavailable(_))
+        ));
+        assert!(matches!(
+            store.probe_blocking(),
+            Err(SecretError::Unavailable(_))
+        ));
     }
 
     /// The real store is exercised only where a developer asks for it: it

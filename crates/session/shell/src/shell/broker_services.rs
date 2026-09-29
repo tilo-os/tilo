@@ -633,6 +633,28 @@ pub struct NativeWorkspaceGovernance(
     pub WorkspaceTreeHandle,
     pub Option<Arc<super::network::ShellNetwork>>,
 );
+impl NativeWorkspaceGovernance {
+    /// The network and room when another device governs `room`. The native
+    /// owner locks the tree under its own mutex, so this must not be asked
+    /// while the tree is held.
+    fn governor_elsewhere(
+        &self,
+        room: &str,
+    ) -> Option<(&Arc<super::network::ShellNetwork>, super::state::RoomId)> {
+        let room = self
+            .0
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == room)
+            .map(|workspace| workspace.room)?;
+        self.1
+            .as_ref()
+            .filter(|network| network.governed_elsewhere(room))
+            .map(|network| (network, room))
+    }
+}
 impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
     fn app_id(&self) -> &str {
         super::state::WORKSPACE_GOVERNANCE_APP_ID
@@ -662,6 +684,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
     }
     fn invoke(&self, request: &WorkspaceGovernanceRequest<'_>) -> Result<(), String> {
         let actor = request.actor;
+        let elsewhere = self.governor_elsewhere(request.room);
         let mut tree = self.0.write();
         let workspace_index = tree
             .desktop
@@ -716,12 +739,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
             return Err("the caller is not allowed to manage permission profiles".into());
         }
         let operation = decode_permission_profile_operation(spec, request.argument)?;
-        if let Some(network) = self
-            .1
-            .as_ref()
-            .filter(|network| network.governed_elsewhere(workspace.room))
-        {
-            let room = workspace.room;
+        if let Some((network, room)) = elsewhere.filter(|(_, room)| *room == workspace.room) {
             drop(tree);
             return govern_elsewhere(network, room, operation);
         }

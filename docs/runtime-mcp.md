@@ -218,8 +218,10 @@ pages list `path?` on each application's `open`. Host applications
 as `capabilities.experimental["so.tilo.mcp"].version`): each resource once,
 its actions as one-line signatures such as `"save-as": "Save document as
 (path?)"` (`p?` optional, `p:type` a non-text type, `a|b` the accepted values,
-`1..64` a numeric range), and string cursors. A resource id longer than 24
-characters is shown as a session handle such as `r3`; `tilo_query`'s
+`1..64` a numeric range), and string cursors. In an app instance's pages, a
+resource id longer than 24 characters is shown as a session handle such as
+`r3`; workspace pages keep their ids (`app.<app_id>`, the permission roles),
+which provisioning code and prompts spell out. `tilo_query`'s
 `parent_resource`, `tilo_resolve` and `tilo_invoke` accept a handle wherever
 they take a resource, and full ids keep working. A bound UI resource's id is
 about 130 characters, repeated in every call. A model reads every page again

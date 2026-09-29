@@ -23,7 +23,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant, UNIX_EPOCH};
 use thumbnail::{ThumbKey, ThumbnailService};
 use ui::paint::PaintCtx;
 use ui::tilo_actions::{
@@ -31,6 +30,7 @@ use ui::tilo_actions::{
     EncodedAction, ExecutionMode, OperationKind, ParamType, PermissionRequirement, Resource,
     ResultSpec, RetryPolicy, RiskLevel,
 };
+use ui::time::{Duration, Instant, UNIX_EPOCH};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
@@ -595,7 +595,7 @@ impl FileExplorerWidget {
         // Under a sandbox this process's `HOME` is its own per-package
         // directory — `/run/tilo/app` — while the directory actually
         // opened is the user's real home, bound by a grant and named by
-        // `TILO_USER_HOME`. Reading `xdg_paths::home()` here made the two
+        // `TILO_USER_HOME`. Reading `tilo_paths::home()` here made the two
         // disagree, and the breadcrumb is where a disagreement shows:
         // `format_path` abbreviates a path to `~` only when it lies
         // under the home it was handed, so a home it does not recognise
@@ -797,7 +797,7 @@ impl FileExplorerWidget {
             clipboard_cut: false,
             last_trash_undo: None,
             status: None,
-            next_metadata_refresh: Instant::now() + metadata_refresh::LIVE_INTERVAL,
+            next_metadata_refresh: ui::time::now() + metadata_refresh::LIVE_INTERVAL,
             renaming: None,
             rename_buffer: String::new(),
             rename_seed_pending: false,
@@ -1475,7 +1475,7 @@ impl FileExplorerWidget {
     /// frame captures the floating chip.
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        self.status_bubble.poke(std::time::Instant::now());
+        self.status_bubble.poke(ui::time::now());
     }
 
     /// Draw the transient floating status bubble at the window's bottom-right —
@@ -1489,7 +1489,7 @@ impl FileExplorerWidget {
         tr: &mut ui::text_render::TextRenderer,
         theme: &ui::Theme,
     ) {
-        let now = std::time::Instant::now();
+        let now = ui::time::now();
         let label = self.footer_label();
         if label != self.last_status_label {
             label.clone_into(&mut self.last_status_label);
@@ -1887,7 +1887,7 @@ impl FileExplorerWidget {
     /// A second click on the same row within the session's multi-click window
     /// returns its path.
     pub fn select(&mut self, idx: Option<usize>) -> Option<PathBuf> {
-        let now = Instant::now();
+        let now = ui::time::now();
         if let (Some(i), Some((pi, pt))) = (idx, self.last_click)
             && i == pi
             && now.duration_since(pt) < ui::gesture::multi_click_interval()
@@ -7368,7 +7368,7 @@ impl FileExplorerWidget {
 
 impl Collaborative for FileExplorerWidget {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
-        let now = Instant::now();
+        let now = ui::time::now();
         self.nearby_send.poll_if_due(now);
         self.shortcut_menu.poll_if_due(now);
         let mut requests = self.nearby_send.take_requests();
@@ -7586,7 +7586,7 @@ impl Widget for FileExplorerWidget {
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.poll_deferred_document_open();
         self.refresh_framework_history_target();
-        self.refresh_metadata_if_due(Instant::now());
+        self.refresh_metadata_if_due(ui::time::now());
         // One bounded catalogue page per idle/sync turn. The palette only
         // reads its retained SearchCatalog; it never performs mount I/O.
         if self.collaborative_record_pager.borrow().has_more() {
@@ -8039,7 +8039,7 @@ impl Widget for FileExplorerWidget {
         self.nav.needs_animation_frame()
             || self.toolbar.needs_animation_frame()
             || (self.is_loading && self.state_spinner.needs_animation_frame())
-            || self.status_bubble.needs_frame(std::time::Instant::now())
+            || self.status_bubble.needs_frame(ui::time::now())
     }
 
     fn needs_idle_sync(&self) -> bool {

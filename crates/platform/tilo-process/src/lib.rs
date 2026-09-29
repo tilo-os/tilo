@@ -53,6 +53,53 @@ pub fn id() -> Option<u32> {
     backend::id()
 }
 
+/// How many files process `pid` has open, where the system says (Linux's
+/// `/proc/<pid>/fd`). `None` elsewhere, and when the process has exited or
+/// its table is not readable; never a made-up zero.
+#[must_use]
+pub fn open_file_count(pid: u32) -> Option<usize> {
+    table::open_file_count(pid)
+}
+
+/// Whether this process may read the system's process table: `Ok` where no
+/// separate table exists to fail, the read error on Linux (`/proc`), so a
+/// process list that comes back empty can be told apart from a denied one.
+///
+/// # Errors
+///
+/// The error reading the table.
+pub fn probe_process_table() -> std::io::Result<()> {
+    table::probe()
+}
+
+#[cfg(target_os = "linux")]
+mod table {
+    pub fn open_file_count(pid: u32) -> Option<usize> {
+        std::fs::read_dir(format!("/proc/{pid}/fd"))
+            .ok()
+            .map(|entries| entries.flatten().count())
+    }
+
+    pub fn probe() -> std::io::Result<()> {
+        std::fs::read_dir("/proc").map(|_| ())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+mod table {
+    pub const fn open_file_count(_pid: u32) -> Option<usize> {
+        None
+    }
+
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the signature is shared with the Linux backend, whose read can fail"
+    )]
+    pub const fn probe() -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(not(target_family = "wasm"))]
 mod backend {
     pub const HAS_PROCESS_ID: bool = true;
@@ -94,5 +141,13 @@ mod tests {
     #[test]
     fn native_processes_have_an_id() {
         assert_eq!(id().is_some(), cfg!(not(target_family = "wasm")));
+    }
+
+    #[test]
+    fn open_files_are_counted_only_where_the_system_lists_them() {
+        let own = id().unwrap_or(0);
+        assert_eq!(open_file_count(own).is_some(), cfg!(target_os = "linux"));
+        assert_eq!(open_file_count(u32::MAX), None);
+        assert!(probe_process_table().is_ok());
     }
 }

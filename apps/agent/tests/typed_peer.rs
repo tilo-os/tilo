@@ -235,7 +235,7 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
     let deadline = tilo_test_env::hang_deadline();
     let mut deferred = Vec::new();
     let mut correlation = 0_u64;
-    while std::time::Instant::now() < deadline {
+    while ui::time::now() < deadline {
         correlation = correlation.wrapping_add(1);
         let link = peer
             .link
@@ -252,10 +252,10 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
             },
         })
         .expect("ask the action host for its catalogue");
-        let answered = std::time::Instant::now()
+        let answered = ui::time::now()
             .checked_add(Duration::from_millis(500))
             .expect("half a second fits in Instant");
-        while std::time::Instant::now() < answered {
+        while ui::time::now() < answered {
             match link
                 .recv(Duration::from_millis(100))
                 .expect("receive the action host's answer")

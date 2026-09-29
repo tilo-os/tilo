@@ -12,8 +12,8 @@
 //! populated, highlightable lyrics view with zero network. The **live** fetch
 //! from [LRCLIB](https://lrclib.net) (`GET https://lrclib.net/api/get` keyed
 //! on track + artist + album + duration, returning `syncedLyrics` /
-//! `plainLyrics`) is gated behind the `lyrics` cargo feature and runs on an
-//! async worker so the UI never blocks. The pure LRC parser below is always
+//! `plainLyrics`) is gated behind the `lyrics` cargo feature and runs as a
+//! task on the app runtime (`tilo_net`), so the UI never blocks. The pure LRC parser below is always
 //! compiled and unit-tested, so the contract is exercised even offline.
 
 /// One line of lyrics. `at_ms` is the line's start time for synced lyrics, or
@@ -133,21 +133,22 @@ pub struct TrackMeta {
 /// present for the seed tracks + offline), then the live source when the
 /// `lyrics` feature is enabled. Returns `None` when nothing is available.
 ///
-/// This is the synchronous resolution seam used by the async worker
-/// ([`LyricsWorker`]); the bundled path makes it usable offline / in `--shots`
-/// with no network.
-pub fn resolve(meta: &TrackMeta) -> Option<Lyrics> {
+/// This is the resolution seam the worker ([`LyricsWorker`]) runs on the app
+/// runtime; the bundled path makes it usable offline / in `--shots` with no
+/// network.
+pub async fn resolve(meta: &TrackMeta) -> Option<Lyrics> {
     if let Some(l) = bundled::for_track(&meta.track_id) {
         return Some(l);
     }
-    live_fetch(meta)
+    live_fetch(meta).await
 }
 
 /// The live LRCLIB fetch. Without an HTTP stack (`lyrics` or `live` feature —
-/// both pull `reqwest`) this is a stub that documents the request it *would*
+/// both pull `tilo-net`) this is a stub that documents the request it *would*
 /// make and returns `None` (the worker treats this as "no lyrics right now").
 #[cfg(not(any(feature = "lyrics", feature = "live")))]
-fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
+#[allow(clippy::unused_async, reason = "the same signature as the live fetch")]
+async fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
     let _ = lrclib_url(meta);
     None
 }
@@ -169,33 +170,44 @@ fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
 /// - **fallback** — an exact `/api/get` miss (`YouTube` durations rarely match
 ///   to the second) falls back to `/api/search`.
 #[cfg(any(feature = "lyrics", feature = "live"))]
-fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
+async fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
     let key = cache_key(meta);
     match cache_get(&key) {
         CacheEntry::Hit(l) => return Some(l),
         CacheEntry::Miss => return None,
         CacheEntry::Absent => {}
     }
-    let result = live_fetch_uncached(meta);
+    let result = live_fetch_uncached(meta).await;
     cache_put(key, result.clone());
     result
 }
 
+/// The shared LRCLIB client.
 #[cfg(any(feature = "lyrics", feature = "live"))]
-fn live_fetch_uncached(meta: &TrackMeta) -> Option<Lyrics> {
-    let client = tilo_net::http::blocking_client()
-        .timeout(std::time::Duration::from_secs(8))
-        .user_agent("Tilo-Music (https://tilo)")
-        .build()
-        .ok()?;
+fn lrclib_client() -> Option<&'static tilo_net::Client> {
+    static CLIENT: std::sync::OnceLock<Option<tilo_net::Client>> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            tilo_net::Client::builder()
+                .timeout(std::time::Duration::from_secs(8))
+                .user_agent("Tilo-Music (https://tilo)")
+                .build()
+                .ok()
+        })
+        .as_ref()
+}
+
+#[cfg(any(feature = "lyrics", feature = "live"))]
+async fn live_fetch_uncached(meta: &TrackMeta) -> Option<Lyrics> {
+    let client = lrclib_client()?;
     // 1. Exact match by (normalised) track/artist/album/duration.
-    if let Some(l) = lrclib_from_object(&client, &lrclib_url(meta)) {
+    if let Some(l) = lrclib_from_object(client, &lrclib_url(meta)).await {
         return Some(l);
     }
     // 2. Fuzzy search fallback — YouTube durations rarely match LRCLIB's to the
     //    second, so `/api/get` frequently 404s. `/api/search` returns candidates
     //    (best first); take the first with real synced (then plain) lyrics.
-    lrclib_from_search(&client, meta)
+    lrclib_from_search(client, meta).await
 }
 
 /// GET `url` as text, retrying a couple of times with linear backoff on a
@@ -203,43 +215,31 @@ fn live_fetch_uncached(meta: &TrackMeta) -> Option<Lyrics> {
 /// any other definitive non-success returns `None` immediately so the caller
 /// moves on to the next strategy rather than burning retries on a real miss.
 #[cfg(any(feature = "lyrics", feature = "live"))]
-fn get_text_retry(client: &reqwest::blocking::Client, url: &str) -> Option<String> {
-    use std::io::Read;
-    const MAX_LYRICS_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
-    for attempt in 0..3u64 {
-        match client.get(url).send() {
+async fn get_text_retry(client: &tilo_net::Client, url: &str) -> Option<String> {
+    use tilo_net::StatusCode;
+    const MAX_LYRICS_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+    for attempt in 0..3u32 {
+        let backoff = std::time::Duration::from_millis(300 * u64::from(attempt + 1));
+        match client.get(url).send().await {
             Ok(resp) => {
                 let status = resp.status();
-                if status == reqwest::StatusCode::NOT_FOUND {
+                if status == StatusCode::NOT_FOUND {
                     return None; // a real miss — don't retry, let the fallback run
                 }
-                if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                    std::thread::sleep(std::time::Duration::from_millis(300 * (attempt + 1)));
+                if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                    ui::rt::sleep(backoff).await;
                     continue; // transient — back off and retry
                 }
                 if !status.is_success() {
                     return None;
                 }
-                if resp
-                    .content_length()
-                    .is_some_and(|len| len > MAX_LYRICS_RESPONSE_BYTES)
-                {
-                    return None;
+                match resp.bytes_limited(MAX_LYRICS_RESPONSE_BYTES).await {
+                    Ok(body) => return Some(String::from_utf8_lossy(&body).into_owned()),
+                    Err(tilo_net::NetError::TooLarge { .. }) => return None,
+                    Err(_) => ui::rt::sleep(backoff).await,
                 }
-                let mut body = String::new();
-                if resp
-                    .take(MAX_LYRICS_RESPONSE_BYTES + 1)
-                    .read_to_string(&mut body)
-                    .is_ok()
-                    && body.len() <= MAX_LYRICS_RESPONSE_BYTES as usize
-                {
-                    return Some(body);
-                }
-                std::thread::sleep(std::time::Duration::from_millis(300 * (attempt + 1)));
             }
-            Err(_) => {
-                std::thread::sleep(std::time::Duration::from_millis(300 * (attempt + 1)));
-            }
+            Err(_) => ui::rt::sleep(backoff).await,
         }
     }
     None
@@ -248,17 +248,17 @@ fn get_text_retry(client: &reqwest::blocking::Client, url: &str) -> Option<Strin
 /// Parse a single LRCLIB record (from `/api/get`) into [`Lyrics`], preferring
 /// synced over plain. `None` on a 404 / empty record.
 #[cfg(any(feature = "lyrics", feature = "live"))]
-fn lrclib_from_object(client: &reqwest::blocking::Client, url: &str) -> Option<Lyrics> {
-    let body = get_text_retry(client, url)?;
+async fn lrclib_from_object(client: &tilo_net::Client, url: &str) -> Option<Lyrics> {
+    let body = get_text_retry(client, url).await?;
     let json: serde_json::Value = serde_json::from_str(&body).ok()?;
     lyrics_from_record(&json)
 }
 
 /// Search LRCLIB by track + artist and return the best candidate's lyrics.
 #[cfg(any(feature = "lyrics", feature = "live"))]
-fn lrclib_from_search(client: &reqwest::blocking::Client, meta: &TrackMeta) -> Option<Lyrics> {
+async fn lrclib_from_search(client: &tilo_net::Client, meta: &TrackMeta) -> Option<Lyrics> {
     let url = lrclib_search_url(meta);
-    let body = get_text_retry(client, &url)?;
+    let body = get_text_retry(client, &url).await?;
     let arr: serde_json::Value = serde_json::from_str(&body).ok()?;
     let list = arr.as_array()?;
     // Prefer the first candidate carrying synced lyrics; else the first plain.
@@ -466,42 +466,38 @@ fn cache_put(key: String, value: Option<Lyrics>) {
     }
 }
 
-/// An async lyrics worker: a background thread that resolves lyrics off the UI
-/// thread and delivers them over a channel. The default live build can fetch
-/// network lyrics; builds without `live` and `lyrics` resolve bundled lyrics
-/// through the same worker interface.
+/// The lyrics worker: each request resolves as a task on the app runtime and
+/// delivers over a channel. The default live build can fetch network lyrics;
+/// builds without `live` and `lyrics` resolve bundled lyrics through the same
+/// interface.
 pub struct LyricsWorker {
-    tx: std::sync::mpsc::Sender<TrackMeta>,
+    tx: std::sync::mpsc::Sender<(String, Lyrics)>,
     rx: std::sync::mpsc::Receiver<(String, Lyrics)>,
 }
 
 impl LyricsWorker {
     pub fn new() -> Self {
-        let (req_tx, req_rx) = std::sync::mpsc::channel::<TrackMeta>();
-        let (res_tx, res_rx) = std::sync::mpsc::channel::<(String, Lyrics)>();
-        std::thread::Builder::new()
-            .name("music-lyrics".into())
-            .spawn(move || {
-                while let Ok(meta) = req_rx.recv() {
-                    // ALWAYS deliver a result for the requested track — an empty
-                    // `Lyrics` on a miss — so the UI clears its "Finding lyrics…"
-                    // pending state and shows "No lyrics found" instead of
-                    // hanging forever when a lookup misses or a fetch fails.
-                    let lyrics = resolve(&meta).unwrap_or_default();
-                    let _ = res_tx.send((meta.track_id.clone(), lyrics));
-                }
-            })
-            .ok();
-        Self {
-            tx: req_tx,
-            rx: res_rx,
-        }
+        let (tx, rx) = std::sync::mpsc::channel::<(String, Lyrics)>();
+        Self { tx, rx }
     }
 
     /// Request lyrics for a track. Non-blocking; the result arrives via
     /// [`Self::poll`].
     pub fn request(&self, meta: TrackMeta) {
-        let _ = self.tx.send(meta);
+        let tx = self.tx.clone();
+        // ALWAYS deliver a result for the requested track — an empty `Lyrics`
+        // on a miss — so the UI clears its "Finding lyrics…" pending state and
+        // shows "No lyrics found" instead of hanging forever when a lookup
+        // misses or a fetch fails.
+        match ui::rt::try_app() {
+            Ok(runtime) => drop(runtime.spawn(async move {
+                let lyrics = resolve(&meta).await.unwrap_or_default();
+                let _ = tx.send((meta.track_id, lyrics));
+            })),
+            Err(_) => {
+                let _ = tx.send((meta.track_id, Lyrics::default()));
+            }
+        }
     }
 
     /// Drain any resolved lyrics that have arrived (track id + lyrics).
@@ -658,7 +654,10 @@ mod tests {
                 track_id: "tk_g1".into(),
                 ..Default::default()
             };
-            let lr = resolve(&meta).expect("bundled resolves offline");
+            let lr = ui::rt::app()
+                .block_on(resolve(&meta))
+                .expect("the app runtime runs")
+                .expect("bundled resolves offline");
             assert!(lr.synced);
         }
 
