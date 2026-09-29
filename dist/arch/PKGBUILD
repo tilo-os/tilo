@@ -81,10 +81,12 @@ package_tilo-session-devel() {
 
 package_tilo-runtime() {
   pkgdesc='Tilo runtime for running Tilo apps on this desktop'
-  # The Tilo app's window and GPU stack is dlopen()ed, invisible to namcap.
+  # The Tilo app's window and GPU stack is dlopen()ed, invisible to namcap;
+  # noto-fonts carries the families its interface names.
   depends=(
     'glibc' 'gcc-libs' 'bubblewrap' 'xdg-desktop-portal' 'xdg-dbus-proxy'
     'vulkan-icd-loader' 'libglvnd' 'wayland' 'libxkbcommon' 'hicolor-icon-theme'
+    'noto-fonts'
   )
   optdepends=('vulkan-driver: hardware-appropriate Vulkan ICD')
   cd "$srcdir/runtime-payload"

@@ -12,6 +12,8 @@
 , wayland
 , vulkan-loader
 , libglvnd
+, makeFontsConf
+, noto-fonts
 }:
 
 # The standalone runtime: how Tilo apps run on a NixOS desktop that is not the
@@ -64,13 +66,15 @@ rustPlatform.buildRustPackage rec {
     runHook postInstall
   '';
 
-  # No FHS PATH or ldconfig cache: seal the sandbox tools into the launcher and
-  # the dlopen()ed window and GPU stack into the app.
+  # No FHS PATH or ldconfig cache: seal the sandbox tools into the launcher, and
+  # the dlopen()ed window and GPU stack and the interface's Noto families into
+  # the app.
   postFixup = ''
     wrapProgram "$out/libexec/tilo-runtime/tilo-launcher" \
       --prefix PATH : ${lib.makeBinPath [ bubblewrap xdg-dbus-proxy ]}
     wrapProgram "$out/libexec/tilo-runtime/store" \
-      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ vulkan-loader libglvnd wayland libxkbcommon ]}
+      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ vulkan-loader libglvnd wayland libxkbcommon ]} \
+      --set-default FONTCONFIG_FILE ${makeFontsConf { fontDirectories = [ noto-fonts ]; }}
   '';
 
   meta = {

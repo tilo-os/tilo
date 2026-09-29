@@ -186,6 +186,10 @@ Requires:       vulkan-loader
 Requires:       libEGL.so.1()(64bit)
 Requires:       libwayland-client.so.0()(64bit)
 Requires:       libxkbcommon.so.0()(64bit)
+# The families the Tilo interface names.
+Requires:       google-noto-sans-fonts
+Requires:       google-noto-serif-fonts
+Requires:       google-noto-sans-mono-fonts
 Recommends:     mesa-vulkan-drivers
 %{?systemd_requires}
 

@@ -131,7 +131,8 @@ runtime_shlib_line=$(
         -e"$runtime/usr/libexec/tilo-runtime/store"
 )
 runtime_shlib_deps=${runtime_shlib_line#shlibs:Depends=}
-# The app's window and GPU stack is dlopen()ed, invisible to dpkg-shlibdeps.
+# The app's window and GPU stack is dlopen()ed, invisible to dpkg-shlibdeps;
+# its interface families are Noto Sans, Serif and Sans Mono.
 cat > "$runtime/DEBIAN/control" <<EOF
 Package: tilo-runtime
 Version: $version-$revision
@@ -140,7 +141,7 @@ Priority: optional
 Architecture: $arch
 Maintainer: Tilo contributors <tilo@code.tilo.so>
 Installed-Size: $(installed_size "$runtime")
-Depends: $runtime_shlib_deps, bubblewrap, xdg-desktop-portal, xdg-dbus-proxy, libvulkan1, libegl1, libwayland-client0, libxkbcommon0
+Depends: $runtime_shlib_deps, bubblewrap, xdg-desktop-portal, xdg-dbus-proxy, libvulkan1, libegl1, libwayland-client0, libxkbcommon0, fonts-noto-core, fonts-noto-mono
 Recommends: mesa-vulkan-drivers, apparmor
 Description: Tilo runtime for running Tilo apps on this desktop
  The per-user Tilo runtime: identity, collaboration and app services that
