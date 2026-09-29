@@ -865,6 +865,9 @@ pub struct SlidesApp {
     /// Hosted by [`crate::resource::SlidesShell`]: edits go through the
     /// framework dispatcher. Standalone / shots keep [`Self::actions`].
     framework: Option<ui::framework::Dispatcher<crate::actions::SlidesDeck>>,
+    /// Test / attach override so [`PublishesResources`] can keep only the live
+    /// selection beside the published deck without constructing a dispatcher.
+    framework_hosted: bool,
 
     /// Responsive slide-rail flap. On a wide window the rail is docked beside
     /// the canvas; on a narrow window it collapses to an overlay flap behind a
@@ -1082,6 +1085,7 @@ impl SlidesApp {
             needs_commit: false,
             actions: ui::ActionHost::new(),
             framework: None,
+            framework_hosted: false,
             rail_flap: FlapState::open_when_docked(),
             inspector_flap: FlapState::open_when_docked(),
             inspector_breakpoint: INSPECTOR_BREAKPOINT,
@@ -1607,6 +1611,46 @@ impl SlidesApp {
         dispatcher: ui::framework::Dispatcher<crate::actions::SlidesDeck>,
     ) {
         self.framework = Some(dispatcher);
+        self.framework_hosted = true;
+    }
+
+    /// Mark this surface as framework-hosted so
+    /// [`PublishesResources`](ui::resources::PublishesResources) keeps only
+    /// selection live extras beside the published deck door.
+    #[cfg(test)]
+    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
+        self.framework_hosted = hosted;
+    }
+
+    /// Whether [`PublishesResources`](ui::resources::PublishesResources) is
+    /// publishing only selection live extras beside the framework door.
+    #[cfg(test)]
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.framework_hosted || self.framework.is_some()
+    }
+
+    /// Test-only: plant a local deck that has not been published through the
+    /// framework resource yet.
+    #[cfg(test)]
+    pub(crate) fn seed_unpublished_deck_for_test(&mut self, deck: crate::model::Deck) {
+        self.deck = deck;
+        self.cur_slide = self.cur_slide.min(self.deck.slides.len().saturating_sub(1));
+    }
+
+    /// Test-only: slide ids currently held on the local deck surface.
+    #[cfg(test)]
+    pub(crate) fn local_slide_ids_for_test(&self) -> Vec<String> {
+        self.deck
+            .slides
+            .iter()
+            .map(|slide| slide.id.clone())
+            .collect()
+    }
+
+    /// Test-only: select an element on the current slide so hosted extras bind.
+    #[cfg(test)]
+    pub(crate) fn select_element_for_test(&mut self, element_id: crate::model::Id) {
+        self.sel = Some(element_id);
     }
 
     /// Show the deck the framework resource holds.
@@ -1652,10 +1696,17 @@ impl SlidesApp {
     }
 
     /// The context Ctrl+K needs to build the deck's resource tree: the deck
-    /// title and each slide (with its elements). Derived entirely from the
-    /// in-memory deck mirror, which the shared document already holds.
+    /// title, each slide (with its elements), and this peer's live selection.
+    /// Deck rows come from the in-memory mirror; selection is local.
     pub(crate) fn slides_resource_ctx(&self) -> crate::actions::SlidesResourceCtx {
-        crate::actions::SlidesResourceCtx::from_deck(&self.deck)
+        let mut ctx = crate::actions::SlidesResourceCtx::from_deck(&self.deck);
+        if let Some(slide) = ctx.slides.get(self.cur_slide) {
+            ctx.selection = Some(crate::actions::selection_ctx_for(
+                slide,
+                self.sel.as_deref(),
+            ));
+        }
+        ctx
     }
 
     // --- rail scroll geometry ----------------------------------------------
@@ -6344,14 +6395,12 @@ impl ui::search::capability::SearchSource for SlidesApp {
 }
 
 impl ui::resources::PublishesResources for SlidesApp {
-    /// The deck's resource tree for the shell's one Ctrl+K palette — every
-    /// document-mutating affordance exported as the same action it dispatches on
-    /// screen. See [`crate::actions`].
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns the
+    /// deck door — keep only the live selection extras.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        // The framework root publishes the deck and its slides. The widget
-        // tree would be a second door.
-        if self.framework.is_some() {
-            return Vec::new();
+        if self.framework_hosted || self.framework.is_some() {
+            return crate::actions::live_presentation_resources(&self.slides_resource_ctx());
         }
         if !self.canonical_matches(doc) {
             return Vec::new();
