@@ -97,6 +97,9 @@ impl QualificationHold {
                     tilo_action_broker::peer_actions::PeerActionAttachmentError::TransportClosed
                 }
                 "failure" => tilo_action_broker::peer_actions::PeerActionAttachmentError::Failed,
+                "unresponsive" => {
+                    tilo_action_broker::peer_actions::PeerActionAttachmentError::Unresponsive
+                }
                 _ => return false,
             };
             if let Some(sender) = self.action_attachment_exit.take() {
@@ -2212,6 +2215,13 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 match attachment_exit {
                     Some(Ok(Err(tilo_action_broker::peer_actions::PeerActionAttachmentError::TransportClosed))) => {
                         error = Some("private broker transport stopped; reconnecting shared session".into());
+                        if let Some(old) = session.take() { old.close().await; }
+                    }
+                    // An unanswered catalogue or heartbeat admitted nothing: a
+                    // busy broker is replaced by attaching afresh, never
+                    // latched as an uncertain outcome.
+                    Some(Ok(Err(tilo_action_broker::peer_actions::PeerActionAttachmentError::Unresponsive))) => {
+                        error = Some("private broker did not answer; reconnecting shared session".into());
                         if let Some(old) = session.take() { old.close().await; }
                     }
                     Some(_) => action_error = Some("private broker attachment stopped; outcome unknown".into()),
