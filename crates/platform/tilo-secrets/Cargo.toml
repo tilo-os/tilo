@@ -16,7 +16,6 @@ path = "src/lib.rs"
 # Desktop backends block on IPC; the async API runs them on the app runtime's
 # blocking pool.
 tilo-rt = { version = "0.1.0", path = "../tilo-rt" }
-tracing.workspace = true
 # Secret bytes are wiped from memory when dropped.
 zeroize.workspace = true
 
