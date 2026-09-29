@@ -353,7 +353,7 @@ fn user_cache_dir() -> io::Result<PathBuf> {
     if len == 0 || len > buf.len() {
         return Err(io::Error::last_os_error());
     }
-    buf.truncate(len - 1);
+    buf.truncate(len.saturating_sub(1));
     Ok(PathBuf::from(OsString::from_vec(buf)))
 }
 
