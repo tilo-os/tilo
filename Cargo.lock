@@ -315,7 +315,6 @@ dependencies = [
  "tilo-app",
  "tilo-automation",
  "tilo-automerge",
- "tilo-clock",
  "tilo-content",
  "tilo-model-gateway",
  "tilo-reference",
@@ -2089,7 +2088,6 @@ dependencies = [
  "tracing",
  "uuid",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
@@ -6566,7 +6564,6 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
- "tilo-clock",
  "tilo-net",
  "tilo-ntfs-protocol",
  "tilo-paths",
@@ -8148,7 +8145,6 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
- "tilo-clock",
  "tilo-content",
  "tilo-files",
  "tilo-net",
@@ -8204,7 +8200,6 @@ dependencies = [
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
- "tokio",
  "tracing",
  "workspace-hack",
 ]
@@ -8422,7 +8417,6 @@ dependencies = [
  "taffy",
  "tilo-actions",
  "tilo-app",
- "tilo-process",
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
@@ -10004,7 +9998,6 @@ dependencies = [
  "serde_json",
  "taffy",
  "tilo-app",
- "tilo-clock",
  "tilo-files",
  "tilo-seal",
  "tilo-vello",
@@ -10060,7 +10053,6 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
- "tilo-clock",
  "tilo-content",
  "tilo-files",
  "tilo-paths",
@@ -10333,7 +10325,6 @@ dependencies = [
  "tokio",
  "tracing",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
@@ -13933,7 +13924,6 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
- "tilo-clock",
  "tilo-files",
  "tilo-net",
  "tilo-test-env",
@@ -17133,7 +17123,6 @@ dependencies = [
  "tracing",
  "uuid",
  "workspace-hack",
- "xdg-paths",
  "zeroize",
 ]
 
@@ -17318,7 +17307,6 @@ dependencies = [
  "fnv",
  "getrandom 0.4.3",
  "hex",
- "private-fs",
  "runtime-dylib",
  "runtime-identity",
  "rustypipe",
@@ -19044,7 +19032,6 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
- "tilo-clock",
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
@@ -19633,7 +19620,6 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
- "tilo-clock",
  "tilo-content",
  "tilo-files",
  "tilo-paths",
@@ -19643,7 +19629,6 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
