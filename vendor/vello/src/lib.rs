@@ -1686,6 +1686,14 @@ impl Renderer {
         }
     }
 
+    /// Limit the image atlas to `max_size` pixels per side (8192 by
+    /// default). Images that do not fit after eviction are omitted and
+    /// reported, instead of a 256 MB atlas taking a browser's GPU process
+    /// past its memory limit.
+    pub fn set_image_atlas_max(&mut self, max_size: u32) {
+        self.resolver.set_image_atlas_max(max_size);
+    }
+
     /// Limit the adaptive bump buffers to `bytes` in total, whatever frames
     /// report using. Scenes past it drop geometry, which the shaders report,
     /// instead of taking a browser's GPU process past its memory limit.

@@ -237,6 +237,9 @@ const MAX_SCENE_BYTES: usize = 128 << 20;
 const MAX_BUMP_BUDGET_BYTES: u64 = 128 << 20;
 /// The scratch budget under `conservative_gpu`.
 const CONSERVATIVE_BUMP_BUDGET_BYTES: u64 = 32 << 20;
+/// The image atlas's side under `conservative_gpu`: 64 MB instead of vello's
+/// 256 MB maximum, which opening a photo-heavy app could reach in one frame.
+const CONSERVATIVE_IMAGE_ATLAS_MAX: u32 = 4096;
 
 fn scene_within_limits(scene: &vello::Scene) -> Result<(), String> {
     let encoding = scene.encoding();
@@ -954,11 +957,12 @@ async fn shared_gpu(
         },
     )
     .map_err(|e| e.to_string())?;
-    renderer.set_bump_budget_limit(if caps == SurfaceCaps::CONSERVATIVE {
-        CONSERVATIVE_BUMP_BUDGET_BYTES
+    if caps == SurfaceCaps::CONSERVATIVE {
+        renderer.set_bump_budget_limit(CONSERVATIVE_BUMP_BUDGET_BYTES);
+        renderer.set_image_atlas_max(CONSERVATIVE_IMAGE_ATLAS_MAX);
     } else {
-        MAX_BUMP_BUDGET_BYTES
-    });
+        renderer.set_bump_budget_limit(MAX_BUMP_BUDGET_BYTES);
+    }
     let p = proxy().map_err(|e| format!("{e:?}"))?;
     let failure = Arc::new(Mutex::new(None));
     let mounts: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
