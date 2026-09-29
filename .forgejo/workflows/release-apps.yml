@@ -492,16 +492,10 @@ jobs:
       # A publication signs these tapps, and the collection ships in signed OS
       # images. Every CI job and agent sandbox can write any object in the
       # shared compiler cache, so publications compile without it: no wrapper,
-      # and the runner's cache credentials are removed before compiling.
+      # and the runner's cache configuration is removed before compiling.
       - name: Prepare compiler cache
         if: needs.plan.outputs.publish != 'true'
-        env:
-          FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-          FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
-        run: |
-          # shellcheck disable=SC1091
-          source tools/ci/compiler_cache_env.sh
-          bash tools/ci/sccache.sh prepare
+        run: bash tools/ci/sccache.sh prepare
       - name: Build and verify selected tapps once for this architecture
         env:
           TILO_RELEASE_APPS: ${{ needs.plan.outputs.apps }}
