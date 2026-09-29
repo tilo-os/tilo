@@ -954,14 +954,7 @@ pub struct SheetsApp {
     /// Framework-owned action dispatch: every doc-mutating affordance routes
     /// through here so undo, byte-identical peer replay, and the OS Ctrl+K
     /// palette all work from one implementation. See [`crate::actions`].
-    actions: ui::ActionHost,
-    /// Hosted by [`crate::resource::SheetsShell`]: edits go through the
-    /// framework dispatcher (permissions, attributed undo). Standalone /
-    /// shots keep [`Self::actions`].
-    framework: Option<ui::framework::Dispatcher<crate::resource::SheetsWorkbook>>,
-    /// The last action submitted through the framework dispatcher.
-    #[cfg(test)]
-    hosted_last: Option<tilo_actions::EncodedAction>,
+    actions: crate::resource::ActionSink,
 }
 
 /// A rectangle captured by copy/cut, retaining each cell's raw input and
@@ -1079,10 +1072,7 @@ impl SheetsApp {
             pending_reveal: None,
             clipboard: None,
             palette: CommandPalette::commands(),
-            actions: ui::ActionHost::new(),
-            framework: None,
-            #[cfg(test)]
-            hosted_last: None,
+            actions: crate::resource::ActionSink::default(),
         }
     }
 
@@ -1091,7 +1081,7 @@ impl SheetsApp {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::SheetsWorkbook>,
     ) {
-        self.framework = Some(dispatcher);
+        self.actions.attach(dispatcher);
     }
 
     /// Show the sheet names the framework resource holds.
@@ -1134,15 +1124,7 @@ impl SheetsApp {
         action: &SheetsAction,
     ) -> Result<(), tilo_actions::ActionError> {
         let context = actions::history_context_for_doc(doc, action);
-        if let Some(dispatcher) = &self.framework {
-            #[cfg(test)]
-            {
-                self.hosted_last = Some(actions::encode(action));
-            }
-            return dispatcher.apply_now_with(doc, action, context);
-        }
-        self.actions
-            .try_dispatch_with_context(doc, actions::SHEETS_ACTION_TYPE, action, context)
+        self.actions.try_dispatch_with_context(doc, action, context)
     }
 
     /// The presentation context the Ctrl+K resource tree is built from: the open
@@ -1403,11 +1385,7 @@ impl SheetsApp {
     /// action.
     #[cfg(test)]
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
-        if self.framework.is_some() {
-            self.hosted_last.as_ref()
-        } else {
-            self.actions.last_dispatched()
-        }
+        self.actions.last_dispatched()
     }
 
     /// Configure the app for the headless `--shots`/test path: seed the sample
@@ -6457,11 +6435,13 @@ impl ui::search::capability::SearchSource for SheetsApp {
 }
 
 impl ui::resources::PublishesResources for SheetsApp {
-    /// Publish the open workbook + its sheets so the host's Ctrl+K action
-    /// palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns the
+    /// workbook door — keep only the live selection extras.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.actions.is_hosted() {
+            return crate::actions::live_presentation_resources(&self.sheets_resource_ctx());
+        }
         self.publish_resources(doc)
     }
     fn action_directory_resource_page(
