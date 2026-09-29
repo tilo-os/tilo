@@ -1805,10 +1805,12 @@ jobs:
 
       # Build / OS dev: build the dev image FROM the tilo-ci image this lane
       # just pushed, in the same BuildKit session (the base's layers are still
-      # in its store), through the shared compiler cache and a registry layer
-      # cache, and push it straight to tilo-vm:<series>-ci-<arch>. The index
-      # tilo-vm:<series>-ci, which `tilo-vm vm upgrade --from sha:` pulls,
-      # collects both architectures. No disk install, no boot.
+      # in its store), through the shared compiler cache, and push it straight
+      # to tilo-vm:<series>-ci-<arch>. No layer cache: every stage but the
+      # scratch staging sits on this commit's base, so no layer is reusable
+      # by the next commit, and exporting one crashed BuildKit (run 48837).
+      # The index tilo-vm:<series>-ci, which `tilo-vm vm upgrade --from sha:`
+      # pulls, collects both architectures. No disk install, no boot.
       - name: Build and publish the dev image
         if: steps.release-mode.outputs.dev-fast == 'true' && steps.dev-image.outcome == 'success'
         timeout-minutes: 30
@@ -1848,8 +1850,6 @@ jobs:
             --label "org.opencontainers.image.base.name=$base" \
             --label "org.opencontainers.image.base.digest=$DEV_BASE_DIGEST" \
             --label sh.tilo.dev.base-trust=integration \
-            --cache-from "type=gha,scope=tilo-vm-dev-$ARCH" \
-            --cache-to "type=gha,scope=tilo-vm-dev-$ARCH,mode=min,ignore-error=true" \
             --metadata-file "$metadata" \
             --output "type=image,name=$child,push=true,compression=zstd,compression-level=1" \
             .
