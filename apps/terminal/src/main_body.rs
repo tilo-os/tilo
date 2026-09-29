@@ -766,6 +766,9 @@ pub struct TerminalWidget {
     /// presence (`PresenceKey::App { sub }`), so a peer's caret/selection is
     /// attributed to this pane rather than colliding with another terminal.
     pane_id: String,
+    /// Set by [`ResourceSurface::attach`]. The framework root already publishes
+    /// the session door; this widget then returns only the live transcript.
+    framework_hosted: bool,
     /// Identifies the local PTY whose presentation is mirrored into this
     /// record. A terminal tab is durable, but its process is not: after a
     /// logout the next login spawns a new shell. Without an incarnation
@@ -906,6 +909,7 @@ impl TerminalWidget {
             content,
             graphics_scanner: GraphicsScanner::default(),
             pane_id: uuid::Uuid::new_v4().to_string(),
+            framework_hosted: false,
             local_session_id: None,
             local_session_bound: false,
             waker: Arc::new(Mutex::new(None)),
@@ -3214,8 +3218,25 @@ impl ui::presence::capability::PublishesPresence for TerminalWidget {
     }
 }
 
+impl TerminalWidget {
+    pub(crate) fn mark_framework_hosted(&mut self) {
+        self.framework_hosted = true;
+    }
+
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.framework_hosted
+    }
+
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.framework_hosted = true;
+    }
+}
+
 impl ui::resources::PublishesResources for TerminalWidget {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        if self.framework_hosted {
+            return vec![self.transcript_resource()];
+        }
         vec![self.session_resource()]
     }
     fn action_directory_resource_page(
@@ -3225,7 +3246,13 @@ impl ui::resources::PublishesResources for TerminalWidget {
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
         let resources = (cursor.is_empty() && max_results > 0)
-            .then(|| self.session_resource())
+            .then(|| {
+                if self.framework_hosted {
+                    self.transcript_resource()
+                } else {
+                    self.session_resource()
+                }
+            })
             .into_iter()
             .collect();
         Some(ui::widget::ActionDirectoryResourcePage {
@@ -3252,6 +3279,9 @@ impl ui::resources::PublishesResources for TerminalWidget {
     }
     fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
         if id == self.terminal_resource_id() {
+            if self.framework_hosted {
+                return None;
+            }
             return Some(self.session_resource());
         }
         if id == self.terminal_transcript_target() {
