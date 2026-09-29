@@ -6321,13 +6321,21 @@ impl ui::resources::PublishesResources for BrowserWidget {
             );
         }
 
-        let mut browser = Resource::new("browser", "browser.application", "Browser");
-        if let Some(spec) = operation(
-            "show-page",
-            "Show current page",
-            OperationKind::View,
-            BrowserOperation::ShowPage,
-        ) {
+        let state = <crate::resource::Browser as ui::tilo_resource::Resource>::read(doc)
+            .unwrap_or_default();
+        let mut browser =
+            ui::tilo_resource::publish::<crate::resource::Browser>("browser", "Browser", &state);
+        if !browser
+            .actions
+            .iter()
+            .any(|action| action.id == "show-page")
+            && let Some(spec) = operation(
+                "show-page",
+                "Show current page",
+                OperationKind::View,
+                BrowserOperation::ShowPage,
+            )
+        {
             browser.actions.push(spec);
         }
         browser.children = vec![
