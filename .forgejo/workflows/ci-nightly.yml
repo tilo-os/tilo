@@ -77,7 +77,7 @@ jobs:
           - arch: aarch64
             runner: runner-arm64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 240
+    timeout-minutes: 180
     container:
       # Visual goldens are meaningful only when fonts, Mesa and the software
       # renderer are byte-for-byte identical to the reviewed refresh job.

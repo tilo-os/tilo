@@ -92,8 +92,10 @@ concurrency:
   # failed release's ARM worker active after cancellation and queued later
   # signed releases behind it. The old run cannot enter promotion.
   group: ${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}
-  # A dev build is superseded by the next commit of its ref.
-  cancel-in-progress: ${{ github.event_name == 'workflow_call' }}
+  # A pull request's dev build is superseded by its next commit. On main the
+  # running build finishes and only the newest waiting commit follows it, so a
+  # stream of merges cannot starve every build of completion.
+  cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}
 
 env:
   TILO_ALLOW_PUBLIC_LENOVO_FIRMWARE: ${{ github.event.inputs.allow_public_lenovo_firmware || 'false' }}
@@ -320,7 +322,8 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.build-matrix) }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 600
+    # No job may need more than three hours; a slower one is a bug to fix.
+    timeout-minutes: 180
     enable-openid-connect: true
     env:
       # Board images carry private firmware: they stay in the forge's private
@@ -925,6 +928,13 @@ jobs:
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "validate=$validate" >> "$GITHUB_OUTPUT"
           echo "dev-fast=$fast" >> "$GITHUB_OUTPUT"
+          # A release and its reproduction clamp every mtime and compress
+          # alike. A Build / OS dev image needs neither: fast zstd, no rewrite.
+          if [[ $fast == true ]]; then
+            echo 'TILO_OCI_EXPORT=compression=zstd,compression-level=1,force-compression=true' >> "$GITHUB_ENV"
+          else
+            echo 'TILO_OCI_EXPORT=rewrite-timestamp=true' >> "$GITHUB_ENV"
+          fi
           # A branch build that validates without publishing installs and
           # boots the dev image built FROM this image instead, and publishes
           # both as dev-trust artifacts: tilo-ci:<series>-<arch> and
@@ -962,10 +972,18 @@ jobs:
           else
             echo 'TILO_REQUIRE_PCR_PREDICTION=0' >> "$GITHUB_ENV"
             echo 'TILO_RUST_LTO=off' >> "$GITHUB_ENV"
-            # Without LTO nothing bounds link memory: every core compiles.
-            echo "TILO_DEV_CARGO_JOBS=$(nproc)" >> "$GITHUB_ENV"
           fi
-          echo "::notice::OS integration validation: $validate; publication: $publish"
+          # Every core compiles, bounded only by memory: a thin-LTO rustc
+          # peaks near 3 GiB, the rest far below it. The job count never
+          # reaches the image, so the two lanes of a release may differ.
+          memory_gib=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 1048576 ))
+          per_job=1
+          [[ $publish != true ]] || per_job=3
+          jobs=$(( memory_gib / per_job ))
+          (( jobs > $(nproc) )) && jobs=$(nproc)
+          (( jobs < 1 )) && jobs=1
+          echo "TILO_CARGO_JOBS=$jobs" >> "$GITHUB_ENV"
+          echo "::notice::OS integration validation: $validate; publication: $publish; cargo jobs: $jobs of $(nproc) CPUs, ${memory_gib} GiB"
 
       # The browser-only bundle and tapp are built in the OS image. Both
       # independently compiled publication lanes must sign their bytes with
@@ -1205,9 +1223,40 @@ jobs:
       # step needs that layer's content. Their failures are therefore handled
       # below: that one error rebuilds without imported cache, and every other
       # error still fails the job.
+      # The engine's layer cache is addressed by everything that goes into
+      # it, so a build of any other commit with the same engine inputs finds
+      # it: in effect a prebuilt artifact, rebuilt only when an input changes.
+      #
+      # Normally no build compiles it at all: build-buildroots.yml publishes
+      # each architecture's engine, signed and pinned in
+      # os/wpe-stage-snapshot.env and labelled with its inputs, and every lane,
+      # the reproduction lane included, takes that stage when its label matches
+      # this checkout's inputs.
+      - name: Take the browser engine from its pinned stage, or address its cache
+        if: env.TILO_WITH_BROWSER == '1'
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          key="$(os/dev/wpe-stage-key.sh "$ARCH")"
+          echo "TILO_WPE_CACHE_KEY=$key" >> "$GITHUB_ENV"
+          name="WPE_STAGE_${ARCH^^}_REF"
+          stage="$(sed -n "s/^$name=//p" os/wpe-stage-snapshot.env)"
+          if [[ $stage =~ ^registry\.tilo\.so/tilo/tilo-wpe-stage@sha256:[0-9a-f]{64}$ ]]; then
+            cosign verify --key keys/cosign.pub "$stage" >/dev/null
+            label="$(skopeo inspect "docker://$stage" | jq -r '.Labels["org.tilo.wpe.inputs"] // empty')"
+            if [[ $label == "$key" ]]; then
+              echo "TILO_WPE_STAGE_REF=$stage" >> "$GITHUB_ENV"
+              echo "::notice::browser engine from its pinned stage $stage"
+              exit 0
+            fi
+            echo "::warning::the pinned engine stage was built from other inputs ($label, not $key); compiling it"
+          fi
+          echo "::notice::browser engine cache key $key"
+
       - name: Build and cache the browser engine stage
         id: wpe-stage
-        if: env.TILO_WITH_BROWSER == '1'
+        if: env.TILO_WITH_BROWSER == '1' && env.TILO_WPE_STAGE_REF == ''
         continue-on-error: true
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
@@ -1222,8 +1271,8 @@ jobs:
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
           provenance: false
           no-cache: ${{ matrix.role == 'reproduce' }}
-          cache-from: ${{ matrix.role != 'reproduce' && format('type=registry,ref={0}/tilo/tilo-buildcache:{1}-wpe', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch) || '' }}
-          cache-to: ${{ matrix.role != 'reproduce' && format('type=registry,ref={0}/tilo/tilo-buildcache:{1}-wpe,mode=max,ignore-error=true', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch) || '' }}
+          cache-from: ${{ matrix.role != 'reproduce' && format('type=registry,ref={0}/tilo/tilo-buildcache:{1}-wpe-{2}', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch, env.TILO_WPE_CACHE_KEY) || '' }}
+          cache-to: ${{ matrix.role != 'reproduce' && format('type=registry,ref={0}/tilo/tilo-buildcache:{1}-wpe-{2},mode=max,ignore-error=true', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch, env.TILO_WPE_CACHE_KEY) || '' }}
 
       # Build and export the compile stages (the Rust builder and its inputs)
       # before anything else. A registry cache is only written when its build
@@ -1243,7 +1292,7 @@ jobs:
           context: .
           build-contexts: |
             github-assets=os/external-assets/cache
-            ${{ steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest) || '' }}
+            ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
           file: os/Containerfile
           target: native-builder-payload
           push: false
@@ -1262,7 +1311,7 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
@@ -1286,7 +1335,6 @@ jobs:
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-from: |
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-wpe
             type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-compile
             type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}
           cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-compile,mode=max,ignore-error=true
@@ -1308,10 +1356,10 @@ jobs:
           context: .
           build-contexts: |
             github-assets=os/external-assets/cache
-            ${{ steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest) || '' }}
+            ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
           file: os/Containerfile
           push: false
-          outputs: ${{ steps.release-mode.outputs.validate == 'true' && 'type=oci,dest=/var/tmp/tilo-image.tar,rewrite-timestamp=true' || '' }}
+          outputs: ${{ steps.release-mode.outputs.validate == 'true' && format('type=oci,dest=/var/tmp/tilo-image.tar,{0}', env.TILO_OCI_EXPORT) || '' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # TILO_WITH_BROWSER: a manual run can omit the browser + its WPE WebKit
@@ -1338,7 +1386,7 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
@@ -1367,7 +1415,6 @@ jobs:
           # The compile stages were already built and exported above, so this
           # reuses them locally and exports the remaining stages.
           cache-from: |
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-wpe
             type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-compile
             type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}
           cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }},mode=max,ignore-error=true
@@ -1395,7 +1442,7 @@ jobs:
           build-args: |
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
           provenance: false
-          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-wpe,mode=max,ignore-error=true
+          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-wpe-${{ env.TILO_WPE_CACHE_KEY }},mode=max,ignore-error=true
 
       # The same image build without cache-from. Layers this builder already
       # holds are reused; the lazily imported ones are rebuilt. It writes every
@@ -1412,10 +1459,10 @@ jobs:
           context: .
           build-contexts: |
             github-assets=os/external-assets/cache
-            ${{ steps.wpe-uncached.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe-uncached@{0}', steps.wpe-uncached.outputs.digest) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
+            ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-uncached.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe-uncached@{0}', steps.wpe-uncached.outputs.digest)) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
           file: os/Containerfile
           push: false
-          outputs: ${{ steps.release-mode.outputs.validate == 'true' && 'type=oci,dest=/var/tmp/tilo-image.tar,rewrite-timestamp=true' || '' }}
+          outputs: ${{ steps.release-mode.outputs.validate == 'true' && format('type=oci,dest=/var/tmp/tilo-image.tar,{0}', env.TILO_OCI_EXPORT) || '' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -1433,7 +1480,7 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
@@ -1521,7 +1568,7 @@ jobs:
           context: .
           build-contexts: |
             github-assets=os/external-assets/cache
-            ${{ steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest) || '' }}
+            ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
           file: os/Containerfile
           push: false
           outputs: type=oci,dest=/var/tmp/tilo-image-repro.tar,rewrite-timestamp=true
@@ -1543,7 +1590,7 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
@@ -1644,7 +1691,7 @@ jobs:
           echo "::notice::independent rebuild reported manifest sha256:$manifest"
 
       - name: Release build cache before image installation
-        if: steps.release-mode.outputs.validate == 'true'
+        if: steps.release-mode.outputs.validate == 'true' && steps.release-mode.outputs.dev-fast != 'true'
         env:
           BUILDER_NAME: ${{ steps.buildx.outputs.name }}
         run: |
@@ -1658,14 +1705,17 @@ jobs:
           df -h /var/tmp
 
       # Build / OS dev: build the dev image FROM the tilo-ci image this lane
-      # just pushed and publish it as tilo-vm:<series>-ci, which
-      # `tilo-vm vm upgrade --from sha:` pulls. No disk install, no boot.
+      # just pushed, in the same BuildKit session (the base's layers are still
+      # in its store), through the shared compiler cache and a registry layer
+      # cache, and push it straight to tilo-vm:<series>-ci-<arch>. The index
+      # tilo-vm:<series>-ci, which `tilo-vm vm upgrade --from sha:` pulls,
+      # collects both architectures. No disk install, no boot.
       - name: Build and publish the dev image
         if: steps.release-mode.outputs.dev-fast == 'true' && steps.dev-image.outcome == 'success'
         env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
           DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
           DEV_BASE_DIGEST: ${{ steps.dev-image.outputs.digest }}
-          BUILD_DIGEST: ${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
           ARCH: ${{ matrix.arch }}
           CACHE_BUCKET: ${{ steps.compiler-cache.outputs.bucket }}
           CACHE_ENDPOINT: ${{ steps.compiler-cache.outputs.endpoint }}
@@ -1674,37 +1724,42 @@ jobs:
         run: |
           set -euo pipefail
           started=$(date +%s)
-          if ! command -v podman >/dev/null; then
-            if command -v apt-get >/dev/null; then
-              export DEBIAN_FRONTEND=noninteractive
-              sudo -n apt-get update
-              sudo -n apt-get install -y --no-install-recommends podman fuse-overlayfs uidmap slirp4netns jq skopeo
-            else
-              sudo -n dnf install -y podman fuse-overlayfs jq skopeo
-            fi
-          fi
-          if [[ '${{ matrix.runner }}' == runner-large* ]]; then
-            CONTAINERS_STORAGE_CONF="$(./os/dev/ci-native-podman-store.sh)"
-            export CONTAINERS_STORAGE_CONF
-          fi
-          first_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
-          first_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$first_tag" "$BUILD_DIGEST")"
-          dev_base="registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH"
-          skopeo copy "oci-archive:/var/tmp/tilo-image.tar:$first_ref" "containers-storage:$dev_base"
-          rm -f /var/tmp/tilo-image.tar
-          [[ "$(podman image inspect --format '{{.Digest}}' "$dev_base")" == "$DEV_BASE_DIGEST" ]] || {
-            echo "::error::the local base is not the published $dev_base ($DEV_BASE_DIGEST)"
-            exit 1
-          }
-          cache_args=""
+          base="registry.tilo.so/tilo/tilo-ci@$DEV_BASE_DIGEST"
+          created="$(skopeo inspect "docker://$base" | jq -er .Created)"
+          created="$(date -u -d "$created" +%Y-%m-%dT%H:%M:%SZ)"
+          child="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci-$ARCH"
+          cache=()
           if [[ -n $CACHE_BUCKET ]]; then
-            cache_args="--build-arg SCCACHE_BUCKET=$CACHE_BUCKET --build-arg SCCACHE_ENDPOINT=$CACHE_ENDPOINT --build-arg SCCACHE_REGION=$CACHE_REGION --build-arg SCCACHE_S3_USE_SSL=$CACHE_USE_SSL --secret id=aws_access_key_id,env=AWS_ACCESS_KEY_ID --secret id=aws_secret_access_key,env=AWS_SECRET_ACCESS_KEY"
+            cache=(--build-arg "SCCACHE_BUCKET=$CACHE_BUCKET" --build-arg "SCCACHE_ENDPOINT=$CACHE_ENDPOINT"
+                   --build-arg "SCCACHE_REGION=$CACHE_REGION" --build-arg "SCCACHE_S3_USE_SSL=$CACHE_USE_SSL"
+                   --secret id=aws_access_key_id,env=AWS_ACCESS_KEY_ID
+                   --secret id=aws_secret_access_key,env=AWS_SECRET_ACCESS_KEY)
           fi
-          TILO_DEV_BASE="$dev_base" TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=0 \
-            TILO_CARGO_FRESHNESS=clean \
-            TILO_BUILD_ARGS="--build-arg TILO_DEV_RUST_LTO=off $cache_args --label org.opencontainers.image.version=$DEV_SERIES-ci --label org.opencontainers.image.revision=$GITHUB_SHA --label org.opencontainers.image.base.name=registry.tilo.so/tilo/tilo-ci@$DEV_BASE_DIGEST --label org.opencontainers.image.base.digest=$DEV_BASE_DIGEST --label sh.tilo.dev.base-trust=integration" \
-            ./os/dev/build-dev-image.sh
-          DEV_IMAGE=localhost/tilo-vm:ci DEV_TAG="$DEV_SERIES-ci" SOURCE_REVISION="$GITHUB_SHA" \
+          metadata="$(mktemp /var/tmp/tilo-vm-build.XXXXXX)"
+          docker buildx build --builder "$BUILDER_NAME" --provenance=false \
+            -f os/Containerfile.dev \
+            --build-arg "BASE_IMAGE=$base" \
+            --build-arg "RPMS_REF=$RPMS_REF" \
+            --build-arg "TILO_BASE_DIGEST=$DEV_BASE_DIGEST" \
+            --build-arg "TILO_BASE_CREATED=$created" \
+            --build-arg TILO_CARGO_FRESHNESS=clean \
+            --build-arg "TILO_CARGO_BUILD_JOBS=$(nproc)" \
+            --build-arg TILO_DEV_RUST_LTO=off \
+            --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+            "${cache[@]}" \
+            --label "org.opencontainers.image.version=$DEV_SERIES-ci" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.base.name=$base" \
+            --label "org.opencontainers.image.base.digest=$DEV_BASE_DIGEST" \
+            --label sh.tilo.dev.base-trust=integration \
+            --cache-from "type=registry,ref=$TILO_LAYER_CACHE_REGISTRY/tilo/tilo-buildcache:$ARCH-dev" \
+            --cache-to "type=registry,ref=$TILO_LAYER_CACHE_REGISTRY/tilo/tilo-buildcache:$ARCH-dev,mode=max,ignore-error=true" \
+            --metadata-file "$metadata" \
+            --output "type=image,name=$child,push=true,compression=zstd,compression-level=1,force-compression=true" \
+            .
+          digest="$(jq -er '."containerimage.digest"' "$metadata")"
+          echo "::notice::dev image built in $(( $(date +%s) - started ))s: $child ($digest)"
+          DEV_TAG="$DEV_SERIES-ci" PUSHED_DIGEST="$digest" SOURCE_REVISION="$GITHUB_SHA" \
             DISK_TOOLING_REVISION="$GITHUB_SHA" IMAGE_ONLY=1 \
             BASE_REPOSITORY=registry.tilo.so/tilo/tilo-ci BASE_TRUST=integration \
             BASE_INDEX_DIGEST="$DEV_BASE_DIGEST" BASE_CHILD_DIGEST="$DEV_BASE_DIGEST" \
