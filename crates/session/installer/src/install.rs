@@ -1270,14 +1270,16 @@ mod tests {
         }
         // Phase `stream_command_rejects_oversized_output_on_either_stream`.
         {
-            for redirect in ["", " >&2"] {
+            // The stdout producer then stays alive holding its pipe: the call
+            // returns only because the overflow kills the command's tree.
+            for script in [
+                "head -c 70000 /dev/zero; exec sleep 3600",
+                "head -c 70000 /dev/zero >&2",
+            ] {
                 let mut cmd = Command::new("sh");
-                cmd.arg("-c")
-                    .arg(format!("head -c 70000 /dev/zero{redirect}"));
-                let started = std::time::Instant::now();
+                cmd.arg("-c").arg(script);
                 let error = stream_command(cmd, "x", &[], |_| {}).unwrap_err();
                 assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
-                assert!(started.elapsed() < std::time::Duration::from_secs(2));
             }
         }
     }
