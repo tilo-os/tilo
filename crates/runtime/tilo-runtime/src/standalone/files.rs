@@ -1,10 +1,14 @@
-//! The profile's workspace files, and the folder that shows them on this
-//! host, where nothing mounts the workspace: `~/Tilo/<workspace>`.
+//! The profile's workspace files, and how this host shows them where the
+//! desktop does not: at `~/Tilo/<workspace>`.
 //!
 //! The files live in the profile as the filesystem daemon keeps them on
 //! Tilo OS: a namespace, the content store the profile's document media
-//! share, and a history of every version. The folder mirrors them both ways
-//! ([`tilo_fs::sync_folder`]).
+//! share, and a history of every version. On Linux with a usable FUSE the
+//! workspace is mounted there ([`mount`]); everywhere else a plain folder
+//! mirrors it both ways ([`tilo_fs::sync_folder`]).
+
+#[cfg(target_os = "linux")]
+mod mount;
 
 use std::{
     io,
@@ -25,7 +29,7 @@ use tilo_fs::{
 const FILES: &str = "files";
 const NAMESPACE: &str = "namespace.bin";
 const HISTORY: &str = "history.json";
-/// Workspace changes reach the folder within this.
+/// Workspace changes reach the folder, and are persisted, within this.
 const INTERVAL: Duration = Duration::from_secs(2);
 
 /// Who the workspace attributes this host's versions to, and the device
@@ -35,44 +39,177 @@ pub(super) struct Author {
     pub(super) device: [u8; 32],
 }
 
-/// The workspace files, kept in step with their folder until dropped.
+/// How the workspace files appear at their folder's path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Projection {
+    /// A plain folder mirroring them.
+    Folder,
+    /// A FUSE mount of the workspace itself.
+    #[cfg(target_os = "linux")]
+    Mount,
+}
+
+impl Projection {
+    /// A mount where this user can make one, otherwise the folder.
+    pub(super) fn for_host() -> Self {
+        #[cfg(target_os = "linux")]
+        if mount::available_in(Path::new("/dev/fuse"), std::env::var_os("PATH").as_deref()) {
+            return Self::Mount;
+        }
+        Self::Folder
+    }
+}
+
+/// The workspace files, shown at their folder's path until dropped.
 pub(super) struct WorkspaceFiles {
-    _watch: Watch,
+    _view: View,
+}
+
+/// Held for its lifetime: dropping it stops the sync or unmounts.
+enum View {
+    Folder {
+        _watch: Watch,
+    },
+    #[cfg(target_os = "linux")]
+    Mount {
+        _mount: mount::Mount,
+    },
 }
 
 impl WorkspaceFiles {
     /// Open the workspace files of `profile` over the content `store` and
-    /// mirror them into `folder`.
+    /// show them at `folder` as `projection`. A mount that fails falls
+    /// back to the folder.
     pub(super) fn start(
         profile: &Path,
         folder: &Path,
         store: Arc<tilo_fs::ContentStore>,
         endpoint: iroh::Endpoint,
         author: &Author,
+        projection: Projection,
     ) -> io::Result<Self> {
-        let state = profile.join(FILES);
-        crate::unix::private_directory(&state)?;
-        let namespace_path = state.join(NAMESPACE);
-        let namespace = Arc::new(Mutex::new(open_namespace(
-            &namespace_path,
-            hex::encode(author.device),
-        )?));
-        let history = FileHistoryStore::open(state.join(HISTORY)).map_err(io::Error::other)?;
-        let actor = collab_types::FileActor {
-            person: collab_types::Ed25519PublicKey(author.person),
-            device: collab_types::Ed25519PublicKey(author.device),
+        let files = Files::open(&profile.join(FILES), store, endpoint, author)?;
+        let view = match projection {
+            Projection::Folder => View::Folder {
+                _watch: files.sync_folder(folder)?.watch(INTERVAL)?,
+            },
+            #[cfg(target_os = "linux")]
+            Projection::Mount => {
+                // Changes made in the folder while nothing was mounted over
+                // it enter the workspace before the mount hides them.
+                files.sync_folder(folder)?.reconcile()?;
+                match mount::Mount::start(files.quick_fs()?, folder, Arc::clone(&files.namespace)) {
+                    Ok(mount) => View::Mount { _mount: mount },
+                    Err(error) => {
+                        tracing::warn!(%error, "the workspace cannot be mounted; syncing a folder instead");
+                        View::Folder {
+                            _watch: files.sync_folder(folder)?.watch(INTERVAL)?,
+                        }
+                    }
+                }
+            }
         };
+        Ok(Self { _view: view })
+    }
+}
+
+/// The workspace's durable parts, from which each view builds its QuickFS.
+struct Files {
+    state: PathBuf,
+    namespace: Arc<NamespaceFile>,
+    history: Arc<FileHistoryStore>,
+    hydrator: Arc<Hydrator>,
+    actor: collab_types::FileActor,
+}
+
+impl Files {
+    fn open(
+        state: &Path,
+        store: Arc<tilo_fs::ContentStore>,
+        endpoint: iroh::Endpoint,
+        author: &Author,
+    ) -> io::Result<Self> {
+        crate::unix::private_directory(state)?;
+        let namespace = NamespaceFile::open(state.join(NAMESPACE), hex::encode(author.device))?;
+        let history = FileHistoryStore::open(state.join(HISTORY)).map_err(io::Error::other)?;
         let hydrator = {
             let _entered = tilo_rt::app().handle().enter();
             Arc::new(Hydrator::new(endpoint, store))
         };
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
-            .with_history(Arc::new(history), actor)
-            .map_err(io::Error::other)?;
-        let commit = Box::new(move || save_namespace(&namespace, &namespace_path));
-        let watch = SyncFolder::open(Arc::new(fs), folder, &state, commit)?.watch(INTERVAL)?;
-        Ok(Self { _watch: watch })
+        Ok(Self {
+            state: state.to_path_buf(),
+            namespace: Arc::new(namespace),
+            history: Arc::new(history),
+            hydrator,
+            actor: collab_types::FileActor {
+                person: collab_types::Ed25519PublicKey(author.person),
+                device: collab_types::Ed25519PublicKey(author.device),
+            },
+        })
+    }
+
+    fn quick_fs(&self) -> io::Result<QuickFS> {
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&self.hydrator)));
+        QuickFS::new(
+            Arc::clone(&self.namespace.namespace),
+            Arc::clone(&self.hydrator),
+            heuristics,
+        )
+        .with_history(Arc::clone(&self.history), self.actor)
+        .map_err(io::Error::other)
+    }
+
+    fn sync_folder(&self, folder: &Path) -> io::Result<SyncFolder> {
+        let namespace = Arc::clone(&self.namespace);
+        let commit = Box::new(move || namespace.save_if_changed());
+        SyncFolder::open(Arc::new(self.quick_fs()?), folder, &self.state, commit)
+    }
+}
+
+/// The workspace namespace and the profile file that keeps it.
+struct NamespaceFile {
+    namespace: Arc<Mutex<Namespace>>,
+    path: PathBuf,
+    /// What the file holds, so an unchanged namespace is not rewritten.
+    saved: Mutex<Vec<automerge::ChangeHash>>,
+}
+
+impl NamespaceFile {
+    fn open(path: PathBuf, author: String) -> io::Result<Self> {
+        let mut namespace = match std::fs::read(&path) {
+            Ok(bytes) => Namespace::from_bytes(author, &bytes)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                Namespace::new(author).map_err(io::Error::other)?
+            }
+            Err(error) => return Err(error),
+        };
+        let saved = if path.exists() {
+            namespace.heads()
+        } else {
+            Vec::new()
+        };
+        Ok(Self {
+            namespace: Arc::new(Mutex::new(namespace)),
+            path,
+            saved: Mutex::new(saved),
+        })
+    }
+
+    fn save_if_changed(&self) -> io::Result<()> {
+        let poisoned = || io::Error::other("workspace namespace lock poisoned");
+        let mut saved = self.saved.lock().map_err(|_| poisoned())?;
+        let (heads, bytes) = {
+            let mut namespace = self.namespace.lock().map_err(|_| poisoned())?;
+            let heads = namespace.heads();
+            if heads == *saved {
+                return Ok(());
+            }
+            (heads, namespace.save())
+        };
+        atomic_file::write_with_mode(&self.path, &bytes, 0o600)?;
+        *saved = heads;
+        Ok(())
     }
 }
 
@@ -90,25 +227,6 @@ pub(super) fn folder(workspace: &str) -> io::Result<PathBuf> {
     let home = std::env::var_os("HOME")
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is missing"))?;
     Ok(folder_in(Path::new(&home), workspace))
-}
-
-fn open_namespace(path: &Path, author: String) -> io::Result<Namespace> {
-    match std::fs::read(path) {
-        Ok(bytes) => Namespace::from_bytes(author, &bytes)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            Namespace::new(author).map_err(io::Error::other)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn save_namespace(namespace: &Mutex<Namespace>, path: &Path) -> io::Result<()> {
-    let bytes = namespace
-        .lock()
-        .map_err(|_| io::Error::other("workspace namespace lock poisoned"))?
-        .save();
-    atomic_file::write_with_mode(path, &bytes, 0o600)
 }
 
 #[cfg(test)]
