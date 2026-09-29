@@ -54,10 +54,12 @@ pub enum Answer {
     Failed(String),
 }
 
+/// One picked path and the extension tokens that open it: its own, and for a
+/// Save destination also that of [`crate::portal::save_sibling`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Picked {
     pub path: PathBuf,
-    pub token: Option<String>,
+    pub tokens: Vec<String>,
 }
 
 /// `request` as one line.
@@ -122,7 +124,9 @@ impl Answer {
                 record.append_pair("outcome", "picked");
                 for item in picked {
                     record.append_pair("path", &item.path.to_string_lossy());
-                    record.append_pair("token", item.token.as_deref().unwrap_or(""));
+                    for token in &item.tokens {
+                        record.append_pair("token", token);
+                    }
                 }
             }
             Answer::Cancelled => {
@@ -152,14 +156,13 @@ impl Answer {
                 "reason" => reason = value.into_owned(),
                 "path" => picked.push(Picked {
                     path: PathBuf::from(&*value),
-                    token: None,
+                    tokens: Vec::new(),
                 }),
-                "token" => {
-                    let item = picked
-                        .last_mut()
-                        .ok_or_else(|| invalid("a token names no path"))?;
-                    item.token = (!value.is_empty()).then(|| value.into_owned());
-                }
+                "token" => picked
+                    .last_mut()
+                    .ok_or_else(|| invalid("a token names no path"))?
+                    .tokens
+                    .push(value.into_owned()),
                 _ => {}
             }
         }
@@ -222,7 +225,9 @@ fn consume_extension(token: &str) -> io::Result<()> {
 /// closes it. Each request is shown by `show` (which answers the picked
 /// paths, or `None` when the person cancelled); every picked path is
 /// answered with its extension token. A Save destination that does not exist
-/// yet is created empty first, since only an existing file can be granted.
+/// yet is created empty first, and it is granted with its one
+/// [`crate::portal::save_sibling`], so the app can save by writing that and
+/// renaming it over the destination; nothing else in the folder is granted.
 ///
 /// # Errors
 ///
@@ -252,20 +257,26 @@ fn answer(request: &PickRequest, shown: Result<Option<Vec<PathBuf>>, String>) ->
     };
     let mut picked = Vec::with_capacity(paths.len());
     for path in paths {
-        if request.suggested_name().is_some()
-            && let Err(error) = create_destination(&path)
-        {
-            return Answer::Failed(format!("could not create {}: {error}", path.display()));
-        }
-        match issue_extension(&path) {
-            Ok(token) => picked.push(Picked {
-                path,
-                token: Some(token),
-            }),
-            Err(error) => {
-                return Answer::Failed(format!("could not grant {}: {error}", path.display()));
+        let mut granted = vec![path.clone()];
+        if request.suggested_name().is_some() {
+            if let Err(error) = create_destination(&path) {
+                return Answer::Failed(format!("could not create {}: {error}", path.display()));
+            }
+            match crate::portal::save_sibling(&path) {
+                Some(sibling) => granted.push(sibling),
+                None => return Answer::Failed(format!("{} names no file", path.display())),
             }
         }
+        let mut tokens = Vec::with_capacity(granted.len());
+        for grant in &granted {
+            match issue_extension(grant) {
+                Ok(token) => tokens.push(token),
+                Err(error) => {
+                    return Answer::Failed(format!("could not grant {}: {error}", grant.display()));
+                }
+            }
+        }
+        picked.push(Picked { path, tokens });
     }
     Answer::Picked(picked)
 }
@@ -298,7 +309,10 @@ pub fn run_chooser_helper() -> io::Result<()> {
             Ok(Some(paths)) if !paths.is_empty() => Answer::Picked(
                 paths
                     .into_iter()
-                    .map(|path| Picked { path, token: None })
+                    .map(|path| Picked {
+                        path,
+                        tokens: Vec::new(),
+                    })
                     .collect(),
             ),
             Ok(_) => Answer::Cancelled,
@@ -431,11 +445,13 @@ fn granted(answer: Answer) -> Answer {
         return answer;
     };
     for item in &picked {
-        let consumed = item
-            .token
-            .as_deref()
-            .ok_or_else(|| invalid("no token"))
-            .and_then(consume_extension);
+        let consumed = if item.tokens.is_empty() {
+            Err(invalid("no token"))
+        } else {
+            item.tokens
+                .iter()
+                .try_for_each(|token| consume_extension(token))
+        };
         if let Err(error) = consumed {
             return Answer::Failed(format!(
                 "{} could not be opened to this app: {error}",
@@ -529,11 +545,11 @@ mod tests {
             Answer::Picked(vec![
                 Picked {
                     path: PathBuf::from("/Users/u/a b&c.txt"),
-                    token: Some("t0k;en".into()),
+                    tokens: vec!["t0k;en".into(), "sib&ling".into()],
                 },
                 Picked {
                     path: PathBuf::from("/Users/u/d"),
-                    token: None,
+                    tokens: Vec::new(),
                 },
             ]),
             Answer::Cancelled,
@@ -607,6 +623,21 @@ mod tests {
     }
 
     #[test]
+    fn a_save_is_replaced_through_its_one_sibling() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("notes.txt");
+        assert_eq!(
+            crate::portal::save_sibling(&destination),
+            Some(dir.path().join(".notes.txt.tilo-save"))
+        );
+        std::fs::write(&destination, b"old").unwrap();
+        crate::portal::replace_saved(&destination, b"new").unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"new");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert!(crate::portal::save_sibling(Path::new("/")).is_none());
+    }
+
+    #[test]
     fn a_path_that_cannot_be_granted_is_a_failure_not_a_path() {
         let request = PickRequest::open("Open", "Open");
         let missing = PathBuf::from("/nonexistent/tilo-chooser-test");
@@ -617,7 +648,7 @@ mod tests {
         assert!(matches!(
             granted(Answer::Picked(vec![Picked {
                 path: PathBuf::from("/x"),
-                token: None,
+                tokens: Vec::new(),
             }])),
             Answer::Failed(_)
         ));

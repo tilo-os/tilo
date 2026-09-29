@@ -388,6 +388,57 @@ fn a_path_picked_in_the_runtimes_chooser_opens_and_nothing_else_does() {
     );
 }
 
+/// Save through the runtime's chooser, as `tilo_dialogs::confined::serve`
+/// answers it: the destination and its one sibling are granted.
+fn saved_through_the_chooser(destination: &Path) -> Vec<String> {
+    use std::io::{BufRead as _, Write as _};
+    use tilo_dialogs::confined::{Answer, encode_request, serve};
+    let (mut app, runtime) = std::os::unix::net::UnixStream::pair().unwrap();
+    let chosen = destination.to_path_buf();
+    let server = std::thread::spawn(move || serve(runtime, |_| Ok(Some(vec![chosen.clone()]))));
+    let request = tilo_dialogs::portal::PickRequest::save("Save", "Save", "doc.txt");
+    writeln!(app, "{}", encode_request(&request)).unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(app.try_clone().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    drop(app);
+    server.join().unwrap().unwrap();
+    match Answer::decode(&line).unwrap() {
+        Answer::Picked(mut picked) => picked.remove(0).tokens,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_save_replaces_the_picked_file_through_its_one_sibling() {
+    let f = fixture();
+    let destination = f.root.join("outside/doc.txt");
+    std::fs::write(&destination, b"old").unwrap();
+    let replace = |tokens: &[String]| {
+        let mut req = request(&f, "replace", &destination);
+        req.env = vec![(
+            OsString::from("TILO_PROBE_TOKENS"),
+            OsString::from(tokens.join("\n")),
+        )];
+        exit_code(&req)
+    };
+    let tokens = saved_through_the_chooser(&destination);
+    assert_eq!(tokens.len(), 2, "the destination and its sibling");
+    assert_eq!(
+        replace(&tokens[..1]),
+        REFUSED,
+        "the sibling was writable without its grant"
+    );
+    assert_eq!(replace(&tokens), OK, "the save by rename failed");
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"TILO_SEATBELT_PROBE_MARKER\0"
+    );
+    assert!(!f.root.join("outside/unrelated.tmp").exists());
+    assert_eq!(replace(&tokens), OK, "a second save failed");
+}
+
 #[test]
 fn service_descriptors_are_inherited_and_nothing_else_is() {
     let f = fixture();

@@ -400,9 +400,13 @@ the kernel-signed token App Sandbox's own panels hand out. The app consumes
 it, and the profile's one extension rule then lets that path, and nothing
 else, through for the rest of the process's life. The app says what kind of
 chooser it wants and never names a path. A Save destination is created empty
-before it is granted, since only an existing file can be; an app that saves
-by writing a temporary file and renaming it over the destination cannot do
-that there. A grant does not outlive the process.
+before it is granted, since only an existing file can be. It is granted
+with exactly one sibling, `.<name>.tilo-save`
+(`tilo_dialogs::portal::save_sibling`), so an app saves atomically by
+writing that and renaming it over the destination
+(`tilo_dialogs::portal::replace_saved`); nothing else in the folder is
+writable, so an app that picks its own temporary name cannot save that way.
+A grant does not outlive the process.
 
 The profile is applied by `/usr/bin/sandbox-exec`, which is SIP-protected.
 It runs a preflight first, against a target that cannot exist. If the
