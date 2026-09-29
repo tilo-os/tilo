@@ -1,0 +1,667 @@
+//! An agent's turns against a Word Processor shaped like the one the guest
+//! serves: the open-with-a-file call, the directory its reply carries,
+//! session handles and multi-word needles.
+use super::*;
+use std::sync::{Arc, Mutex};
+use tilo_actions::remote::{
+    ActionHostError, CatalogueProvider, CatalogueResource, InvocationReceipt, InvocationState,
+    Pending,
+};
+use tilo_actions::{ActionParam, InvocationUpdate, ParamType};
+
+/// Ids shaped like the bound UI resources a live Word Processor publishes.
+const RICH: &str = "tilo-ui-bound:v1:2a4120d7-2f63-4578-aed8-11cb91ed3628:c0fe4ad7-b7d0-46c3-ab7e-78d12d5d86f4:71646f632e726963682d74657874";
+const DOC: &str = "tilo-ui-bound:v1:2a4120d7-2f63-4578-aed8-11cb91ed3628:c0fe4ad7-b7d0-46c3-ab7e-78d12d5d86f4:776f72642d70726f636573736f722e646f63756d656e74";
+const STYLE: &str = "tilo-ui-bound:v1:2a4120d7-2f63-4578-aed8-11cb91ed3628:c0fe4ad7-b7d0-46c3-ab7e-78d12d5d86f4:776f72642d70726f636573736f722e7374796c653a626f6479";
+const APP: &str = "so.tilo.word-processor";
+const WORKSPACE: &str = "workspace:room";
+
+/// A workspace offering one app, which publishes its directory as soon as
+/// it is opened.
+#[derive(Clone)]
+struct Writer {
+    /// The app's action that opens a path, if it has one.
+    opener: Option<&'static str>,
+    running: Arc<Mutex<bool>>,
+    invoked: Arc<Mutex<Vec<InvokeRequest>>>,
+}
+
+impl Writer {
+    fn new(opener: Option<&'static str>) -> Self {
+        Self {
+            opener,
+            running: Arc::default(),
+            invoked: Arc::default(),
+        }
+    }
+
+    fn invoked(&self) -> Vec<(String, String, String, Value)> {
+        self.invoked
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| {
+                let arguments = match &request.argument {
+                    InvokeArgument::Json(map) => Value::Object(map.clone()),
+                    _ => Value::Null,
+                };
+                (
+                    request.target.provider.clone(),
+                    request.target.address.resource.clone(),
+                    request.target.address.action.clone(),
+                    arguments,
+                )
+            })
+            .collect()
+    }
+
+    fn rows(&self, provider: &str) -> Vec<CatalogueRow> {
+        if provider == WORKSPACE {
+            let mut open = row(
+                "",
+                "app.so.tilo.word-processor",
+                "applications.app",
+                "open",
+                Vec::new(),
+            );
+            open.app_id = "so.tilo.desktop".into();
+            return vec![open];
+        }
+        let path = || ActionParam::optional("path", ParamType::Text, "Direct filesystem path");
+        let mut rows =
+            vec![
+                row(
+                    "",
+                    RICH,
+                    "qdoc.rich-text",
+                    "apply",
+                    vec![
+                        ActionParam::required("action", ParamType::Object, "An edit")
+                            .with_schema(json!({"oneOf": []})),
+                    ],
+                ),
+                CatalogueRow {
+                    action: None,
+                    has_children: true,
+                    ..row("", DOC, "word_processor.document", "", Vec::new())
+                },
+                row(
+                    DOC,
+                    DOC,
+                    "word_processor.document",
+                    "read-text",
+                    vec![
+                        ActionParam::required(
+                            "pageSize",
+                            ParamType::Integer,
+                            "Maximum items in this page",
+                        )
+                        .with_schema(json!({"type": "integer", "minimum": 1, "maximum": 64})),
+                        ActionParam::optional("cursor", ParamType::Text, "Opaque nextCursor"),
+                    ],
+                ),
+                row(DOC, DOC, "word_processor.document", "save-as", vec![path()]),
+                row(
+                    DOC,
+                    DOC,
+                    "word_processor.document",
+                    "select-block",
+                    vec![ActionParam::required("block", ParamType::Text, "Paragraph")],
+                ),
+                row(
+                    DOC,
+                    DOC,
+                    "word_processor.document",
+                    "set-paragraph-style",
+                    vec![
+                        ActionParam::required("kind", ParamType::Text, "Block kind")
+                            .with_choices(["paragraph", "heading", "list_item"]),
+                        ActionParam::optional("level", ParamType::Integer, "Heading level"),
+                    ],
+                ),
+                row(
+                    DOC,
+                    STYLE,
+                    "word_processor.style",
+                    "toggle-bold",
+                    Vec::new(),
+                ),
+            ];
+        if let Some(opener) = self.opener {
+            rows.push(row(
+                DOC,
+                DOC,
+                "word_processor.document",
+                opener,
+                vec![path()],
+            ));
+        }
+        for action in rows.iter_mut().filter_map(|row| row.action.as_mut()) {
+            if action.address.action == "set-paragraph-style" {
+                action.description = Some(
+                    "Make your selected paragraphs (or the caret paragraph) a heading, list or body paragraph"
+                        .into(),
+                );
+            }
+        }
+        rows
+    }
+}
+
+fn row(
+    parent: &str,
+    resource: &str,
+    kind: &str,
+    action: &str,
+    params: Vec<ActionParam>,
+) -> CatalogueRow {
+    let label = if kind == "word_processor.style" {
+        "body"
+    } else {
+        "Document"
+    };
+    CatalogueRow {
+        provider: String::new(),
+        app_id: APP.into(),
+        parent_resource: parent.into(),
+        resource: CatalogueResource {
+            id: resource.into(),
+            kind: kind.into(),
+            label: label.into(),
+            presentation: None,
+        },
+        action: (!action.is_empty()).then(|| tilo_actions::ActionDescriptor {
+            address: tilo_actions::ActionAddress::new(resource, action),
+            resource_kind: kind.into(),
+            resource_label: label.into(),
+            action_label: action.replace('-', " "),
+            description: None,
+            locus: tilo_actions::ExecutionLocus::ClientLocal,
+            kind: tilo_actions::OperationKind::Document,
+            contract: tilo_actions::ActionContract::default(),
+            input: tilo_actions::InputSpec::None,
+            params,
+            view: None,
+        }),
+        has_children: false,
+        visibility: None,
+    }
+}
+
+/// The host's own needle: a substring of an id, label or parameter name,
+/// anywhere below the provider's root.
+fn host_matches(row: &CatalogueRow, needle: &str) -> bool {
+    let needle = needle.to_lowercase();
+    let mut fields = vec![row.resource.id.clone(), row.resource.label.clone()];
+    if let Some(action) = &row.action {
+        fields.push(action.address.action.clone());
+        fields.push(action.action_label.clone());
+        fields.extend(action.params.iter().map(|param| param.name.to_string()));
+    }
+    fields
+        .iter()
+        .any(|field| field.to_lowercase().contains(&needle))
+}
+
+impl ActionHost for Writer {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        let running = *self.running.lock().unwrap();
+        let Some(provider) = query.provider.clone() else {
+            return Pending::ready(Ok(CataloguePage {
+                revision: "v5".into(),
+                providers: running
+                    .then(|| CatalogueProvider {
+                        provider: "1".into(),
+                        app_id: APP.into(),
+                        room: "room".into(),
+                        record_id: String::new(),
+                        browsable: true,
+                    })
+                    .into_iter()
+                    .collect(),
+                ..CataloguePage::default()
+            }));
+        };
+        if provider != WORKSPACE && !running {
+            return Pending::ready(Err(ActionHostError::UnknownAction));
+        }
+        let mut rows = self.rows(&provider);
+        for row in &mut rows {
+            row.provider.clone_from(&provider);
+        }
+        if let Some(target) = &query.target {
+            rows.retain(|row| row.action.as_ref().is_some_and(|a| a.address == *target));
+        } else if query.needle.is_empty() {
+            let parent = query.parent_resource.clone().unwrap_or_default();
+            rows.retain(|row| row.parent_resource == parent);
+        } else {
+            rows.retain(|row| host_matches(row, &query.needle));
+        }
+        rows.truncate(query.page_size());
+        Pending::ready(Ok(CataloguePage {
+            revision: "v5".into(),
+            rows,
+            exhausted: true,
+            ..CataloguePage::default()
+        }))
+    }
+
+    fn invoke(
+        &self,
+        _caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        let invocation = request.invocation;
+        if request.target.provider == WORKSPACE {
+            if !matches!(&request.argument, InvokeArgument::Json(map) if map.is_empty()) {
+                return Pending::ready(Err(ActionHostError::Refused {
+                    reason: "launch content requires an application the launcher authenticated"
+                        .into(),
+                }));
+            }
+            *self.running.lock().unwrap() = true;
+        }
+        self.invoked.lock().unwrap().push(request);
+        Pending::ready(Ok(InvocationState::new(
+            invocation,
+            InvocationUpdate::Accepted { invocation },
+        )
+        .receipt()))
+    }
+
+    fn observe(
+        &self,
+        _caller: &Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Option<InvocationState> {
+        self.invoked
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| request.invocation == *id)
+            .then(|| {
+                InvocationState::new(
+                    *id,
+                    InvocationUpdate::Succeeded {
+                        invocation: *id,
+                        output: tilo_actions::ActionOutput::default(),
+                    },
+                )
+            })
+    }
+
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> Result<(), ActionHostError> {
+        Ok(())
+    }
+}
+
+fn run<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(future)
+}
+
+/// One turn's tool call: its structured result, or its error text.
+async fn call(
+    server: &mut McpServer<Writer>,
+    name: &str,
+    arguments: Value,
+) -> Result<Value, String> {
+    let reply = server
+        .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}}))
+        .await
+        .unwrap();
+    let result = &reply["result"];
+    if result["isError"] == true {
+        return Err(result["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned());
+    }
+    Ok(result["structuredContent"].clone())
+}
+
+/// The resource a compact page names `id` by, and that resource's actions.
+fn resource<'a>(page: &'a Value, kind: &str) -> &'a Value {
+    page["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|resource| resource["kind"] == kind)
+        .unwrap_or_else(|| panic!("no {kind} in {page}"))
+}
+
+#[test]
+fn opening_an_app_with_a_file_opens_it_through_the_apps_own_action() {
+    let host = Writer::new(Some("open"));
+    let mut server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    run(async {
+        let reply = call(
+            &mut server,
+            "tilo_invoke",
+            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/paper.docx"}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply["update"]["state"], "succeeded", "{reply}");
+        assert_eq!(reply["peer_id"], 1, "{reply}");
+        assert!(reply["opened"].get("error").is_none(), "{reply}");
+        assert_eq!(reply["opened"]["update"]["state"], "succeeded", "{reply}");
+        assert_eq!(reply["opened"]["action"], "open", "{reply}");
+
+        let document = resource(&reply["directory"], "word_processor.document");
+        assert_eq!(reply["opened"]["resource"], document["resource"]);
+        let actions = &document["actions"];
+        assert!(actions["set-paragraph-style"].is_string(), "{reply}");
+        assert_eq!(
+            actions["read-text"], "read text (pageSize:integer 1..64, cursor?)",
+            "a bound the app enforces is shown before a call trips over it"
+        );
+        assert!(
+            resource(&reply["directory"], "word_processor.style")["actions"]["toggle-bold"]
+                .is_string()
+        );
+        assert!(resource(&reply["directory"], "qdoc.rich-text")["actions"]["apply"].is_string());
+        assert!(reply["directory"].get("truncated").is_none(), "{reply}");
+        assert!(reply["directory"].to_string().len() < DIRECTORY_BYTES);
+    });
+    // The workspace launched the app empty; the app itself read the file,
+    // inside its sandbox, under the grants it holds.
+    assert_eq!(
+        host.invoked(),
+        [
+            (
+                WORKSPACE.into(),
+                "app.so.tilo.word-processor".into(),
+                "open".into(),
+                json!({})
+            ),
+            (
+                "1".into(),
+                DOC.into(),
+                "open".into(),
+                json!({"path": "/data/in/paper.docx"})
+            ),
+        ]
+    );
+}
+
+#[test]
+fn an_app_without_open_imports_the_file_by_its_extension() {
+    let host = Writer::new(Some("import-csv"));
+    let mut server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let reply = run(call(
+        &mut server,
+        "tilo_invoke",
+        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/Sales.CSV"}}),
+    ))
+    .unwrap();
+    assert_eq!(reply["opened"]["action"], "import-csv", "{reply}");
+    assert_eq!(host.invoked()[1].3, json!({"path": "/data/in/Sales.CSV"}));
+}
+
+#[test]
+fn an_app_that_cannot_open_a_path_says_so_and_still_opens() {
+    let host = Writer::new(None);
+    let mut server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let reply = run(call(
+        &mut server,
+        "tilo_invoke",
+        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/paper.docx"}}),
+    ))
+    .unwrap();
+    assert_eq!(reply["peer_id"], 1, "{reply}");
+    assert!(reply["opened"]["error"].is_string(), "{reply}");
+    assert!(reply["directory"]["resources"].is_array(), "{reply}");
+    assert_eq!(host.invoked().len(), 1, "nothing but the launch ran");
+    assert!(
+        run(call(
+            &mut server,
+            "tilo_invoke",
+            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": 7}}),
+        ))
+        .is_err()
+    );
+}
+
+#[test]
+fn the_workspace_page_offers_a_path_on_opening_an_app() {
+    let mut server = McpServer::new(Writer::new(Some("open")), "room".into(), "owner".into());
+    let page = run(call(&mut server, "tilo_query", json!({"workspace": true}))).unwrap();
+    assert_eq!(
+        resource(&page, "applications.app")["actions"]["open"],
+        "open (path?)",
+        "{page}"
+    );
+    let full = run(call(
+        &mut server,
+        "tilo_query",
+        json!({"workspace": true, "detail": "full"}),
+    ))
+    .unwrap();
+    assert_eq!(
+        full["rows"][0]["descriptor"]["params"],
+        json!([]),
+        "version 1 rows are as published"
+    );
+}
+
+#[test]
+fn handles_stand_for_long_ids_and_full_ids_keep_working() {
+    let host = Writer::new(Some("open"));
+    let mut server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    run(async {
+        call(
+            &mut server,
+            "tilo_invoke",
+            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
+        )
+        .await
+        .unwrap();
+        let page = call(&mut server, "tilo_query", json!({"peer_id": 1}))
+            .await
+            .unwrap();
+        let rich = resource(&page, "qdoc.rich-text")["resource"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let doc = resource(&page, "word_processor.document")["resource"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(rich.starts_with('r') && rich.len() < 6, "{page}");
+        assert!(
+            !page.to_string().contains(DOC),
+            "no long id is repeated: {page}"
+        );
+        let again = call(&mut server, "tilo_query", json!({"peer_id": 1}))
+            .await
+            .unwrap();
+        assert_eq!(page, again, "a handle names the same resource all session");
+
+        let children = call(
+            &mut server,
+            "tilo_query",
+            json!({"peer_id": 1, "parent_resource": doc}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            resource(&children, "word_processor.document")["actions"]["save-as"].is_string(),
+            "{children}"
+        );
+        let resolved = call(
+            &mut server,
+            "tilo_resolve",
+            json!({"peer_id": 1, "resource": doc, "action": "save-as"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            resolved["row"]["resource"], DOC,
+            "a resolved contract names the full id"
+        );
+        for name in [doc.as_str(), DOC] {
+            call(&mut server, "tilo_invoke", json!({"peer_id": 1, "resource": name, "action": "save-as", "arguments": {"path": "/data/out/a.docx"}}))
+                .await
+                .unwrap();
+        }
+        let full = call(
+            &mut server,
+            "tilo_query",
+            json!({"peer_id": 1, "detail": "full"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            full["rows"][0]["resource"], RICH,
+            "version 1 rows carry full ids"
+        );
+    });
+    let saves = host
+        .invoked()
+        .into_iter()
+        .filter(|call| call.2 == "save-as")
+        .collect::<Vec<_>>();
+    assert_eq!(saves.len(), 2);
+    assert!(saves.iter().all(|call| call.1 == DOC), "{saves:?}");
+    assert_eq!(
+        page::Handles::default().short("sheets.workbook"),
+        "sheets.workbook"
+    );
+}
+
+#[test]
+fn a_needle_no_row_matches_whole_finds_the_rows_matching_most_of_it() {
+    let mut server = McpServer::new(Writer::new(Some("open")), "room".into(), "owner".into());
+    run(async {
+        call(
+            &mut server,
+            "tilo_invoke",
+            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
+        )
+        .await
+        .unwrap();
+        let page = call(
+            &mut server,
+            "tilo_query",
+            json!({"peer_id": 1, "needle": "open paragraph style heading"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(page["partial_match"], true, "{page}");
+        let document = resource(&page, "word_processor.document");
+        assert!(
+            document["actions"]["set-paragraph-style"].is_string(),
+            "{page}"
+        );
+        let whole = call(
+            &mut server,
+            "tilo_query",
+            json!({"peer_id": 1, "needle": "paragraph style"}),
+        )
+        .await
+        .unwrap();
+        assert!(whole.get("partial_match").is_none(), "{whole}");
+        let full = call(
+            &mut server,
+            "tilo_query",
+            json!({"peer_id": 1, "needle": "open paragraph style heading", "detail": "full"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            full["rows"],
+            json!([]),
+            "version 1 keeps its every-word needle"
+        );
+        let nothing = call(
+            &mut server,
+            "tilo_query",
+            json!({"peer_id": 1, "needle": "zebra quokka"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(nothing["resources"], json!([]), "{nothing}");
+    });
+}
+
+#[test]
+fn a_session_pinned_to_full_rows_gets_no_directory() {
+    let mut server = McpServer::new(Writer::new(Some("open")), "room".into(), "owner".into());
+    run(async {
+        server
+            .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"detail":"full"}}}}}))
+            .await
+            .unwrap();
+        let reply = call(&mut server, "tilo_invoke", json!({"workspace": true, "revision": "0.0", "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {}}))
+            .await
+            .unwrap();
+        assert_eq!(reply["peer_id"], 1, "{reply}");
+        assert!(reply.get("directory").is_none(), "{reply}");
+    });
+}
+
+/// doc-real-headings (guest run 20260929-142555) took 12 turns: the open
+/// with a file was refused, then three `tilo_query` turns found the
+/// document's actions and a read failed on `pageSize`. The same task now
+/// needs open, read, edit-and-save.
+#[test]
+fn doc_real_headings_takes_three_tilo_turns() {
+    let host = Writer::new(Some("open"));
+    let mut server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let turns = run(async {
+        let mut turns = 0;
+        turns += 1;
+        let opened = call(
+            &mut server,
+            "tilo_invoke",
+            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/paper.docx"}}),
+        )
+        .await
+        .unwrap();
+        let document = resource(&opened["directory"], "word_processor.document");
+        let doc = document["resource"].as_str().unwrap().to_owned();
+        let read = &document["actions"]["read-text"];
+        assert!(read.as_str().unwrap().contains("1..64"));
+
+        turns += 1;
+        call(&mut server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "read-text", "arguments": {"pageSize": 64}}))
+            .await
+            .unwrap();
+
+        turns += 1;
+        for block in ["b.0", "b.2", "b.4"] {
+            call(&mut server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "select-block", "arguments": {"block": block}}))
+                .await
+                .unwrap();
+            call(&mut server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "set-paragraph-style", "arguments": {"kind": "heading", "level": 2}}))
+                .await
+                .unwrap();
+        }
+        call(&mut server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "save-as", "arguments": {"path": "/data/out/paper.docx"}}))
+            .await
+            .unwrap();
+        turns
+    });
+    assert_eq!(turns, 3);
+    let calls = host.invoked();
+    assert!(
+        calls
+            .iter()
+            .skip(1)
+            .all(|call| call.0 == "1" && call.1 == DOC),
+        "{calls:?}"
+    );
+    assert_eq!(calls.len(), 10);
+}
