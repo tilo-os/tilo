@@ -29,10 +29,12 @@
 )]
 
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use ui::time::{Duration, UNIX_EPOCH};
 
 use maps::MapsApp;
-use maps::livetest::{Frame, Harness, pump_frames_until, render_live_to_png};
+mod livetest;
+
+use livetest::{Frame, Harness, pump_frames_until, render_live_to_png};
 use vello::kurbo::Rect;
 
 /// Live viewport. Width < 720 puts the side panel into its overlay drawer,
@@ -52,7 +54,7 @@ fn map_region() -> Rect {
 fn unique_cache() -> PathBuf {
     // Only needs to be distinct per run; a pre-epoch clock (never in practice)
     // just falls back to 0 rather than panicking the test setup.
-    let n = SystemTime::now()
+    let n = ui::time::wall()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();

@@ -9,7 +9,7 @@
 //! unsupported binary types remain explicitly labelled rather than being
 //! confused with a database NULL.
 
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use postgres::fallible_iterator::FallibleIterator as PgFallibleIterator;
@@ -654,7 +654,7 @@ impl PostgresEngine {
         if trimmed.is_empty() {
             return Ok(QueryResult::default());
         }
-        let start = Instant::now();
+        let start = ui::time::now();
 
         match self.client.prepare(trimmed) {
             Ok(stmt) if stmt.columns().is_empty() => {

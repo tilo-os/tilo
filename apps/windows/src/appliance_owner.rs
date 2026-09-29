@@ -6,7 +6,7 @@
 use std::fs::File;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde::Deserialize;
 
@@ -61,7 +61,9 @@ pub struct TemporaryEgressLease {
 impl TemporaryEgressLease {
     #[must_use]
     pub fn expiry_label(&self) -> String {
-        let now = tilo_clock::unix_now();
+        let now = ui::time::wall()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
         if self.expires_at_unix <= now {
             "Expired; refreshing status…".into()
         } else {
@@ -312,7 +314,7 @@ impl ApplianceOwnerClient {
             status_pending: false,
             action_pending: false,
             action_result: None,
-            next_refresh: Instant::now()
+            next_refresh: ui::time::now()
                 .checked_sub(STATUS_INTERVAL)
                 .unwrap_or_else(Instant::now),
             status: ApplianceStatus::unavailable("Checking the Windows appliance…"),
@@ -332,11 +334,11 @@ impl ApplianceOwnerClient {
     }
 
     pub fn refresh(&mut self) {
-        if self.status_pending || self.action_pending || Instant::now() < self.next_refresh {
+        if self.status_pending || self.action_pending || ui::time::now() < self.next_refresh {
             return;
         }
         self.status_pending = true;
-        self.next_refresh = Instant::now() + STATUS_INTERVAL;
+        self.next_refresh = ui::time::now() + STATUS_INTERVAL;
         let sender = self.sender.clone();
         std::thread::spawn(move || {
             let _ = sender.send(OwnerEvent::Status(read_status()));

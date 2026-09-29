@@ -27,7 +27,7 @@ impl HistoryFacetIndex {
         let mut index = Self::default();
         for entry in entries {
             bump(&mut index.people, &entry.author.name);
-            bump(&mut index.operations, op_label(entry.op_class));
+            bump(&mut index.operations, &op_class_label(entry.op_class));
             let Some(context) = entry.context.as_ref() else {
                 index.unclassified = index.unclassified.saturating_add(1);
                 continue;
@@ -58,18 +58,19 @@ fn bump(map: &mut BTreeMap<String, usize>, key: &str) {
     *count = count.saturating_add(1);
 }
 
-fn op_label(class: OpClass) -> &'static str {
-    match class {
-        OpClass::Splice => "Text / structure",
-        OpClass::EditMeta => "Metadata",
-        OpClass::Move => "Move",
-        OpClass::Comment => "Comments",
-        OpClass::Tombstone => "Delete",
-        OpClass::Restore => "Restore",
-        OpClass::Govern => "Governance",
-        OpClass::Compaction => "Checkpoints",
-        OpClass::Redact => "Redaction",
-    }
+/// What kind of change `class` is, in the desktop's language.
+pub fn op_class_label(class: OpClass) -> String {
+    crate::i18n!(match class {
+        OpClass::Splice => "history-op-splice",
+        OpClass::EditMeta => "history-op-edit-meta",
+        OpClass::Move => "history-op-move",
+        OpClass::Comment => "history-op-comment",
+        OpClass::Tombstone => "history-op-tombstone",
+        OpClass::Restore => "history-op-restore",
+        OpClass::Govern => "history-op-govern",
+        OpClass::Compaction => "history-op-compaction",
+        OpClass::Redact => "history-op-redact",
+    })
 }
 
 #[cfg(test)]

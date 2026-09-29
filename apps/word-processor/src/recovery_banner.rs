@@ -23,7 +23,7 @@ pub(crate) const BANNER_HEIGHT: f64 = 40.0;
 
 #[derive(Clone, Debug)]
 struct RecoveryOffer {
-    path: PathBuf,
+    slot: (tilo_files::Dir, tilo_files::VPath),
     markdown: Vec<u8>,
 }
 
@@ -75,13 +75,27 @@ impl RecoveryBanner {
         self.base_dir = Some(dir);
     }
 
+    #[cfg(test)]
     fn base_dir(&self) -> PathBuf {
         self.base_dir
             .clone()
             .unwrap_or_else(crate::recovery::base_dir)
     }
 
+    /// The recovery copy's file for `document_path`, in any override.
+    fn slot(&self, document_path: Option<&Path>) -> Option<(tilo_files::Dir, tilo_files::VPath)> {
+        let name = tilo_files::VPath::new(&crate::recovery::slot_name(document_path)).ok()?;
+        if let Some(base) = &self.base_dir {
+            let dir = tilo_files::Dir::open(tilo_files::Location::Native(base.clone())).ok()?;
+            Some((dir, name))
+        } else {
+            let (dir, prefix) = crate::recovery::store()?;
+            Some((dir, prefix.join(&name)))
+        }
+    }
+
     /// Stable recovery path for `document_path`, re-rooted under any override.
+    #[cfg(test)]
     pub(crate) fn path_for(&self, document_path: Option<&Path>) -> PathBuf {
         let default_path = crate::recovery::recovery_path_for(document_path);
         default_path
@@ -103,18 +117,16 @@ impl RecoveryBanner {
         let Some(markdown) = snapshot() else {
             return;
         };
-        let path = self.path_for(document_path);
-        if let Some(parent) = path.parent()
-            && std::fs::create_dir_all(parent).is_err()
-        {
-            return;
+        if let Some((dir, name)) = self.slot(document_path) {
+            let _ = tilo_files::blocking::write_atomic(&dir, &name, &markdown);
         }
-        let _ = atomic_file::write(&path, &markdown);
     }
 
     /// Remove a superseded recovery copy after a successful open/save.
     pub(crate) fn clear(&mut self, document_path: Option<&Path>) {
-        let _ = std::fs::remove_file(self.path_for(document_path));
+        if let Some((dir, name)) = self.slot(document_path) {
+            let _ = tilo_files::blocking::remove(&dir, &name);
+        }
         self.edits_since_autosave = 0;
         self.offer = None;
         self.buttons.clear();
@@ -127,10 +139,12 @@ impl RecoveryBanner {
         self.offer = None;
         self.buttons.clear();
         self.edits_since_autosave = 0;
-        let path = self.path_for(document_path);
-        match std::fs::read(&path) {
+        let Some(slot) = self.slot(document_path) else {
+            return false;
+        };
+        match tilo_files::blocking::read(&slot.0, &slot.1) {
             Ok(markdown) if !markdown.is_empty() => {
-                self.offer = Some(RecoveryOffer { path, markdown });
+                self.offer = Some(RecoveryOffer { slot, markdown });
                 true
             }
             _ => false,
@@ -147,7 +161,7 @@ impl RecoveryBanner {
             .find(|(_, rect)| rect.contains(point))
             .map(|(action, _)| *action)?;
         let offer = self.offer.take()?;
-        let _ = std::fs::remove_file(offer.path);
+        let _ = tilo_files::blocking::remove(&offer.slot.0, &offer.slot.1);
         self.buttons.clear();
         Some(match action {
             RecoveryAction::Restore => RecoveryDecision::Restore(offer.markdown),

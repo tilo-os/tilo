@@ -175,7 +175,7 @@ fn source_error(path: &Path, error: impl std::fmt::Display) -> ImportError {
     ImportError::Source(format!("{}: {error}", path.display()))
 }
 fn read(path: &Path) -> Result<Vec<u8>, ImportError> {
-    std::fs::read(path).map_err(|e| source_error(path, e))
+    crate::files::read(path).map_err(|e| source_error(path, e))
 }
 fn source_workspace(path: &Path, bytes: &[u8]) -> Result<Workspace, ImportError> {
     if bytes.is_empty() {

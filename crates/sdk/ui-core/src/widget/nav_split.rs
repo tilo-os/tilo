@@ -760,7 +760,7 @@ impl NavSplit {
     }
 }
 
-/// Cached `QUICK_UI_NO_SPLIT_CACHE=1` check: when set, `apply_layout` always
+/// Cached `TILO_UI_NO_SPLIT_CACHE=1` check: when set, `apply_layout` always
 /// re-solves the content pane, as a safety escape and a perf baseline. Read
 /// once and cached so the hot layout path never touches an env var.
 fn split_cache_disabled() -> bool {

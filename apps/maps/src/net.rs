@@ -1,12 +1,13 @@
 //! Live data fetchers — Nominatim geocoding, OSRM routing, and the
-//! Transitous/MOTIS public-transport planner. All requests are blocking and
-//! run on background threads spawned by the app; results flow back over an
-//! `mpsc` channel and are folded into the model during `sync`.
+//! Transitous/MOTIS public-transport planner. Every request is async
+//! (`tilo_net`) and runs as a task on the app runtime; results flow back over
+//! an `mpsc` channel and are folded into the model during `sync`.
 //!
 //! None of this runs under `--shots` (no event loop) — the screenshot uses
 //! the bundled sample data instead.
 
 use std::fmt::Write as _;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -81,20 +82,27 @@ pub struct TransitQuery {
     pub time: Option<String>,
 }
 
-fn client() -> Result<reqwest::blocking::Client, String> {
-    tilo_net::http::blocking_client()
-        .user_agent(USER_AGENT)
-        .timeout(Duration::from_secs(12))
-        .build()
-        .map_err(|e| e.to_string())
+fn client() -> Result<&'static tilo_net::Client, String> {
+    static CLIENT: OnceLock<Result<tilo_net::Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            tilo_net::Client::builder()
+                .user_agent(USER_AGENT)
+                .timeout(Duration::from_secs(12))
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(Clone::clone)
 }
 
-fn fetch_json(url: &str) -> Result<Value, String> {
-    let resp = client()?.get(url).send().map_err(|e| e.to_string())?;
+async fn fetch_json(url: &str) -> Result<Value, String> {
+    let resp = client()?.get(url).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
-    resp.json::<Value>().map_err(|e| e.to_string())
+    let body = resp.bytes().await.map_err(|e| e.to_string())?;
+    serde_json::from_slice(&body).map_err(|e| e.to_string())
 }
 
 /// Geocode a free-text query via Nominatim.
@@ -102,12 +110,12 @@ fn fetch_json(url: &str) -> Result<Value, String> {
 /// # Errors
 ///
 /// Returns `Err` if the request fails or the response isn't the expected shape.
-pub fn geocode(query: &str) -> Result<Vec<Place>, String> {
+pub async fn geocode(query: &str) -> Result<Vec<Place>, String> {
     let q = ui::uri::encode_component(query);
     let url = format!(
         "https://nominatim.openstreetmap.org/search?q={q}&format=jsonv2&limit=8&addressdetails=1"
     );
-    let v = fetch_json(&url)?;
+    let v = fetch_json(&url).await?;
     let arr = v.as_array().ok_or("unexpected response")?;
     let out = arr.iter().filter_map(place_from_json).collect();
     Ok(out)
@@ -120,12 +128,12 @@ pub fn geocode(query: &str) -> Result<Vec<Place>, String> {
 /// # Errors
 ///
 /// Returns `Err` if the request fails or the response isn't the expected shape.
-pub fn geocode_regions(query: &str) -> Result<Vec<RegionHit>, String> {
+pub async fn geocode_regions(query: &str) -> Result<Vec<RegionHit>, String> {
     let q = ui::uri::encode_component(query);
     let url = format!(
         "https://nominatim.openstreetmap.org/search?q={q}&format=jsonv2&limit=8&addressdetails=1"
     );
-    let v = fetch_json(&url)?;
+    let v = fetch_json(&url).await?;
     let arr = v.as_array().ok_or("unexpected response")?;
     Ok(arr.iter().filter_map(region_from_json).collect())
 }
@@ -252,9 +260,9 @@ nwr[\"public_transport\"=\"station\"]({bbox});\
 /// # Errors
 ///
 /// Returns `Err` if the request fails or the response isn't valid JSON.
-pub fn overpass(south: f64, west: f64, north: f64, east: f64) -> Result<Vec<Poi>, String> {
+pub async fn overpass(south: f64, west: f64, north: f64, east: f64) -> Result<Vec<Poi>, String> {
     let url = overpass_url(south, west, north, east);
-    let v = fetch_json(&url)?;
+    let v = fetch_json(&url).await?;
     Ok(parse_overpass(&v))
 }
 
@@ -366,7 +374,7 @@ fn tag_string(tags: &Value, key: &str) -> Option<String> {
 /// # Errors
 ///
 /// Returns `Err` if the request fails or OSRM reports a non-`Ok` routing status.
-pub fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, String> {
+pub async fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, String> {
     let url = format!(
         "https://router.project-osrm.org/route/v1/{}/{:.6},{:.6};{:.6},{:.6}?overview=full&geometries=geojson&steps=true",
         mode.osrm_profile(),
@@ -375,7 +383,7 @@ pub fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, String
         to.lon,
         to.lat,
     );
-    let v = fetch_json(&url)?;
+    let v = fetch_json(&url).await?;
     if v.get("code").and_then(Value::as_str) != Some("Ok") {
         return Err(v
             .get("code")
@@ -485,11 +493,11 @@ fn step_instruction(m: Maneuver, name: &str) -> String {
 /// # Errors
 ///
 /// Returns `Err` if the request fails or no usable address is found.
-pub fn reverse_geocode(lat: f64, lon: f64) -> Result<String, String> {
+pub async fn reverse_geocode(lat: f64, lon: f64) -> Result<String, String> {
     let url = format!(
         "https://nominatim.openstreetmap.org/reverse?lat={lat:.6}&lon={lon:.6}&format=jsonv2&zoom=16&addressdetails=1"
     );
-    let v = fetch_json(&url)?;
+    let v = fetch_json(&url).await?;
     // Prefer the specific `name`, then a short leading fragment of the full
     // display name, so the origin label stays compact.
     if let Some(name) = v
@@ -533,13 +541,13 @@ pub fn transit_url(from: LatLon, to: LatLon, when: &TransitQuery) -> String {
 /// # Errors
 ///
 /// Returns `Err` if the request fails or the response can't be parsed.
-pub fn transit(
+pub async fn transit(
     from: LatLon,
     to: LatLon,
     when: &TransitQuery,
 ) -> Result<Vec<TransitJourney>, String> {
     let url = transit_url(from, to, when);
-    let v = fetch_json(&url)?;
+    let v = fetch_json(&url).await?;
     parse_transit(&v)
 }
 

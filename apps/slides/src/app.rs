@@ -9,7 +9,6 @@
 //! selection, mode — is per-peer and stays local.
 
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
 use ui::widget::{AppModel, ModelPath};
@@ -92,17 +91,12 @@ fn presentation_filter() -> FileFilter {
 }
 
 fn read_presentation_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
-    let file = std::fs::File::open(path)?;
-    let mut bytes = Vec::with_capacity(64 * 1024);
-    file.take((MAX_PRESENTATION_FILE_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_PRESENTATION_FILE_BYTES {
-        return Err(std::io::Error::new(
+    crate::assets::read_bounded(path, MAX_PRESENTATION_FILE_BYTES)?.ok_or_else(|| {
+        std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "presentation file is larger than 64 MiB",
-        ));
-    }
-    Ok(bytes)
+        )
+    })
 }
 
 fn load_presentation_from_path(
@@ -133,7 +127,9 @@ fn save_presentation_to_path(
             crate::odp::write_odp(deck, content).map_err(|error| error.to_string())?,
         )
     };
-    std::fs::write(path, bytes).map_err(|error| error.to_string())
+    tilo_files::file_at(&path)
+        .and_then(|(dir, name)| tilo_files::blocking::save_document(&dir, &name, &bytes))
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,31 +180,29 @@ impl DocumentWorker {
     fn new(content: ContentStore) -> Result<Self, String> {
         let (tx, jobs) = std::sync::mpsc::sync_channel(1);
         let (results, rx) = std::sync::mpsc::sync_channel(1);
-        std::thread::Builder::new()
-            .name("slides-document-io".into())
-            .spawn(move || {
-                while let Ok(job) = jobs.recv() {
-                    let result = match job {
-                        DocumentJob::Open { generation, path } => DocumentJobResult::Open {
-                            generation,
-                            result: load_presentation_from_path(&path, &content),
-                        },
-                        DocumentJob::Save {
-                            generation,
-                            path,
-                            deck,
-                        } => DocumentJobResult::Save {
-                            generation,
-                            result: save_presentation_to_path(&deck, &path, &content),
-                        },
-                    };
-                    if results.send(result).is_err() {
-                        break;
-                    }
+        ui::rt::spawn_thread("slides-document-io", move || {
+            while let Ok(job) = jobs.recv() {
+                let result = match job {
+                    DocumentJob::Open { generation, path } => DocumentJobResult::Open {
+                        generation,
+                        result: load_presentation_from_path(&path, &content),
+                    },
+                    DocumentJob::Save {
+                        generation,
+                        path,
+                        deck,
+                    } => DocumentJobResult::Save {
+                        generation,
+                        result: save_presentation_to_path(&deck, &path, &content),
+                    },
+                };
+                if results.send(result).is_err() {
+                    break;
                 }
-            })
-            .map(|_| Self { tx, rx })
-            .map_err(|error| format!("could not start presentation I/O worker: {error}"))
+            }
+        })
+        .map(|_| Self { tx, rx })
+        .map_err(|error| format!("could not start presentation I/O worker: {error}"))
     }
 }
 
@@ -806,6 +800,9 @@ pub struct SlidesApp {
     rect: Rect,
     node: Option<NodeId>,
     seeded: bool,
+    /// Mounted on a record another participant created: its deck is theirs
+    /// to seed, so an uninitialized document is left untouched.
+    joined: bool,
     bootstrapped: bool,
 
     mode: Mode,
@@ -844,7 +841,7 @@ pub struct SlidesApp {
     /// on the same element within the double-click window enters text edit; a
     /// single press just selects and arms a move, so a selected element drags on
     /// the very first grab.
-    last_click: Option<(Id, std::time::Instant, Point)>,
+    last_click: Option<(Id, ui::time::Instant, Point)>,
     /// A press inside the text box being edited is held: its drag selects
     /// text in the box, not the element.
     text_drag: bool,
@@ -880,7 +877,7 @@ pub struct SlidesApp {
     inspector_breakpoint: f64,
     /// Last instant the flap animation advanced, for frame-rate-independent
     /// easing across `draw` calls.
-    last_flap_tick: std::time::Instant,
+    last_flap_tick: ui::time::Instant,
     /// Cleared after the first layout is resolved; until then the flap's eased
     /// reveal is snapped to the resolved default so the very first frame at a
     /// narrow width shows the (closed) flap without a one-frame flash.
@@ -1056,6 +1053,7 @@ impl SlidesApp {
             rect: Rect::ZERO,
             node: None,
             seeded: false,
+            joined: ui::launch::record_launch() == Some(ui::launch::RecordLaunch::Joined),
             bootstrapped: false,
             mode: Mode::Edit,
             canonical_deck: None,
@@ -1081,7 +1079,7 @@ impl SlidesApp {
             rail_flap: FlapState::open_when_docked(),
             inspector_flap: FlapState::open_when_docked(),
             inspector_breakpoint: INSPECTOR_BREAKPOINT,
-            last_flap_tick: std::time::Instant::now(),
+            last_flap_tick: ui::time::now(),
             flap_uninitialised: true,
             text_scale: 1.0,
             breakpoint: NARROW_BREAKPOINT,
@@ -5263,7 +5261,7 @@ fn write_demo_image() -> Option<PathBuf> {
         let blue = (120.0 + 60.0 * (1.0 - ring)) as u8;
         *px = Rgb([red, green, blue]);
     }
-    let path = std::env::temp_dir().join("slides-demo-image.png");
+    let path = tilo_paths::temp_dir()?.join("slides-demo-image.png");
     img.save(&path).ok()?;
     Some(path)
 }
@@ -5660,6 +5658,9 @@ impl Widget for SlidesApp {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
+        if self.joined && SlidesDoc::is_uninitialized(state) {
+            return;
+        }
         self.reconcile_canonical(state);
         if let Some((save, file)) = self.resource_file.take() {
             let queued = if save {
@@ -5778,7 +5779,7 @@ impl Widget for SlidesApp {
         // Reconcile the rail flap with the current width (so resizing across
         // the breakpoint returns to the layout default) and advance its eased
         // reveal using real elapsed time, frame-rate independent.
-        let now = std::time::Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.last_flap_tick).as_secs_f64().min(0.1);
         self.last_flap_tick = now;
         self.sync_flaps(dt, theme.reduce_motion);
@@ -6096,13 +6097,18 @@ impl Widget for SlidesApp {
                 }
                 let (role, name, mut state) = self.semantic_copy(&button.hit);
                 state.focusable = !state.disabled;
-                Some(
-                    AccessNode::new(role)
-                        .with_name(name)
-                        .with_action_target(target)
-                        .with_bounds(button.rect)
-                        .with_state(state),
-                )
+                let node = AccessNode::new(role)
+                    .with_name(name)
+                    .with_action_target(target)
+                    .with_bounds(button.rect)
+                    .with_state(state);
+                // The notes box reads out what it holds, as a field would.
+                Some(match (&button.hit, self.slide()) {
+                    (Hit::EditNotes, Some(slide)) if !slide.notes.is_empty() => {
+                        node.with_value(slide.notes.clone())
+                    }
+                    _ => node,
+                })
             })
             .collect();
 
@@ -7029,7 +7035,7 @@ impl SlidesApp {
             let double = self.last_click.as_ref().is_some_and(|(cid, t, cp)| {
                 cid == &id && t.elapsed().as_millis() < 400 && cp.distance(p) < 6.0
             });
-            self.last_click = Some((id.clone(), std::time::Instant::now(), p));
+            self.last_click = Some((id.clone(), ui::time::now(), p));
             self.editing_notes = false;
 
             // Already editing this exact text box → a click inside it places
@@ -10756,6 +10762,23 @@ mod tests {
     // --- caret line navigation (ArrowUp/Down did nothing) -------------------
 
     // --- shared multiline speaker-notes editor ------------------------------
+
+    #[test]
+    fn the_notes_box_reads_out_the_slides_notes() {
+        fn find(node: &ui::a11y::AccessNode) -> Option<&ui::a11y::AccessNode> {
+            if node.name.as_deref() == Some("Edit speaker notes") {
+                return Some(node);
+            }
+            node.children.iter().find_map(find)
+        }
+        let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
+        sized(&mut app, 1280.0, 800.0);
+        crate::doc::SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "thank the hosts");
+        app.reload(&doc);
+        let tree = app.accessibility().expect("editor semantics");
+        let notes = find(&tree).expect("the notes box is exposed");
+        assert_eq!(notes.value.as_deref(), Some("thank the hosts"));
+    }
 
     #[test]
     fn notes_typing_writes_through_and_up_down_move_the_caret() {
