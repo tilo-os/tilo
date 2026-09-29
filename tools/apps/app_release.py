@@ -292,6 +292,24 @@ def apps_from_changes(
     return sorted(selected.difference(OS_INTEGRATED_APPS))
 
 
+def prior_collection_base(source: str, collection_builder: str, builder: str) -> str | None:
+    """The commit a main push may select a partial rebuild relative to, or None.
+
+    A partial rebuild reuses the published collection's other tapps and needs
+    its shared runtime to be byte-identical to the one built now. That runtime
+    is compiled from source, which the commit range selects on, and carries
+    system libraries from the builder image, which no source diff shows. So a
+    collection built with another builder image, or with an unrecorded one,
+    must be rebuilt in full; publication would otherwise refuse the changed
+    runtime after every app was built.
+    """
+    if not re.fullmatch(r"[0-9a-f]{40}", source):
+        return None
+    if not builder or collection_builder != builder:
+        return None
+    return source
+
+
 def app_from_tag(tag: str, catalog: dict[str, dict]) -> str | None:
     match = re.fullmatch(r"app-(.+)-v[0-9].*", tag)
     if not match:
@@ -396,8 +414,17 @@ def main() -> int:
     parser.add_argument("--event", default="")
     parser.add_argument("--architectures", default="")
     parser.add_argument("--main-architectures", default="")
+    parser.add_argument("--prior-collection-base", action="store_true",
+                        help="print the partial-rebuild base, or nothing for a full rebuild")
+    parser.add_argument("--collection-source", default="")
+    parser.add_argument("--collection-builder", default="")
+    parser.add_argument("--builder", default="")
     args = parser.parse_args()
     try:
+        if args.prior_collection_base:
+            print(prior_collection_base(
+                args.collection_source, args.collection_builder, args.builder) or "")
+            return 0
         if args.architecture_matrix:
             print(
                 json.dumps(
