@@ -755,6 +755,9 @@ enum Exit {
     Lost(String),
 }
 
+/// A sealed frame held for its keys, with its authenticated author.
+type HeldFrame = (Vec<u8>, [u8; 32]);
+
 struct Task {
     config: PeerConfig,
     signer: Arc<dyn DeviceSigner>,
@@ -771,7 +774,7 @@ struct Task {
     channel_changes: crate::channels::Changes,
     /// Sealed documents that arrived before this device held their keys,
     /// with their authenticated authors.
-    held_inbound: BTreeMap<DocumentRoute, VecDeque<(Vec<u8>, [u8; 32])>>,
+    held_inbound: BTreeMap<DocumentRoute, VecDeque<HeldFrame>>,
     /// Frames published on an encrypted route before this device held its
     /// keys; they are sealed and committed once the keys arrive.
     held_outbound: BTreeMap<DocumentRoute, Vec<Vec<u8>>>,

@@ -241,7 +241,7 @@ mod tests {
             keys,
             vec![(device_key(1).0, false), (browser.device_public_key, false)]
         );
-        assert!(fleet_devices(&fleet, &|_| vec![foreign.clone()]).len() == 1);
+        assert_eq!(fleet_devices(&fleet, &|_| vec![foreign.clone()]).len(), 1);
     }
 
     fn device_key(seed: u8) -> Ed25519PublicKey {

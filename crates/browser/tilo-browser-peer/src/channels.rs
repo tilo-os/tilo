@@ -492,14 +492,13 @@ impl Channels {
             lines.push(format!("candidate genesis {room} from {}", short(sender)));
         }
         for (channel, route) in &self.routes {
-            let access =
-                route
-                    .member
-                    .as_ref()
-                    .map_or("no member".to_owned(), |member| match member.access() {
-                        Access::Ready { .. } => "ready".to_owned(),
-                        other => format!("{other:?}"),
-                    });
+            let access = route.member.as_ref().map_or_else(
+                || "no member".to_owned(),
+                |member| match member.access() {
+                    Access::Ready { .. } => "ready".to_owned(),
+                    other => format!("{other:?}"),
+                },
+            );
             lines.push(format!(
                 "route {}/{} ({channel:?}): {access}; request {}; early {}",
                 route.document.app_id,

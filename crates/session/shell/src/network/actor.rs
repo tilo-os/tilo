@@ -716,6 +716,10 @@ impl Actor {
     }
 }
 
+/// The channel governance a device published to one room: each message's
+/// retention channel and its encoded frame.
+type GovernanceLog = VecDeque<([u8; 32], Vec<u8>)>;
+
 /// Mutable state shared across every `select!` branch of [`run`]'s event
 /// loop, bundled into a struct so each branch's handling can be split into
 /// its own method instead of one long function body.
@@ -753,7 +757,7 @@ struct ActorState {
     recent_input: HashMap<(WorkspaceId, [u8; 32]), Instant>,
     /// Channel governance this device published to each room, by retention
     /// channel (see [`remember_governance`]).
-    governance: HashMap<WorkspaceId, VecDeque<([u8; 32], Vec<u8>)>>,
+    governance: HashMap<WorkspaceId, GovernanceLog>,
     wake: Option<crate::session_runtime::Wake>,
     /// Long-lived direct media connections. One unidirectional QUIC stream
     /// per frame avoids head-of-line blocking between viewers and frames.
@@ -3144,7 +3148,7 @@ const MAX_REMEMBERED_GOVERNANCE: usize = 512;
 /// it starts: a channel's genesis is announced once, and a device that is
 /// not a member yet learns only from the host that the channel exists.
 fn remember_governance(
-    remembered: &mut HashMap<WorkspaceId, VecDeque<([u8; 32], Vec<u8>)>>,
+    remembered: &mut HashMap<WorkspaceId, GovernanceLog>,
     ws: WorkspaceId,
     msg: &NeighbourMsg,
 ) {
@@ -5446,6 +5450,10 @@ mod tests {
     /// What a host writes before answering a subscription is its replay of
     /// retained history and is marked so (receivers exempt it from their
     /// freshness window); what it fans out afterwards is live.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one host, two members and the replay/live boundary in a single scenario"
+    )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn host_replay_is_marked_until_the_host_answers_ready() {
         let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));

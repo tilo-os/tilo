@@ -356,6 +356,7 @@ mod tests {
             document(op(vec![2]), true),
             |_| "peer".into()
         ));
+        drop(fanout);
         assert_eq!(count(), 2, "another op under a used sequence is refused");
     }
 }
