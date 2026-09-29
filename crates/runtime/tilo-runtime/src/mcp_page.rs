@@ -7,6 +7,7 @@
 //! `tilo_resolve` (or `detail: "full"`) away.
 use base64::Engine as _;
 use serde_json::{Map, Value, json};
+use std::collections::HashMap;
 use tilo_actions::remote::{CataloguePage, CatalogueRow};
 use tilo_actions::{ActionDescriptor, ActionParam, Availability, ParamType, RiskLevel};
 
@@ -14,6 +15,11 @@ use tilo_actions::{ActionDescriptor, ActionParam, Availability, ParamType, RiskL
 const BASE64_CURSOR: &str = "b64:";
 /// Longest action description a compact signature carries.
 const DESCRIPTION_CHARS: usize = 120;
+/// Resource ids up to this long are shown as they are: `sheets.workbook`
+/// reads better than a handle and costs about as much.
+const SHORT_ID_BYTES: usize = 24;
+/// Handles one session keeps; later ids are shown in full.
+const MAX_HANDLES: usize = 4096;
 
 /// An opaque continuation as a JSON string: printable text verbatim (an
 /// app's cursor usually is), anything else as prefixed base64.
@@ -56,6 +62,11 @@ pub fn needle_words(needle: &str) -> Vec<String> {
 /// Whether every word begins a word of the row's names: action id, label,
 /// description and parameters, resource label and kind, app id.
 pub fn matches_words(row: &CatalogueRow, words: &[String]) -> bool {
+    word_score(row, words) == words.len()
+}
+
+/// How many of `words` begin a word of the row's names.
+pub fn word_score(row: &CatalogueRow, words: &[String]) -> usize {
     let mut names = vec![
         row.resource.label.as_str(),
         row.resource.kind.as_str(),
@@ -76,12 +87,52 @@ pub fn matches_words(row: &CatalogueRow, words: &[String]) -> bool {
         .collect::<Vec<_>>();
     words
         .iter()
-        .all(|word| tokens.iter().any(|token| token.starts_with(word.as_str())))
+        .filter(|word| tokens.iter().any(|token| token.starts_with(word.as_str())))
+        .count()
+}
+
+/// Short names for one session's long resource ids. A bound UI resource's
+/// id is about 130 characters, and an agent repeats it in every call it
+/// makes and every page it reads; `r3` says the same.
+#[derive(Clone, Default)]
+pub struct Handles {
+    by_id: HashMap<String, String>,
+    by_handle: HashMap<String, String>,
+}
+
+impl Handles {
+    /// The name a compact page shows for `id`: `id` itself when it is short
+    /// or the session holds as many handles as it keeps.
+    pub fn short(&mut self, id: &str) -> String {
+        if id.len() <= SHORT_ID_BYTES {
+            return id.to_owned();
+        }
+        if let Some(handle) = self.by_id.get(id) {
+            return handle.clone();
+        }
+        if self.by_handle.len() >= MAX_HANDLES {
+            return id.to_owned();
+        }
+        let handle = format!("r{}", self.by_handle.len().saturating_add(1));
+        self.by_id.insert(id.to_owned(), handle.clone());
+        self.by_handle.insert(handle.clone(), id.to_owned());
+        handle
+    }
+
+    /// The resource id `name` stands for: a handle this session issued, or
+    /// a full id as given.
+    pub fn full(&self, name: &str) -> String {
+        self.by_handle
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| name.to_owned())
+    }
 }
 
 /// `page` with its rows grouped by resource and each action reduced to a
-/// signature: `{"save-as": "Save document as (path?)"}`.
-pub fn compact_page(page: &CataloguePage) -> Value {
+/// signature: `{"save-as": "Save document as (path?)"}`. Long resource ids
+/// are named by their session handles.
+pub fn compact_page(page: &CataloguePage, handles: &mut Handles) -> Value {
     /// One resource of the page: its head and its actions, in page order.
     struct Group {
         id: String,
@@ -93,7 +144,7 @@ pub fn compact_page(page: &CataloguePage) -> Value {
         if !groups.iter().any(|group| group.id == row.resource.id) {
             groups.push(Group {
                 id: row.resource.id.clone(),
-                head: resource_head(row),
+                head: resource_head(row, handles),
                 actions: Map::new(),
             });
         }
@@ -138,9 +189,9 @@ pub fn compact_page(page: &CataloguePage) -> Value {
     value
 }
 
-fn resource_head(row: &CatalogueRow) -> Map<String, Value> {
+fn resource_head(row: &CatalogueRow, handles: &mut Handles) -> Map<String, Value> {
     let mut head = Map::new();
-    head.insert("resource".into(), row.resource.id.clone().into());
+    head.insert("resource".into(), handles.short(&row.resource.id).into());
     head.insert("kind".into(), row.resource.kind.clone().into());
     head.insert("label".into(), row.resource.label.clone().into());
     head
@@ -198,10 +249,26 @@ fn param(param: &ActionParam) -> String {
         text.push(':');
         text.push_str(param.ty.label());
     }
+    if let Some(range) = param.schema.as_ref().and_then(range) {
+        text.push(' ');
+        text.push_str(&range);
+    }
     if param.schema.is_some() && matches!(param.ty, ParamType::Object | ParamType::Array) {
         text.push_str(" (schema: tilo_resolve)");
     }
     text
+}
+
+/// A numeric schema's bounds as `1..64`, `1..` or `..64`: a caller that
+/// guesses past one fails a whole call.
+fn range(schema: &Value) -> Option<String> {
+    let bound = |key: &str| schema.get(key).filter(|value| value.is_number());
+    let (minimum, maximum) = (bound("minimum"), bound("maximum"));
+    if minimum.is_none() && maximum.is_none() {
+        return None;
+    }
+    let show = |value: Option<&Value>| value.map(ToString::to_string).unwrap_or_default();
+    Some(format!("{}..{}", show(minimum), show(maximum)))
 }
 
 const fn risk_label(risk: RiskLevel) -> &'static str {
