@@ -82,10 +82,18 @@ impl WebBuild {
 ///
 /// # Errors
 ///
-/// When the app's SDK has no web build, the build fails, or it leaves no app
-/// module behind.
+/// When the app is not web-capable (the portability lint), its SDK has no web
+/// build, the build fails, or it leaves no app module behind.
 pub fn build_web(start: &Path, request: &WebBuildRequest) -> Result<WebBuild> {
     let app_dir = resolve_app_dir(start)?;
+    let portability = crate::portability::lint_app(&app_dir)?;
+    if !portability.web_capable() {
+        bail!(
+            "{} cannot run on the web:\n{}",
+            app_dir.display(),
+            portability.render_web()
+        );
+    }
     let script = web_build_script(&app_dir)?;
     let output = request.output.as_ref().map_or_else(
         || app_dir.join("target/web"),
@@ -307,7 +315,13 @@ pub(crate) fn package_web(start: &Path, request: &PackageRequest) -> Result<Pack
     let packed =
         crate::pack::pack_manifest(manifest, resource_kinds, &payload, &staged, &identity)?;
     let entrypoints = vec![PathBuf::from(module_name)];
-    let size = crate::within_budget(&payload, &entrypoints, packed.bytes, budget, &output)?;
+    let size = crate::within_budget(
+        &payload,
+        &entrypoints,
+        packed.bytes,
+        (budget, crate::PackagePlatform::Web),
+        &output,
+    )?;
     std::fs::rename(&staged, &output)
         .with_context(|| format!("publishing package to {}", output.display()))?;
     eprintln!(

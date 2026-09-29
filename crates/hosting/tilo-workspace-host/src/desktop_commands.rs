@@ -128,8 +128,15 @@ impl SessionOwner {
         let mut documents = vec![];
         let mut routes = tilo_desktop_model::apps::record_routes(&doc);
         let opens_app = matches!(command.command, DesktopCommand::OpenApp { .. });
+        let mut revoked = Vec::new();
         let mut governed = if matches!(resolved, DesktopCommand::RecordEffectReceipt { .. }) {
             Some(Vec::new())
+        } else if let Some((granted, removed)) = self
+            .apply_app_action_command(workspace, caller, &resolved, now, &doc)
+            .map_err(rejected)?
+        {
+            revoked = removed;
+            Some(granted)
         } else {
             self.apply_permission_profile_command(workspace, caller, &resolved, now)
                 .map_err(rejected)?
@@ -281,6 +288,15 @@ impl SessionOwner {
                 )
                 .map_err(rejected)?;
         }
+        if !revoked.is_empty() {
+            candidate
+                .remove_governed_capabilities(
+                    &revoked,
+                    &self.identity.native,
+                    crate::owner::policy_fence::sample(time).map_err(rejected)?,
+                )
+                .map_err(rejected)?;
+        }
         let committed = self
             .commit_desktop_creation_candidate(
                 candidate,
@@ -310,6 +326,9 @@ impl SessionOwner {
         Ok(receipt)
     }
 }
+
+/// Capabilities the governance writer records, and the ids it removes.
+type GovernedChange = (Vec<collab_types::caps::CapOverride>, Vec<String>);
 
 /// Record a member's effect receipt in the room document; a receipt already
 /// recorded for the invocation must be the same one.
@@ -378,6 +397,109 @@ impl SessionOwner {
             CapOverride::grant(Subject::app(app), Scope::Workspace, Verb::Write)
                 .with_id(format!("app-author-v1:{app}")),
         ))
+    }
+
+    /// Apply an app-action grant or revocation with the caller's own authority
+    /// over workspace governance: `Some((granted, revoked))`, the capabilities
+    /// the governance writer then records and the ids it removes; `None` when
+    /// `command` is neither.
+    fn apply_app_action_command(
+        &self,
+        workspace: &mut Workspace,
+        caller: &tilo_user_identity::DeviceCert,
+        command: &DesktopCommand,
+        now: std::time::SystemTime,
+        room: &AutoCommit,
+    ) -> Result<Option<GovernedChange>, String> {
+        use collab_types::caps::{
+            Actor, CapOverride, Effect, Principal, ResourceRef, Scope, Subject, Verb,
+        };
+        let (action_id, app, target_app, action, lifetime) = match command {
+            DesktopCommand::GrantAppAction {
+                app,
+                target_app,
+                action,
+                lifetime,
+            } => (
+                APP_ACTION_GRANT_ACTION_ID,
+                app,
+                target_app,
+                action,
+                Some(lifetime),
+            ),
+            DesktopCommand::RevokeAppAction {
+                app,
+                target_app,
+                action,
+            } => (APP_ACTION_REVOKE_ACTION_ID, app, target_app, action, None),
+            _ => return Ok(None),
+        };
+        let (app, target_app, action) = (app.trim(), target_app.trim(), action.trim());
+        if app.is_empty() || target_app.is_empty() || action.is_empty() {
+            return Err("name the application, the other application and its action".into());
+        }
+        let (role, capabilities, person) =
+            self.peer().permissions(caller.device_public_key, now)?;
+        let actor = Actor::person(Some(role), person).in_room(self.peer().room());
+        workspace.capabilities = capabilities;
+        let seconds = now
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .map_err(|_| "desktop policy time predates epoch")?
+            .as_secs();
+        if !workspace.allows_at(
+            &actor,
+            &ResourceRef::Action {
+                app: WORKSPACE_GOVERNANCE_APP_ID.into(),
+                action: action_id.into(),
+            },
+            Verb::Admin,
+            seconds,
+        ) {
+            return Err("the caller is not allowed to change what apps may use".into());
+        }
+        let scope = Scope::Action {
+            app: target_app.to_owned(),
+            action: action.to_owned(),
+        };
+        let subject = Subject::app(app);
+        let Some(lifetime) = lifetime else {
+            let revoked = tilo_peer_state::room::extract_governed_fields(room)
+                .2
+                .into_iter()
+                .filter(|cap| {
+                    cap.effect == Effect::Grant && cap.subject == subject && cap.scope == scope
+                })
+                .map(|cap| cap.id)
+                .collect();
+            return Ok(Some((Vec::new(), revoked)));
+        };
+        if target_app == WORKSPACE_GOVERNANCE_APP_ID {
+            return Err("governing the workspace is assigned with a permission role".into());
+        }
+        match lifetime.trim().to_ascii_lowercase().as_str() {
+            "always" => {}
+            "session" => {
+                return Err(
+                    "a hosted workspace grants for always; revoke the grant to end it".into(),
+                );
+            }
+            _ => return Err("lifetime must be session or always".into()),
+        }
+        let grantor = actor
+            .principals
+            .iter()
+            .find(|principal| !matches!(principal, Principal::Room(_)))
+            .cloned()
+            .ok_or("the caller carries no identity to grant as")?;
+        let id = workspace
+            .grant_capability(CapOverride::grant(subject, scope, Verb::Write).granted_by(grantor));
+        let granted = workspace
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == id)
+            .cloned()
+            .ok_or("the grant was not recorded")?;
+        Ok(Some((vec![granted], Vec::new())))
     }
 
     /// Apply a permission-profile command with the caller's own authority over

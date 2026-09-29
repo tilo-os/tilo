@@ -484,7 +484,7 @@ async fn real_webtransport_uses_native_signed_proof_and_current_owner_revocation
                 &proof,
                 publish,
                 subscribe,
-                Duration::from_secs(5),
+                tilo_test_env::hang_bound(),
             )
             .await
         }

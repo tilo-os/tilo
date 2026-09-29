@@ -86,8 +86,9 @@ impl Client {
     }
     /// [`Self::post`], retried while the service answers its retryable 503
     /// (the Store lock stayed contended past the deferral bound, as on a
-    /// loaded runner), exactly as a delivery client retries. Any other status
-    /// is returned; the bound only catches a service that never recovers.
+    /// loaded runner), exactly as the browser's delivery, onboarding and
+    /// live-grant clients retry. Any other status is returned; the bound only
+    /// catches a service that never recovers.
     async fn post_retrying(&self, target: &str, body: Vec<u8>) -> (reqwest::StatusCode, Vec<u8>) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         loop {
@@ -373,6 +374,8 @@ async fn enrolled_deployment() -> (
     std::net::TcpListener,
     std::net::UdpSocket,
 ) {
+    // The served broker, runtime and HTTPS threads open this Store too.
+    crate::storage::test_journal::journal_this_process();
     let (transport_root, store_root, config, ready, tcp, udp) =
         crate::https_owner::serve::tests::fixture().await;
     let owner_root = SigningKey::from_bytes(&[7; 32]);
@@ -557,7 +560,7 @@ async fn cloud_https_loopback_product_data_survives_owner_reopen() {
         ed25519_dalek::VerifyingKey::from_bytes(&peer_now.authority().device_public_key).unwrap();
     let request = SnapshotRequest::new(SnapshotOperation::Baseline).unwrap();
     let (status, body) = client
-        .post(
+        .post_retrying(
             "/peer/v3/snapshots",
             framed(MessageType::SnapshotManifest, &request.encode().unwrap()),
         )
@@ -610,7 +613,7 @@ async fn cloud_https_loopback_product_data_survives_owner_reopen() {
     })
     .unwrap();
     let (status, body) = client
-        .post(
+        .post_retrying(
             "/peer/v3/snapshots",
             framed(MessageType::SnapshotManifest, &renew.encode().unwrap()),
         )
@@ -881,7 +884,7 @@ async fn onboard(
             .to_bytes(),
     );
     let (status, reply) = client
-        .post(operation.path(), request.encode().unwrap())
+        .post_retrying(operation.path(), request.encode().unwrap())
         .await;
     assert_eq!(
         status,
@@ -1367,7 +1370,7 @@ async fn baseline_snapshot(client: &Client, root: &Path) -> CommitBoundary {
         ed25519_dalek::VerifyingKey::from_bytes(&peer(root).authority().device_public_key).unwrap();
     let request = SnapshotRequest::new(SnapshotOperation::Baseline).unwrap();
     let (status, body) = client
-        .post(
+        .post_retrying(
             "/peer/v3/snapshots",
             framed(MessageType::SnapshotManifest, &request.encode().unwrap()),
         )
@@ -1545,7 +1548,7 @@ async fn cloud_https_retention_rotation_recovers_consumers_by_snapshot_and_suffi
     handshake(&mut client, &root).await;
     let first = browser_delta(&root, MACHINE, "kept-one ");
     let (status, body) = client
-        .post("/peer/v3/state", chunk([1; 16], &first, 0, first.len()))
+        .post_retrying("/peer/v3/state", chunk([1; 16], &first, 0, first.len()))
         .await;
     assert_eq!(
         status,
@@ -1555,7 +1558,7 @@ async fn cloud_https_retention_rotation_recovers_consumers_by_snapshot_and_suffi
     );
     let second = browser_delta(&root, MACHINE, "kept-two ");
     let (status, body) = client
-        .post("/peer/v3/state", chunk([2; 16], &second, 0, second.len()))
+        .post_retrying("/peer/v3/state", chunk([2; 16], &second, 0, second.len()))
         .await;
     assert_eq!(
         status,
@@ -1574,8 +1577,10 @@ async fn cloud_https_retention_rotation_recovers_consumers_by_snapshot_and_suffi
             break;
         }
     }
+    // A cursor ack is idempotent; the delivery client re-sends it after a
+    // retryable 503, as it does every state upload.
     let (status, _) = client
-        .post(
+        .post_retrying(
             "/peer/v3/acks",
             framed(
                 MessageType::CursorAck,
@@ -1890,7 +1895,7 @@ async fn cloud_https_snapshot_pin_recovers_after_actual_restart() {
             .unwrap();
     let request = SnapshotRequest::new(SnapshotOperation::Baseline).unwrap();
     let (status, body) = client
-        .post(
+        .post_retrying(
             "/peer/v3/snapshots",
             framed(MessageType::SnapshotManifest, &request.encode().unwrap()),
         )
@@ -1945,7 +1950,7 @@ async fn cloud_https_snapshot_pin_recovers_after_actual_restart() {
     // With no progress served since the restart it answers the identical
     // current manifest (never SnapshotRequired, never a silent extension).
     let (status, body) = client
-        .post("/peer/v3/snapshots", renew(manifest.digest()))
+        .post_retrying("/peer/v3/snapshots", renew(manifest.digest()))
         .await;
     assert_eq!(
         status,
@@ -1982,7 +1987,7 @@ async fn cloud_https_snapshot_pin_recovers_after_actual_restart() {
     // Progress served after the restart qualifies a real renewal: same pin
     // and content, strictly later expiry.
     let (status, body) = client
-        .post("/peer/v3/snapshots", renew(manifest.digest()))
+        .post_retrying("/peer/v3/snapshots", renew(manifest.digest()))
         .await;
     assert_eq!(
         status,

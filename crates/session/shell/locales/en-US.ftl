@@ -1454,6 +1454,10 @@ search-action-quick-settings-power-profile-set = Set power profile
 search-action-quick-settings-power-profile-set-subtitle = Choose saver, balanced, or performance for this device
 search-action-quick-settings-vpn-set-enabled = Set VPN enabled state
 search-action-quick-settings-vpn-set-enabled-subtitle = Enable or disable one named VPN connection on this device
+search-action-quick-settings-bluetooth-set-enabled = Set Bluetooth enabled state
+search-action-quick-settings-bluetooth-set-enabled-subtitle = Power this device's Bluetooth radio on or off
+search-action-quick-settings-airplane-mode-set-enabled = Set airplane mode
+search-action-quick-settings-airplane-mode-set-enabled-subtitle = Turn every wireless radio on this device off or back on
 
 # Search: search sources and workspace governance rows
 search-action-search-provider-set = Enable or disable a search source

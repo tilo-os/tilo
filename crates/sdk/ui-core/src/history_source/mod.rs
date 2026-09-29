@@ -209,10 +209,7 @@ impl HistorySource {
             return Vec::new();
         }
         let start = versions.len().saturating_sub(self.max_entries);
-        let genesis = (!self.record_genesis)
-            .then(|| crate::record::genesis_actor(doc))
-            .flatten()
-            .map(|actor| actor.to_hex_string());
+        let genesis_actor = crate::record::genesis_actor(doc).map(|actor| actor.to_hex_string());
 
         // Plus the one before the window — the patch path diffs between
         // consecutive frontiers.
@@ -251,13 +248,16 @@ impl HistorySource {
             // a revision to a nonexistent person. Skipped here rather than in
             // `versions`, which stays positional (`materialize_at` / `prefix_heads`
             // address a change by its place).
-            // A record's genesis is the same kind of change, when the caller
-            // leaves it out; so is a package-primary document's, which holds
-            // no identity to derive its actor from.
-            if qdoc::model::is_schema_genesis(v)
-                || genesis.as_deref() == Some(v.actor.as_str())
-                || (!self.record_genesis && is_store_genesis(doc, v))
-            {
+            if qdoc::model::is_schema_genesis(v) {
+                continue;
+            }
+            // A record's genesis is the same kind of change; so is a
+            // package-primary document's, which holds no identity to derive
+            // its actor from. The document's own history keeps it, marked,
+            // as the version to restore to.
+            let genesis =
+                genesis_actor.as_deref() == Some(v.actor.as_str()) || is_store_genesis(doc, v);
+            if genesis && !self.record_genesis {
                 continue;
             }
 
@@ -272,10 +272,13 @@ impl HistorySource {
                 }
             }
 
-            let context = v
-                .message
-                .as_deref()
-                .and_then(tilo_actions::ActionContext::from_change_message);
+            let context = if genesis {
+                Some(genesis_context())
+            } else {
+                v.message
+                    .as_deref()
+                    .and_then(tilo_actions::ActionContext::from_change_message)
+            };
             let summary = context
                 .as_ref()
                 .and_then(tilo_actions::ActionContext::summary)
@@ -299,6 +302,16 @@ impl HistorySource {
             });
         }
         out
+    }
+}
+
+/// What a genesis row says: the document was created, by no one in
+/// particular.
+fn genesis_context() -> tilo_actions::ActionContext {
+    tilo_actions::ActionContext {
+        action_label: crate::i18n::I18nManager::lookup_plain("history-genesis"),
+        facets: vec![crate::widget::history::genesis_facet()],
+        ..tilo_actions::ActionContext::default()
     }
 }
 

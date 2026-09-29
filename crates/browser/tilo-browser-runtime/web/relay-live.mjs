@@ -33,6 +33,65 @@ export function colorOf(key) {
 const recordKey = record => `${record.app}\u0000${record.record}`;
 const unhex = text => Uint8Array.from(text.match(/../g) ?? [], byte => parseInt(byte, 16));
 
+/** Publications after an action that may still carry its caret change (the
+ * caret can settle a presented frame later). */
+const ACTION_PUBLICATIONS = 3;
+
+/**
+ * One presence per live layer, however many mounts share it: the mount the
+ * person (or agent) acted in last publishes, and idle or hidden mounts never
+ * overwrite it. Input in a mount claims its layer at once; an action through
+ * a mount claims it only if it moved that mount's focus or caret (an agent
+ * posting in Chat after editing the notes stays in the notes).
+ */
+export function createSpeakers() {
+  const speaker = new Map();
+  return {
+    mount() {
+      const token = {};
+      const views = new Map();
+      let own = '[null,null]';
+      let focus = null;
+      let selection = null;
+      let actionPublications = 0;
+      const speaks = layer => {
+        if ((speaker.get(layer) ?? token) !== token) return false;
+        speaker.set(layer, token);
+        return true;
+      };
+      return {
+        /** Input in this mount: it speaks for `layer` now. */
+        claim(layer) { speaker.set(layer, token); },
+        /** An action ran through this mount. */
+        acted() { actionPublications = ACTION_PUBLICATIONS; },
+        release() { for (const [layer, holder] of speaker) if (holder === token) speaker.delete(layer); },
+        /** `layer.api` as this mount publishes through it. */
+        view(layer) {
+          let found = views.get(layer);
+          if (!found) {
+            found = Object.create(layer.api, {
+              publishPresence: {value: partial => {
+                if ('focus' in partial) focus = partial.focus;
+                if ('selection' in partial) selection = partial.selection;
+                const next = JSON.stringify([focus, selection]);
+                if (actionPublications > 0) {
+                  actionPublications--;
+                  if (next !== own) speaker.set(layer, token);
+                }
+                own = next;
+                return speaks(layer) && layer.api.publishPresence(partial);
+              }},
+              publishPreview: {value: (record, ops) => speaks(layer) && layer.api.publishPreview(record, ops)},
+            });
+            views.set(layer, found);
+          }
+          return found;
+        },
+      };
+    },
+  };
+}
+
 /**
  * WebTransport at `https://<host>:<webtransportPort>/moq/live` (pinned by
  * `certificateSha256` for a development certificate), else the HTTPS stream
@@ -61,10 +120,15 @@ export function relayLiveCarriers(origin, info, {fetch: fetcher, webtransport, h
 /**
  * The live layer of `room` for the relay peer `peer` (the wasm `WasmPeer`;
  * `runtime` is the wasm module with the live codec). `participant` is
- * `{label, color}`, published with this device's presence.
+ * `{label, color}`, published with this device's presence. With `agent`, the
+ * layer publishes as that agent of this device, under its own namespace
+ * (`tilo_relay_protocol::web::agent_publisher`), with an agent participant.
+ * The grant is asked for once `ready` resolves: the room refuses it until it
+ * admitted the device.
  */
 export function createRelayLive(peer, runtime, room, {
-  endpoint, carriers, participant, now = () => performance.now(), wallNow = () => Date.now(),
+  endpoint, carriers, participant, agent, ready = Promise.resolve(),
+  now = () => performance.now(), wallNow = () => Date.now(),
   setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
   clearTimer = handle => globalThis.clearTimeout(handle),
 } = {}) {
@@ -74,7 +138,7 @@ export function createRelayLive(peer, runtime, room, {
   const members = new Set();
   const watched = new Map();
   const subscriptions = new Map();
-  const listeners = {presence: new Set(), preview: new Set(), member: new Set(), durable: new Set(), state: new Set(), publish: new Set()};
+  const listeners = {presence: new Set(), preview: new Set(), member: new Set(), durable: new Set(), state: new Set(), publish: new Set(), agentActivity: new Set()};
   const emit = (kind, value) => { for (const listener of [...listeners[kind]]) { try { listener(value); } catch {} } };
   const on = kind => listener => { listeners[kind].add(listener); return () => listeners[kind].delete(listener); };
   let session;
@@ -109,6 +173,9 @@ export function createRelayLive(peer, runtime, room, {
     // The overlay re-reads `members()` on a member event: the name arrives
     // with presence, after the member itself.
     if (renamed) emit('member', {publisher: from, active: true});
+    if (renamed && participant.kind === 'agent') {
+      emit('agentActivity', {publisher: from, agentId: participant.label, name: participant.label, expired: false});
+    }
   }
   function onOps(from, payload) {
     let decoded;
@@ -172,7 +239,7 @@ export function createRelayLive(peer, runtime, room, {
     if (stopped) return;
     setState(retry === 0 ? 'connecting' : 'reconnecting');
     try {
-      const grant = JSON.parse(await peer.liveGrant(room));
+      const grant = JSON.parse(await peer.liveGrant(room, agent));
       const opened = await carriers.connect({
         endpoint,
         authorization: unhex(grant.token),
@@ -185,7 +252,7 @@ export function createRelayLive(peer, runtime, room, {
       retry = 0;
       setState('live');
       session.watchMembers({onMember});
-      if (participant) publisher.update({participant: {kind: 'person', activity: null, ...participant}});
+      if (participant) publisher.update({participant: {kind: agent ? 'agent' : 'person', activity: null, ...participant}});
       publisher.start();
       const renewIn = Math.max(1000, grant.expiresAtNs / 1e6 - wallNow() - GRANT_RENEW_MS);
       renewTimer = setTimer(() => rotate(), renewIn);
@@ -230,7 +297,9 @@ export function createRelayLive(peer, runtime, room, {
     emit('durable', {record});
   }
 
-  connect();
+  ready.then(() => connect(), () => { if (!stopped) setState('unavailable'); });
+
+  const isAgent = from => participants.get(from)?.kind === 'agent';
 
   /** `session.liveV1`'s surface, as `live-overlay.mjs` reads it. */
   const api = {
@@ -272,20 +341,25 @@ export function createRelayLive(peer, runtime, room, {
     onPreview: on('preview'),
     onMember: on('member'),
     onDurable: on('durable'),
-    agents: () => [],
-    stats: () => ({state, members: members.size, carrier: carriers.state?.().last ?? null}),
+    onAgentActivity: on('agentActivity'),
+    /** Agents present in the room (`publisherIdentity` labels them as agents). */
+    agents: () => [...members].filter(isAgent).map(from => ({
+      publisher: from, agentId: participants.get(from).label, name: participants.get(from).label,
+    })),
+    stats: () => ({state, members: members.size, agent: agent ?? null, carrier: carriers.state?.().last ?? null}),
   };
 
   return {
     api,
-    /** `[{device, name, color}]` of the members whose presence named them,
-     * for the overlay's labels. */
-    members: () => [...members].map(from => ({
+    /** `[{device, name, color}]` of the people whose presence named them,
+     * for the overlay's labels; agents are in `api.agents()`. */
+    members: () => [...members].filter(from => !isAgent(from)).map(from => ({
       device: from, name: participants.get(from)?.label ?? '', color: participants.get(from)?.color,
     })),
-    /** Apply the session's durable events (on every peer change). */
-    pump() {
-      for (const event of JSON.parse(peer.takeDurableEvents())) {
+    /** Apply the session's durable events (on every peer change); pass
+     * `events` when several layers share one peer. */
+    pump(events = JSON.parse(peer.takeDurableEvents())) {
+      for (const event of events) {
         if (event.kind === 'durable') durableChanged(event.record);
       }
     },

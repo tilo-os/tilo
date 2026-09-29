@@ -1112,6 +1112,17 @@ mod component_adapter {
             let root = self.component.root.as_deref()?;
             root.text_review()
         }
+        fn nav_availability(&self) -> crate::gesture::NavAvailability {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return crate::gesture::NavAvailability::default();
+            };
+            self.component
+                .root
+                .as_deref()
+                .map(Widget::nav_availability)
+                .unwrap_or_default()
+        }
         fn on_external_event(
             &mut self,
             payload: &str,

@@ -86,6 +86,42 @@ previews) prefers WebTransport and falls back to the HTTPS stream routes
 when UDP or WebTransport is unavailable; documents sync over HTTPS either
 way.
 
+A page publishes one presence per device, from the mount the person acted
+in last. An agent the page runs (a mount with `agent`, or one authored by
+an agent member of its desktop) publishes its own caret under
+`/live/grant/agent`: a namespace derived from the room, the device and the
+agent id, labelled as the agent.
+
+### WebTransport: what it takes
+
+WebTransport is QUIC, so browsers need **UDP** to the relay's port; the
+TCP port alone only carries the fallback.
+
+- **Production:** expose the room ports for TCP *and* UDP. The
+  `tilo-rooms-direct` LoadBalancer carries both on each port (a load
+  balancer without mixed protocols needs a second Service for UDP), and
+  firewalls and security groups must pass inbound UDP on them. The relays
+  present the public `*.<domain>` certificate, so browsers need no pinned
+  hash. Visitors whose network drops UDP get the fallback over the same TCP
+  port.
+- **Locally, on Windows with WSL2:** WSL's default NAT networking forwards
+  only TCP from Windows' `localhost`, so Windows browsers always get the
+  fallback. For WebTransport:
+  1. Switch WSL to mirrored networking (`%UserProfile%\.wslconfig`:
+     `[wsl2]` `networkingMode=mirrored`, then `wsl --shutdown`). Windows
+     and WSL then share `localhost` for TCP and UDP.
+  2. Allow inbound UDP on the relay ports through the Hyper-V firewall
+     (elevated PowerShell): `New-NetFirewallHyperVRule -Name tilo-rooms-udp
+     -DisplayName "Tilo rooms (UDP)" -Direction Inbound -VMCreatorId
+     '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -Protocol UDP -LocalPorts
+     9700-9763`. For phones on the LAN, also allow those ports in Windows
+     Defender Firewall (`New-NetFirewallRule -Direction Inbound -Protocol UDP
+     -LocalPort 9700-9763 -Action Allow`).
+  3. The page then reaches `https://localhost:<port>/moq/live` over UDP. The
+     relay's development certificate is pinned by the hash the relay
+     announces (`serverCertificateHashes`); no certificate exception is
+     needed.
+
 ## Build and run
 
 ```sh
