@@ -5509,6 +5509,27 @@ pub struct PrintBuf {
     index: u32,
 }
 
+fn splice_chars(text: &str, at: usize, delete: usize, insert: &str) -> String {
+    let mut chars: Vec<char> = text.chars().collect();
+    let at = at.min(chars.len());
+    let end = (at + delete).min(chars.len());
+    chars.splice(at..end, insert.chars());
+    chars.into_iter().collect()
+}
+
+fn blank_attr_range(attrs: &mut Vec<u8>, from: usize, count: usize) {
+    if count == 0 {
+        return;
+    }
+    let empty = Attr::default().pack();
+    for index in from..(from + count) {
+        let start = index * ATTR_BYTES;
+        if let Some(dest) = attrs.get_mut(start..start + ATTR_BYTES) {
+            dest.copy_from_slice(&empty);
+        }
+    }
+}
+
 /// Name this emulator reports for itself in the XTVERSION reply
 /// (`CSI > 0 q` → `DCS > | tilo-terminal(<version>) ST`).
 pub const TERMINAL_NAME: &str = "tilo-terminal";
@@ -5995,18 +6016,55 @@ impl TerminalPerformer<'_> {
     /// underlying doc rejected the insert (nothing sane to fall back to —
     /// callers skip the line rather than fabricate an id).
     fn make_blank_line(&mut self, idx: usize) -> Option<ObjId> {
+        let index = u32::try_from(idx).ok()?;
+        let text = " ".repeat(self.width);
+        let attrs = vec![Attr::default().pack(); self.width].concat();
+        ui::tilo_actions::Action::apply(
+            &crate::resource::TerminalAction::InsertBlankLine {
+                alternate: *self.alt_active,
+                index,
+                text,
+                attrs,
+            },
+            self.state,
+        )
+        .ok()?;
         let grid_id = self.active_grid_id();
-        let line_id = self.state.insert_object(&grid_id, idx, ObjType::Map).ok()?;
-        let text_id = self
-            .state
-            .put_object(&line_id, "text", ObjType::Text)
-            .ok()?;
-        let _ = self
-            .state
-            .splice_text(&text_id, 0, 0, &" ".repeat(self.width));
-        let attr_bytes: Vec<u8> = vec![Attr::default().pack(); self.width].concat();
-        let _ = self.state.put(&line_id, "attrs", attr_bytes);
-        Some(line_id)
+        match self.state.get(&grid_id, idx).ok().flatten() {
+            Some((Value::Object(ObjType::Map), id)) => Some(id),
+            _ => None,
+        }
+    }
+
+    fn write_grid_line(&mut self, index: usize, text: String, attrs: Vec<u8>) {
+        let Some(index) = u32::try_from(index).ok() else {
+            return;
+        };
+        let _ = ui::tilo_actions::Action::apply(
+            &crate::resource::TerminalAction::WriteLine {
+                alternate: *self.alt_active,
+                index,
+                text,
+                attrs,
+            },
+            self.state,
+        );
+    }
+
+    fn line_text_and_attrs(&self, line_obj: &ObjId) -> Option<(String, Vec<u8>)> {
+        let text_id = match self.state.get(line_obj, "text").ok().flatten() {
+            Some((Value::Object(ObjType::Text), id)) => id,
+            _ => return None,
+        };
+        let text = self.state.text(&text_id).unwrap_or_default();
+        let attrs = match self.state.get(line_obj, "attrs").ok().flatten() {
+            Some((Value::Scalar(value), _)) => match value.as_ref() {
+                automerge::ScalarValue::Bytes(bytes) => bytes.clone(),
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        };
+        Some((text, attrs))
     }
 
     fn newline(&mut self) {
@@ -6195,18 +6253,11 @@ impl TerminalPerformer<'_> {
             _ => return,
         };
         for abs_y in range {
-            if let Some(line_obj) = self.active_line_id(abs_y) {
-                if let Ok(Some((Value::Object(ObjType::Text), text_id))) =
-                    self.state.get(&line_obj, "text")
-                {
-                    let l = self.state.length(&text_id);
-                    let _ =
-                        self.state
-                            .splice_text(&text_id, 0, l as isize, &" ".repeat(self.width));
-                }
-                let attr_bytes: Vec<u8> = vec![Attr::default().pack(); self.width].concat();
-                let _ = self.state.put(&line_obj, "attrs", attr_bytes);
-            }
+            self.write_grid_line(
+                abs_y,
+                " ".repeat(self.width),
+                vec![Attr::default().pack(); self.width].concat(),
+            );
         }
     }
 
@@ -6215,22 +6266,22 @@ impl TerminalPerformer<'_> {
         let Some(line_obj) = self.active_line_id(y) else {
             return;
         };
-        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
-        {
-            let len = self.state.length(&text_id);
-            let (from, count): (usize, usize) = match mode {
-                0 => (self.cursor_x, len.saturating_sub(self.cursor_x)), // cursor → end
-                1 => (0, self.cursor_x.min(len)),                        // start → cursor
-                2 => (0, len),                                           // whole line
-                _ => return,
-            };
-            if count > 0 {
-                let _ = self
-                    .state
-                    .splice_text(&text_id, from, count as isize, &" ".repeat(count));
-            }
-            self.reset_attr_range(&line_obj, from, count);
+        let Some((text, mut attrs)) = self.line_text_and_attrs(&line_obj) else {
+            return;
+        };
+        let len = text.chars().count();
+        let (from, count): (usize, usize) = match mode {
+            0 => (self.cursor_x, len.saturating_sub(self.cursor_x)),
+            1 => (0, self.cursor_x.min(len)),
+            2 => (0, len),
+            _ => return,
+        };
+        if count == 0 {
+            return;
         }
+        let text = splice_chars(&text, from, count, &" ".repeat(count));
+        blank_attr_range(&mut attrs, from, count);
+        self.write_grid_line(y, text, attrs);
     }
 
     fn erase_chars(&mut self, n: usize) {
@@ -6238,20 +6289,17 @@ impl TerminalPerformer<'_> {
         let Some(line_obj) = self.active_line_id(y) else {
             return;
         };
-        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
-        {
-            let len = self.state.length(&text_id);
-            let count = n.min(len.saturating_sub(self.cursor_x));
-            if count > 0 {
-                let _ = self.state.splice_text(
-                    &text_id,
-                    self.cursor_x,
-                    count as isize,
-                    &" ".repeat(count),
-                );
-                self.reset_attr_range(&line_obj, self.cursor_x, count);
-            }
+        let Some((text, mut attrs)) = self.line_text_and_attrs(&line_obj) else {
+            return;
+        };
+        let len = text.chars().count();
+        let count = n.min(len.saturating_sub(self.cursor_x));
+        if count == 0 {
+            return;
         }
+        let text = splice_chars(&text, self.cursor_x, count, &" ".repeat(count));
+        blank_attr_range(&mut attrs, self.cursor_x, count);
+        self.write_grid_line(y, text, attrs);
     }
 
     fn insert_chars(&mut self, n: usize) {
@@ -6259,23 +6307,18 @@ impl TerminalPerformer<'_> {
         let Some(line_obj) = self.active_line_id(y) else {
             return;
         };
-        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
-        {
-            let n = n.min(self.width.saturating_sub(self.cursor_x));
-            if n == 0 {
-                return;
-            }
-            let _ = self
-                .state
-                .splice_text(&text_id, self.cursor_x, 0, &" ".repeat(n));
-            // Truncate back to the grid width.
-            let len = self.state.length(&text_id);
-            if len > self.width {
-                let _ =
-                    self.state
-                        .splice_text(&text_id, self.width, (len - self.width) as isize, "");
-            }
+        let Some((text, attrs)) = self.line_text_and_attrs(&line_obj) else {
+            return;
+        };
+        let n = n.min(self.width.saturating_sub(self.cursor_x));
+        if n == 0 {
+            return;
         }
+        let mut text = splice_chars(&text, self.cursor_x, 0, &" ".repeat(n));
+        if text.chars().count() > self.width {
+            text = text.chars().take(self.width).collect();
+        }
+        self.write_grid_line(y, text, attrs);
     }
 
     fn delete_chars(&mut self, n: usize) {
@@ -6283,44 +6326,20 @@ impl TerminalPerformer<'_> {
         let Some(line_obj) = self.active_line_id(y) else {
             return;
         };
-        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
-        {
-            let len = self.state.length(&text_id);
-            let count = n.min(len.saturating_sub(self.cursor_x));
-            if count == 0 {
-                return;
-            }
-            let _ = self
-                .state
-                .splice_text(&text_id, self.cursor_x, count as isize, "");
-            // Pad blanks at the end to restore the width.
-            let new_len = self.state.length(&text_id);
-            if new_len < self.width {
-                let _ =
-                    self.state
-                        .splice_text(&text_id, new_len, 0, &" ".repeat(self.width - new_len));
-            }
-        }
-    }
-
-    /// Reset the packed attrs for cells `[from, from+count)` to default.
-    fn reset_attr_range(&mut self, line_obj: &ObjId, from: usize, count: usize) {
+        let Some((text, attrs)) = self.line_text_and_attrs(&line_obj) else {
+            return;
+        };
+        let len = text.chars().count();
+        let count = n.min(len.saturating_sub(self.cursor_x));
         if count == 0 {
             return;
         }
-        if let Ok(Some((Value::Scalar(v), _))) = self.state.get(line_obj, "attrs")
-            && let automerge::ScalarValue::Bytes(bytes) = v.as_ref()
-        {
-            let mut attr_bytes = bytes.clone();
-            let empty = Attr::default().pack();
-            for i in from..(from + count) {
-                let s = i * ATTR_BYTES;
-                if let Some(dest) = attr_bytes.get_mut(s..s + ATTR_BYTES) {
-                    dest.copy_from_slice(&empty);
-                }
-            }
-            let _ = self.state.put(line_obj, "attrs", attr_bytes);
+        let mut text = splice_chars(&text, self.cursor_x, count, "");
+        let new_len = text.chars().count();
+        if new_len < self.width {
+            text.push_str(&" ".repeat(self.width - new_len));
         }
+        self.write_grid_line(y, text, attrs);
     }
 
     /// DEC private set/reset — `CSI ? Ps h` / `CSI ? Ps l`.
@@ -6400,16 +6419,11 @@ impl TerminalPerformer<'_> {
     /// `height` lines (a previous alt session may have left it longer).
     fn clear_alt_buffer(&mut self) {
         let width = self.width;
-        let ids: Vec<ObjId> = self.alt_line_ids.clone();
-        for id in &ids {
-            if let Ok(Some((Value::Object(ObjType::Text), tid))) = self.state.get(id, "text") {
-                let l = self.state.length(&tid);
-                let _ = self
-                    .state
-                    .splice_text(&tid, 0, l as isize, &" ".repeat(width));
-            }
-            let attr_bytes: Vec<u8> = vec![Attr::default().pack(); width].concat();
-            let _ = self.state.put(id, "attrs", attr_bytes);
+        let count = self.alt_line_ids.len();
+        let text = " ".repeat(width);
+        let attrs = vec![Attr::default().pack(); width].concat();
+        for index in 0..count {
+            self.write_grid_line(index, text.clone(), attrs.clone());
         }
         while self.alt_line_ids.len() > self.height {
             let idx = self.alt_line_ids.len() - 1;
