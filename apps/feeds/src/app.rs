@@ -1114,69 +1114,14 @@ impl FeedsApp {
         article_limit: usize,
         tag_limit: usize,
     ) -> FeedsResourceCtx {
-        let folders = self
-            .store
-            .folders_sorted()
-            .iter()
-            .take(folder_limit)
-            .map(|f| actions::FolderRef {
-                id: f.id,
-                name: f.name.clone(),
-                collapsed: f.collapsed,
-            })
-            .collect();
-        let mut sorted_feeds = self.store.feeds.iter().take(feed_limit).collect::<Vec<_>>();
-        sorted_feeds.sort_by_key(|feed| feed.title.to_lowercase());
-        let mut remaining_articles = article_limit;
-        let feeds: Vec<actions::FeedRef> = sorted_feeds
-            .into_iter()
-            .take(feed_limit)
-            .map(|f| {
-                let articles = self
-                    .store
-                    .articles
-                    .iter()
-                    .filter(|article| article.feed_id == f.id)
-                    .take(remaining_articles)
-                    .map(|article| actions::ArticleRef {
-                        id: article.id,
-                        title: article.title.clone(),
-                        read: article.read,
-                        starred: article.starred,
-                        tags: article.tags.clone(),
-                    })
-                    .collect::<Vec<_>>();
-                remaining_articles = remaining_articles.saturating_sub(articles.len());
-                actions::FeedRef {
-                    id: f.id,
-                    title: f.title.clone(),
-                    folder: f.folder,
-                    unread: self.store.unread_ids_for(Filter::Feed(f.id)),
-                    articles,
-                }
-            })
-            .collect();
-        let next_folder_order = self
-            .store
-            .folders
-            .iter()
-            .map(|f| f.order)
-            .max()
-            .map_or(0, |m| m + 1);
-        FeedsResourceCtx {
-            folders,
-            feeds,
-            tags: self
-                .store
-                .tags_limited(tag_limit)
-                .into_iter()
-                .map(|name| actions::TagRef { name })
-                .collect(),
-            unread: self.store.unread_ids_for(Filter::All),
-            next_feed_order: self.store.next_feed_order(None),
-            next_folder_order,
-            settings: self.settings,
-        }
+        actions::resource_ctx_from_library_with_limits(
+            &self.store,
+            self.settings,
+            folder_limit,
+            feed_limit,
+            article_limit,
+            tag_limit,
+        )
     }
 
     fn toggle_folder(&mut self, id: Id, doc: &mut AutoCommit) {
@@ -1848,8 +1793,13 @@ impl FeedsApp {
     }
 
     /// Show the library the framework resource already holds.
-    pub(crate) fn adopt_resource_state(&mut self, state: &Store) {
-        self.store.clone_from(state);
+    /// An empty projection does not wipe feeds that have not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::FeedsState) {
+        if state.store.is_empty() {
+            return;
+        }
+        self.store.clone_from(&state.store);
+        self.settings = state.settings;
         self.ensure_selection();
     }
 
@@ -1859,6 +1809,16 @@ impl FeedsApp {
         dispatcher: ui::framework::Dispatcher<crate::resource::Feeds>,
     ) {
         self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
     }
 
     // --- geometry --------------------------------------------------------
@@ -5414,10 +5374,11 @@ impl ui::search::capability::SearchSource for FeedsApp {
 
 impl ui::resources::PublishesResources for FeedsApp {
     /// Publish the reader + its folders and subscriptions so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the `ResourceProvider`
-    /// (`tilo_actions::ResourceProvider`) impl in [`crate::actions`].
+    /// action palette scopes to them. When the framework hosts the surface,
+    /// [`tilo_resource::publish`] already owns the reader door; hosted returns
+    /// nothing rather than a second hand-built tree.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.actions.is_hosted() {
+        if self.is_hosted() {
             return Vec::new();
         }
         self.publish_resources(doc)
