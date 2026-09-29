@@ -113,7 +113,7 @@ iroh-base = { workspace = true, optional = true }
 iroh-blobs.workspace = true
 # The content format (chunking, manifests) and the pieces of iroh-blobs
 # the content store builds its file-backed provider from.
-fs-content = { path = "../fs-content" }
+fs-content = { version = "0.1.0", path = "../fs-content" }
 bao-tree = { workspace = true }
 irpc = { workspace = true }
 ref-cast = { workspace = true }
@@ -158,23 +158,23 @@ rand = { workspace = true, optional = true }
 redb.workspace = true
 # Cloud accounts as mounted folders: the account store and credential
 # handoff, the provider interface and the providers.
-accounts = { path = "../accounts", optional = true }
-cloud-source = { path = "../cloud-source", optional = true }
-cloud-source-dav = { path = "../cloud-source-dav", optional = true }
-cloud-source-gdrive = { path = "../cloud-source-gdrive", optional = true }
-cloud-source-onedrive = { path = "../cloud-source-onedrive", optional = true }
-cloud-source-dropbox = { path = "../cloud-source-dropbox", optional = true }
-cloud-source-icloud = { path = "../cloud-source-icloud", optional = true }
+accounts = { version = "0.1.0", path = "../accounts", optional = true }
+cloud-source = { version = "0.1.0", path = "../cloud-source", optional = true }
+cloud-source-dav = { version = "0.1.0", path = "../cloud-source-dav", optional = true }
+cloud-source-gdrive = { version = "0.1.0", path = "../cloud-source-gdrive", optional = true }
+cloud-source-onedrive = { version = "0.1.0", path = "../cloud-source-onedrive", optional = true }
+cloud-source-dropbox = { version = "0.1.0", path = "../cloud-source-dropbox", optional = true }
+cloud-source-icloud = { version = "0.1.0", path = "../cloud-source-icloud", optional = true }
 notify = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 tracing.workspace = true
-wire-frame = { path = "../wire-frame", optional = true, features = ["tokio", "postcard"] }
+wire-frame = { version = "0.1.0", path = "../wire-frame", optional = true, features = ["tokio", "postcard"] }
 
 [dev-dependencies]
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 image = { workspace = true, features = ["png"] }
 tilo-test-env = { path = "../../dev/test-env" }
-cloud-source-dav = { path = "../cloud-source-dav", features = ["fake-server"] }
+cloud-source-dav = { version = "0.1.0", path = "../cloud-source-dav", features = ["fake-server"] }
 
 [lints]
 workspace = true

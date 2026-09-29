@@ -97,7 +97,7 @@ xdg-paths = { version = "0.1.0", path = "../../system/xdg-paths" }
 # native backends. Re-exported under the toolkit's own module paths.
 tilo-host = { version = "0.1.0", path = "../tilo-host" }
 # Test builds bound the pairing broker exchange with the shared hang bound.
-tilo-test-env = { path = "../../dev/test-env", optional = true }
+tilo-test-env = { version = "0.1.0", path = "../../dev/test-env", optional = true }
 advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 # The content store a host lends a component (`HostContext::content`), in every
 # build; the unix `native` build adds the launcher's device store below.
@@ -209,7 +209,7 @@ qdoc = { version = "0.1.0", path = "../../doc/qdoc" }
 tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 # Every catalogue and text index is a tantivy index through the shared
 # search layer.
-tilo-search = { path = "../search" }
+tilo-search = { version = "0.1.0", path = "../search" }
 # The Tilo ACTION model: serializable, replayable CRDT-mutation actions + the
 # nested Resource tree apps publish. `command_palette` + `action_palette` +
 # the `App` resource-collection hook build on it to make Ctrl+K scope to the
@@ -310,7 +310,7 @@ tempfile.workspace = true
 # Tests whose interface is the process environment (launcher variables such
 # as `TILO_SVC_COLLAB_FD`) set it through `ScopedEnv`, which restores the
 # prior value and serialises every such test in the process.
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
 # The scoped chooser and URI fixtures the invocation-scope tests select.
 tilo-host = { path = "../tilo-host", features = ["test-support"] }
 # The `collaboration` shim tests stand up a fake capnp broker on one end

@@ -31,7 +31,7 @@ store = [
 ]
 
 [dependencies]
-xdg-paths = { path = "../../system/xdg-paths" }
+xdg-paths = { version = "0.1.0", path = "../../system/xdg-paths" }
 tilo-app-package = { version = "0.1.0", path = "../tilo-app-package" }
 ed25519-dalek.workspace = true
 hex.workspace = true
