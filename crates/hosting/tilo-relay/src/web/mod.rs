@@ -45,8 +45,8 @@ use tilo_relay_protocol::certify::CertifyReply;
 use tilo_relay_protocol::live::LiveFrame;
 pub(crate) use tilo_relay_protocol::web as protocol;
 use tilo_relay_protocol::web::{
-    API_PREFIX, EventsRequest, HostInfo, MAX_POLL_MS, MAX_REQUEST_BYTES, SESSION_HEADER,
-    SessionFinish, live_room,
+    API_PREFIX, AgentLiveGrantRequest, EventsRequest, HostInfo, MAX_AGENT_ID_BYTES, MAX_POLL_MS,
+    MAX_REQUEST_BYTES, SESSION_HEADER, SessionFinish, live_room,
 };
 use tilo_user_identity::CertificationRequest;
 
@@ -224,19 +224,21 @@ fn bridge_browser_presence(
     context: &crate::daemon::WebContext,
 ) -> tokio::task::JoinHandle<()> {
     let (tx, mut rx) =
-        tokio::sync::mpsc::channel::<(String, [u8; 32], Vec<u8>)>(BROWSER_PRESENCE_BACKLOG);
+        tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(BROWSER_PRESENCE_BACKLOG);
     live.set_presence_tap(Arc::new(
         move |room: &str, publisher: &str, frame: &[u8]| {
-            let mut device = [0u8; 32];
-            if hex::decode_to_slice(publisher, &mut device).is_ok() {
-                let _ = tx.try_send((room.to_owned(), device, frame.to_vec()));
-            }
+            let _ = tx.try_send((room.to_owned(), publisher.to_owned(), frame.to_vec()));
         },
     ));
     let grants = grants.clone();
     let context = context.clone();
     tokio::spawn(async move {
-        while let Some((room, device, frame)) = rx.recv().await {
+        while let Some((room, publisher, frame)) = rx.recv().await {
+            // Native peers attribute a live frame to a device: an agent's
+            // presence stays on the browser live plane.
+            let Some(device) = grants.publisher_device(&room, &publisher) else {
+                continue;
+            };
             let Some(workspace_id) = grants.workspace_of(&room) else {
                 continue;
             };
@@ -547,6 +549,27 @@ async fn route(
                     session.peer.device_public_key,
                     session.peer.user_public_key,
                     workspace_id,
+                    None,
+                )
+                .await
+                .map(|grant| encoded(&grant))
+                .ok_or_else(|| status(StatusCode::FORBIDDEN, "not admitted to this workspace"))
+        }
+        "/live/grant/agent" => {
+            let session = authed()?;
+            let request: AgentLiveGrantRequest = decode(&bytes)?;
+            if request.agent_id.is_empty() || request.agent_id.len() > MAX_AGENT_ID_BYTES {
+                return Err(status(StatusCode::BAD_REQUEST, "agent id out of bounds"));
+            }
+            let token = session.token();
+            web.grants
+                .issue(
+                    sessions,
+                    token,
+                    session.peer.device_public_key,
+                    session.peer.user_public_key,
+                    request.workspace_id,
+                    Some(&request.agent_id),
                 )
                 .await
                 .map(|grant| encoded(&grant))
