@@ -249,7 +249,7 @@ fn run_layout_pass(
     let mut t_apply_us = 0u128;
     let mut current_root = root_node;
     let mut recomposed = false;
-    let view = app.root_widget.view_state();
+    let view = crate::view::capability::view_state(app.root_widget.as_ref());
     // A pending structural rebuild means the old map may already contain
     // removed controls. Capture only from an admitted, unchanged topology.
     app.layout.structure_dirty |= app.root_widget.take_structure_dirty();
@@ -274,7 +274,7 @@ fn run_layout_pass(
             app.rebuild_structure();
             app.autofocus_on_structure_change = autofocus;
             if let Some(view) = &view {
-                app.root_widget.restore_view_state(view);
+                crate::view::capability::restore_view_state(app.root_widget.as_mut(), view);
             }
             // Sync may legitimately replace newly mounted delegates. Never
             // inspect or measure stale raw pointers from that build.

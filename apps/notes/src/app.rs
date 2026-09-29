@@ -4212,22 +4212,9 @@ impl Widget for NotesApp {
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource,
-        dyn ui::presence::capability::PublishesPresence
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::component_lifecycle::ComponentLifecycle
     );
-
-    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-        self.legacy_fixture_storage.as_ref()?;
-        if self.legacy_read_blocked.is_some() {
-            return Some(Err(
-                "Current note is unreadable; its draft has not been saved".into(),
-            ));
-        }
-        self.flush_main_panel_edit();
-        let legacy = self.legacy_fixture_storage.as_ref()?;
-        let bodies = legacy.page_saver.try_flush();
-        let metadata = legacy.saver.try_flush();
-        Some(bodies.and(metadata))
-    }
 
     fn start_operation(
         &mut self,
@@ -4898,6 +4885,22 @@ impl Widget for NotesApp {
     ) {
         // The root rect is the whole window — always paint, never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::component_lifecycle::ComponentLifecycle for NotesApp {
+    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
+        self.legacy_fixture_storage.as_ref()?;
+        if self.legacy_read_blocked.is_some() {
+            return Some(Err(
+                "Current note is unreadable; its draft has not been saved".into(),
+            ));
+        }
+        self.flush_main_panel_edit();
+        let legacy = self.legacy_fixture_storage.as_ref()?;
+        let bodies = legacy.page_saver.try_flush();
+        let metadata = legacy.saver.try_flush();
+        Some(bodies.and(metadata))
     }
 }
 

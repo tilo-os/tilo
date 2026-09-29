@@ -85,7 +85,8 @@ impl App {
         let _entry = self.enter_wake_scope();
         let native = self.collaboration.manager.has_native_committed_primary();
         let initial = if native {
-            let Some(want) = self.root_widget.record_intent() else {
+            let Some(want) = crate::record::capability::record_intent(self.root_widget.as_ref())
+            else {
                 return false;
             };
             if self

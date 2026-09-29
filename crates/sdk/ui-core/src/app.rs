@@ -979,9 +979,12 @@ impl App {
         self.control_domain.close();
         self.actions.bound_record_sync = None;
         self.component_close_reports
-            .extend(self.root_widget.close_components());
-        self.component_close_reports
-            .extend(self.root_widget.take_component_close_reports());
+            .extend(crate::component_lifecycle::close_components(
+                self.root_widget.as_mut(),
+            ));
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
+        );
         self.bindings.clear();
         self.layout.node_map.clear();
     }
@@ -998,8 +1001,9 @@ impl App {
     pub fn take_component_close_reports(
         &mut self,
     ) -> Vec<crate::application::ComponentCloseReport> {
-        self.component_close_reports
-            .extend(self.root_widget.take_component_close_reports());
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
+        );
         std::mem::take(&mut self.component_close_reports)
     }
 
@@ -2175,8 +2179,9 @@ impl App {
     pub(crate) fn init_layout_with_dev_view(&mut self, dev_view: Option<crate::view::View>) {
         let _entry = self.enter_wake_scope();
         self.refresh_control_action_availability();
-        self.component_close_reports
-            .extend(self.root_widget.take_component_close_reports());
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
+        );
         self.bindings.clear();
         self.layout.node_map.clear();
         self.build_history_presentation();
@@ -2249,8 +2254,9 @@ impl App {
         // replacement control at the same id still receives set_focus(true).
         self.focused_node = None;
         self.layout.taffy = TaffyTree::new();
-        self.component_close_reports
-            .extend(self.root_widget.take_component_close_reports());
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
+        );
         self.bindings.clear();
         self.layout.node_map.clear();
         self.build_history_presentation();
@@ -2735,11 +2741,14 @@ pub(crate) fn flush_widget_owned_persistence(
     root: &mut dyn Widget,
     reports: &mut Vec<crate::application::ComponentCloseReport>,
 ) -> Result<(), String> {
-    reports.extend(root.take_component_close_reports());
-    let current = root
-        .try_flush_owned_persistence()
+    reports.extend(crate::component_lifecycle::take_component_close_reports(
+        root,
+    ));
+    let current = crate::component_lifecycle::try_flush_owned_persistence(root)
         .unwrap_or_else(|| Err("widget-owned persistence requires a checked flush hook".into()));
-    reports.extend(root.take_component_close_reports());
+    reports.extend(crate::component_lifecycle::take_component_close_reports(
+        root,
+    ));
     for report in reports.iter_mut() {
         if report.record_error.is_some() && report.record_retry.is_some() {
             // The report retains the actual outgoing owner and exact legacy
@@ -2792,6 +2801,8 @@ mod legacy_owner_routing_tests {
     }
 
     impl Widget for OwnerProbe {
+        crate::provides!(dyn crate::component_lifecycle::ComponentLifecycle);
+
         fn build_layout(
             &mut self,
             tree: &mut taffy::TaffyTree<()>,
@@ -2866,6 +2877,9 @@ mod legacy_owner_routing_tests {
                 .unwrap();
             true
         }
+    }
+
+    impl crate::component_lifecycle::ComponentLifecycle for OwnerProbe {
         fn take_component_close_reports(
             &mut self,
         ) -> Vec<crate::application::ComponentCloseReport> {
