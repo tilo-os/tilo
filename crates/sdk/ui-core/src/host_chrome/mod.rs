@@ -7,6 +7,8 @@
 //! that enters the same local door as the palette and assistive technology.
 
 pub(crate) mod edit;
+#[cfg(any(all(target_os = "linux", feature = "native"), test))]
+pub(crate) mod header_bar;
 #[cfg(all(target_os = "macos", feature = "native"))]
 pub(crate) mod macos;
 #[cfg(any(feature = "native", test))]
