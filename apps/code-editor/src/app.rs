@@ -1364,6 +1364,20 @@ impl CodeApp {
         }
     }
 
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn project_node_count(&self) -> usize {
+        self.session.project.nodes.len()
+    }
+
     /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
     pub(crate) fn attach_framework(
         &mut self,
@@ -4291,14 +4305,12 @@ impl ui::search::capability::SearchSource for CodeApp {
 }
 
 impl ui::resources::PublishesResources for CodeApp {
-    /// Publish a bounded contextual project snapshot for the shell's Ctrl+K
-    /// palette. Any omitted file/symbol/result resolves lazily below through
-    /// its canonical address. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Standalone / `--shots` keeps the full hand-built door. When hosted,
+    /// file Document ops ride [`tilo_resource::publish`]; this returns only
+    /// live extras (save / symbols / search) — never a second project root.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.actions.is_hosted() {
-            return Vec::new();
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
         }
         self.publish_resources(doc)
     }
