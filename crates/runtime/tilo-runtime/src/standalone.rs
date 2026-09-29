@@ -16,6 +16,7 @@
 //! collaboration history.
 
 mod channels;
+mod files;
 mod joined;
 mod owner;
 mod rooms;
@@ -66,6 +67,8 @@ pub struct Standalone {
     actor: String,
     identity_socket: PathBuf,
     blob_socket: PathBuf,
+    /// Before the media host, whose content store it uses.
+    _files: Option<files::WorkspaceFiles>,
     _media: profile::MediaHost,
     _lock: advisory_lock::FileLock,
 }
@@ -89,9 +92,9 @@ impl Standalone {
         stage("loading the workspace");
         let workspace = ProfileWorkspace::open(root)?;
         let room_id = workspace.room();
-        let actor = tilo_identity_host::registry::selected_identity_profile(&room_id)?
-            .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?
-            .principal_id();
+        let identity = tilo_identity_host::registry::selected_identity_profile(&room_id)?
+            .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?;
+        let actor = identity.principal_id();
         stage("saving the workspace");
         workspace.adopt(&actor)?;
         let workspace = Arc::new(workspace);
@@ -116,7 +119,7 @@ impl Standalone {
         });
         let identity_socket = root.join(IDENTITY_SOCKET);
         stage("starting the identity service");
-        let identity = tilo_identity_host::broker::spawn(
+        let identity_broker = tilo_identity_host::broker::spawn(
             identity_socket.clone(),
             Arc::clone(&rooms) as Arc<dyn WorkspaceMembership>,
             Arc::new(channel_keys.keys.clone()),
@@ -152,15 +155,27 @@ impl Standalone {
         let blob_socket = root.join(BLOB_SOCKET);
         stage("opening the content store");
         let media = profile::MediaHost::start(&root.join("content"), &blob_socket)?;
+        let files = if workspace.governs() {
+            stage("syncing the workspace folder");
+            let author = files::Author {
+                person: identity.user_public_key,
+                device,
+            };
+            workspace_files(root, &workspace.name(), &media, joined.endpoint(), &author)
+        } else {
+            // The desktop session projects the files of a profile it serves.
+            None
+        };
         Ok(Self {
             broker,
             joined,
             _channels: channel_keys,
-            _identity: identity,
+            _identity: identity_broker,
             room: room_id,
             actor,
             identity_socket,
             blob_socket,
+            _files: files,
             _media: media,
             _lock: lock,
         })
@@ -302,6 +317,24 @@ fn channels(root: &Path) -> BrokerChannels {
         ),
     }
     channels
+}
+
+/// The profile's workspace files, mirrored into their folder in this
+/// user's home. Without the folder the host still serves: apps keep their
+/// documents, only the folder view of the files is missing.
+fn workspace_files(
+    profile: &Path,
+    workspace: &str,
+    media: &profile::MediaHost,
+    endpoint: iroh::Endpoint,
+    author: &files::Author,
+) -> Option<files::WorkspaceFiles> {
+    let started = files::folder(workspace).and_then(|folder| {
+        files::WorkspaceFiles::start(profile, &folder, media.store(), endpoint, author)
+    });
+    started
+        .inspect_err(|error| tracing::warn!(%error, "the workspace folder is unavailable"))
+        .ok()
 }
 
 /// The durable owner of the profile's room: this host's own, governed with
