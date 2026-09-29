@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Merge main into the checked-out pull-request head (see action.yml).
+# Merge the pull request's base branch into its checked-out head (see
+# action.yml). The base is main for ordinary pull requests and the lower branch
+# for a stacked one.
 set -euo pipefail
 
 if [ "${EVENT:-}" != pull_request ]; then
@@ -9,8 +11,9 @@ fi
 
 head=$(git rev-parse HEAD)
 if [ -z "${MAIN:-}" ]; then
-  git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
-  MAIN=$(git rev-parse refs/remotes/origin/main)
+  base_ref=${BASE_REF:-main}
+  git fetch --no-tags --depth=1 origin "+refs/heads/$base_ref:refs/remotes/origin/$base_ref"
+  MAIN=$(git rev-parse "refs/remotes/origin/$base_ref")
 fi
 [[ "$MAIN" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::invalid main commit: $MAIN" >&2; exit 1; }
 
