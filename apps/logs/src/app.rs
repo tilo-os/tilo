@@ -34,7 +34,7 @@
 )]
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -79,7 +79,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// has less than `POLL_INTERVAL` of history — that only delays the forced
 /// poll by at most `POLL_INTERVAL`, never panics.
 fn force_immediate_poll_at() -> Instant {
-    let now = Instant::now();
+    let now = ui::time::now();
     now.checked_sub(POLL_INTERVAL).unwrap_or(now)
 }
 
@@ -237,7 +237,7 @@ impl LogsApp {
             m: Metrics::ONE,
             push: PushNav::default(),
             allow_live,
-            last_poll: Instant::now(),
+            last_poll: ui::time::now(),
         };
         app.rebuild_facets();
         app
@@ -2521,7 +2521,7 @@ impl Widget for LogsApp {
 
         // Optional live tail: throttled re-poll, never under --shots.
         if self.allow_live && self.live_tail && self.last_poll.elapsed() >= POLL_INTERVAL {
-            self.last_poll = Instant::now();
+            self.last_poll = ui::time::now();
             match crate::journal::load_live(2000) {
                 Ok(fresh) => {
                     self.entries = fresh;

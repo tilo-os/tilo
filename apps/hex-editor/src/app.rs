@@ -22,12 +22,18 @@ pub fn sample_view() -> HexView {
         .with_cursor(0x10)
 }
 
+/// The bytes of a file a chooser or the command line named.
+pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>, tilo_files::FsError> {
+    let (dir, name) = tilo_files::file_at(path)?;
+    tilo_files::blocking::read(&dir, &name)
+}
+
 /// Construct the editor opened on a file's bytes. The display name is the
 /// file's final path component, and the path is remembered so `Ctrl+S` writes
 /// straight back. An unreadable path yields the honest empty state — never a
 /// fabricated buffer.
 pub fn view_for_path(path: &Path) -> HexView {
-    match std::fs::read(path) {
+    match read_file(path) {
         Ok(bytes) => {
             let name = path.file_name().map_or_else(
                 || "untitled".to_string(),

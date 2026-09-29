@@ -341,7 +341,8 @@ pub(crate) fn load_list(name: &str, url: &str) -> Option<String> {
             {
                 match crate::storage::private_root_write_guard(dir) {
                     Ok(_private_write) => {
-                        let _ = atomic_file::write_creating_parent(p, text.as_bytes());
+                        let _ =
+                            tilo_files::native::atomic::write_creating_parent(p, text.as_bytes());
                     }
                     Err(error) => tracing::warn!(%error, "filter cache is unavailable"),
                 }

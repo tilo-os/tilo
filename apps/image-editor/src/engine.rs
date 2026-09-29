@@ -13,10 +13,34 @@ pub enum EvalError {
     Save(String),
 }
 
+/// A source image kept in the app's state instead of at a path: one opened
+/// by contents, where files have no path (a browser page).
+pub const OPENED_SOURCE: &str = "opened:";
+
+/// Decode the source at `path`, or the kept image an [`OPENED_SOURCE`] names.
+pub fn open_source(path: &str) -> Result<RgbaImage, EvalError> {
+    open_bounded(path)
+}
+
 fn open_bounded(path: &str) -> Result<RgbaImage, EvalError> {
-    let mut reader = image::ImageReader::open(path)
+    if let Some(name) = path.strip_prefix(OPENED_SOURCE) {
+        let file = crate::web_file::recall()
+            .filter(|file| file.name == name)
+            .ok_or_else(|| EvalError::Open("the opened image is no longer kept".into()))?;
+        let reader = image::ImageReader::new(std::io::Cursor::new(file.bytes))
+            .with_guessed_format()
+            .map_err(|error| EvalError::Open(error.to_string()))?;
+        return decode_bounded(reader);
+    }
+    let reader = image::ImageReader::open(path)
         .and_then(image::ImageReader::with_guessed_format)
         .map_err(|error| EvalError::Open(error.to_string()))?;
+    decode_bounded(reader)
+}
+
+fn decode_bounded<R: std::io::BufRead + std::io::Seek>(
+    mut reader: image::ImageReader<R>,
+) -> Result<RgbaImage, EvalError> {
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
     limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
@@ -124,6 +148,14 @@ fn map(mut image: RgbaImage, f: impl Fn(u8) -> u8) -> RgbaImage {
         p[2] = f(p[2]);
     }
     image
+}
+/// The evaluated image as PNG bytes, for a save by contents.
+pub fn export_png(project: &Project) -> Result<Vec<u8>, EvalError> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    evaluate(project)?
+        .write_to(&mut out, image::ImageFormat::Png)
+        .map_err(|e| EvalError::Save(e.to_string()))?;
+    Ok(out.into_inner())
 }
 pub fn export(project: &Project, path: &std::path::Path) -> Result<(), EvalError> {
     evaluate(project)?

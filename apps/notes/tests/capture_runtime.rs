@@ -418,7 +418,7 @@ fn canonical_typing_records_real_frame_cost_and_visible_content() {
     notes::capture::drive_fixture(&mut driver, Some("fenced_code_opening")).unwrap();
     driver.key("Enter");
     driver.begin_profiling();
-    let started = std::time::Instant::now();
+    let started = ui::time::now();
     driver.type_text("print(1)");
     let typing_us = started.elapsed().as_micros();
     let samples = driver.take_profile_samples();

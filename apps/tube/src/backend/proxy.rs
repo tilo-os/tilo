@@ -21,7 +21,7 @@
 //!
 //! [`resolve_rangeable`]: crate::backend::proxy::resolve_rangeable
 
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 /// Public Invidious instances tried in order until one's `local` media proxy
 /// actually serves bytes. Operators can prepend their own via
@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 /// Ordering matters: instances whose media proxy is reliably up come first, so
 /// the common case resolves on the first probe.
 pub const INVIDIOUS_INSTANCES: &[&str] = &[
+    "https://invidious.f5.si",
     "https://invidious.nerdvpn.de",
     "https://inv.nadeko.net",
     "https://yewtu.be",
@@ -207,22 +208,23 @@ pub const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36
 /// the playback that follows will succeed. `None` when no instance's proxy
 /// answers within the budget (the caller then falls back to the direct,
 /// possibly-truncating, URL).
-pub fn resolve_rangeable(video_id: &str) -> Option<ResolvedVideo> {
+pub async fn resolve_rangeable(video_id: &str) -> Option<ResolvedVideo> {
     // Bounded so slow/down instances can't stall the resolve: a short
     // per-request timeout + an overall deadline.
-    let client = tilo_net::http::blocking_client()
+    let client = tilo_net::Client::builder()
         .timeout(Duration::from_millis(2500))
         .user_agent(BROWSER_UA)
+        .fetch_proxy(tilo_net::proxy::ProxyUse::CrossOrigin)
         .build()
         .ok()?;
-    let deadline = Instant::now() + Duration::from_secs(6);
+    let deadline = ui::time::now() + Duration::from_secs(6);
     for instance in instances() {
         for &(itag, mime, quality) in KNOWN_MUXED_ITAGS {
-            if Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 return None;
             }
             let url = proxy_media_url(&instance, video_id, itag);
-            if proxy_serves_bytes(&client, &url) {
+            if proxy_serves_bytes(&client, &url).await {
                 return Some(ResolvedVideo {
                     video_id: video_id.to_string(),
                     url,
@@ -238,17 +240,39 @@ pub fn resolve_rangeable(video_id: &str) -> Option<ResolvedVideo> {
 }
 
 /// Probe a proxy media URL with a tiny range request: `true` only when the
-/// instance actually serves media bytes (2xx with a non-empty body), so a broken
-/// proxy (500/403/redirect-to-nothing) is skipped.
-fn proxy_serves_bytes(client: &reqwest::blocking::Client, url: &str) -> bool {
+/// instance actually serves media bytes (2xx, a media type, a non-empty body),
+/// so a broken proxy (500/403/redirect-to-nothing) or an instance answering
+/// with a bot-check page is skipped.
+async fn proxy_serves_bytes(client: &tilo_net::Client, url: &str) -> bool {
     match client
         .get(url)
-        .header(reqwest::header::RANGE, "bytes=0-2047")
+        .header(tilo_net::header::RANGE, "bytes=0-2047")
         .send()
+        .await
     {
-        Ok(resp) => resp.status().is_success() && resp.bytes().is_ok_and(|b| !b.is_empty()),
+        Ok(resp) => {
+            let media = resp
+                .headers()
+                .get(tilo_net::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_none_or(is_media_type);
+            resp.status().is_success() && media && resp.bytes().await.is_ok_and(|b| !b.is_empty())
+        }
         Err(_) => false,
     }
+}
+
+/// Whether a `Content-Type` can be media bytes rather than a page.
+fn is_media_type(content_type: &str) -> bool {
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    essence.starts_with("video/")
+        || essence.starts_with("audio/")
+        || essence == "application/octet-stream"
 }
 
 #[cfg(test)]
@@ -345,43 +369,48 @@ mod tests {
     #[test]
     fn rangeable_source_serves_bytes_past_first_segment() {
         let video_id = "aqz-KE-bpKQ"; // Big Buck Bunny (Blender, CC-BY) — long + stable.
-        let Some(stream) = resolve_rangeable(video_id) else {
-            eprintln!("[proxy test] skipped — no Invidious instance reachable");
+        let Ok(resolved) = ui::rt::block_on(async {
+            let Some(stream) = resolve_rangeable(video_id).await else {
+                eprintln!("[proxy test] skipped — no Invidious instance reachable");
+                return None;
+            };
+            assert!(
+                stream.url.contains("local=true"),
+                "resolved a proxied URL: {}",
+                stream.url
+            );
+            assert!(stream.has_audio, "a muxed format carries audio");
+            let client = tilo_net::Client::builder()
+                .timeout(Duration::from_secs(20))
+                .user_agent(BROWSER_UA)
+                .build()
+                .ok()?;
+            // Request a range well past the first-segment boundary raw
+            // googlevideo URLs refuse (~2 MB in).
+            let Ok(resp) = client
+                .get(&stream.url)
+                .header(tilo_net::header::RANGE, "bytes=2000000-2100000")
+                .send()
+                .await
+            else {
+                eprintln!("[proxy test] skipped — proxy fetch failed");
+                return None;
+            };
+            if !resp.status().is_success() {
+                eprintln!("[proxy test] skipped — proxy returned {}", resp.status());
+                return None;
+            }
+            Some(resp.bytes().await)
+        }) else {
             return;
         };
-        assert!(
-            stream.url.contains("local=true"),
-            "resolved a proxied URL: {}",
-            stream.url
-        );
-        assert!(stream.has_audio, "a muxed format carries audio");
-        let Ok(client) = tilo_net::http::blocking_client()
-            .timeout(Duration::from_secs(20))
-            .user_agent(BROWSER_UA)
-            .build()
-        else {
-            return;
-        };
-        // Request a range well past the first-segment boundary raw googlevideo
-        // URLs refuse (~2 MB in).
-        let Ok(resp) = client
-            .get(&stream.url)
-            .header(reqwest::header::RANGE, "bytes=2000000-2100000")
-            .send()
-        else {
-            eprintln!("[proxy test] skipped — proxy fetch failed");
-            return;
-        };
-        if !resp.status().is_success() {
-            eprintln!("[proxy test] skipped — proxy returned {}", resp.status());
-            return;
-        }
-        match resp.bytes() {
-            Ok(bytes) => assert!(
+        match resolved {
+            Some(Ok(bytes)) => assert!(
                 !bytes.is_empty(),
                 "the rangeable source served bytes past the first segment"
             ),
-            Err(_) => eprintln!("[proxy test] skipped — body read failed"),
+            Some(Err(_)) => eprintln!("[proxy test] skipped — body read failed"),
+            None => {}
         }
     }
 }

@@ -8,7 +8,6 @@
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
-use std::thread;
 
 use crate::compile::{CompileOutput, WorldParts, compile_source};
 
@@ -40,31 +39,29 @@ impl CompileWorker {
     pub fn spawn(parts: Arc<WorldParts>) -> Option<Self> {
         let (job_tx, job_rx) = channel::<Job>();
         let (result_tx, result_rx) = channel::<CompileResult>();
-        thread::Builder::new()
-            .name("typst-compile".into())
-            .spawn(move || {
-                while let Ok(mut job) = job_rx.recv() {
-                    // Drain to the freshest queued job — older edits are stale.
-                    loop {
-                        match job_rx.try_recv() {
-                            Ok(newer) => job = newer,
-                            Err(TryRecvError::Empty) => break,
-                            Err(TryRecvError::Disconnected) => return,
-                        }
-                    }
-                    let output = compile_source(&parts, &job.source, job.ppp);
-                    if result_tx
-                        .send(CompileResult {
-                            seq: job.seq,
-                            output,
-                        })
-                        .is_err()
-                    {
-                        return;
+        ui::rt::spawn_thread("typst-compile", move || {
+            while let Ok(mut job) = job_rx.recv() {
+                // Drain to the freshest queued job — older edits are stale.
+                loop {
+                    match job_rx.try_recv() {
+                        Ok(newer) => job = newer,
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => return,
                     }
                 }
-            })
-            .ok()?;
+                let output = compile_source(&parts, &job.source, job.ppp);
+                if result_tx
+                    .send(CompileResult {
+                        seq: job.seq,
+                        output,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        })
+        .ok()?;
 
         Some(Self {
             job_tx,

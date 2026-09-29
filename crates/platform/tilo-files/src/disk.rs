@@ -56,6 +56,10 @@ pub(crate) fn append(root: &Path, path: &VPath, bytes: &[u8]) -> Result<(), FsEr
     Ok(())
 }
 
+pub(crate) fn write(root: &Path, path: &VPath, bytes: &[u8]) -> Result<(), FsError> {
+    Ok(fs::write(prepare(root, path)?, bytes)?)
+}
+
 pub(crate) fn write_atomic(root: &Path, path: &VPath, bytes: &[u8]) -> Result<(), FsError> {
     Ok(atomic::write(&prepare(root, path)?, bytes)?)
 }
@@ -140,6 +144,17 @@ pub(crate) fn remove(root: &Path, path: &VPath) -> Result<(), FsError> {
     let target = resolve(root, path);
     if fs::symlink_metadata(&target)?.is_dir() {
         fs::remove_dir(&target)?;
+    } else {
+        fs::remove_file(&target)?;
+    }
+    Ok(())
+}
+
+/// A symbolic link is removed, never followed.
+pub(crate) fn remove_all(root: &Path, path: &VPath) -> Result<(), FsError> {
+    let target = resolve(root, path);
+    if fs::symlink_metadata(&target)?.is_dir() {
+        fs::remove_dir_all(&target)?;
     } else {
         fs::remove_file(&target)?;
     }

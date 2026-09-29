@@ -18,8 +18,6 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-# One owner for ~/.config/tilo/settings.json.
-settings-store = { path = "../../crates/system/settings-store" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
@@ -30,7 +28,6 @@ uuid.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../crates/dev/test-env" }
@@ -38,3 +35,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
