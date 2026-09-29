@@ -43,10 +43,10 @@ class MergeMain(unittest.TestCase):
         self.git(work, "checkout", "-q", "--detach", self.head)
         return work
 
-    def run_action(self, work, event="pull_request", main=""):
+    def run_action(self, work, event="pull_request", main="", base_ref="main"):
         output = self.tmp / f"{work.name}.out"
         output.write_text("")
-        env = dict(os.environ, EVENT=event, MAIN=main, GITHUB_OUTPUT=str(output),
+        env = dict(os.environ, EVENT=event, MAIN=main, BASE_REF=base_ref, GITHUB_OUTPUT=str(output),
                    GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
         result = subprocess.run(["bash", str(SCRIPT)], cwd=work, env=env,
                                 capture_output=True, text=True)
@@ -69,6 +69,17 @@ class MergeMain(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(self.git(work, "rev-parse", "HEAD"), merged)
             self.assertFalse((work / "d.txt").exists())
+
+    def test_a_stacked_pull_request_merges_its_base_branch(self):
+        self.git(self.origin, "checkout", "-q", "-b", "lower", self.head)
+        lower = self.commit(self.origin, "e.txt", "lower moved\n")
+        self.git(self.origin, "checkout", "-q", "main")
+        work = self.job("stacked")
+        result, output = self.run_action(work, base_ref="lower")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output, f"main={lower}\n")
+        self.assertTrue((work / "e.txt").exists())
+        self.assertFalse((work / "c.txt").exists())
 
     def test_conflicts_and_other_events(self):
         with self.subTest(phase="a conflict with main fails the job"):
