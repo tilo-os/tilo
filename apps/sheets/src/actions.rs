@@ -2129,7 +2129,7 @@ pub fn workbook_root(ctx: &SheetsResourceCtx) -> Resource {
                         .expect("sheet operation serializes")
                 },
             )
-            .execution(ExecutionMode::Background { cancellable: false })
+            .execution(ExecutionMode::Background { cancellable: true })
             .returns(ResultSpec::Job),
         );
     }
@@ -3067,10 +3067,11 @@ mod tests {
                     .find(|action| action.id == id)
                     .unwrap();
                 assert_eq!(action.params()[0].name.as_ref(), "path");
-                assert!(matches!(
+                assert_eq!(
                     action.contract.execution,
-                    ExecutionMode::Background { .. }
-                ));
+                    ExecutionMode::Background { cancellable: true },
+                    "{id} must stay cancellable so a stuck job cannot hold the one interchange slot"
+                );
                 assert_eq!(action.contract.result, ResultSpec::Job);
                 assert!(action.contract.validate_declaration().is_empty());
             }
