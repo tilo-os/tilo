@@ -2022,7 +2022,8 @@ impl TerminalWidget {
         if let Some(t) = title_out
             && t != self.title
         {
-            let _ = state.put(root, "terminal_title", t.clone());
+            let action = crate::resource::TerminalAction::SetTitle { title: t.clone() };
+            let _ = ui::tilo_actions::Action::apply(&action, state);
             self.title = t;
         }
 
