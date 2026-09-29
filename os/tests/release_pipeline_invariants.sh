@@ -95,7 +95,7 @@ grep -Fq 'scope=kernel-{0},mode=min,ignore-error=true' "$workflows/build-kernel.
 # that stage by digest as its wpe-builder context; os/Containerfile fails
 # closed without it.
 [ "$(grep -Fc 'file: os/Containerfile.wpe' "$os")" = 2 ] \
-  && [ "$(grep -Fc "format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)" "$os")" = 7 ] \
+  && [ "$(grep -Fc "format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)" "$os")" = 8 ] \
   && grep -Fq "format('wpe-builder=oci-layout:///var/tmp/tilo-wpe-uncached@{0}', steps.wpe-uncached.outputs.digest)" "$os" \
   && grep -Fq "no-cache: \${{ matrix.role == 'reproduce' }}" "$os" \
   && ok 'OS image builds take the browser engine from its isolated recipe' \
@@ -313,7 +313,7 @@ grep -Fq 'payload_source=$(jq -r '"'"'.source // empty'"'"' "$work/manifest.json
 grep -Fq 'with_browser=0' "$os" \
   && grep -Fq 'WITH_BROWSER: ${{ env.TILO_WITH_BROWSER }}' "$os" \
   && grep -Fq "max-parallelism = \${{ github.event_name == 'workflow_call' && 4 || 1 }}" "$os" \
-  && test "$(grep -Fc 'TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 7 \
+  && test "$(grep -Fc 'TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 8 \
   && grep -Fq 'TILO_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
   && ! grep -Fq 'id=tilo-composefs-' "$repo/os/Containerfile" \
   && grep -Fq 'find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$repo/os/Containerfile" \
@@ -347,7 +347,7 @@ grep -Fq 'refs/tags/v*) with_browser=1 ;;' "$os" \
 grep -Fq 'python3 os/dev/windows_provider.py mode --arch "$(uname -m)"' "$os" \
   && grep -Fq 'FEX_PAYLOAD_REF: ${{ vars.TILO_FEX_PAYLOAD_REF }}' "$os" \
   && grep -Fq 'WINDOWS_GUEST_REF: ${{ vars.TILO_WINDOWS_GUEST_REF }}' "$os" \
-  && [ "$(grep -Fc 'TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}' "$os")" = 7 ] \
+  && [ "$(grep -Fc 'TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}' "$os")" = 8 ] \
   && grep -Fq 'windows_provider.py" mode --arch "$TILO_WINDOWS_ARCH"' "$repo/os/dev/build-image.sh" \
   && grep -Fq -- '--build-arg "TILO_WITH_WINDOWS=$TILO_WITH_WINDOWS"' "$repo/os/dev/build-image.sh" \
   && grep -Fq 'FROM windows-provider-${TILO_WINDOWS_ARCH}-${TILO_WITH_WINDOWS} AS windows-provider' "$repo/os/Containerfile" \
