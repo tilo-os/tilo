@@ -73,6 +73,13 @@ launcher currently checks Linux process birth information under `/proc`; its
 non-Linux implementation returns no attestation. Both macOS and Windows need
 an authenticated launch adapter before they can reuse the broker safely.
 
+Identity secrets on macOS live in the login Keychain: the personal
+identity's private share, the device key and the runtime's channel-state key.
+None falls back to a file; a Keychain that refuses or fails stops the runtime
+from starting. A key file an earlier build wrote moves into the Keychain once,
+is read back, and only then removed. Tests keep them in files by setting
+`TILO_IDENTITY_FILE_SECRETS`, which a release build ignores.
+
 Confinement is settled separately. A macOS app launched by the per-user
 runtime runs under App Sandbox only if it is Developer ID-signed,
 notarized and App Sandbox-entitled. Every other app runs under a
