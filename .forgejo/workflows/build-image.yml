@@ -2003,7 +2003,7 @@ jobs:
             --label "org.opencontainers.image.base.digest=$DEV_BASE_DIGEST" \
             --label sh.tilo.dev.base-trust=integration \
             --metadata-file "$metadata" \
-            --output "type=image,name=$child,push=true,compression=zstd,compression-level=1" \
+            --output "type=image,name=$child,push=true,compression=zstd,compression-level=1,rewrite-timestamp=true" \
             .
           digest="$(jq -er '."containerimage.digest"' "$metadata")"
           echo "::notice::dev image built in $(( $(date +%s) - started ))s: $child ($digest)"
