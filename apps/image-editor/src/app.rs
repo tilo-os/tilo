@@ -2776,6 +2776,13 @@ impl Widget for ImageEditorApp {
         if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
             return Ok(Some(started));
         }
+        if request.type_id == CONTROL_OPERATION_TYPE {
+            for button in self.retained_buttons_mut() {
+                if let Some(started) = button.start_operation(op, doc, path)? {
+                    return Ok(Some(started));
+                }
+            }
+        }
         if let Some(started) = self.admit_resource_operation(
             request.invocation,
             request.kind,
