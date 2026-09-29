@@ -2219,7 +2219,13 @@ impl TerminalWidget {
         if let Some(id) = Self::shared_pane_id(state, root) {
             self.pane_id = id;
         } else {
-            let _ = state.put(root, "terminal_pane_id", self.pane_id.clone());
+            let action = crate::resource::TerminalAction::ClaimPane {
+                pane_id: self.pane_id.clone(),
+            };
+            let _ = ui::tilo_actions::Action::apply(&action, state);
+            if let Some(id) = Self::shared_pane_id(state, root) {
+                self.pane_id = id;
+            }
         }
 
         if self.cursor_id.is_none() {
@@ -5757,8 +5763,10 @@ impl Perform for TerminalPerformer<'_> {
                     && let Some(id) = self.next_link_id.checked_add(1)
                 {
                     *self.next_link_id = id;
-                    let _ = self.state.put(&self.links_id, id.to_string(), url);
-                    self.current_link_id = id;
+                    let action = crate::resource::TerminalAction::RegisterLink { id, url };
+                    if ui::tilo_actions::Action::apply(&action, &mut self.state).is_ok() {
+                        self.current_link_id = id;
+                    }
                 }
             }
             _ => {}
