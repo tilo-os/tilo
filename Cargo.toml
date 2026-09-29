@@ -51,7 +51,6 @@ members = [
     "crates/session/tilo-ntfs-helper",
     "crates/session/tilo-ntfs-protocol",
     "crates/browser/chromium-blocker",
-    "crates/browser/tilo-browser-peer",
     "crates/browser/tilo-web-desktop",
     # Core product surfaces
     "crates/session/shell",
