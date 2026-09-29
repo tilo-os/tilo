@@ -158,20 +158,6 @@ export function abiInputs({cargoJson, repo, runtime, rustflags, packages, rustc 
   };
 }
 
-/**
- * The packages whose units decide the ABI: those of the core's graph that the
- * app collection's graphs share. A crate only the core uses (its page host's
- * transports, say) exports nothing an app links against, so an optional core
- * feature that adds such crates, and changes no shared crate's features,
- * keeps the id. `graph` is graph.json: `{"<root>": ["name@version", ...]}`
- * for the core and each collection app; without apps, the core's own graph.
- */
-export function abiPackages(graph) {
-  const core = graph[CORE_PACKAGE] ?? [];
-  const apps = new Set(Object.entries(graph).filter(([root]) => root !== CORE_PACKAGE).flatMap(([, packages]) => packages));
-  return new Set(apps.size ? core.filter(key => apps.has(key)) : core);
-}
-
 /** `tilo-runtime/2026.07+wasm.<32 hex>`: the runtime name plus 128 bits of the digest. */
 export function abiId(inputs) {
   return `${inputs.runtime}+wasm.${sha256(JSON.stringify(inputs)).slice(0, 32)}`;
@@ -179,7 +165,7 @@ export function abiId(inputs) {
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const [cargoJsonPath, graphPath, repo, runtime] = process.argv.slice(2);
-  const packages = abiPackages(JSON.parse(readFileSync(graphPath, 'utf8')));
+  const packages = new Set(JSON.parse(readFileSync(graphPath, 'utf8'))[CORE_PACKAGE]);
   const inputs = abiInputs({cargoJson: readFileSync(cargoJsonPath, 'utf8'), repo, runtime, packages, rustflags: process.env.RUSTFLAGS ?? ''});
   process.stdout.write(JSON.stringify({abi: abiId(inputs), inputs}, null, 2) + '\n');
 }

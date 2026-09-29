@@ -27,9 +27,6 @@ mod close_recovery;
 #[cfg(all(target_arch = "wasm32", feature = "cloud"))]
 mod peer;
 
-#[cfg(all(target_arch = "wasm32", feature = "relay"))]
-mod relay;
-
 #[cfg(not(target_arch = "wasm32"))]
 mod fixture;
 #[cfg(not(target_arch = "wasm32"))]
