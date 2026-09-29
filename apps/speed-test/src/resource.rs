@@ -43,9 +43,10 @@ impl Resource for SpeedTest {
     }
 
     fn local_operations() -> Vec<ActionSpec> {
+        // Stop is live: it only exists while a measurement is running, so it
+        // stays on the hosted extra instead of the always-on door.
         [
             ("start", "Run speed test", SpeedOperation::Start),
-            ("stop", "Stop speed test", SpeedOperation::Stop),
             (
                 "change-region",
                 "Change test region",
@@ -85,7 +86,72 @@ impl ResourceApp for SpeedTestShell {
 }
 
 impl ResourceSurface<SpeedTest> for SpeedTestApp {
+    /// Results stay on this device. An empty projection must not clear them.
     fn present(&mut self, _state: &std::rc::Rc<SpeedTestState>) {}
 
-    fn attach(&mut self, _cx: SurfaceCx<SpeedTest>) {}
+    fn attach(&mut self, _cx: SurfaceCx<SpeedTest>) {
+        self.mark_framework_hosted();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::resources::PublishesResources;
+
+    #[test]
+    fn publish_owns_start_and_hosted_keeps_stop_only_while_running() {
+        let published = ui::tilo_resource::publish::<SpeedTest>(
+            "speed-test",
+            "Internet speed test",
+            &SpeedTestState,
+        );
+        let ids: Vec<&str> = published
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        assert!(ids.contains(&"start"), "start rides publish: {ids:?}");
+        assert!(
+            ids.contains(&"change-region"),
+            "change-region rides publish: {ids:?}"
+        );
+        assert!(!ids.contains(&"stop"), "stop stays live: {ids:?}");
+
+        let mut idle = SpeedTestApp::new();
+        assert!(!idle.is_framework_hosted());
+        let standalone = idle.resources(&ui::automerge::AutoCommit::new());
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].kind, SpeedTest::KIND);
+
+        idle.mark_hosted_for_test();
+        assert!(
+            idle.resources(&ui::automerge::AutoCommit::new()).is_empty(),
+            "idle hosted adds no second speed-test root"
+        );
+
+        let mut running = SpeedTestApp::demo("running");
+        running.mark_hosted_for_test();
+        let extras = running.resources(&ui::automerge::AutoCommit::new());
+        assert_eq!(extras.len(), 1);
+        assert_ne!(extras[0].kind, SpeedTest::KIND);
+        assert_eq!(extras[0].id.as_str(), "speed-test.run");
+        assert!(
+            extras[0]
+                .actions
+                .iter()
+                .any(|action| action.id.as_str() == "stop")
+        );
+    }
+
+    #[test]
+    fn present_empty_does_not_wipe_a_completed_result() {
+        let mut app = SpeedTestApp::demo("complete");
+        assert!(app.has_result());
+        ResourceSurface::<SpeedTest>::present(&mut app, &std::rc::Rc::new(SpeedTestState));
+        assert!(
+            app.has_result(),
+            "empty present must not wipe a local result"
+        );
+    }
 }

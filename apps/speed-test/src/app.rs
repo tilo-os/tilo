@@ -86,6 +86,7 @@ pub struct SpeedTestApp {
     error: Option<String>,
     history: Vec<ResultSet>,
     shot: bool,
+    hosted: bool,
 }
 
 impl SpeedTestApp {
@@ -106,6 +107,7 @@ impl SpeedTestApp {
             error: None,
             history: Vec::new(),
             shot: false,
+            hosted: false,
         }
     }
 
@@ -247,6 +249,22 @@ impl SpeedTestApp {
         } else {
             168.0
         }
+    }
+
+    pub(crate) fn mark_framework_hosted(&mut self) {
+        self.hosted = true;
+    }
+
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.hosted
+    }
+
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
+    }
+
+    pub(crate) fn has_result(&self) -> bool {
+        self.result.is_some()
     }
 
     fn is_running(&self) -> bool {
@@ -798,6 +816,9 @@ impl Widget for SpeedTestApp {
 
 impl ui::resources::PublishesResources for SpeedTestApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        if self.hosted {
+            return self.live_run_extra();
+        }
         let mut root = Resource::new("speed-test:root", "speed-test", "Internet speed test");
         if let Some(spec) = action("start", "Run speed test", &SpeedOperation::Start) {
             root.actions.push(spec);
@@ -815,6 +836,20 @@ impl ui::resources::PublishesResources for SpeedTestApp {
             root.actions.push(spec);
         }
         vec![root]
+    }
+}
+
+impl SpeedTestApp {
+    /// Stop while a measurement is running. Not a second `speed-test` root.
+    fn live_run_extra(&self) -> Vec<Resource> {
+        if !self.is_running() {
+            return Vec::new();
+        }
+        let mut run = Resource::new("speed-test.run", "speed-test.run", "Running test");
+        if let Some(spec) = action("stop", "Stop speed test", &SpeedOperation::Stop) {
+            run.actions.push(spec);
+        }
+        vec![run]
     }
 }
 
