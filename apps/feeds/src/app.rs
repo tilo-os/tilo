@@ -5377,11 +5377,19 @@ impl ui::resources::PublishesResources for FeedsApp {
     /// action palette scopes to them. When the framework hosts the surface,
     /// [`tilo_resource::publish`] already owns the reader door; hosted returns
     /// nothing rather than a second hand-built tree.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         if self.is_hosted() {
             return Vec::new();
         }
-        self.publish_resources(doc)
+        let state = crate::resource::FeedsState {
+            store: self.store.clone(),
+            settings: self.settings,
+        };
+        vec![ui::tilo_resource::publish::<crate::resource::Feeds>(
+            crate::resource::READER_RESOURCE_ID,
+            "Feeds",
+            &state,
+        )]
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         self.publish_resource(doc, id)
