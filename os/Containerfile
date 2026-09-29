@@ -1761,6 +1761,8 @@ ARG TILO_WINDOWS_ARCH
 # appliance's domain uses, and libvirt the KVM daemon set without the
 # `qemu-kvm`/`libvirt-daemon-kvm` metapackages: those add QEMU's GTK and SDL
 # front ends and network block drivers no Tilo path opens.
+# libvirt's storage drivers recommend the NFS client stack, which would undo the
+# removal above: the kernel has no NFS, so its units only fail at boot.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     test "$(uname -m)" = "$TILO_WINDOWS_ARCH" && \
     case "$(uname -m)" in \
@@ -1771,6 +1773,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     --exclude=dosbox-staging \
     --exclude=libcanberra-gtk3 \
     --exclude=xdg-desktop-portal-gtk \
+    --exclude=nfs-utils --exclude=nfs-client-utils --exclude=nfs-common-utils \
+    --exclude=nfsv3-client-utils --exclude=nfsv4-client-utils --exclude=rpcbind \
     $windows_packages \
     qemu-kvm-core \
     qemu-ui-spice-core \
