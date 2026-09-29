@@ -1186,13 +1186,24 @@ jobs:
         run: |
           set -euo pipefail
           key="$(os/dev/wpe-stage-key.sh "$ARCH")"
+          legacy_key="$(os/dev/wpe-stage-key.sh "$ARCH" --legacy)"
           echo "TILO_WPE_CACHE_KEY=$key" >> "$GITHUB_ENV"
+          echo "TILO_WPE_LEGACY_CACHE_KEY=$legacy_key" >> "$GITHUB_ENV"
+          # Match the snapshot publisher's memory-safe job count. Eight jobs
+          # preserves the cache made by existing large-runner OS builds.
+          jobs=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 3145728 ))
+          (( jobs > $(nproc) )) && jobs=$(nproc)
+          (( jobs > 8 )) && jobs=8
+          (( jobs < 1 )) && jobs=1
+          echo "TILO_WPE_JOBS=$jobs" >> "$GITHUB_ENV"
           name="WPE_STAGE_${ARCH^^}_REF"
           stage="$(sed -n "s/^$name=//p" os/wpe-stage-snapshot.env)"
           if [[ $stage =~ ^registry\.tilo\.so/tilo/tilo-wpe-stage@sha256:[0-9a-f]{64}$ ]]; then
             cosign verify --key keys/cosign.pub "$stage" >/dev/null
             label="$(skopeo inspect "docker://$stage" | jq -r '.Labels["org.tilo.wpe.inputs"] // empty')"
-            if [[ $label == "$key" ]]; then
+            # A signed stage promoted by the previous workflow carries the
+            # full-manifest key. Its exact old inputs are still valid here.
+            if [[ $label == "$key" || $label == "$legacy_key" ]]; then
               echo "TILO_WPE_STAGE_REF=$stage" >> "$GITHUB_ENV"
               echo "::notice::browser engine from its pinned stage $stage"
               exit 0
@@ -1216,9 +1227,12 @@ jobs:
           outputs: type=oci,dest=/var/tmp/tilo-wpe,tar=false
           build-args: |
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
+            WPE_BUILD_JOBS=${{ env.TILO_WPE_JOBS }}
           provenance: false
           no-cache: ${{ matrix.role == 'reproduce' }}
-          cache-from: ${{ matrix.role != 'reproduce' && format('type=gha,scope=tilo-os-wpe-{0}-{1}', env.TILO_WPE_CACHE_KEY, matrix.arch) || '' }}
+          cache-from: |
+            ${{ matrix.role != 'reproduce' && format('type=gha,scope=tilo-os-wpe-{0}-{1}', env.TILO_WPE_CACHE_KEY, matrix.arch) || '' }}
+            ${{ matrix.role != 'reproduce' && format('type=gha,scope=tilo-os-wpe-{0}-{1}', env.TILO_WPE_LEGACY_CACHE_KEY, matrix.arch) || '' }}
           cache-to: ${{ matrix.role != 'reproduce' && format('type=gha,scope=tilo-os-wpe-{0}-{1},mode=max,ignore-error=true', env.TILO_WPE_CACHE_KEY, matrix.arch) || '' }}
 
       # Build and export the compile stages (the Rust builder and its inputs)
