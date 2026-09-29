@@ -1983,6 +1983,16 @@ impl ContactsApp {
         self.actions.attach(dispatcher);
     }
 
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
     fn local_change_for(
         &self,
         action: &crate::actions::ContactsAction,
@@ -8236,12 +8246,12 @@ impl ui::search::capability::SearchSource for ContactsApp {
 
 impl ui::resources::PublishesResources for ContactsApp {
     /// Publish the open book + its contacts so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// scopes to them. When the framework hosts the surface,
+    /// [`tilo_resource::publish`] already owns the address-book door; only
+    /// live extras (import conflicts, pending merges) remain here.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.actions.is_hosted() {
-            return Vec::new();
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
         }
         self.publish_resources(doc)
     }
