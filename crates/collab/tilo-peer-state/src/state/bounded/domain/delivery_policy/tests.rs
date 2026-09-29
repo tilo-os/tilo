@@ -359,3 +359,39 @@ fn actual_delivery_holder_preserves_policy_errors_before_current_route_denial() 
         assert_eq!(ROUTE_CHECKS.with(std::cell::Cell::get), 0);
     }
 }
+
+#[test]
+fn a_file_grant_to_an_app_leaves_the_delivery_policy_available() {
+    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+    let (mut peer, key, _, device, now) = crate::admission_tests::seeded();
+    let mut room = peer.admitted_room().unwrap().clone();
+    let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
+    let grant = CapOverride::grant(
+        Subject::app("so.tilo.notes"),
+        Scope::FsPath("/data/out".into()),
+        Verb::Write,
+    );
+    room.put(&caps, "profile:files", serde_json::to_vec(&grant).unwrap())
+        .unwrap();
+    let changes = room
+        .get_changes(&[])
+        .iter()
+        .map(|c| c.raw_bytes().to_vec())
+        .collect();
+    peer.receive_from(
+        TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+        NeighbourMsg::SyncResp {
+            room: peer.room().into(),
+            changes,
+        },
+        now,
+    )
+    .unwrap();
+    peer.delivery_policy_unqualified(37, peer.authority(), &device, now)
+        .unwrap();
+    let native = restore(&peer, now, &PeerLimits::default());
+    native
+        .read()
+        .delivery_policy(37, peer.authority(), &device, now)
+        .unwrap();
+}

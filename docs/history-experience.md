@@ -7,6 +7,9 @@ and recover the exact action when something needs attention.
 The experience has three zoom levels. They are views of one action-derived
 model, not three separately generated feeds.
 
+What counts as history, and how Catch up, the timeline and per-resource history
+divide the work, is settled in [search-and-history-views.md](search-and-history-views.md).
+
 ## 1. Glance: ambient, quiet, current
 
 The top bar's collaborator cluster is the passive surface. It answers “what is

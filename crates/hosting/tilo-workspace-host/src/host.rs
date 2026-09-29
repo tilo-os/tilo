@@ -1176,6 +1176,21 @@ async fn handle_collaboration_admin(
             reconcile = true;
             serde_json::json!({"generation": completion.generation.to_string()})
         }
+        CollaborationAdminOperation::SetAdministrator(input) => {
+            let completion = service
+                .set_member_administrator(
+                    owner,
+                    caller,
+                    crate::collaboration::RemoveMemberRequest {
+                        request_id,
+                        user_public_key: participant(&input.participant_id)?,
+                    },
+                    now,
+                )
+                .map_err(|error| rejected(error.to_string()))?;
+            reconcile = true;
+            serde_json::json!({"generation": completion.generation.to_string()})
+        }
         CollaborationAdminOperation::Remove(input) => {
             let completion = service
                 .remove_member(

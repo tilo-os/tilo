@@ -44,6 +44,8 @@ pub const ROOM_TASKS_KEY: &str = "tasks_v1";
 pub const ROOM_EFFECT_RECEIPTS_KEY: &str = "effect_receipts_v1";
 /// Key a room document stores its saved shortcuts under.
 pub const ROOM_AUTOMATIONS_KEY: &str = "automations_v1";
+/// Key a room document stores its permission profiles under, by lowercase name.
+pub const ROOM_PERMISSION_PROFILES_KEY: &str = "permission_profiles_v1";
 /// Key a room document stores its schedule claims under.
 pub const ROOM_SCHEDULE_CLAIMS_KEY: &str = "schedule_claims_v1";
 
@@ -347,6 +349,71 @@ pub fn project_workspace_shortcuts(
         }
     }
     Ok(())
+}
+
+/// Project a workspace's permission profiles as one map value per lowercase
+/// profile name. The capabilities an assignment expands to are governance and
+/// travel separately; a profile itself grants nothing.
+///
+/// # Errors
+///
+/// The document's error when the profiles map cannot be created.
+pub fn project_workspace_permission_profiles(
+    doc: &mut AutoCommit,
+    profiles: &[collab_types::PermissionProfile],
+) -> Result<(), automerge::AutomergeError> {
+    use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+
+    let map = match doc.get(&ROOT, ROOM_PERMISSION_PROFILES_KEY).ok().flatten() {
+        Some((_, id)) => id,
+        None if profiles.is_empty() => return Ok(()),
+        None => doc.put_object(&ROOT, ROOM_PERMISSION_PROFILES_KEY, ObjType::Map)?,
+    };
+    let key = |profile: &collab_types::PermissionProfile| profile.name.trim().to_lowercase();
+    let stale: Vec<String> = doc
+        .keys(&map)
+        .filter(|name| !profiles.iter().any(|profile| key(profile) == *name))
+        .collect();
+    for name in stale {
+        doc.delete(&map, name.as_str())?;
+    }
+    for profile in profiles {
+        let Ok(blob) = serde_json::to_vec(profile) else {
+            continue;
+        };
+        let name = key(profile);
+        let unchanged = matches!(
+            doc.get(&map, name.as_str()).ok().flatten(),
+            Some((Value::Scalar(value), _))
+                if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
+        );
+        if !unchanged {
+            doc.put(&map, name.as_str(), ScalarValue::Bytes(blob))?;
+        }
+    }
+    Ok(())
+}
+
+/// The permission profiles a room document carries, by name. A value that
+/// does not decode is skipped.
+pub fn workspace_permission_profiles_of(doc: &AutoCommit) -> Vec<collab_types::PermissionProfile> {
+    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+
+    let Some((_, map)) = doc.get(&ROOT, ROOM_PERMISSION_PROFILES_KEY).ok().flatten() else {
+        return Vec::new();
+    };
+    let mut profiles: Vec<collab_types::PermissionProfile> = doc
+        .keys(&map)
+        .filter_map(|key| match doc.get(&map, key.as_str()).ok().flatten() {
+            Some((Value::Scalar(value), _)) => match value.as_ref() {
+                ScalarValue::Bytes(blob) => serde_json::from_slice(blob).ok(),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    profiles.sort_by_key(|profile| profile.name.to_lowercase());
+    profiles
 }
 
 /// The shortcuts a room document carries, by id. A value that does not
@@ -1059,6 +1126,23 @@ pub fn localise_tile(
                 note: String::new(),
             }
         }
+        // A governed room's owner places in-process kinds; a member that bound
+        // its own instance of that app to the tab keeps it.
+        placeholder @ (TileContent::AppPlaceholder { .. } | TileContent::Stub { .. }) => {
+            let app = crate::apps::canonical_app_id(&placeholder);
+            match current {
+                Some(
+                    bound @ (TileContent::Foreign { app_id, .. }
+                    | TileContent::PeerWindow { app_id, .. }),
+                ) if app
+                    .as_deref()
+                    .is_some_and(|app| app.eq_ignore_ascii_case(app_id)) =>
+                {
+                    bound.clone()
+                }
+                _ => placeholder,
+            }
+        }
         other => other,
     }
 }
@@ -1360,8 +1444,11 @@ pub fn apply_admitted_room(
     let shortcuts = workspace_shortcuts_of(doc);
     let reshortcut = workspace.shortcuts != shortcuts;
     workspace.shortcuts = shortcuts;
+    let profiles = workspace_permission_profiles_of(doc);
+    let reprofiled = workspace.permission_profiles != profiles;
+    workspace.permission_profiles = profiles;
     let changed = merge_room_contents(tree, room, contents_of(doc), Reader::Viewer);
-    Ok(changed || renamed || reshortcut)
+    Ok(changed || renamed || reshortcut || reprofiled)
 }
 
 /// The room's topology namespaces: salt → the device key (64 lowercase hex
@@ -1396,6 +1483,43 @@ pub fn desktop_counter_of(doc: &AutoCommit) -> Option<u64> {
 mod tests {
     use super::*;
     use tilo_automerge::ApplyIncoming;
+
+    #[test]
+    fn a_bound_instance_survives_the_owner_re_sending_its_placeholder() {
+        let placeholder = TileContent::AppPlaceholder {
+            kind: AppKind::Other("so.tilo.notes".into()),
+            label: "Notes".into(),
+        };
+        let bound = TileContent::Foreign {
+            app_id: "so.tilo.notes".into(),
+            surface_id: 7,
+        };
+        assert_eq!(
+            localise_tile(placeholder.clone(), Some(&bound), "Notes"),
+            bound
+        );
+        let waiting = TileContent::PeerWindow {
+            app_id: "so.tilo.notes".into(),
+            label: "Notes".into(),
+            note: String::new(),
+        };
+        assert_eq!(
+            localise_tile(placeholder.clone(), Some(&waiting), "Notes"),
+            waiting
+        );
+        let other = TileContent::Foreign {
+            app_id: "so.tilo.terminal".into(),
+            surface_id: 8,
+        };
+        assert_eq!(
+            localise_tile(placeholder.clone(), Some(&other), "Notes"),
+            placeholder
+        );
+        assert_eq!(
+            localise_tile(placeholder.clone(), None, "Notes"),
+            placeholder
+        );
+    }
 
     fn held(entry: (&str, &str)) -> std::collections::BTreeMap<String, String> {
         std::collections::BTreeMap::from([(entry.0.to_string(), entry.1.to_string())])
