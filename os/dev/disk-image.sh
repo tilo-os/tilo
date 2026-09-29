@@ -677,7 +677,7 @@ if ! root_podman run "${run_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
   publishes to a local registry for that reason — check the push above succeeded.
   Full log: $LOG"
   fi
-  want="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$LOG" | tail -1)"
+  want="$(composefs_expected_digest "$LOG")"
   if [ -n "$want" ]; then
     die "the UKI's sealed composefs digest is not the one install computed (bootc#2334).
   \`bootc container ukify\` and \`bootc install\` disagree on the digest of the same
