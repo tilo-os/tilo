@@ -99,6 +99,7 @@ impl Fixture {
                 tx: delivery,
                 live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 replay: None,
+                lag: None,
             },
         );
         let source = StateSource {
@@ -241,6 +242,7 @@ impl Fixture {
             agents: Box::leak(Box::default()),
             positions: None,
             resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         write_state_delivery(delivery, &self.recipient, &session, wire)
             .await
@@ -1707,6 +1709,7 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 agents: Box::leak(Box::default()),
                 positions: None,
                 resumes: Box::leak(Box::default()),
+                lag: Box::leak(Box::default()),
             };
             handle_sync_request(&source.peer, &session, 7, vec![]).await
         });
@@ -1812,6 +1815,7 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
         agents: Box::leak(Box::default()),
         positions: None,
         resumes: Box::leak(Box::default()),
+        lag: Box::leak(Box::default()),
     };
     handle_sync_request(&fixture.source.peer, &session, 7, vec![])
         .await
@@ -1941,6 +1945,7 @@ impl Fixture {
             agents: Box::leak(Box::default()),
             positions: None,
             resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         let mut replay = None;
         handle_subscribe(
@@ -2193,6 +2198,7 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
                 agents: Box::leak(Box::default()),
                 positions: None,
                 resumes: Box::leak(Box::default()),
+                lag: Box::leak(Box::default()),
             };
             Box::pin(finish_replay_write(
                 ReplayWrite {
@@ -2337,6 +2343,7 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
             agents: Box::leak(Box::default()),
             positions: None,
             resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         let source = StateSource::new(&writer.recipient, &session);
         let authority = ticket.authority.clone();
@@ -2470,6 +2477,7 @@ async fn replay_direct_wait_finishes_active_private_frame_before_replay_error() 
             agents: Box::leak(Box::default()),
             positions: None,
             resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         let operation = async move {
             complete_rx.await.unwrap();
@@ -2903,6 +2911,7 @@ impl Fixture {
             agents: Box::leak(Box::default()),
             positions: None,
             resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         Box::pin(handle_inbound_frame(
             Envelope::Subscribe {
@@ -3252,6 +3261,7 @@ async fn native_sync_refresh_uses_live_subscribed_source_and_rechecks_execution(
             agents: Box::leak(Box::default()),
             positions: None,
             resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         handle_sync_request(&source.peer, &session, 7, vec![])
             .await
