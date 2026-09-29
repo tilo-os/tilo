@@ -72,6 +72,14 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(SlidesApp::new())
 }
 
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.slides", app_root)
+        .history(&framework_history::HISTORY)
+        .component_actions(actions::register)
+        .as_definition("Slides")
+}
+
 /// Root pre-loaded with the hermetic sample deck, optionally jumped to a named
 /// screen (`overview` / `present` / `presenter` / `help` / `narrow` / …). Used
 /// only by the `--shots` capture path so a live launch never shows fabricated

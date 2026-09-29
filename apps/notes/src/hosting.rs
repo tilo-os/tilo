@@ -99,9 +99,9 @@ fn prepare_default_notebook(
             }
             if let Some(root) = legacy_root {
                 let metadata_path = crate::storage::workspace_file_path(root);
-                let has_source = match std::fs::metadata(&metadata_path) {
+                let has_source = match crate::files::metadata(&metadata_path) {
                     Ok(_) => true,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(tilo_files::FsError::NotFound) => false,
                     Err(error) => {
                         return Err(LaunchError::Operation(format!(
                             "{}: {error}",

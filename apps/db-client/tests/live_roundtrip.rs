@@ -188,7 +188,7 @@ fn postgres_real_round_trip_and_cancellation() {
         tilo_test_env::wait_until("the worker to publish the active PostgreSQL query", || {
             s.cancel_in_flight_query()
         });
-        let cancelled = std::time::Instant::now();
+        let cancelled = ui::time::now();
         s.block_until_idle();
         let stopped = cancelled.elapsed();
         assert!(
@@ -265,7 +265,7 @@ fn mysql_real_round_trip_and_cancellation() {
         tilo_test_env::wait_until("the worker to publish the active MySQL query", || {
             s.cancel_in_flight_query()
         });
-        let cancelled = std::time::Instant::now();
+        let cancelled = ui::time::now();
         s.block_until_idle();
         let stopped = cancelled.elapsed();
         assert!(

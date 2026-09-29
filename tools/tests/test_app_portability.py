@@ -118,9 +118,13 @@ class AppPortabilityTests(unittest.TestCase):
             pub fn cfg() -> &'static str { "~/.config/chat" }
             pub fn quote() -> char { '"' }
             pub fn raw() -> &'static str { r#"/usr/share/"quoted""# }
+            pub fn clip() -> &'static str { "https://demo.local/clip.mp4" }
+            pub fn file() -> &'static str { "file:///home/u/.local/x" }
             """,
         )
-        self.assertEqual([f.line for f in self.findings() if f.rule == "R3"], [2, 3, 4, 6, 8])
+        self.assertEqual(
+            [f.line for f in self.findings() if f.rule == "R3"], [2, 3, 4, 6, 8, 10]
+        )
 
     def test_os_tools_are_r4_only_when_named_by_a_literal(self):
         self.app(
@@ -271,6 +275,32 @@ class AppPortabilityTests(unittest.TestCase):
         self.assertEqual(set(self.rules("portable")), {"R1", "R3", "R4", "W1"})
         self.assertEqual(set(self.rules("desktop")), {"R1", "R3", "R4"})
         self.assertEqual(set(self.rules("disks")), {"R1"})
+        # Platform code in an app on every platform has no baseline allowance
+        # once `[strict]` names the rules.
+        enforced = self.write(
+            "strict_rules.toml",
+            RULES.read_text(encoding="utf-8").replace(
+                "rules = []", 'rules = ["R1", "R2", "R3", "R4", "W1", "W2", "W3"]', 1
+            ),
+        )
+        strict = {(f.package, f.rule) for f in portability.audit(self.root, enforced) if f.strict}
+        self.assertEqual(
+            strict, {("portable", "R1"), ("portable", "R3"), ("portable", "R4"), ("portable", "W1")}
+        )
+
+    def test_a_target_section_holding_only_the_workspace_hack_is_not_platform_code(self):
+        self.app(
+            "plumbing",
+            cargo_extra='\n[target.\'cfg(not(target_arch = "wasm32"))\'.dependencies]\n'
+            'workspace-hack = { version = "0.1" }\n',
+        )
+        self.app(
+            "selecting",
+            cargo_extra='\n[target.\'cfg(not(target_arch = "wasm32"))\'.dependencies]\n'
+            'workspace-hack = { version = "0.1" }\nlibc = "0.2"\n',
+        )
+        self.assertEqual(self.rules("plumbing"), {})
+        self.assertEqual(self.rules("selecting").get("R1"), 1)
 
     def test_model_crates_get_only_the_model_rules(self):
         self.app(

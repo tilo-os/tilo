@@ -10,7 +10,7 @@
 //!   cargo run -p browser --example dmabuf_composite_probe --features wpe --release
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use browser::compositor::WebViewCompositor;
 use ui::render_thread::FramePostProcess;
@@ -74,9 +74,9 @@ fn main() {
     let rect = Arc::new(Mutex::new(Some([0.0, TOOLBAR_FRAC, 1.0, 1.0])));
     let mut comp = WebViewCompositor::new(engine, rect);
 
-    let deadline = Instant::now() + Duration::from_secs(25);
+    let deadline = ui::time::now() + Duration::from_secs(25);
     loop {
-        if Instant::now() > deadline {
+        if ui::time::now() > deadline {
             eprintln!("[composite] FAIL: no composited frame within 25s");
             std::process::exit(1);
         }
