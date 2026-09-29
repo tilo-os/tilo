@@ -39,8 +39,6 @@ notifications = ["native"]
 [dependencies]
 hex.workspace = true
 image = { workspace = true, features = ["png"] }
-libc.workspace = true
-thiserror.workspace = true
 tilo-rt.workspace = true
 # Only the native backends run futures on tokio.
 tokio = { workspace = true, optional = true, features = ["full"] }
@@ -69,10 +67,6 @@ zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { workspace = true, optional = true, features = ["screencast"] }
-
-[dev-dependencies]
-tempfile.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

@@ -39,7 +39,6 @@ os-actions = { path = "../../system/os-actions", optional = true }
 # The page's media devices, pinned to the versions the browser runtime links.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 wasm-bindgen = "=0.2.108"
-js-sys = "=0.3.85"
 
 [lints]
 workspace = true

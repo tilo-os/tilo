@@ -49,7 +49,6 @@ test-support = ["dep:tilo-test-env"]
 
 [dependencies]
 atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
-web-time = { version = "1", features = ["serde"] }
 # Transport CRDT. A tiny automerge document carries follow-the-host playback
 # state (playing / position / rate / epoch) between peers so a joiner follows
 # the host with drift correction. Same pin as `ui` so a single copy resolves.
@@ -116,7 +115,6 @@ objc2-media-player = { version = "0.3", default-features = false, features = ["s
 # pinned to the versions the browser runtime links.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 wasm-bindgen = "=0.2.108"
-js-sys = "=0.3.85"
 
 [dev-dependencies]
 # The decode probe example prints pipeline diagnostics; the same subscriber the
