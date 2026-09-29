@@ -276,6 +276,63 @@ fn network_follows_the_egress_decision() {
     );
 }
 
+fn user_cache_dir() -> PathBuf {
+    let mut buf = vec![0_u8; 1024];
+    // SAFETY: `buf` is writable for its length.
+    let len = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_CACHE_DIR,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+        )
+    };
+    assert!(len > 0 && len <= buf.len());
+    buf.truncate(len - 1);
+    std::fs::canonicalize(String::from_utf8(buf).unwrap()).unwrap()
+}
+
+/// Removes an app's cache directory, which lives outside the fixture.
+struct CacheDir(PathBuf);
+
+impl Drop for CacheDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn each_app_keeps_its_own_shader_cache_and_no_other() {
+    let f = fixture();
+    let room = format!("cache-test-{}", std::process::id());
+    let container = prepare_container(&f.root.join("support"), Some(&room), PACKAGE).unwrap();
+    let other = prepare_container(&f.root.join("support"), Some(&room), "so.tilo.other").unwrap();
+    let own = CacheDir(user_cache_dir().join(format!("so.tilo+{room}+{PACKAGE}")));
+    let _other = CacheDir(user_cache_dir().join(format!("so.tilo+{room}+so.tilo.other")));
+
+    let mut req = request_with(&f, &f.probe, "cache", OsString::from("com.apple.metal"));
+    req.container_dir = container;
+    assert_eq!(
+        exit_code(&req),
+        OK,
+        "the app's cache directory was not writable"
+    );
+    assert!(own.0.join("com.apple.metal").is_file());
+
+    let mut intruder = request_with(
+        &f,
+        &f.probe,
+        "cache",
+        OsString::from(format!("../so.tilo+{room}+{PACKAGE}/planted")),
+    );
+    intruder.container_dir = other;
+    assert_eq!(
+        exit_code(&intruder),
+        REFUSED,
+        "an app wrote into another app's cache"
+    );
+    assert!(!own.0.join("planted").exists());
+}
+
 #[test]
 fn service_descriptors_are_inherited_and_nothing_else_is() {
     let f = fixture();

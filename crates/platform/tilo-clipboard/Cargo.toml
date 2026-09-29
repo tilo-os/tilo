@@ -34,7 +34,9 @@ libc.workspace = true
 # through smithay-client-toolkit, because data-control would bypass Tilo's
 # focus/privilege boundary.
 smithay-clipboard = "0.7"
-smithay-client-toolkit = { version = "0.20.0", features = ["calloop"] }
+# Without default features: `xkbcommon` makes sctk's build script demand the
+# libxkbcommon development package, and the clipboard never decodes keys.
+smithay-client-toolkit = { version = "0.20.0", default-features = false, features = ["calloop"] }
 
 # The page's clipboard: trusted clipboard events and a synchronous copy.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]

@@ -1155,7 +1155,8 @@ ARG SOURCE_DATE_EPOCH=0
 # builder that unpacked the base before the commit (a seeded one) produced
 # different layers than a fresh one (run 49265). Pin every directory to the
 # epoch before anything else runs.
-RUN find / -xdev -type d -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
+RUN --mount=type=bind,source=os/scripts/pin-directory-times.py,target=/run/tilo-pin-directory-times.py \
+    python3 -B /run/tilo-pin-directory-times.py / "${SOURCE_DATE_EPOCH}"
 
 # ---- Finalize SQLite's rpmdb after every rpm transaction --------------------
 # rpm's sqlite backend persists `rpmdb.sqlite-wal` and `rpmdb.sqlite-shm` rather

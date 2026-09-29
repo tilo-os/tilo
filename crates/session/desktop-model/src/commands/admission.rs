@@ -94,7 +94,9 @@ pub fn check_owned(command: &DesktopCommand, owned: impl Fn(u64) -> bool) -> Res
         | DesktopCommand::ClaimNamespace { .. }
         | DesktopCommand::SavePermissionProfile { .. }
         | DesktopCommand::AssignPermissionProfile { .. }
-        | DesktopCommand::RecordEffectReceipt { .. } => Ok(()),
+        | DesktopCommand::RecordEffectReceipt { .. }
+        | DesktopCommand::GrantAppAction { .. }
+        | DesktopCommand::RevokeAppAction { .. } => Ok(()),
     }
 }
 

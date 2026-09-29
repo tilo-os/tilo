@@ -61,6 +61,7 @@ pub use topology::{DropTarget, GroupShape, RemovedTab, TabMove};
 pub use tree::{DesktopTree, STATE_SCHEMA_VERSION};
 pub use width::WindowWidth;
 pub use workspace::{
-    PROFILE_ASSIGN_ACTION_ID, PROFILE_SAVE_ACTION_ID, PermissionProfileMutationError, UserId,
-    WORKSPACE_GOVERNANCE_APP_ID, Workspace, WorkspaceDefaultError, role_from_id, role_id,
+    APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID, PROFILE_ASSIGN_ACTION_ID,
+    PROFILE_SAVE_ACTION_ID, PermissionProfileMutationError, UserId, WORKSPACE_GOVERNANCE_APP_ID,
+    Workspace, WorkspaceDefaultError, role_from_id, role_id,
 };

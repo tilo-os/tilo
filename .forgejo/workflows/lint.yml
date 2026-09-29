@@ -44,6 +44,11 @@ jobs:
           fetch-depth: 2
           fetch-tags: false
 
+      # Pull requests are checked merged onto main's current tip.
+      - name: Merge onto main
+        id: merge
+        uses: ./.forgejo/actions/merge-main
+
       - name: Restore Cargo downloads
         uses: ./.forgejo/actions/restore-cargo-downloads
 
@@ -64,13 +69,13 @@ jobs:
         shell: bash
         run: >-
           bash tools/ci/check-changed-rustfmt.sh
-          '${{ github.event.pull_request.base.sha }}'
+          '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'
 
       - name: Require reasons for Rust lint exceptions in changed files
         run: >-
           python3 tools/ci/check_changed_rust_allows.py
-          '${{ github.event.pull_request.base.sha }}'
+          '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'
 
       - name: Repository policy suite
@@ -100,5 +105,5 @@ jobs:
       - name: cargo machete
         run: >-
           bash tools/ci/check-unused-dependencies.sh --changed
-          '${{ github.event.pull_request.base.sha }}'
+          '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'

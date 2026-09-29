@@ -1,0 +1,11 @@
+graph-title = Projects
+graph-introduction = This screen is a serialized graph under ui/. Edit it while the app runs with tilo-app ui edit ui/main.json.
+graph-open-about = About this app
+graph-summary-title = A component from Rust
+graph-summary-detail = The heading and this line come from src/components/project_summary.rs, mounted by name in the graph.
+graph-project-name = Project name
+graph-create = Create
+graph-load-error = The screens could not be loaded: { $error }
+about-title = About
+about-body = A second screen, added with tilo-app add screen about and registered with the router.
+about-back = Back

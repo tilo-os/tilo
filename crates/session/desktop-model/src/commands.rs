@@ -181,6 +181,25 @@ pub enum DesktopCommand {
     RecordEffectReceipt {
         receipt_json: String,
     },
+    /// Let application `app` use `target_app`'s `action` here, for
+    /// `lifetime` `always` (a hosted workspace has no session to end a
+    /// `session` grant with). Only a native owner applies it, with the
+    /// caller's authority over workspace governance. Appended last: existing
+    /// encodings are unchanged.
+    GrantAppAction {
+        app: String,
+        target_app: String,
+        action: String,
+        lifetime: String,
+    },
+    /// Take back every grant letting `app` use `target_app`'s `action`, as
+    /// for [`Self::GrantAppAction`]. Appended last: existing encodings are
+    /// unchanged.
+    RevokeAppAction {
+        app: String,
+        target_app: String,
+        action: String,
+    },
 }
 
 impl DesktopCommand {
@@ -196,6 +215,8 @@ impl DesktopCommand {
                 | Self::SavePermissionProfile { .. }
                 | Self::AssignPermissionProfile { .. }
                 | Self::RecordEffectReceipt { .. }
+                | Self::GrantAppAction { .. }
+                | Self::RevokeAppAction { .. }
         )
     }
 }
@@ -862,7 +883,9 @@ pub fn apply_command(
         }
         DesktopCommand::SavePermissionProfile { .. }
         | DesktopCommand::AssignPermissionProfile { .. }
-        | DesktopCommand::RecordEffectReceipt { .. } => {
+        | DesktopCommand::RecordEffectReceipt { .. }
+        | DesktopCommand::GrantAppAction { .. }
+        | DesktopCommand::RevokeAppAction { .. } => {
             return Err("only the workspace's native owner applies this command".into());
         }
         DesktopCommand::OpenApp { .. } => {

@@ -279,7 +279,10 @@ jobs:
               # 10 GiB. The early KVM probe rejects publishing if nested
               # virtualization is unavailable. Tags retain the dedicated release
               # fleet above.
-              matrix='{"include":[{"arch":"x86_64","runner":"runner-release"},{"arch":"aarch64","runner":"runner-release-arm64"},{"arch":"x86_64","runner":"runner-release","role":"reproduce"},{"arch":"aarch64","runner":"runner-release-arm64","role":"reproduce"}]}'
+              # There is one aarch64 release slot, and a publication lane holds
+              # its slot while it waits for its reproduction, so the aarch64
+              # reproduction runs on the (seed-free) large ARM runners.
+              matrix='{"include":[{"arch":"x86_64","runner":"runner-release"},{"arch":"aarch64","runner":"runner-release-arm64"},{"arch":"x86_64","runner":"runner-release","role":"reproduce"},{"arch":"aarch64","runner":"runner-large-arm64","role":"reproduce"}]}'
             fi
           else
             # Main integration images feed both native dev VM architectures.
@@ -905,6 +908,9 @@ jobs:
         uses: ./.forgejo/actions/setup-buildx
         with:
           driver-opts: image=docker.io/moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          # A publication and its reproduction must not depend on when a seed
+          # was unpacked.
+          seed: ${{ needs.plan.outputs.publish != 'true' }}
           buildkitd-config-inline: |
             [worker.oci]
               max-parallelism = ${{ github.event_name == 'workflow_call' && 4 || 1 }}

@@ -241,6 +241,10 @@ jobs:
       publish: ${{ steps.plan.outputs.publish }}
       collection: ${{ steps.plan.outputs.collection }}
       complete: ${{ steps.plan.outputs.complete }}
+      prior_x86_url: ${{ steps.plan.outputs.prior_x86_url }}
+      prior_x86_sha256: ${{ steps.plan.outputs.prior_x86_sha256 }}
+      prior_arm64_url: ${{ steps.plan.outputs.prior_arm64_url }}
+      prior_arm64_sha256: ${{ steps.plan.outputs.prior_arm64_sha256 }}
     steps:
       - name: Disable automatic Git maintenance in the disposable job container
         # Git 2.54 maintenance can rewrite shallow history between fetches.
@@ -357,9 +361,23 @@ jobs:
           COORDINATOR_INTENT: ${{ github.event.inputs.coordinator_intent }}
           BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
           COLLECTION_SOURCE: ${{ vars.TILO_APP_COLLECTION_SOURCE }}
+          COLLECTION_BUILDER: ${{ vars.TILO_APP_COLLECTION_BUILDER }}
+          BUILDER: ${{ steps.builder.outputs.image }}
+          PRIOR_X86_URL: ${{ vars.TILO_APP_COLLECTION_URL_X86_64 || vars.TILO_APP_COLLECTION_URL }}
+          PRIOR_X86_SHA256: ${{ vars.TILO_APP_COLLECTION_SHA256_X86_64 || vars.TILO_APP_COLLECTION_SHA256 }}
+          PRIOR_ARM64_URL: ${{ vars.TILO_APP_COLLECTION_URL_AARCH64 }}
+          PRIOR_ARM64_SHA256: ${{ vars.TILO_APP_COLLECTION_SHA256_AARCH64 }}
         run: |
           set -euo pipefail
           args=(--github-output "$GITHUB_OUTPUT")
+          # Publication reuses exactly the collection this selection was made
+          # against, never one a later run moved the channel to.
+          {
+            echo "prior_x86_url=${PRIOR_X86_URL:-}"
+            echo "prior_x86_sha256=${PRIOR_X86_SHA256:-}"
+            echo "prior_arm64_url=${PRIOR_ARM64_URL:-}"
+            echo "prior_arm64_sha256=${PRIOR_ARM64_SHA256:-}"
+          } >> "$GITHUB_OUTPUT"
           # Whether this selection covers every change since the published
           # collection's source, so publishing may record this commit as it.
           complete=false
@@ -383,9 +401,12 @@ jobs:
             # Main publishes the default collection below. Select the tapps
             # affected since the published collection's source, so unchanged
             # immutable members are reused and runs superseded in the queue
-            # lose nothing; without a usable source, rebuild them all.
+            # lose nothing; without a usable source, or when the published
+            # collection's runtime came from another builder, rebuild them all.
             complete=true
-            base=${COLLECTION_SOURCE:-}
+            base=$(python3 -I tools/ci/python.py tools/apps/app_release.py \
+              --prior-collection-base --collection-source "${COLLECTION_SOURCE:-}" \
+              --collection-builder "${COLLECTION_BUILDER:-}" --builder "${BUILDER:-}")
             if ! [[ $base =~ ^[0-9a-f]{40}$ ]] || ! use_base "$base"; then
               args+=(--collection default)
             fi
@@ -717,10 +738,10 @@ jobs:
           VERSION: ${{ needs.plan.outputs.version }}
           COLLECTION: ${{ needs.plan.outputs.collection }}
           COMPLETE: ${{ needs.plan.outputs.complete }}
-          PRIOR_X86_URL: ${{ vars.TILO_APP_COLLECTION_URL_X86_64 || vars.TILO_APP_COLLECTION_URL }}
-          PRIOR_X86_SHA256: ${{ vars.TILO_APP_COLLECTION_SHA256_X86_64 || vars.TILO_APP_COLLECTION_SHA256 }}
-          PRIOR_ARM64_URL: ${{ vars.TILO_APP_COLLECTION_URL_AARCH64 }}
-          PRIOR_ARM64_SHA256: ${{ vars.TILO_APP_COLLECTION_SHA256_AARCH64 }}
+          PRIOR_X86_URL: ${{ needs.plan.outputs.prior_x86_url }}
+          PRIOR_X86_SHA256: ${{ needs.plan.outputs.prior_x86_sha256 }}
+          PRIOR_ARM64_URL: ${{ needs.plan.outputs.prior_arm64_url }}
+          PRIOR_ARM64_SHA256: ${{ needs.plan.outputs.prior_arm64_sha256 }}
           TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
           TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL || 'https://apps.tilo.so' }}
           TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}
@@ -1078,6 +1099,9 @@ jobs:
               update_variable TILO_APP_COLLECTION_URL_AARCH64 "$arm64_channel_url"
               update_variable TILO_APP_COLLECTION_SHA256_AARCH64 "$arm64_channel_sha"
             fi
+            # Its runtime carries this builder's system libraries; the next
+            # main run may reuse the collection only with the same builder.
+            update_variable TILO_APP_COLLECTION_BUILDER "$BUILDER_IMAGE"
             # The next main run selects its tapps relative to this commit.
             if [[ $COMPLETE == true ]]; then
               update_variable TILO_APP_COLLECTION_SOURCE "$GITHUB_SHA"
