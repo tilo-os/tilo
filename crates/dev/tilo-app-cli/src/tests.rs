@@ -1675,7 +1675,7 @@ fn add_artifact_protects_work_and_stays_inside_the_app() {
         );
 
         std::fs::create_dir_all(app.join("locales")).unwrap();
-        std::fs::write(app.join("locales/en-US.ftl"), source_catalog()).unwrap();
+        std::fs::write(app.join("locales/en-US.ftl"), STARTER_APP_CATALOG).unwrap();
         let registry = locale_registry_source(&["en-US".to_owned()]);
         std::fs::write(app.join("src/locales.rs"), &registry).unwrap();
         let preview = add_app_artifact(AddRequest {
@@ -1937,10 +1937,7 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         let translation_path = app.join("locales/de-DE.ftl");
         let translation = std::fs::read_to_string(&translation_path)
             .unwrap()
-            .replace(
-                "starter-title = Your first Tilo app",
-                "starter-title = Meine Tilo-App",
-            )
+            .replace("starter-title = Hello", "starter-title = Meine Tilo-App")
             .replace(
                 "starter-greeting = Hello, { $name }!",
                 "starter-greeting = Hallo, { $benutzer }!",
@@ -2451,15 +2448,12 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         assert!(main.contains("ui::framework::run::<reading_list::App>()"));
         let library = std::fs::read_to_string(destination.join("src/lib.rs")).expect("library");
         assert!(library.contains("pub const APP_ID: &str = \"local.dev.reading.list\";"));
-        assert!(library.contains("#[derive(Model, Debug, Clone, PartialEq)]"));
-        assert!(library.contains("#[resource(kind = \"generated.profile\""));
+        assert!(library.contains("#[derive(Model, Default, Debug, Clone, PartialEq)]"));
+        assert!(library.contains("#[resource(kind = \"generated.greeting\""));
         assert!(library.contains("impl ResourceApp for App"));
-        assert!(library.contains(".input(|profile| profile.name.clone(), Profile::SET_NAME)"));
+        assert!(library.contains(".input(|greeting| greeting.name.clone(), Greeting::SET_NAME)"));
         assert!(library.contains("with_id(\"name-input\")"));
-        assert!(library.contains(".checkbox("));
-        assert!(library.contains("NumberInput::from_state(value)"));
-        assert!(library.contains("Slider::from_state,"));
-        assert!(library.contains("Dropdown::from_state("));
+        assert!(library.contains("cx.button(\"starter-clear\", Greeting::CLEAR.invoke())"));
         assert!(library.contains("labeled_field(\"starter-name-label\", name)"));
         assert!(!library.contains("LocalState::new"));
         assert!(!library.contains("ActionForm"));
@@ -2474,13 +2468,12 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         assert!(manifest.contains("mode = \"off\""));
         let app_test =
             std::fs::read_to_string(destination.join("tests/app.rs")).expect("generated app test");
-        assert!(app_test.contains("use reading_list::{App, Profile};"));
+        assert!(app_test.contains("use reading_list::{App, Greeting};"));
         assert!(!app_test.contains("generated_app"));
         assert!(app_test.contains("TestApp::<App>::new()"));
-        assert!(app_test.contains("Replica::<Profile>::new()"));
+        assert!(app_test.contains("Replica::<Greeting>::new()"));
         assert!(app_test.contains("perform_named(\"name-input\""));
         assert!(app_test.contains("SemanticExpectation::named(\"greeting\")"));
-        assert!(app_test.contains("perform_named(\"volume-slider\""));
         assert!(app_test.contains("with_role(ui::Role::Viewer)"));
         assert!(app_test.contains("app.undo()"));
         assert!(app_test.contains("reopen()"));
@@ -2664,7 +2657,7 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
         req.app_id = None;
         req.template = None;
         let mut input = std::io::Cursor::new(
-            b"Bad Name\nreading-list\n\nbad-id\norg.example.reading-list\n10\n4\n\n".to_vec(),
+            b"Bad Name\nreading-list\n\nbad-id\norg.example.reading-list\n10\n3\n\n".to_vec(),
         );
         let mut output = Vec::new();
 
@@ -2676,14 +2669,16 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
         assert!(transcript.contains("invalid package name \"Bad Name\""));
         assert!(transcript.contains("invalid app id \"bad-id\""));
         assert!(transcript.contains("1) starter"));
-        assert!(transcript.contains("5) graph"));
+        assert!(transcript.contains("4) graph"));
         assert!(transcript.contains("unknown template \"10\""));
         assert!(transcript.contains("Review:"));
-        assert!(transcript.contains("Template:    tree — Professional hierarchy browser"));
+        assert!(transcript.contains(
+            "Template:    collection — A list of items the user adds, edits, checks off and removes"
+        ));
         assert!(transcript.contains(&format!("Destination: {}", destination.display())));
         assert!(transcript.contains("Create this app [Y/n]:"));
         let source = std::fs::read_to_string(destination.join("src/lib.rs")).unwrap();
-        assert!(source.contains("TreeView::new"), "{source}");
+        assert!(source.contains("cx.each("), "{source}");
     }
 
     // Phase: interactive_wizard_declines_before_publishing_any_files.
@@ -3222,132 +3217,89 @@ fn creation_inputs_are_validated_and_printed_safely() {
         );
     }
 
-    // Phase: template_prompt_accepts_names_and_shortcuts.
+    // Phase: template_prompt_accepts_names_and_numbers.
     {
-        assert_eq!(parse_template("1").unwrap(), Template::Starter);
-        assert_eq!(parse_template("starter").unwrap(), Template::Starter);
-        assert_eq!(parse_template("S").unwrap(), Template::Starter);
-        assert_eq!(parse_template("data").unwrap(), Template::Data);
-        assert_eq!(parse_template("3").unwrap(), Template::List);
-        assert_eq!(parse_template("d").unwrap(), Template::Data);
-        assert_eq!(parse_template("list").unwrap(), Template::List);
-        assert_eq!(parse_template("L").unwrap(), Template::List);
-        assert_eq!(parse_template("tree").unwrap(), Template::Tree);
-        assert_eq!(parse_template("T").unwrap(), Template::Tree);
-        assert_eq!(parse_template("graph").unwrap(), Template::Graph);
-        assert_eq!(parse_template("5").unwrap(), Template::Graph);
-        assert_eq!(parse_template("builder").unwrap(), Template::Graph);
-        assert_eq!(parse_template("async").unwrap(), Template::Async);
-        assert_eq!(parse_template("6").unwrap(), Template::Async);
-        assert_eq!(parse_template("task").unwrap(), Template::Async);
-        assert_eq!(parse_template("document").unwrap(), Template::Document);
-        assert_eq!(parse_template("7").unwrap(), Template::Document);
-        assert_eq!(parse_template("editor").unwrap(), Template::Document);
-        assert_eq!(parse_template("qr").unwrap(), Template::Qr);
-        assert_eq!(parse_template("8").unwrap(), Template::Qr);
-        assert_eq!(parse_template("showcase").unwrap(), Template::Qr);
-        assert_eq!(parse_template("9").unwrap(), Template::Workspace);
-        assert_eq!(
-            parse_template("master-detail").unwrap(),
-            Template::Workspace
-        );
+        for (number, template) in (1..).zip(Template::ALL) {
+            assert_eq!(parse_template(template.name()).unwrap(), template);
+            assert_eq!(parse_template(&format!(" {number} ")).unwrap(), template);
+        }
+        assert_eq!(parse_template("Collection").unwrap(), Template::Collection);
+        assert!(parse_template("0").is_err());
+        assert!(parse_template("5").is_err());
         assert!(parse_template("dashboard").is_err());
+        let retired = parse_template("list").unwrap_err().to_string();
+        assert!(retired.contains("--from-example virtual-list"), "{retired}");
     }
 }
 
-/// The data, QR, workspace, graph, list, tree, async and document templates each compose the
-/// toolkit patterns they are meant to demonstrate.
+/// The starter, document, collection and graph templates each compose the toolkit patterns they
+/// are meant to start from.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn each_template_composes_the_toolkit_patterns_it_teaches() {
-    // Phase: data_template_renders_cells_and_uses_stable_row_ids.
+    // Phase: every_template_has_its_own_catalog_and_uses_only_its_messages.
     {
-        let spec = AppSpec {
-            package_name: "log-browser".into(),
-            crate_name: "log_browser".into(),
-            title: "Log Browser".into(),
-            app_id: "so.tilo.log.browser".into(),
-            sdk: AppSdk::Workspace {
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            },
-            template: Template::Data,
-        };
-        let source = app_lib(&spec);
-        assert!(source.contains("with_text(|row| row.name.clone())"));
-        assert!(source.contains("with_id(\"rows-table\")"));
-        assert!(source.contains("with_accessible_name(\"data-accessible-name\")"));
-        assert!(source.contains("impl TableModel for Rows"));
-        assert!(source.contains("const ROW_COUNT: usize = 100_000_000"));
-        assert!(source.contains("LatestRequest::new()"));
-        assert!(source.contains("std::thread::spawn"));
-        assert!(source.contains("fn poll_changes"));
-        assert!(source.contains("TableModelChange::RowsChanged"));
-        assert!(source.contains("completion.complete(rows)"));
-        assert!(source.contains("with_widget"));
-        assert!(source.contains("let actions = cx.actions();"));
-        assert!(source.contains("Review::OPEN.with(row.id)"));
-        assert!(source.contains("pub id: u64"));
-        let test = app_test(&spec);
-        assert!(test.contains("Role::Table"));
-        assert!(test.contains("row:3:0"));
-        assert!(test.contains("wait_for_named"));
-        assert!(test.contains("only the sparse viewport is semantic"));
-        assert!(test.contains("app.state().opened"));
+        for template in Template::ALL {
+            let spec = AppSpec {
+                package_name: "notes".into(),
+                crate_name: "notes".into(),
+                title: "Notes".into(),
+                app_id: "so.tilo.notes".into(),
+                sdk: AppSdk::Workspace {
+                    ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+                },
+                template,
+            };
+            let files = render(&spec).unwrap();
+            let catalog = &files
+                .iter()
+                .find(|(path, _)| path == Path::new("locales/en-US.ftl"))
+                .expect("a source catalog")
+                .1;
+            let messages = parse_fluent_catalog(catalog).expect("the catalog parses");
+            let source = app_lib(&spec);
+            for id in messages.entries.keys() {
+                assert!(
+                    source.contains(&format!("\"{id}\"")),
+                    "{}: {id} is in the catalog but not used",
+                    template.name()
+                );
+            }
+            for other in Template::ALL.into_iter().filter(|other| *other != template) {
+                assert!(
+                    !catalog.contains(&format!("{}-", other.name())),
+                    "{} carries {} messages",
+                    template.name(),
+                    other.name()
+                );
+            }
+        }
     }
 
-    // Phase: qr_template_composes_ime_input_state_visual_output_and_accessibility.
+    // Phase: collection_template_uses_item_actions_and_starts_empty.
     {
         let spec = AppSpec {
-            package_name: "qr-code".into(),
-            crate_name: "qr_code".into(),
-            title: "QR Code".into(),
-            app_id: "so.tilo.qr.code".into(),
+            package_name: "errands".into(),
+            crate_name: "errands".into(),
+            title: "Errands".into(),
+            app_id: "so.tilo.errands".into(),
             sdk: AppSdk::Workspace {
                 ui_path: PathBuf::from("../../crates/sdk/ui-core"),
             },
-            template: Template::Qr,
+            template: Template::Collection,
         };
         let source = app_lib(&spec);
-        assert!(source.contains(".input(|code| code.payload.clone(), Code::SET_PAYLOAD)"));
-        assert!(source.contains("cx.value(|code| code.payload.clone())"));
-        assert!(source.contains("ModelView::from_state"));
-        assert!(source.contains("QrWidget::new"));
-        assert!(source.contains("with_id(\"qr-output\")"));
-        assert!(source.contains("with_alt(alt)"));
+        assert!(source.contains("pub items: Collection<Item>"));
+        assert!(source.contains("item: &Id"));
+        assert!(source.contains("cx.each(|items| &items.items, item_row)"));
+        assert!(source.contains("EmptyState::new"));
         let test = app_test(&spec);
-        assert!(test.contains("你好 Rust GUI"));
-        assert!(test.contains("Role::Image"));
-        assert!(test.contains("name_contains"));
-        assert!(app_readme(&spec).contains("payload-specific alternative text"));
-    }
-
-    // Phase: workspace_template_composes_navigation_and_isolated_durable_detail_views.
-    {
-        let spec = AppSpec {
-            package_name: "project-workspace".into(),
-            crate_name: "project_workspace".into(),
-            title: "Project Workspace".into(),
-            app_id: "so.tilo.project.workspace".into(),
-            sdk: AppSdk::Workspace {
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            },
-            template: Template::Workspace,
-        };
-        let source = app_lib(&spec);
-        assert!(source.contains("AppShell::new"));
-        assert!(source.contains("with_narrow_screen_state"));
-        assert!(source.contains("workspace-back"));
-        assert!(source.contains("cx.switch(&selected"));
-        assert!(source.contains(".on_select"));
-        assert!(source.contains("pub projects: Collection<Project>"));
-        assert!(source.contains("Workspace::SET_TITLE.map(move |title| (id, title))"));
-        let test = app_test(&spec);
-        assert!(test.contains("workspace_keeps_master_detail_views_isolated_and_synchronized"));
+        assert!(test.contains("the_list_starts_empty_and_rows_edit_their_item"));
         assert!(test.contains("app.undo()"));
-        assert!(app_readme(&spec).contains("responsive master-detail shell"));
+        assert!(app_readme(&spec).contains("item actions"));
     }
 
     // Phase: graph_template_generates_a_valid_editable_screen.
@@ -3402,100 +3354,6 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
         assert!(app_readme(&spec).contains("available to every generated screen automatically"));
     }
 
-    // Phase: list_template_starts_sparse_variable_and_interactive.
-    {
-        let spec = AppSpec {
-            package_name: "activity-feed".into(),
-            crate_name: "activity_feed".into(),
-            title: "Activity Feed".into(),
-            app_id: "so.tilo.activity.feed".into(),
-            sdk: AppSdk::Workspace {
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            },
-            template: Template::List,
-        };
-        let source = app_lib(&spec);
-        assert!(source.contains("ITEM_COUNT: usize = 100_000_000"));
-        assert!(source.contains("impl ListModel for ActivityModel"));
-        assert!(source.contains("LatestRequest::new()"));
-        assert!(source.contains("VirtualList::new_async"));
-        assert!(source.contains("ListRowState::Loading"));
-        assert!(source.contains("ListModelChange::RowsChanged"));
-        assert!(source.contains("with_semantic_key(u64::to_string)"));
-        assert!(source.contains("if index % 5 == 0"));
-        assert!(source.contains("Button::new"));
-        assert!(source.contains("Feed::OPEN.with(*key)"));
-        assert!(source.contains("with_id(\"activity-list\")"));
-        let test = app_test(&spec);
-        assert!(test.contains("Role::List"));
-        assert!(test.contains("key:3"));
-        assert!(test.contains("open-0"));
-        assert!(test.contains("wait_for_named"));
-        assert!(test.contains("delegate measurements drive variable rows"));
-    }
-
-    // Phase: tree_template_uses_stable_ids_and_professional_tree_defaults.
-    {
-        let spec = AppSpec {
-            package_name: "project-browser".into(),
-            crate_name: "project_browser".into(),
-            title: "Project Browser".into(),
-            app_id: "so.tilo.project.browser".into(),
-            sdk: AppSdk::Workspace {
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            },
-            template: Template::Tree,
-        };
-        let source = app_lib(&spec);
-        assert!(source.contains("TreeNode::branch"));
-        assert!(source.contains("with_expanded([1, 2])"));
-        assert!(source.contains("multi_select(true)"));
-        assert!(source.contains("with_row_delegate"));
-        assert!(source.contains("Button::new"));
-        assert!(source.contains("reorderable()"));
-        assert!(source.contains("with_viewport(280.0, 36.0)"));
-        assert!(source.contains("with_accessible_name"));
-        assert!(source.contains("with_id(\"workspace-tree\")"));
-        let test = app_test(&spec);
-        assert!(test.contains("Role::Tree"));
-        assert!(test.contains("perform_semantic_named"));
-        assert!(test.contains("node:3"));
-        assert!(test.contains("more-4"));
-    }
-
-    // Phase: async_template_uses_typed_wakeup_and_keyed_result_views.
-    {
-        let spec = AppSpec {
-            package_name: "repo-scan".into(),
-            crate_name: "repo_scan".into(),
-            title: "Repo Scan".into(),
-            app_id: "so.tilo.repo.scan".into(),
-            sdk: AppSdk::Workspace {
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            },
-            template: Template::Async,
-        };
-        let source = app_lib(&spec);
-        assert!(source.contains("LatestTask::new(LoadState::Idle)"));
-        assert!(source.contains("task.begin(LoadState::Loading)"));
-        assert!(source.contains("completion.complete(state)"));
-        assert!(source.contains("cancel_task.cancel(LoadState::Idle)"));
-        assert!(source.contains("Button::new(\"cancel-task\""));
-        assert!(source.contains("std::thread::spawn"));
-        assert!(source.contains("ModelView::from_state_by"));
-        assert!(source.contains("with_arg(\"count\""));
-        assert!(source.contains("with_id(\"task-result\")"));
-        let test = app_test(&spec);
-        assert!(test.contains("app_runs_background_work_on_the_resource_input"));
-        assert!(test.contains("generated.background-task:root"));
-        assert!(test.contains("wait_for_named(\"task-result\""));
-        assert!(source.contains("live.with(|scan| scan.folder.clone())"));
-        let actions = headless_actions(&spec);
-        assert!(actions.contains("\"action\": \"activate\""));
-        assert!(actions.contains("\"expect\""));
-        assert!(actions.contains("\"timeout_ms\": 1000"));
-    }
-
     // Phase: document_template_uses_direct_durable_bindings_and_undo_contract.
     {
         let spec = AppSpec {
@@ -3510,11 +3368,11 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
         };
         let source = app_lib(&spec);
         assert!(source.contains(".input(|document| document.title.clone(), Document::SET_TITLE)"));
-        assert!(source.contains("cx.text(|document| document.title.clone())"));
+        assert!(source.contains(".text(|document| document.title.clone())"));
         assert!(source.contains("multiline(true)"));
         assert!(source.contains("#[action(destructive)]"));
         let test = app_test(&spec);
-        assert!(test.contains("document_fields_are_synchronized_and_undoable"));
+        assert!(test.contains("the_preview_follows_the_inputs_and_undo_reverts"));
         assert!(test.contains("app.undo()"));
         assert!(test.contains("sync_with"));
     }
@@ -3530,17 +3388,7 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
 fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
     // Phase: every_template_uses_the_toolkit_resource_action_host.
     {
-        for template in [
-            Template::Starter,
-            Template::Data,
-            Template::List,
-            Template::Tree,
-            Template::Graph,
-            Template::Async,
-            Template::Document,
-            Template::Qr,
-            Template::Workspace,
-        ] {
+        for template in Template::ALL {
             let spec = AppSpec {
                 package_name: "generated-app".into(),
                 crate_name: "generated_app".into(),
@@ -3595,7 +3443,7 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
             assert!(readme.contains("tilo-app keys new\n"));
             assert!(readme.contains("tilo-app apply --domain example.com\n"));
             assert!(readme.contains("tilo-app publish\n"));
-            assert!(readme.contains("\"resource\":\"generated.profile\""));
+            assert!(readme.contains("\"resource\":\"generated.greeting\""));
             assert!(readme.contains("`#[derive(Model)]` resource"));
             assert!(readme.contains("tilo-app test\n"));
             assert!(readme.contains("tilo-app dev\n"));
@@ -3654,17 +3502,7 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
 
     // Phase: every_template_generates_valid_rust_and_actions.
     {
-        for template in [
-            Template::Starter,
-            Template::Data,
-            Template::List,
-            Template::Tree,
-            Template::Graph,
-            Template::Async,
-            Template::Document,
-            Template::Qr,
-            Template::Workspace,
-        ] {
+        for template in Template::ALL {
             let spec = AppSpec {
                 package_name: "demo".into(),
                 crate_name: "demo".into(),
@@ -4205,7 +4043,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         let identity = pack::load_identity(&identity_path).expect("load identity");
         let output = temp.path().join("reading-list.tapp");
         let kinds = resource_kinds::declared_in(&spec.app_dir).expect("resource kinds");
-        assert_eq!(kinds, ["generated.profile"], "the starter's resource");
+        assert_eq!(kinds, ["generated.greeting"], "the starter's resource");
         let manifest = || {
             tilo_app_package::Manifest::from_toml_str(
                 &std::fs::read_to_string(&spec.manifest_path).expect("manifest"),
@@ -4224,7 +4062,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         assert_eq!(tapp.meta.id.to_string(), packed.id);
         assert_eq!(
             tapp.meta.manifest.resources.kinds,
-            ["generated.profile"],
+            ["generated.greeting"],
             "the signed manifest declares the app's resource kinds"
         );
         assert_eq!(tapp.meta.publisher(), identity.public_key_bytes());
@@ -4951,17 +4789,7 @@ fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace
 
 #[test]
 fn every_template_scaffolds_a_portable_app() {
-    for template in [
-        Template::Starter,
-        Template::Data,
-        Template::List,
-        Template::Tree,
-        Template::Graph,
-        Template::Async,
-        Template::Document,
-        Template::Qr,
-        Template::Workspace,
-    ] {
+    for template in Template::ALL {
         let root = tempfile::tempdir().unwrap();
         let app = root.path().join(template.name());
         let mut new_app = request(app.clone());
