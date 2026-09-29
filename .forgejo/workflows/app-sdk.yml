@@ -108,9 +108,10 @@ jobs:
     timeout-minutes: 180
     # Several full debug graphs (tilo-app-cli's tests, Calculator, a generated
     # app for two targets) share one target directory on the runner's disk,
-    # and the packaged release build must fit the runner's memory.
+    # and tilo-app-cli's integration tests (most of the workspace) must fit
+    # the runner's memory.
     env:
-      CARGO_BUILD_JOBS: "4"
+      CARGO_BUILD_JOBS: "2"
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
