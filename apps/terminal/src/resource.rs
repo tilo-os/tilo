@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{
     Action, ActionError, ActionParam, ActionRegistry, ActionSpec, EncodedAction, OperationKind,
-    ParamType,
+    ParamType, RetryPolicy,
 };
 use ui::tilo_resource::{Doc, ModelError, Resource};
 use ui::widget::Element;
@@ -432,7 +432,11 @@ impl Resource for Terminal {
                 "terminal.send",
                 |text| EncodedAction::encode_operation("terminal.send", &text).expect("payload"),
             )
-            .privileged(),
+            .with_description(
+                "Writes reviewed text without pressing Enter; confirmation is required.",
+            )
+            .privileged()
+            .retry_policy(RetryPolicy::AtMostOnce),
             ActionSpec::prompted_operation(
                 "run",
                 "Run command",
@@ -442,7 +446,11 @@ impl Resource for Terminal {
                 "terminal.run",
                 |text| EncodedAction::encode_operation("terminal.run", &text).expect("payload"),
             )
-            .privileged(),
+            .with_description(
+                "Runs one reviewed command in this live process; confirmation is required.",
+            )
+            .privileged()
+            .retry_policy(RetryPolicy::AtMostOnce),
         ];
         for (id, label, type_id) in [
             ("interrupt", "Interrupt process", "terminal.control"),
@@ -450,7 +458,7 @@ impl Resource for Terminal {
         ] {
             if let Ok(spec) = ActionSpec::operation(id, label, OperationKind::Effect, type_id, &id)
             {
-                ops.push(spec.privileged());
+                ops.push(spec.privileged().retry_policy(RetryPolicy::AtMostOnce));
             }
         }
         for (id, label) in [
@@ -477,7 +485,11 @@ impl Resource for Terminal {
                         .expect("a borrowed string always serializes")
                     },
                 )
-                .privileged(),
+                .with_description(
+                    "Pastes the exact supplied text; clipboard contents are never re-read after confirmation.",
+                )
+                .privileged()
+                .retry_policy(RetryPolicy::AtMostOnce),
             );
         }
         ops

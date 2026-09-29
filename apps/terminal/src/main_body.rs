@@ -24,9 +24,7 @@ use ui::collaboration::PresencePayload;
 use ui::icons::{Icon, draw_icon};
 use ui::permissions::{AppKind as PermAppKind, PermissionContext};
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::tilo_actions::{
-    ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource, RetryPolicy,
-};
+use ui::tilo_actions::{ActionSpec, OperationKind, Resource, RetryPolicy};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::{
     DragSelect, Granularity, clipboard_copy, clipboard_copy_primary, clipboard_paste,
@@ -1185,10 +1183,6 @@ impl TerminalWidget {
         transcript
     }
 
-    #[allow(
-        clippy::expect_used,
-        reason = "JSON serialization of an owned String is infallible"
-    )]
     fn session_resource(&self) -> Resource {
         let disconnected = self.is_disconnected();
         let unavailable_reason =
@@ -1198,86 +1192,25 @@ impl TerminalWidget {
         } else {
             format!("Terminal — {}", self.title)
         };
-        let mut terminal = Resource::new(self.terminal_resource_id(), "terminal.session", label);
-        for (id, label, prompt, placeholder, type_id) in [
-            ("send", "Send text", "Text to send", "text", "terminal.send"),
-            (
-                "run",
-                "Run command",
-                "Command to run",
-                "command",
-                "terminal.run",
-            ),
-        ] {
-            let mut spec = ActionSpec::prompted_operation(
-                id,
-                label,
-                prompt,
-                placeholder,
-                OperationKind::Effect,
-                type_id,
-                move |text| {
-                    EncodedAction::encode_operation(type_id, &text).expect("string payload")
-                },
-            )
-            .with_description(if id == "run" {
-                "Runs one reviewed command in this live process; confirmation is required."
-            } else {
-                "Writes reviewed text without pressing Enter; confirmation is required."
-            })
-            .privileged()
-            .retry_policy(RetryPolicy::AtMostOnce);
-            if disconnected {
-                spec = spec.unavailable("session_disconnected", unavailable_reason);
-            }
-            terminal.actions.push(spec);
-        }
-        for (id, label) in [
-            ("interrupt", "Interrupt process"),
-            ("clear", "Clear screen"),
-        ] {
-            if let Ok(spec) =
-                ActionSpec::operation(id, label, OperationKind::Effect, "terminal.control", &id)
-            {
-                let mut control = spec.privileged().retry_policy(RetryPolicy::AtMostOnce);
-                if disconnected {
-                    control = control.unavailable("session_disconnected", unavailable_reason);
+        let state = crate::resource::SessionState {
+            title: self.title.clone(),
+            pane_id: self.pane_id.clone(),
+        };
+        let mut terminal = ui::tilo_resource::publish::<crate::resource::Terminal>(
+            &self.terminal_resource_id(),
+            &label,
+            &state,
+        );
+        if disconnected {
+            for action in &mut terminal.actions {
+                if matches!(
+                    action.id.as_str(),
+                    "send" | "run" | "interrupt" | "clear" | "paste" | "paste-primary"
+                ) {
+                    let current = action.clone();
+                    *action = current.unavailable("session_disconnected", unavailable_reason);
                 }
-                terminal.actions.push(control);
             }
-        }
-        for (id, label) in [
-            ("paste", "Paste"),
-            ("paste-primary", "Paste primary selection"),
-        ] {
-            let mut paste = ActionSpec::typed_operation(
-                id,
-                label,
-                "text",
-                OperationKind::Effect,
-                "terminal.paste",
-                vec![ActionParam::required(
-                    "text",
-                    ParamType::Text,
-                    "Exact text to paste after confirmation",
-                )],
-                |args| {
-                    EncodedAction::encode_operation(
-                        "terminal.paste",
-                        &args.text("text").unwrap_or_default(),
-                    )
-                    .expect("a borrowed string always serializes")
-                },
-            )
-            .with_description(
-                "Pastes the exact supplied text; clipboard contents are never re-read after confirmation.",
-            )
-            .privileged()
-            .retry_policy(RetryPolicy::AtMostOnce);
-            if disconnected {
-                paste = paste.unavailable("session_disconnected", unavailable_reason);
-            }
-            terminal.actions.push(paste);
         }
         terminal.children.push(self.transcript_resource());
         terminal
