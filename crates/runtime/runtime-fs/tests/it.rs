@@ -9,3 +9,5 @@ pub mod mock_fs;
 pub mod native_grants;
 #[path = "native_operations.rs"]
 pub mod native_operations;
+#[path = "workspace_server.rs"]
+pub mod workspace_server;

@@ -15424,6 +15424,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-file-provider"
+version = "0.1.0"
+dependencies = [
+ "capnp",
+ "libc",
+ "runtime-fs",
+ "runtime-portal",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-files"
 version = "0.1.0"
 dependencies = [
