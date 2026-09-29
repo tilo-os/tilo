@@ -9157,22 +9157,10 @@ fn app_readme(spec: &AppSpec) -> String {
         out,
         "The app is written on the Tilo app framework: its state is a `#[derive(Model)]` resource, every edit is an `#[action]` method, and the view binds controls to those actions (`cx.input`, `cx.checkbox`, `cx.button`, `cx.control`, `cx.each`). Storage, sync, collaboration, history, per-author undo, permissions, the action palette, agents, scripts and search come from the framework; `Replica` tests the resource and `TestApp` tests the running app. `tilo-app doctor` rejects apps that remove this surface.\n"
     );
-    let _ = writeln!(
-        out,
-        "From the parent directory, scaffold and launch this template in one command:"
-    );
-    let _ = writeln!(out, "\n```bash");
-    let _ = writeln!(
-        out,
-        "tilo-app new {} --template {} --dev",
-        spec.package_name,
-        spec.template.name()
-    );
-    let _ = writeln!(out, "```");
     let (resource, action, arguments) = readme_action_example(spec.template);
     let _ = writeln!(
         out,
-        "\nAgents, scripts, and search invoke the same address as the visible control. Discover the live catalogue, then submit an invocation shaped like:\n"
+        "Agents, scripts, and search invoke the same address as the visible control. Discover the live catalogue, then submit an invocation shaped like:\n"
     );
     let _ = writeln!(out, "```json");
     let _ = writeln!(
@@ -9180,7 +9168,7 @@ fn app_readme(spec: &AppSpec) -> String {
         "{{\"resource\":{resource:?},\"action\":{action:?},\"arguments\":{arguments}}}"
     );
     let _ = writeln!(out, "```");
-    let sections: [(&str, &[&str]); 4] = [
+    let sections: [(&str, &[&str]); 5] = [
         (
             "Develop: run the app, rebuilding and reloading it as you edit",
             &["tilo-app dev", "tilo-app run", "tilo-app test"],
@@ -9212,8 +9200,21 @@ fn app_readme(spec: &AppSpec) -> String {
             ],
         ),
         (
-            "Ship: build, sign and verify an installable package",
-            &["tilo-app package"],
+            "Ship: build, sign and verify a package for each platform (`--platform tilo|linux|windows|macos|web`, `--arch x86_64|aarch64`; `build`, `run`, `dev` and `check` take the same flags)",
+            &[
+                "tilo-app package",
+                "tilo-app package --platform web",
+                "tilo-app check --platform all",
+            ],
+        ),
+        (
+            "Publish: create a publisher key, prove a namespace, and upload what `dist/` holds",
+            &[
+                "tilo-app keys new",
+                "tilo-app apply --domain example.com",
+                "tilo-app publish",
+                "tilo-app add ci --forge github",
+            ],
         ),
     ];
     for (heading, commands) in sections {
@@ -9270,6 +9271,12 @@ fn app_readme(spec: &AppSpec) -> String {
         "\nUser-facing strings start in `locales/en-US.ftl`. `tilo-app add locale de-DE` creates and registers a complete editable copy of that message contract. After changing the source, `tilo-app locale sync` adds missing units without replacing translations; `tilo-app doctor` reports differences deliberately left for a translator while the toolkit falls back to the source catalog."
     );
     let _ = writeln!(out, "\nApp id: `{}`", spec.app_id);
+    if spec.app_id.starts_with("local.dev.") {
+        let _ = writeln!(
+            out,
+            "\nThis id is for local development. Before publishing, change it in `tilo-app.toml` and `src/lib.rs` to one inside a namespace you prove with `tilo-app apply`: `example.com` proves `com.example`."
+        );
+    }
     out
 }
 
