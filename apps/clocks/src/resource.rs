@@ -42,9 +42,9 @@ impl Resource for Clocks {
     }
 
     fn local_operations() -> Vec<tilo_actions::ActionSpec> {
-        // Per-timer/alarm effects need live state and stay on the widget tree
-        // until they move here with document-backed state.
-        Vec::new()
+        // Creates and stopwatch transport do not name a live row. Per-item
+        // effects and the floating-overlay polarity stay on the widget.
+        crate::actions::collection_local_operations()
     }
 }
 
@@ -76,7 +76,104 @@ impl ResourceApp for ClocksShell {
 }
 
 impl ResourceSurface<Clocks> for ClocksApp {
+    /// Alarms and timers are device-local. An empty projection must not wipe
+    /// an unpublished local collection.
     fn present(&mut self, _state: &std::rc::Rc<ClockState>) {}
 
-    fn attach(&mut self, _cx: SurfaceCx<Clocks>) {}
+    fn attach(&mut self, _cx: SurfaceCx<Clocks>) {
+        self.mark_framework_hosted();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::resources::PublishesResources;
+    use ui::widget::Widget;
+
+    #[test]
+    fn publish_owns_collection_door_and_hosted_keeps_only_live_rows() {
+        let published =
+            ui::tilo_resource::publish::<Clocks>("clocks", "Clocks", &ClockState::default());
+        assert_eq!(published.kind, Clocks::KIND);
+        let ids: Vec<&str> = published
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        for expected in [
+            "new-timer",
+            "new-alarm",
+            "add-new-york",
+            "toggle",
+            "lap",
+            "reset",
+        ] {
+            assert!(
+                ids.contains(&expected),
+                "palette `{expected}` must ride publish via local_operations: {ids:?}"
+            );
+        }
+        assert!(
+            !ids.contains(&"set-floating"),
+            "floating polarity stays on the live stopwatch: {ids:?}"
+        );
+
+        let mut app = ClocksApp::scenario("running");
+        let mut state = ui::State::new();
+        Widget::sync(&mut app, &mut state.doc, &state.root);
+        assert!(!app.is_framework_hosted());
+        let standalone = app.resources(&state.doc);
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].id.as_str(), "clocks");
+
+        app.mark_hosted_for_test();
+        let extras = app.resources(&state.doc);
+        assert!(
+            extras.iter().all(|resource| {
+                resource.kind != Clocks::KIND && resource.id.as_str() != "clocks"
+            }),
+            "hosted must not republish clocks.collection beside ResourceRoot: {:?}",
+            extras
+                .iter()
+                .map(|resource| resource.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            extras
+                .iter()
+                .any(|resource| resource.kind == "clocks.timer"),
+            "hosted keeps the running timer"
+        );
+        let stopwatch = extras
+            .iter()
+            .find(|resource| resource.id.as_str() == "clocks.stopwatch")
+            .expect("stopwatch extra");
+        assert!(
+            stopwatch
+                .actions
+                .iter()
+                .any(|action| action.id.as_str() == "set-floating")
+        );
+        assert!(
+            !stopwatch
+                .actions
+                .iter()
+                .any(|action| action.id.as_str() == "lap"),
+            "lap already rides publish"
+        );
+    }
+
+    #[test]
+    fn present_empty_does_not_wipe_unpublished_local_timers() {
+        let mut app = ClocksApp::scenario("running");
+        assert!(app.timer_count() > 0);
+        let before = app.timer_count();
+        ResourceSurface::<Clocks>::present(&mut app, &std::rc::Rc::new(ClockState::default()));
+        assert_eq!(
+            app.timer_count(),
+            before,
+            "empty present must not wipe unpublished local timers"
+        );
+    }
 }

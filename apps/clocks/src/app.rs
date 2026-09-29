@@ -978,6 +978,7 @@ fn surface(
 pub struct ClocksApp {
     inner: Element,
     state: ui::LocalState<ClockState>,
+    hosted: bool,
     generation: u64,
     last_saved: String,
     last_notification: Option<(uuid::Uuid, String, String)>,
@@ -1065,6 +1066,7 @@ impl ClocksApp {
                 &validation_error,
             ),
             state,
+            hosted: false,
             generation: 0,
             last_saved: String::new(),
             last_notification: None,
@@ -1499,12 +1501,36 @@ impl Widget for ClocksApp {
     }
 }
 
+impl ClocksApp {
+    /// Framework [`ResourceSurface::attach`] marks the surface hosted so
+    /// `resources` does not republish `clocks.collection` beside ResourceRoot.
+    pub(crate) fn mark_framework_hosted(&mut self) {
+        self.hosted = true;
+    }
+
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.hosted
+    }
+
+    /// Test-only: mark hosted without constructing a framework dispatcher.
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
+    }
+
+    pub(crate) fn timer_count(&self) -> usize {
+        self.state.with(|state| state.timers.len())
+    }
+}
+
 impl ui::resources::PublishesResources for ClocksApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         let _ = doc;
+        if self.hosted {
+            return self.state.with(crate::actions::live_clock_extras);
+        }
         self.state.with(crate::actions::provide_resources)
     }
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         fn find(
             resources: Vec<tilo_actions::Resource>,
             id: &str,
@@ -1519,8 +1545,7 @@ impl ui::resources::PublishesResources for ClocksApp {
             }
             None
         }
-        self.state
-            .with(|state| find(crate::actions::provide_resources(state), id))
+        find(self.resources(doc), id)
     }
 }
 

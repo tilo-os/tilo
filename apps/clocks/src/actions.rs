@@ -154,6 +154,40 @@ fn alarm_resource(alarm: &crate::Alarm) -> Resource {
     ))
 }
 
+fn stopwatch_resource(state: &ClockState) -> Resource {
+    Resource::new("clocks.stopwatch", "clocks.stopwatch", "Stopwatch")
+        .with_presentation(ResourcePresentation {
+            detail: Some(crate::app::duration(
+                state
+                    .stopwatch
+                    .elapsed(chrono::Utc::now())
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX),
+            )),
+            badge: state.stopwatch.pinned_overlay.then_some("Floating".into()),
+            preview: None,
+        })
+        .with_action(op(
+            "toggle",
+            "Start or pause",
+            &ClockOperation::ToggleStopwatch,
+        ))
+        .with_action(op("lap", "Record lap", &ClockOperation::Lap))
+        .with_action(op("reset", "Reset", &ClockOperation::ResetStopwatch))
+        .with_action(op(
+            "set-floating",
+            if state.stopwatch.pinned_overlay {
+                "Stop floating"
+            } else {
+                "Keep floating"
+            },
+            &ClockOperation::SetStopwatchOverlay {
+                pinned: !state.stopwatch.pinned_overlay,
+            },
+        ))
+}
+
 fn world_clock_resource(clock: &crate::WorldClock) -> Resource {
     Resource::new(
         format!("clocks.world:{}", clock.id),
@@ -206,41 +240,62 @@ pub fn provide_resources(state: &ClockState) -> Vec<Resource> {
             },
         ))
         .with_children(state.world_clocks.iter().map(world_clock_resource));
-    let stopwatch = Resource::new("clocks.stopwatch", "clocks.stopwatch", "Stopwatch")
-        .with_presentation(ResourcePresentation {
-            detail: Some(crate::app::duration(
-                state
-                    .stopwatch
-                    .elapsed(chrono::Utc::now())
-                    .as_millis()
-                    .try_into()
-                    .unwrap_or(u64::MAX),
-            )),
-            badge: state.stopwatch.pinned_overlay.then_some("Floating".into()),
-            preview: None,
-        })
-        .with_action(op(
-            "toggle",
-            "Start or pause",
-            &ClockOperation::ToggleStopwatch,
-        ))
-        .with_action(op("lap", "Record lap", &ClockOperation::Lap))
-        .with_action(op("reset", "Reset", &ClockOperation::ResetStopwatch))
-        .with_action(op(
-            "set-floating",
-            if state.stopwatch.pinned_overlay {
-                "Stop floating"
-            } else {
-                "Keep floating"
-            },
-            &ClockOperation::SetStopwatchOverlay {
-                pinned: !state.stopwatch.pinned_overlay,
-            },
-        ));
+    let stopwatch = stopwatch_resource(state);
     vec![
         Resource::new("clocks", "clocks.collection", "Clocks")
             .with_children([world, alarms, timers, stopwatch]),
     ]
+}
+
+/// Create / stopwatch commands that do not name a live timer, alarm, or city.
+/// They ride [`crate::resource::Clocks::local_operations`] through
+/// `tilo_resource::publish`. Per-item rows and the floating-overlay polarity
+/// stay on [`live_clock_extras`].
+pub(crate) fn collection_local_operations() -> Vec<ActionSpec> {
+    vec![
+        op(
+            "new-timer",
+            "Start a five-minute timer",
+            &ClockOperation::NewTimer {
+                seconds: 300,
+                label: "Timer".into(),
+            },
+        ),
+        op(
+            "new-alarm",
+            "Create a 07:30 alarm",
+            &ClockOperation::NewAlarm {
+                hours: 7,
+                minutes: 30,
+                label: "Alarm".into(),
+            },
+        ),
+        op(
+            "add-new-york",
+            "Add New York",
+            &ClockOperation::AddWorldClock {
+                city: "New York".into(),
+                timezone: "America/New_York".into(),
+            },
+        ),
+        op("toggle", "Start or pause", &ClockOperation::ToggleStopwatch),
+        op("lap", "Record lap", &ClockOperation::Lap),
+        op("reset", "Reset", &ClockOperation::ResetStopwatch),
+    ]
+}
+
+/// Live device rows beside `tilo_resource::publish`: timers, alarms, cities,
+/// and the stopwatch floating toggle. Not a second `clocks.collection` root.
+pub(crate) fn live_clock_extras(state: &ClockState) -> Vec<Resource> {
+    let mut extras: Vec<Resource> = state.timers.iter().map(timer_resource).collect();
+    extras.extend(state.alarms.iter().map(alarm_resource));
+    extras.extend(state.world_clocks.iter().map(world_clock_resource));
+    let mut stopwatch = stopwatch_resource(state);
+    stopwatch
+        .actions
+        .retain(|action| action.id.as_str() == "set-floating");
+    extras.push(stopwatch);
+    extras
 }
 
 /// Empty-state provider retained for lightweight contract consumers. The app
