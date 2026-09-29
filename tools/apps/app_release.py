@@ -91,14 +91,15 @@ def architecture_matrix(
         detail = ", ".join(sorted(invalid)) or "empty selection"
         raise ValueError(f"architectures must contain only x86_64 and/or aarch64: {detail}")
     # Tools from the first architecture run on its small runner; compiling the
-    # whole collection is CPU-bound and takes the large x86 one. The few large
-    # ARM slots are held by image builds for up to hours, so ARM stays small.
+    # whole collection is CPU-bound and takes the large one.
     return {
         "include": [
             {
                 "arch": architecture,
                 "runner": "runner" if architecture == "x86_64" else "runner-arm64",
-                "build_runner": "runner-large" if architecture == "x86_64" else "runner-arm64",
+                "build_runner": (
+                    "runner-large" if architecture == "x86_64" else "runner-large-arm64"
+                ),
             }
             for architecture in architectures
         ]
