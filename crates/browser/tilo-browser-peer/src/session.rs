@@ -1196,25 +1196,8 @@ impl Task {
                         let http = link.client().clone();
                         let session = link.session().to_owned();
                         n0_future::task::spawn(async move {
-                            let grant = match agent {
-                                None => {
-                                    crate::carrier::live_grant(
-                                        http.as_ref(),
-                                        &session,
-                                        workspace_id,
-                                    )
-                                    .await
-                                }
-                                Some(agent) => {
-                                    crate::carrier::agent_live_grant(
-                                        http.as_ref(),
-                                        &session,
-                                        workspace_id,
-                                        agent,
-                                    )
-                                    .await
-                                }
-                            };
+                            let grant =
+                                live_grant(http.as_ref(), &session, workspace_id, agent).await;
                             done(grant.map_err(|error| error.to_string()));
                         });
                     }
@@ -1769,6 +1752,19 @@ async fn connect(config: &PeerConfig, signer: &dyn DeviceSigner) -> Result<Link,
                 other => LinkError::Refused(other.to_string()),
             })
         }
+    }
+}
+
+/// A live grant for this device, or for agent `agent` it runs.
+async fn live_grant(
+    http: &dyn crate::HttpClient,
+    session: &str,
+    workspace_id: u64,
+    agent: Option<String>,
+) -> Result<tilo_relay_protocol::web::LiveGrant, crate::carrier::LinkError> {
+    match agent {
+        None => crate::carrier::live_grant(http, session, workspace_id).await,
+        Some(agent) => crate::carrier::agent_live_grant(http, session, workspace_id, agent).await,
     }
 }
 
