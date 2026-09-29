@@ -411,7 +411,7 @@ mod tests {
 
         let standalone = app.resources(&state.doc);
         assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, "video.project");
+        assert_eq!(standalone[0].kind, "video_editor.project");
         let standalone_playhead = standalone[0]
             .children
             .iter()

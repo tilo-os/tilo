@@ -4372,7 +4372,7 @@ mod tests {
             let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "one open project");
             let project = &resources[0];
-            assert_eq!(project.kind, "video.project");
+            assert_eq!(project.kind, "video_editor.project");
             let proj_actions: Vec<&str> = project.actions.iter().map(|a| a.id.as_str()).collect();
             assert!(proj_actions.contains(&"rename-project"), "{proj_actions:?}");
 

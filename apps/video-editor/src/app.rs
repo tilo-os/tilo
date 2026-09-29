@@ -7406,7 +7406,7 @@ impl ui::resources::PublishesResources for VideoEditorApp {
     /// action palette scopes to them. Delegates to the
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         // Framework [`tilo_resource::publish`] owns `video_editor.project`,
         // import/export Effects, and timeline children. Playhead/mix
         // conveniences are live presentation only — keep that same
@@ -7414,7 +7414,20 @@ impl ui::resources::PublishesResources for VideoEditorApp {
         if self.actions.is_hosted() {
             return crate::actions::live_playhead_resources(&self.video_resource_ctx());
         }
-        self.publish_resources(doc)
+        let ctx = self.video_resource_ctx();
+        let label = if ctx.project.name.is_empty() {
+            "Project".to_string()
+        } else {
+            ctx.project.name.clone()
+        };
+        let mut root = ui::tilo_resource::publish::<crate::resource::VideoProject>(
+            "video.project",
+            &label,
+            &ctx.project,
+        );
+        root.children
+            .extend(crate::actions::live_playhead_resources(&ctx));
+        vec![root]
     }
 }
 
