@@ -859,13 +859,10 @@ jobs:
             [worker.oci]
               max-parallelism = 1
 
-      # Read the manifest through the builder that consumes the snapshot, so
-      # its large RPM layer is pulled once, into BuildKit, instead of into
-      # Docker first and BuildKit again.
+      # Reads only the snapshot's metadata layer; BuildKit pulls the package
+      # layers when a stage actually mounts them.
       - name: Verify frozen package snapshot matches every consumer
-        env:
-          SNAPSHOT_BUILDER: ${{ steps.buildx.outputs.name }}
-        run: python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"
+        run: python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF"
 
       - name: Require the promoted native WPE buildroot
         env:
