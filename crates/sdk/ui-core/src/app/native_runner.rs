@@ -3785,6 +3785,7 @@ impl App {
             );
         }
         let event_loop = event_loop_builder.build().unwrap();
+        tilo_host_search::forward_to_runtime();
         let proxy = event_loop.create_proxy();
         super::install_dev_session_stop(proxy.clone());
         #[cfg(target_os = "android")]

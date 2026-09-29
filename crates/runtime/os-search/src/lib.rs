@@ -8,8 +8,9 @@
 //! - GNOME Shell's `org.gnome.Shell.SearchProvider2` and `KRunner`'s
 //!   `org.kde.krunner1` ask this index to match over the session bus
 //!   ([`dbus`]); packaging registers them with the files in [`linux_files`].
-//! - Spotlight keeps its own copy, which [`Changes`] keeps in step, and
-//!   hands a chosen result back as a user activity (`spotlight`).
+//! - Spotlight keeps its own copy, which [`Changes`] keeps in step
+//!   (`spotlight`); the app it wakes for a chosen result hands the entry
+//!   back to the daemon (`tilo-host-search`).
 //!
 //! A host hands back only an opaque [`EntryId`]. Opening re-resolves the
 //! resource's opening action as the owner and invokes it through the action

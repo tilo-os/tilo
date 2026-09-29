@@ -15509,6 +15509,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-host-search"
+version = "0.1.0"
+dependencies = [
+ "objc2 0.6.3",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-spotlight",
+ "objc2-foundation 0.3.2",
+ "tempfile",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-identity-host"
 version = "0.1.0"
 dependencies = [
@@ -15827,7 +15840,6 @@ dependencies = [
  "blake3",
  "block2 0.6.2",
  "objc2 0.6.3",
- "objc2-app-kit 0.3.2",
  "objc2-core-spotlight",
  "objc2-foundation 0.3.2",
  "objc2-uniform-type-identifiers 0.3.2",
@@ -16221,6 +16233,7 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-dialogs",
+ "tilo-host-search",
  "tilo-identity-host",
  "tilo-installed-apps",
  "tilo-joined-room",
@@ -16398,6 +16411,7 @@ dependencies = [
  "tilo-font-catalog",
  "tilo-headless-schema",
  "tilo-host",
+ "tilo-host-search",
  "tilo-media",
  "tilo-resource",
  "tilo-rt",
