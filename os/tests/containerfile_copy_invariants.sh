@@ -59,7 +59,9 @@ containerfile="$repo/os/Containerfile"
 # tilo-identity.service user unit (a one-shot chain-v1 repair) is gone; the
 # compositor verifies and repairs identity at startup. The session flight
 # recorder and tilo-session-report (through desktop-binaries) are deliberate
-# additions: the image's tilo-session now records each login. The rootfs
+# additions: the image's tilo-session now records each login. The
+# systemd-boot-random-seed drop-in, which skips the seed refresh on a
+# read-only /boot, is a deliberate addition. The rootfs
 # takes its build outputs from native-builder-payload, the builder's outputs
 # copied unchanged, so it no longer needs the compile stage's intermediate
 # cache.
@@ -69,7 +71,7 @@ containerfile="$repo/os/Containerfile"
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=13d7ce59ac930eb7339b02377a0b7f826d006a77a867381457103c8780d55850
+expected_contract=5cbe4535c14af14f332bee98bb8e36d9cd1a5853c7261cfd62d427013a6e5ff8
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
