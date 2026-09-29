@@ -23,10 +23,11 @@ ignored = ["pkg-config", "wgpu-hal", "getrandom02"]
 default = ["native", "broker-transport"]
 # The native desktop runner and host services: the winit event loop with its
 # AccessKit adapter, the Wayland/X11 clipboard, the OS URI handler, startup
-# warmup, and the `ui::native` backends. Without it the crate is the portable
+# warmup, the host OS appearance a standalone app follows (the Settings portal
+# on Linux), and the `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
-native = ["local-daemons", "tilo-host/native", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:windows", "dep:accesskit_android", "dep:tilo-content", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full"]
+native = ["local-daemons", "tilo-host/native", "dep:zbus", "zbus?/blocking-api", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:windows", "dep:accesskit_android", "dep:tilo-content", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full"]
 # two-face's grammars for the code editor's highlighting (about 0.9 MB of
 # data). Without it every language highlights as plain text; the browser
 # toolkit core leaves it out.
@@ -281,7 +282,9 @@ tts = { version = "0.1.0", path = "../../system/tts" }
 [target.'cfg(unix)'.dependencies]
 # Takes the launcher's content-store capability at launch (`launch.rs`).
 tilo-content = { version = "0.1.0", path = "../../system/content", optional = true, features = ["device"] }
-# Session-bus client for `priority-contacts`; runs on the workspace's tokio.
+# Session-bus client for `priority-contacts` and, on Linux, the Settings
+# portal a standalone app takes its appearance from; runs on the workspace's
+# tokio.
 zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -366,12 +369,17 @@ accesskit_android = { version = "0.8.0", optional = true, features = ["embedded-
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu-hal = { version = "29", default-features = false, features = ["metal"], optional = true }
 # The menu bar and title-bar search field History and Search live in
-# (`host_chrome/macos.rs`). The generation arboard already brings in.
+# (`host_chrome/macos.rs`), and the accent and display options a standalone
+# app follows (`host_appearance/macos.rs`). The generation arboard already
+# brings in.
 objc2 = { version = "0.6", optional = true }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSObject", "NSProcessInfo", "NSString"], optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSObject", "NSProcessInfo", "NSString", "NSUserDefaults"], optional = true }
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
+    "NSAccessibility",
     "NSApplication",
+    "NSColor",
+    "NSColorSpace",
     "NSControl",
     "NSEvent",
     "NSMenu",
@@ -385,6 +393,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSToolbarItem",
     "NSView",
     "NSWindow",
+    "NSWorkspace",
 ], optional = true }
 
 # Private files and the pairing flow's TLS client need an OS; the browser
