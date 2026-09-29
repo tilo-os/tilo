@@ -173,6 +173,11 @@ for (const bin of [relayBin, runtimeBin, ...appNames.map(a => join(binDir, APPS[
 const axSource = join(here, 'collab-e2e-ax.swift');
 const axBin = join(out, 'collab-e2e-ax');
 execFileSync('swiftc', ['-O', axSource, '-o', axBin], {stdio: 'inherit'});
+// A locked screen presents no native window: its apps start but never draw,
+// answer accessibility or run their input timeline.
+if (/"CGSSessionScreenIsLocked"\s*=\s*Yes/.test(execFileSync('ioreg', ['-n', 'Root', '-d1'], {encoding: 'utf8'}))) {
+  throw new Error('the screen is locked: native windows present no frames; unlock it and run again');
+}
 
 // ---------------------------------------------------------------------------
 // The host, the native runtime daemon and the page server.
@@ -364,7 +369,16 @@ function axClient(pid) {
   const lines = createInterface({input: child.stdout});
   const waiting = [];
   lines.on('line', line => waiting.shift()?.(JSON.parse(line)));
-  const ask = command => new Promise(ok => { waiting.push(ok); child.stdin.write(`${JSON.stringify(command)}\n`); });
+  // An app that does not answer accessibility (busy, or a locked screen that
+  // never presents its window) must fail its checks, not stall the run: a
+  // late answer is dropped with the request it belongs to.
+  const ask = command => new Promise(ok => {
+    let done = false;
+    const answer = value => { if (!done) { done = true; ok(value); } };
+    waiting.push(answer);
+    child.stdin.write(`${JSON.stringify(command)}\n`);
+    setTimeout(() => answer({ok: false, nodes: [], timeout: true}), 5000);
+  });
   let last = [];
   return {
     async dump() { const answer = await ask({cmd: 'dump'}); last = answer.nodes ?? []; return last; },

@@ -586,7 +586,10 @@ outside the process through the macOS accessibility API
 (`collab-e2e-ax.swift`, compiled with `swiftc` on first use), so the terminal
 running the script needs Accessibility permission; the native pointer moves
 through a `TILO_NATIVE_SCENARIO` timeline. Native presence from the pages is
-read from the runtime daemon's log. macOS only.
+read from the runtime daemon's log. The screen must stay unlocked for the whole
+run: a locked screen presents no native window, so the script refuses to start
+on one. Each page's channel state (`peer.channelDiagnostics()`) is saved as
+`*-channels.txt`. macOS only.
 
 ## Tests
 
