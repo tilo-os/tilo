@@ -208,6 +208,9 @@ impl Room {
                         ));
                     }
                 }
+                PeerEvent::DocumentRejected(reason) => {
+                    warn(&format!("dropped a document: {reason}"))
+                }
                 _ => {}
             }
         }

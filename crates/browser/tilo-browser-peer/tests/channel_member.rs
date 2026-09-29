@@ -376,3 +376,100 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
     reloaded.close();
     host.relay.shutdown().await;
 }
+
+/// A page that joined before the steward announced the channel (the room
+/// looked ungoverned after the host's replay, so its first edit went out in
+/// the clear) asks for access once the genesis arrives live, and seals from
+/// then on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_page_that_joined_first_asks_for_access_when_the_genesis_arrives() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let route = route();
+    let channel = document_channel_id(&route.app_id, &route.cluster_id, &route.record);
+    let vault = VaultKey::new([7; 32]);
+    let steward_dir = tempfile::tempdir().unwrap();
+    let steward =
+        ChannelSteward::open_or_create(steward_dir.path(), channel, laptop.key.clone(), &vault)
+            .unwrap();
+    let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .bind()
+        .await
+        .unwrap();
+    let client = RelayClient::connect(
+        endpoint,
+        host.relay.node_addr(),
+        root.verifying_key().to_bytes(),
+        laptop.cert.clone(),
+        laptop.key.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    let laptop_device = laptop.key.verifying_key().to_bytes();
+    let session = RelayCoeditSession::join(client, workspace(), laptop_device).unwrap();
+    publish(
+        &session,
+        &NeighbourMsg::IdentityHello {
+            cert: Box::new(laptop.cert.clone()),
+            revocations: Vec::new(),
+        },
+    );
+
+    let peer = start_peer(
+        Host::Https(host.https()),
+        browser.cert.clone(),
+        host_device.cert.clone(),
+        browser.key.clone(),
+    );
+    peer.join(workspace()).unwrap();
+    peer.open_route(route.clone()).unwrap();
+    ready(&[&peer]).await;
+    peer.publish(
+        route.clone(),
+        &DocumentMutation::Incremental(b"before the genesis".to_vec()),
+    )
+    .unwrap();
+
+    publish(
+        &session,
+        &NeighbourMsg::MlsGovernance {
+            room: ROOM.into(),
+            frame: Box::new(steward.journal().frames()[0].clone()),
+            delivery: 1,
+        },
+    );
+    let browser_device = browser.key.verifying_key().to_bytes();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let inbound = tokio::time::timeout_at(deadline, session.recv())
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "no access request after the genesis; the page's channels:\n{}",
+                    peer.status().channels
+                )
+            })
+            .expect("host session open");
+        let Inbound::Delta { author, data } = inbound else {
+            continue;
+        };
+        if let Ok(NeighbourMsg::MlsAccessRequest { request, .. }) = postcard::from_bytes(&data) {
+            assert_eq!(author, browser_device);
+            assert_eq!(request.channel, channel);
+            break;
+        }
+    }
+    peer.close();
+    host.relay.shutdown().await;
+}

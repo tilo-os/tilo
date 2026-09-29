@@ -408,6 +408,8 @@ impl PeerHandle {
             ciphers: Ciphers::new(),
             channels,
             channel_changes: crate::channels::Changes::default(),
+            opened: BTreeMap::new(),
+            refused: (0, String::new()),
             held_inbound: BTreeMap::new(),
             held_outbound: saved.held.into_iter().collect(),
             doc_seq: 0,
@@ -772,6 +774,10 @@ struct Task {
     channels: crate::channels::Channels,
     /// What channel state changed since the session last acted on it.
     channel_changes: crate::channels::Changes,
+    /// Documents opened per route, and those refused with the last reason,
+    /// for the diagnostics.
+    opened: BTreeMap<(DocumentRoute, [u8; 4]), u64>,
+    refused: (u64, String),
     /// Sealed documents that arrived before this device held their keys,
     /// with their authenticated authors.
     held_inbound: BTreeMap<DocumentRoute, VecDeque<HeldFrame>>,
@@ -1406,9 +1412,19 @@ impl Task {
 
     fn open_document(&mut self, body: &[u8], author: [u8; 32]) {
         match open_frame(body, author, &mut self.ciphers) {
-            Ok(Some(document)) => self.emit(&PeerEvent::Document(Box::new(document))),
+            Ok(Some(document)) => {
+                let from: [u8; 4] = author
+                    .get(..4)
+                    .and_then(|b| b.try_into().ok())
+                    .unwrap_or_default();
+                *self.opened.entry((document.route.clone(), from)).or_default() += 1;
+                self.emit(&PeerEvent::Document(Box::new(document)));
+            }
             Ok(None) => {}
-            Err(error) => self.emit(&PeerEvent::DocumentRejected(error.to_string())),
+            Err(error) => {
+                self.refused = (self.refused.0 + 1, error.to_string());
+                self.emit(&PeerEvent::DocumentRejected(error.to_string()));
+            }
         }
     }
 
@@ -1453,7 +1469,26 @@ impl Task {
             if changes.keys.is_empty() && changes.outgoing.is_empty() && changes.released.is_empty()
             {
                 self.persist_channels(false);
-                let channels = self.channels.describe();
+                let mut channels = self.channels.describe();
+                for ((route, from), count) in &self.opened {
+                    channels.push_str(&format!(
+                        "\nopened {}/{} from {}: {count}",
+                        route.app_id,
+                        route.record,
+                        hex::encode(from)
+                    ));
+                }
+                for (route, held) in &self.held_inbound {
+                    channels.push_str(&format!(
+                        "\nheld for keys {}/{}: {}",
+                        route.app_id,
+                        route.record,
+                        held.len()
+                    ));
+                }
+                if self.refused.0 > 0 {
+                    channels.push_str(&format!("\nrefused {}: {}", self.refused.0, self.refused.1));
+                }
                 if lock(&self.shared).status.channels != channels {
                     self.update(|status| status.channels = channels);
                 }
