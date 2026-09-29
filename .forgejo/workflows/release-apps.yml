@@ -804,17 +804,16 @@ jobs:
           # every generated icon or screenshot with its real image type.
           # This guards against the package upload and public proxy drifting
           # apart and avoids publishing Store cards that render as blanks.
-          while IFS=$'\t' read -r media media_url; do
+          check_media() {
+            local media=$1 media_url=$2 expected_type headers status=000 content_type= attempt
             case "$media" in
               *.svg) expected_type='image/svg+xml' ;;
               *.png) expected_type='image/png' ;;
               *.jpg|*.jpeg) expected_type='image/jpeg' ;;
               *.webp) expected_type='image/webp' ;;
-              *) printf 'unsupported registry media type: %s\n' "$media" >&2; exit 1 ;;
+              *) printf 'unsupported registry media type: %s\n' "$media" >&2; return 1 ;;
             esac
-            headers="$RUNNER_TEMP/tilo-registry-media-headers"
-            status='000'
-            content_type=''
+            headers=$(mktemp "$RUNNER_TEMP/tilo-registry-media-headers.XXXXXX")
             for attempt in 1 2 3 4 5; do
               : > "$headers"
               status=$(curl --silent --show-error --location --head --dump-header "$headers" \
@@ -823,12 +822,17 @@ jobs:
               [[ $status == 200 && $content_type == "$expected_type" ]] && break
               (( attempt < 5 )) && sleep "$attempt"
             done
+            rm -f "$headers"
             [[ $status == 200 && $content_type == "$expected_type" ]] || {
               printf 'public registry media is unavailable or has the wrong type (%s: HTTP %s, %s; expected %s)\n' \
                 "$media_url" "$status" "${content_type:-no Content-Type}" "$expected_type" >&2
-              exit 1
+              return 1
             }
-          done < "$registry_media_urls"
+          }
+          export -f check_media
+          export RUNNER_TEMP
+          tr '\t' '\n' < "$registry_media_urls" \
+            | xargs -d '\n' -n 2 -P 8 bash -c 'check_media "$1" "$2"' _
 
           # Submit every newly built immutable tapp to the signed registry.
           # The request is signed by the same identity as the package; retries
@@ -873,14 +877,19 @@ jobs:
           # architecture into that entry before POSTing so the registry never
           # has to synthesize or re-sign publisher data. This also upgrades an
           # already-published single-architecture entry append-only.
+          # One snapshot serves every id; only a refused attempt re-reads it.
+          fetch_snapshot() {
+            curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
+              --retry 3 --retry-all-errors "$registry_url/entries" --output "$snapshot"
+            jq -e '.entries | type == "array"' "$snapshot" >/dev/null
+          }
+          fetch_snapshot
           while IFS= read -r id; do
             accepted=false
             architectures=$(awk -F $'\t' -v id="$id" '$1 == id {print $4}' \
               "$publication_plan" | paste -sd, -)
             for attempt in 1 2 3; do
-              curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
-                --retry 3 --retry-all-errors "$registry_url/entries" --output "$snapshot"
-              jq -e '.entries | type == "array"' "$snapshot" >/dev/null
+              (( attempt == 1 )) || fetch_snapshot
               matches=$(jq --arg id "$id" '[.entries[] | select(.package_id == $id)] | length' "$snapshot")
               previous="$RUNNER_TEMP/tilo-registry-previous.json"
               aggregate="$RUNNER_TEMP/tilo-registry-aggregate.json"
