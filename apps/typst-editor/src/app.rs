@@ -444,6 +444,79 @@ impl TypstApp {
         self.framework_hosted = hosted;
     }
 
+    /// Whether [`PublishesResources`](ui::resources::PublishesResources) is
+    /// publishing only live diagnostics / preview-page extras beside the
+    /// framework door.
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.framework_hosted
+    }
+
+    /// Live presentation inputs for the resource tree.
+    pub(crate) fn resource_ctx(&self) -> crate::actions::TypstResourceCtx<'_> {
+        crate::actions::TypstResourceCtx {
+            diagnostics: self.diagnostics.diags(),
+            page_count: self.preview.page_count(),
+        }
+    }
+
+    /// Test-only: stage Problems rows and preview pages for hosted extras.
+    #[cfg(test)]
+    pub(crate) fn stage_live_extras_for_test(
+        &mut self,
+        diags: Vec<crate::compile::Diagnostic>,
+        pages: Vec<crate::compile::PageImage>,
+    ) {
+        self.diagnostics.set_diagnostics(diags);
+        self.preview.set_pages(&pages);
+    }
+
+    /// Test-only: drop staged diagnostics and pages so hosted extras go empty.
+    #[cfg(test)]
+    pub(crate) fn clear_live_extras_for_test(&mut self) {
+        self.diagnostics.set_diagnostics(Vec::new());
+        self.preview.set_pages(&[]);
+    }
+
+    /// Test-only: live diagnostic count after staging.
+    #[cfg(test)]
+    pub(crate) fn live_diagnostic_count_for_test(&self) -> usize {
+        self.diagnostics.diags().len()
+    }
+
+    /// Test-only: live preview page count after staging.
+    #[cfg(test)]
+    pub(crate) fn live_page_count_for_test(&self) -> usize {
+        self.preview.page_count()
+    }
+
+    /// Test-only: replace the local document list with unpublished source.
+    #[cfg(test)]
+    pub(crate) fn seed_unpublished_source_for_test(&mut self, name: &str, source: &str) {
+        self.documents = vec![Document {
+            name: name.into(),
+            source: source.into(),
+            from_disk: false,
+        }];
+        self.current = 0;
+        self.initialized = false;
+        self.source_id = None;
+    }
+
+    /// Test-only: local document names currently held on the surface.
+    #[cfg(test)]
+    pub(crate) fn local_document_names_for_test(&self) -> Vec<String> {
+        self.documents.iter().map(|doc| doc.name.clone()).collect()
+    }
+
+    /// Test-only: current local source body held on the surface.
+    #[cfg(test)]
+    pub(crate) fn local_source_for_test(&self) -> String {
+        self.documents
+            .get(self.current)
+            .map(|doc| doc.source.clone())
+            .unwrap_or_default()
+    }
+
     /// Screenshot-only: pre-arrange a demo instance into a named state so the
     /// offscreen renderer can capture views that normally require interaction.
     /// Never called by the live event loop.
@@ -944,6 +1017,26 @@ impl TypstApp {
             }
             TypstOperation::ShowEditor => self.set_compact_view(CompactPane::Editor),
             TypstOperation::ShowPreview => self.set_compact_view(CompactPane::Preview),
+            TypstOperation::GoToDiagnostic { index } => {
+                if let Some(diag) = self.diagnostics.diags().get(index)
+                    && let Some(line) = diag.line
+                {
+                    let text = self.read_source(doc);
+                    self.editor.goto_line(&text, line);
+                    self.show_diagnostics = true;
+                    if self.compact {
+                        self.set_compact_view(CompactPane::Editor);
+                    } else {
+                        self.editor.focused = true;
+                    }
+                }
+            }
+            TypstOperation::GoToPage { page } => {
+                self.preview.scroll_to_page(page);
+                if self.compact {
+                    self.set_compact_view(CompactPane::Preview);
+                }
+            }
         }
     }
 
@@ -2351,11 +2444,16 @@ impl ui::undo::UndoPoints for TypstApp {
 }
 
 impl ui::resources::PublishesResources for TypstApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let ctx = self.resource_ctx();
+        // Framework [`tilo_resource::publish`] owns `typst.workspace`, compile /
+        // save / zoom Views, and the document children. Diagnostics and preview
+        // pages are live presentation only — keep that same standalone slice
+        // when hosted, never a second workspace root.
         if self.framework_hosted {
-            return Vec::new();
+            return crate::actions::live_extras(&ctx);
         }
-        crate::actions::resources(doc)
+        crate::actions::resources(&ctx)
     }
 }
 

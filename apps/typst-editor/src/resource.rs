@@ -1,6 +1,9 @@
 //! Typst Editor as a [`tilo_resource::Resource`]: source text stays on the
 //! CRDT-native text path; compile / open / save / zoom are View and Effect
-//! operations published from the resource.
+//! operations published from the resource. Live diagnostics and preview-page
+//! hits stay on the surface — hosted
+//! [`PublishesResources`](ui::resources::PublishesResources) returns only that
+//! slice beside the framework door.
 
 use std::rc::Rc;
 
@@ -45,25 +48,22 @@ impl Resource for TypstEditor {
     }
 
     fn children(_state: &()) -> Vec<tilo_actions::Resource> {
-        actions::resources(&automerge::AutoCommit::new())
-            .into_iter()
-            .next()
-            .map(|root| root.children)
-            .unwrap_or_default()
+        // Static document / preview / export door only — live diagnostics and
+        // preview pages ride [`PublishesResources`] via [`actions::live_extras`].
+        actions::workspace_resource().children
     }
 
     fn local_operations() -> Vec<ActionSpec> {
-        actions::resources(&automerge::AutoCommit::new())
+        let root = actions::workspace_resource();
+        let nested = root.children.into_iter().flat_map(|child| {
+            child
+                .actions
+                .into_iter()
+                .chain(child.children.into_iter().flat_map(|g| g.actions))
+        });
+        root.actions
             .into_iter()
-            .flat_map(|resource| {
-                let nested = resource.children.into_iter().flat_map(|child| {
-                    child
-                        .actions
-                        .into_iter()
-                        .chain(child.children.into_iter().flat_map(|g| g.actions))
-                });
-                resource.actions.into_iter().chain(nested)
-            })
+            .chain(nested)
             .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
             .collect()
     }
@@ -102,7 +102,10 @@ impl ResourceApp for TypstEditorShell {
 }
 
 impl ResourceSurface<TypstEditor> for TypstApp {
-    fn present(&mut self, _state: &Rc<()>) {}
+    fn present(&mut self, _state: &Rc<()>) {
+        // Source lives on the CRDT text object and local document list — an
+        // empty projection must not wipe unpublished local source.
+    }
 
     fn attach(&mut self, _cx: SurfaceCx<TypstEditor>) {
         self.set_framework_hosted(true);
@@ -114,4 +117,205 @@ pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<TypstEditorShell>().configure_app(|app| {
         app.set_window_title(Some("Typst".into()));
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compile::{DiagKind, Diagnostic, PageImage};
+    use std::sync::Arc;
+    use ui::resources::PublishesResources;
+    use ui::tilo_actions::OperationKind;
+    use ui::widget::Widget;
+
+    fn blank_page() -> PageImage {
+        PageImage {
+            rgba: Arc::from([255u8, 255, 255, 255].as_slice()),
+            width: 1,
+            height: 1,
+            width_pt: 100.0,
+            height_pt: 100.0,
+        }
+    }
+
+    #[test]
+    fn hosted_resources_keep_live_extras_without_workspace_root() {
+        let published =
+            ui::tilo_resource::publish::<TypstEditor>("typst.workspace", "Typst workspace", &());
+        assert_eq!(published.kind, "typst.workspace");
+        let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
+        for expected in [
+            "open",
+            "save",
+            "compile",
+            "export-pdf",
+            "zoom-in",
+            "problems",
+            "apply",
+            "group",
+        ] {
+            assert!(
+                ids.contains(&expected),
+                "palette `{expected}` must ride local_operations via publish: {ids:?}"
+            );
+        }
+        let compile = published
+            .actions
+            .iter()
+            .find(|action| action.id == "compile")
+            .expect("compile");
+        assert_eq!(compile.kind, OperationKind::Effect);
+        assert!(
+            published
+                .children
+                .iter()
+                .any(|child| child.kind == "typst.document"),
+            "document door must ride Resource children: {:?}",
+            published
+                .children
+                .iter()
+                .map(|child| child.id.as_str())
+                .collect::<Vec<_>>()
+        );
+
+        let mut app = TypstApp::with_demo_documents();
+        let mut state = ui::State::new();
+        Widget::sync(&mut app, &mut state.doc, &state.root);
+        assert!(
+            !app.is_framework_hosted(),
+            "standalone stays on the full action tree"
+        );
+
+        app.stage_live_extras_for_test(
+            vec![
+                Diagnostic {
+                    kind: DiagKind::Error,
+                    message: "unknown variable".into(),
+                    line: Some(4),
+                    col: Some(28),
+                    end_line: Some(4),
+                    end_col: Some(43),
+                    hints: Vec::new(),
+                },
+                Diagnostic {
+                    kind: DiagKind::Warning,
+                    message: "unknown font family".into(),
+                    line: Some(1),
+                    col: Some(12),
+                    end_line: Some(1),
+                    end_col: Some(26),
+                    hints: Vec::new(),
+                },
+            ],
+            vec![blank_page(), blank_page()],
+        );
+        assert!(
+            app.live_diagnostic_count_for_test() > 0,
+            "staged diagnostics required for the hosted extras contract"
+        );
+        assert!(
+            app.live_page_count_for_test() > 1,
+            "staged pages required for the hosted extras contract"
+        );
+
+        let standalone = app.resources(&state.doc);
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].kind, "typst.workspace");
+        let document = standalone[0]
+            .children
+            .iter()
+            .find(|child| child.kind == "typst.document")
+            .expect("standalone nests the document under the workspace");
+        let standalone_problems = document
+            .children
+            .iter()
+            .find(|child| child.kind == "typst.problems")
+            .expect("standalone nests diagnostics under the document");
+        assert!(
+            !standalone_problems.children.is_empty(),
+            "standalone problems projection carries diagnostic rows"
+        );
+        assert!(
+            standalone_problems.children.iter().all(|hit| {
+                hit.kind == "typst.diagnostic"
+                    && hit.actions.iter().any(|action| action.id == "open")
+            }),
+            "each diagnostic is a navigable typst.diagnostic row"
+        );
+        let standalone_pages = document
+            .children
+            .iter()
+            .find(|child| child.kind == "typst.preview-pages")
+            .expect("standalone nests preview pages under the document");
+        assert_eq!(
+            standalone_pages.children.len(),
+            app.live_page_count_for_test(),
+            "standalone keeps one row per compiled page"
+        );
+
+        app.set_framework_hosted(true);
+        assert!(app.is_framework_hosted());
+        let extras = app.resources(&state.doc);
+        assert!(
+            extras
+                .iter()
+                .all(|resource| resource.kind != "typst.workspace"
+                    && resource.kind != "typst.document"),
+            "hosted must not republish typst.workspace beside ResourceRoot: {:?}",
+            extras
+                .iter()
+                .map(|resource| resource.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(extras.len(), 2, "hosted returns problems + pages slices");
+        assert!(
+            extras
+                .iter()
+                .any(|resource| resource.kind == "typst.problems"),
+            "hosted keeps the problems slice"
+        );
+        assert!(
+            extras
+                .iter()
+                .any(|resource| resource.kind == "typst.preview-pages"),
+            "hosted keeps the preview-pages slice"
+        );
+        let hosted_problems = extras
+            .iter()
+            .find(|resource| resource.kind == "typst.problems")
+            .expect("hosted returns the problems slice");
+        assert_eq!(
+            hosted_problems.id, standalone_problems.id,
+            "hosted problems tree matches the standalone nested slice"
+        );
+        assert_eq!(
+            hosted_problems.children.len(),
+            standalone_problems.children.len(),
+            "hosted keeps the same bounded diagnostic rows"
+        );
+
+        app.clear_live_extras_for_test();
+        assert!(
+            app.resources(&state.doc).is_empty(),
+            "hosted publishes no live extras when compile reported none"
+        );
+    }
+
+    #[test]
+    fn present_empty_does_not_wipe_unpublished_local_source() {
+        let mut app = TypstApp::new();
+        app.seed_unpublished_source_for_test("local-only.typ", "= Not published yet\n");
+        let empty = Rc::new(());
+        ResourceSurface::<TypstEditor>::present(&mut app, &empty);
+        assert_eq!(
+            app.local_document_names_for_test(),
+            vec!["local-only.typ".to_owned()],
+            "empty present must not wipe unpublished local source"
+        );
+        assert_eq!(
+            app.local_source_for_test(),
+            "= Not published yet\n",
+            "empty present must keep the local source body"
+        );
+    }
 }
