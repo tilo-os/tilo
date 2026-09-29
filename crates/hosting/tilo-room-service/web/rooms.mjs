@@ -67,8 +67,9 @@ export function parseJoinLink(hash = location.hash) {
  * pairing code this page shows. Resolves to relay.mjs's peer
  * (`whenReady`, `mountDesktop`, `records`, `whenRecord`, …).
  */
-export function joinRoom({origin, userPublicKey, room, ticket, admit, label = 'Browser', signal, onStatus}) {
+export async function joinRoom({origin, userPublicKey, room, ticket, admit, label = 'Browser', signal, onStatus}) {
   if (!admit) throw new TypeError('admit is required');
+  await untilReachable(origin, {signal});
   return connectRelayPeer({
     origin, userPublicKey, room, label, signal, onStatus,
     onPairingCode: async pairingCode => {
@@ -79,6 +80,22 @@ export function joinRoom({origin, userPublicKey, room, ticket, admit, label = 'B
       if (!response.ok) onStatus?.({phase: 'failed', error: (await response.json().catch(() => ({}))).error ?? 'the room refused this device'});
     },
   });
+}
+
+/** Resolves once the room's relay answers: a room that just started (or a
+ * port forward that has not noticed it yet) refuses connections briefly. */
+async function untilReachable(origin, {signal, timeoutMs = 15_000} = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (let delay = 100; ; delay = Math.min(delay * 2, 1000)) {
+    try {
+      const response = await fetch(new URL('/peer/v1/host', origin), {method: 'POST', credentials: 'omit', cache: 'no-store', signal});
+      if (response.ok) return;
+    } catch (error) {
+      if (signal?.aborted) throw error;
+    }
+    if (Date.now() + delay > deadline) return;
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
 }
 
 /** The room's record of `app` once this page holds one. */
