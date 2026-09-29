@@ -1110,25 +1110,63 @@ impl Mount {
             return Ok(());
         };
         let viewport = self.viewport.requested();
+        // What asked for this frame, when frame metrics are on.
+        let mut reasons = self.metrics.borrow().enabled().then(|| {
+            let mut reasons = Vec::new();
+            if self.pending {
+                reasons.push("input or host".to_owned());
+            }
+            reasons
+        });
         // Desktop tabs' components and queued desktop changes wake the
         // mount, not the frame harness. Relayout to take them, and present
         // the new scene.
-        if self.desktop.as_ref().is_some_and(|d| d.shared.take_wake()) {
+        if let Some(desktop) = self.desktop.as_ref().filter(|d| d.shared.take_wake()) {
+            let wakers = desktop.shared.take_wakers();
+            if let Some(reasons) = &mut reasons {
+                if wakers.is_empty() {
+                    reasons.push("desktop wake".into());
+                }
+                reasons.extend(wakers.iter().map(|app| format!("wake: {app}")));
+            }
             self.frame.relayout();
             self.pending = true;
         }
         // A peer's change merged into an open record.
         if self.replica_changed.replace(false) {
+            if let Some(reasons) = &mut reasons {
+                reasons.push("replica change".into());
+            }
             self.frame.relayout();
             self.pending = true;
         }
         let frame = self.frame.frame_schedule();
+        let due = frame
+            .next_wake_deadline
+            .is_some_and(|wake| wake <= ui::time::now());
+        if let Some(reasons) = &mut reasons {
+            if self.viewport.needs_present() {
+                reasons.push("viewport".into());
+            }
+            if frame.queued_work {
+                reasons.push("queued work".into());
+            }
+            if frame.needs_animation_frame || due {
+                reasons.extend(
+                    self.frame
+                        .frame_requesters()
+                        .into_iter()
+                        .map(|(path, demand)| match demand {
+                            ui::headless::FrameDemand::Animation => format!("animation: {path}"),
+                            ui::headless::FrameDemand::Deadline => format!("deadline: {path}"),
+                        }),
+                );
+            }
+        }
         self.pending |= self.viewport.needs_present()
             || frame.queued_work
             || frame.needs_animation_frame
-            || frame
-                .next_wake_deadline
-                .is_some_and(|wake| wake <= ui::time::now());
+            || due;
         if !self.pending {
             return Ok(());
         }
@@ -1260,6 +1298,9 @@ impl Mount {
         self.viewport.did_present();
         self.pending = false;
         self.frames = self.frames.saturating_add(1);
+        if let Some(reasons) = reasons {
+            self.metrics.borrow_mut().presented(reasons);
+        }
         self.publish(0);
         Ok(())
     }
@@ -1945,7 +1986,7 @@ pub fn take_frame_metrics() -> Result<String, JsValue> {
             .iter_mut()
             .map(|(id, mount)| {
                 let mut metrics = mount.metrics.borrow_mut();
-                serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "layoutPasses": mount.frame.take_profile_samples()})
+                serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "requesters": metrics.take_requesters(), "layoutPasses": mount.frame.take_profile_samples()})
             })
             .collect();
         serde_json::to_string(&samples).map_err(error)
