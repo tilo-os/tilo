@@ -435,10 +435,27 @@ pub fn provide_resources_with_unavailable_reason(
     unavailable_reason: Option<&str>,
 ) -> Vec<Resource> {
     let unavailable_reason = unavailable_reason.unwrap_or(DEFAULT_UNAVAILABLE);
-    let root = publish_policy_document(policy);
-
-    let mut backups = Resource::new(BACKUPS_RESOURCE_ID, "backups.workspace", "Backups");
+    let state = crate::resource::BackupsState {
+        policy: policy.clone(),
+    };
+    let mut backups = ui::tilo_resource::publish::<crate::resource::Backups>(
+        BACKUPS_RESOURCE_ID,
+        "Backups",
+        &state,
+    );
+    let mut extra = Vec::new();
     for spec in workspace_effect_specs(configured, unavailable_reason) {
+        if let Some(existing) = backups
+            .actions
+            .iter_mut()
+            .find(|action| action.id == spec.id)
+        {
+            *existing = spec;
+        } else {
+            extra.push(spec);
+        }
+    }
+    for spec in extra {
         backups = backups.with_action(spec);
     }
     backups = backups
@@ -450,9 +467,7 @@ pub fn provide_resources_with_unavailable_reason(
             unavailable_reason,
         ));
 
-    // Keep the long-standing policy root first: automation clients that began
-    // at the original public root retain a stable traversal order.
-    vec![root, backups]
+    vec![backups]
 }
 
 /// Resolve one stable resource without requiring it to be in the contextual
@@ -652,8 +667,17 @@ mod tests {
     }
 
     fn field_resource(root: &Resource, field: PolicyField) -> &Resource {
+        let policy = if root.kind == "backups.policy" {
+            root
+        } else {
+            root.children
+                .iter()
+                .find(|resource| resource.kind == "backups.policy")
+                .unwrap_or(root)
+        };
         let id = format!("backups.retention:{}", field.key());
-        root.children
+        policy
+            .children
             .iter()
             .find(|r| r.id.as_str() == id)
             .unwrap_or_else(|| panic!("a resource for {id}"))
@@ -677,13 +701,16 @@ mod tests {
         let resources = ui::resources::resources(&app, &doc);
         assert_eq!(
             resources.len(),
-            2,
-            "the stored policy and the safe backup automation catalog are exported"
+            1,
+            "the workspace publishes the policy and the backup catalog"
         );
-        let root = resources
+        let workspace = &resources[0];
+        assert_eq!(workspace.kind, "backups.workspace");
+        let root = workspace
+            .children
             .iter()
             .find(|resource| resource.kind == "backups.policy")
-            .expect("retention-policy root");
+            .expect("retention-policy child");
         assert_eq!(root.kind, "backups.policy");
         assert_eq!(root.children.len(), 4, "one child per retention class");
 
