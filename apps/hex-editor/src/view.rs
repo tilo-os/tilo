@@ -208,6 +208,10 @@ pub struct HexView {
     shots_overlay: bool,
     /// The canvas is keyboard-focusable even though it is custom drawn.
     focused: bool,
+    /// Set when the framework ResourceApp hosts this surface. Hosted
+    /// [`PublishesResources`] keeps only live cursor extras — never a second
+    /// `hex_editor.document` beside ResourceRoot.
+    hosted: bool,
 }
 
 impl HexView {
@@ -254,7 +258,25 @@ impl HexView {
             shots_status: false,
             shots_overlay: false,
             focused: false,
+            hosted: false,
         }
+    }
+
+    /// Framework [`ResourceSurface::attach`] marks the surface hosted so
+    /// palette publication does not duplicate ResourceRoot's publish door.
+    pub(crate) fn mark_framework_hosted(&mut self) {
+        self.hosted = true;
+    }
+
+    /// Whether this surface is under the framework ResourceApp host.
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.hosted
+    }
+
+    /// Test-only: mark hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
     }
 
     /// The editor with no file loaded — the honest live default. Shows a
@@ -2209,11 +2231,13 @@ impl Widget for HexView {
 }
 
 impl ui::resources::PublishesResources for HexView {
-    /// Publish the open buffer + its byte-edit actions so the shell's Ctrl+K
-    /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Standalone / `--shots` / unit tests publish the full hand tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// `hex_editor.document` — keep only live cursor / selection byte extras.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.hosted {
+            return crate::actions::live_buffer_extras(&self.hex_resource_ctx());
+        }
         self.publish_resources(doc)
     }
 }
