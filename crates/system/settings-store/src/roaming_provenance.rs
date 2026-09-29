@@ -204,7 +204,7 @@ impl RoamingProvenance {
         self.normalise()?;
         let mut bytes = serde_json::to_vec_pretty(self).map_err(|_| ProvenanceError::Invalid)?;
         bytes.push(b'\n');
-        atomic_file::write_creating_parent_with_mode(path, &bytes, 0o600)
+        tilo_files::native::atomic::write_creating_parent_with_mode(path, &bytes, 0o600)
             .map_err(|error| ProvenanceError::Io(error.to_string()))
     }
 

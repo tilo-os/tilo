@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Instant;
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -162,6 +162,15 @@ fn stable_access_key(id: &str) -> u64 {
     let mut hasher = fnv::FnvHasher::default();
     std::hash::Hasher::write(&mut hasher, id.as_bytes());
     std::hash::Hasher::finish(&hasher)
+}
+
+/// Run a network fetch as a task on the app runtime; its result arrives on
+/// the app's channel.
+fn spawn_net(fetch: impl Future<Output = ()> + Send + 'static) {
+    match ui::rt::try_app() {
+        Ok(runtime) => drop(runtime.spawn(fetch)),
+        Err(error) => tracing::warn!("maps: no app runtime for a network fetch: {error}"),
+    }
 }
 
 #[allow(
@@ -1447,7 +1456,7 @@ impl MapsApp {
     fn on_search_input(&mut self) {
         let q = self.model.query.trim().to_string();
         let matches = self.ranked_matches(&q);
-        self.search.query_changed(&q, matches, Instant::now());
+        self.search.query_changed(&q, matches, ui::time::now());
     }
 
     /// Fire the debounced live geocode if the quiet period has elapsed. Called
@@ -1461,8 +1470,8 @@ impl MapsApp {
         self.model.status = "Searching…".to_string();
         if self.online {
             let tx = self.net_tx.clone();
-            std::thread::spawn(move || {
-                let results = net::geocode(&q);
+            spawn_net(async move {
+                let results = net::geocode(&q).await;
                 let _ = tx.send(NetMsg::Search { query: q, results });
             });
         }
@@ -1506,8 +1515,8 @@ impl MapsApp {
             return;
         }
         let tx = self.net_tx.clone();
-        std::thread::spawn(move || {
-            let results = net::geocode(&query);
+        spawn_net(async move {
+            let results = net::geocode(&query).await;
             let _ = tx.send(NetMsg::Search { query, results });
         });
     }
@@ -1543,8 +1552,8 @@ impl MapsApp {
         if self.online {
             let tx = self.net_tx.clone();
             let origin = endpoint == Endpoint::Origin;
-            std::thread::spawn(move || {
-                let results = net::geocode(&query);
+            spawn_net(async move {
+                let results = net::geocode(&query).await;
                 let _ = tx.send(NetMsg::EndpointSearch {
                     origin,
                     query,
@@ -1673,8 +1682,8 @@ impl MapsApp {
         self.model.status = "Routing…".to_string();
         if self.online {
             let tx = self.net_tx.clone();
-            std::thread::spawn(move || {
-                let r = net::route(origin, dest, mode);
+            spawn_net(async move {
+                let r = net::route(origin, dest, mode).await;
                 let _ = tx.send(NetMsg::Route(r));
             });
         }
@@ -1717,8 +1726,8 @@ impl MapsApp {
         if self.online {
             let tx = self.net_tx.clone();
             let query = self.transit_query();
-            std::thread::spawn(move || {
-                let r = net::transit(origin, dest, &query);
+            spawn_net(async move {
+                let r = net::transit(origin, dest, &query).await;
                 let _ = tx.send(NetMsg::Transit(r));
             });
         }
@@ -1878,7 +1887,7 @@ impl MapsApp {
     /// Arm the viewport POI refetch. Debounced so a drag/zoom gesture fires one
     /// Overpass query when it settles, not per pointer event.
     fn schedule_pois(&mut self) {
-        self.poi_debounce = Some(Instant::now() + POI_DEBOUNCE);
+        self.poi_debounce = Some(ui::time::now() + POI_DEBOUNCE);
     }
 
     /// Fire the debounced POI refetch if the quiet period has elapsed. Called
@@ -1912,7 +1921,7 @@ impl MapsApp {
     fn fetch_viewport_pois(&mut self) {
         if self.rect.width() <= 1.0 {
             // No valid viewport yet — re-arm so the first real frame fetches.
-            self.poi_debounce = Some(Instant::now() + POI_DEBOUNCE);
+            self.poi_debounce = Some(ui::time::now() + POI_DEBOUNCE);
             return;
         }
         if self.model.zoom < POI_MIN_ZOOM {
@@ -1936,13 +1945,14 @@ impl MapsApp {
             self.pending += 1;
             self.model.status = "Loading places…".to_string();
             let tx = self.net_tx.clone();
-            std::thread::spawn(move || {
+            spawn_net(async move {
                 let pois = net::overpass(
                     bounds.min.lat,
                     bounds.min.lon,
                     bounds.max.lat,
                     bounds.max.lon,
-                );
+                )
+                .await;
                 let _ = tx.send(NetMsg::Pois { generation, pois });
             });
         }
@@ -2293,8 +2303,8 @@ impl MapsApp {
                 if self.online {
                     self.pending += 1;
                     let tx = self.net_tx.clone();
-                    std::thread::spawn(move || {
-                        let r = net::reverse_geocode(pos.lat, pos.lon);
+                    spawn_net(async move {
+                        let r = net::reverse_geocode(pos.lat, pos.lon).await;
                         let _ = tx.send(NetMsg::ReverseGeocode(r));
                     });
                 }
@@ -5083,16 +5093,16 @@ impl Widget for MapsApp {
         // Fold in a device-location fix if the portal worker has one.
         self.drain_location();
         // Fire a debounced search-as-you-type geocode once typing settles.
-        self.tick_search_debounce(Instant::now());
+        self.tick_search_debounce(ui::time::now());
         // Refetch viewport POIs once a pan/zoom settles.
-        self.tick_poi_debounce(Instant::now());
+        self.tick_poi_debounce(ui::time::now());
         // Fire the offline panel's live city geocode once its field settles.
-        if let Some(query) = self.offline_panel.take_due_query(Instant::now()) {
+        if let Some(query) = self.offline_panel.take_due_query(ui::time::now()) {
             self.pending += 1;
             if self.online {
                 let tx = self.net_tx.clone();
-                std::thread::spawn(move || {
-                    let results = net::geocode_regions(&query);
+                spawn_net(async move {
+                    let results = net::geocode_regions(&query).await;
                     let _ = tx.send(NetMsg::RegionSearch { query, results });
                 });
             }
@@ -5127,7 +5137,7 @@ impl Widget for MapsApp {
         }
         self.endpoints
             .sync_queries(&self.model.origin_query, &self.model.dest_query);
-        if let Some(effect) = self.endpoints.take_due_search(Instant::now()) {
+        if let Some(effect) = self.endpoints.take_due_search(ui::time::now()) {
             self.apply_endpoint_effect(effect);
         }
     }
@@ -5182,7 +5192,7 @@ impl Widget for MapsApp {
             && self.rect.width() > 1.0
             && self.model.zoom >= POI_MIN_ZOOM
         {
-            self.poi_debounce = Some(Instant::now() + POI_DEBOUNCE);
+            self.poi_debounce = Some(ui::time::now() + POI_DEBOUNCE);
         }
     }
 
@@ -5289,7 +5299,7 @@ impl Widget for MapsApp {
                     .chain(std::iter::once((self.overflow_rect(), "More")));
                 if self
                     .map_controls
-                    .on_pointer(p, self.left_down, extra_targets, Instant::now())
+                    .on_pointer(p, self.left_down, extra_targets, ui::time::now())
                 {
                     *ctx.handled = true;
                 }

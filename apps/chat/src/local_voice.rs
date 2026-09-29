@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn newer_join_response_retires_prior_pending_intents() {
-        let now = Instant::now();
+        let now = ui::time::now();
         let mut voice = LocalVoice::default();
         voice
             .submit(Command::Join {
@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn lost_status_reply_clears_retained_inventory_and_fences_late_response() {
-        let now = Instant::now();
+        let now = ui::time::now();
         let mut voice = LocalVoice::default();
         voice
             .submit(Command::Join {
@@ -362,7 +362,7 @@ mod tests {
         assert_eq!(voice.snapshot.state, State::Preparing);
         assert!(voice.snapshot.muted);
         assert!(!voice.snapshot.capture_active);
-        let requests = voice.take_requests(Instant::now());
+        let requests = voice.take_requests(ui::time::now());
         assert_eq!(requests.len(), 1);
         assert!(
             matches!(&requests[0], CollabRequest::NativeMediaCommand { command: Request { version: 1, command: Command::Join { channel_id }, .. }, .. } if channel_id == "voice")
@@ -380,9 +380,9 @@ mod tests {
                 channel_id: "voice".into(),
             })
             .unwrap();
-        let join = voice.take_requests(Instant::now());
+        let join = voice.take_requests(ui::time::now());
         voice.submit(Command::Leave).unwrap();
-        let leave = voice.take_requests(Instant::now());
+        let leave = voice.take_requests(ui::time::now());
         voice.complete(request_id(&join[0]), &Ok(live()));
         assert_eq!(voice.snapshot.state, State::Ended);
         assert!(voice.channel.is_none());
@@ -409,7 +409,7 @@ mod tests {
                 channel_id: "voice".into(),
             })
             .unwrap();
-        let requests = voice.take_requests(Instant::now());
+        let requests = voice.take_requests(ui::time::now());
         let mut invalid = live();
         invalid.capture_active = true;
         voice.complete(request_id(&requests[0]), &Ok(invalid));
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn status_polling_and_pending_commands_are_bounded_and_mute_always_fits() {
-        let now = Instant::now();
+        let now = ui::time::now();
         let mut voice = LocalVoice::default();
         assert_eq!(voice.take_requests(now).len(), 1);
         assert!(voice.take_requests(now).is_empty());

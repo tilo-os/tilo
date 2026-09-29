@@ -16,7 +16,7 @@
 //! it needs no motion estimation or bitstream state, so the encoder is small
 //! and fully deterministic, while remaining a widely-supported video codec.
 
-use std::io::{self, Read};
+use std::io;
 use std::path::Path;
 
 use image::{ExtendedColorType, ImageEncoder};
@@ -295,13 +295,15 @@ fn encode_avi(frames: &[Vec<u8>], w: u32, h: u32, fps: u32) -> Vec<u8> {
 /// duration_ms)`. Best-effort: `None` if the file is not a readable AVI.
 /// Lets the recent handoff show real duration/resolution for recorded clips
 /// without decoding the whole stream.
+/// The largest clip [`probe_avi`] reads (whole; the header is its first
+/// 512 bytes).
+const PROBE_READ_LIMIT: usize = 256 * 1024 * 1024;
+
 pub fn probe_avi(path: &Path) -> Option<(u32, u32, i64)> {
     // The `avih` header lives near the top of the file; a small prefix is
     // enough. Read up to 512 bytes.
-    let mut f = std::fs::File::open(path).ok()?;
-    let mut head = [0u8; 512];
-    let read = f.read(&mut head).ok()?;
-    let head = head.get(..read)?;
+    let file = crate::files::read_bounded(path, PROBE_READ_LIMIT)?;
+    let head = file.get(..file.len().min(512))?;
     if head.len() < 12
         || head.get(0..4) != Some(&b"RIFF"[..])
         || head.get(8..12) != Some(&b"AVI "[..])
@@ -345,9 +347,8 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 /// Returns an error if `dir` cannot be created or the clip cannot be
 /// written to it.
 pub fn write_clip(dir: &Path, bytes: &[u8], stamp: &str) -> io::Result<String> {
-    std::fs::create_dir_all(dir)?;
     let name = format!("VID_{stamp}.avi");
-    std::fs::write(dir.join(&name), bytes)?;
+    crate::files::write(&dir.join(&name), bytes)?;
     Ok(name)
 }
 

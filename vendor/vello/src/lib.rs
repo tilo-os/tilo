@@ -1636,6 +1636,8 @@ impl Renderer {
         engine.build_shaders_if_needed(device, options.num_init_threads);
         #[cfg(feature = "debug_layers")]
         let debug = debug::DebugRenderer::new(device, wgpu::TextureFormat::Rgba8Unorm, &mut engine);
+        let mut budget = bump_budget::BudgetTracker::new();
+        budget.set_device_limits(&device.limits());
 
         Ok(Self {
             options,
@@ -1645,7 +1647,7 @@ impl Renderer {
             recording: Recording::default(),
             packed_scene: Vec::new(),
             shaders,
-            budget: bump_budget::BudgetTracker::new(),
+            budget,
             unsettled_bump_overflow: OverflowLatch::default(),
             sparse_masks: Vec::new(),
             sparse_records: Vec::new(),

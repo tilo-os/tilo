@@ -24,8 +24,8 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # replayable action dispatched through one executor, so undo, multi-peer replay
 # and the Ctrl+K command palette all work from a single implementation.
 tilo-actions = { path = "../../crates/collab/actions" }
-atomic-file = { path = "../../crates/system/atomic-file" }
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

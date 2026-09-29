@@ -784,3 +784,122 @@ fn a_compacted_record_restores_and_a_tampered_stored_compaction_does_not() {
         assert!(f.restore(&tampered).is_err(), "{why} restores");
     }
 }
+
+#[test]
+fn a_history_near_its_bound_is_due_for_compaction() {
+    let mut f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let mut author = Author::new(&f.host);
+    let first = write(&f.host, &f.editor, &keys, &author.edit("value", "1"), now);
+    admit(&mut f.host, &f.editor, first, now);
+    assert!(f.host.sealed_records_to_compact().is_empty());
+    let one = held(&f.host).remove(0);
+    f.host.core.documents.get_mut(&route()).unwrap().sealed = vec![one; MAX_SEALED_OPS / 4 * 3];
+    assert_eq!(
+        f.host.sealed_records_to_compact(),
+        vec![(APP.to_owned(), RECORD.to_owned())]
+    );
+}
+
+#[test]
+fn the_governor_publishes_its_compaction_behind_the_records_receipt() {
+    let f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let mut host = f.host.clone();
+    let mut author = Author::new(&host);
+    for value in ["1", "2", "3"] {
+        let sealed = write(&host, &f.editor, &keys, &author.edit("value", value), now);
+        admit(&mut host, &f.editor, sealed, now);
+    }
+    let mut before = host.clone();
+    let compaction = envelope_of(&mint(&mut host, &keys, &f.owner, now).unwrap());
+    let sealed = |messages: &[NeighbourMsg]| {
+        messages
+            .iter()
+            .filter(|message| {
+                matches!(message, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some())
+            })
+            .map(envelope_of)
+            .collect::<Vec<_>>()
+    };
+
+    let mutation = host
+        .clone()
+        .durable_mutation_messages(&before, &f.owner, now, 2)
+        .unwrap();
+    assert_eq!(sealed(&mutation), vec![compaction.clone()]);
+    assert_eq!(
+        mutation.last().map(envelope_of),
+        Some(compaction.clone()),
+        "behind the room change that carries the record's receipt"
+    );
+    let bootstrap = host
+        .clone()
+        .durable_bootstrap_messages(&f.owner, now, 2)
+        .unwrap();
+    assert_eq!(sealed(&bootstrap), vec![compaction]);
+    assert!(
+        sealed(
+            &host
+                .clone()
+                .durable_mutation_messages(&host, &f.owner, now, 2)
+                .unwrap()
+        )
+        .is_empty(),
+        "a compaction already published is not published again"
+    );
+    assert!(
+        sealed(&before.durable_bootstrap_messages(&f.owner, now, 2).unwrap()).is_empty(),
+        "other devices' sealed writes travel as themselves, never republished"
+    );
+}
+
+#[test]
+fn the_governor_acknowledges_sealed_writes_without_a_cleartext_checkpoint() {
+    let f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let mut host = f.host.clone();
+    let before = host.clone();
+    let mut author = Author::new(&host);
+    let sealed = write(&host, &f.editor, &keys, &author.edit("value", "1"), now);
+    admit(&mut host, &f.editor, sealed.clone(), now);
+    let watermark = |peer: &StatePeer| {
+        crate::durability::entries(peer.admitted_room().unwrap())
+            .unwrap()
+            .get(&crate::coverage::route_key(APP, RECORD))
+            .and_then(|receipt| {
+                receipt
+                    .coverage
+                    .watermarks
+                    .get(&hex::encode(f.editor.verifying_key().to_bytes()))
+                    .copied()
+            })
+    };
+    let documents = |messages: &[NeighbourMsg]| {
+        messages
+            .iter()
+            .any(|message| matches!(message, NeighbourMsg::AppDocument { record_id, .. } if record_id == RECORD))
+    };
+
+    let mut published = host.clone();
+    let messages = published
+        .durable_mutation_messages(&before, &f.owner, now, 2)
+        .unwrap();
+    assert!(
+        !documents(&messages),
+        "a cleartext checkpoint would downgrade the encrypted record"
+    );
+    assert_eq!(watermark(&published), Some(envelope_of(&sealed).seq));
+    assert_eq!(held(&published), vec![envelope_of(&sealed)]);
+    f.restore(&published.durable().unwrap()).unwrap();
+
+    let mut bootstrapped = published.clone();
+    let messages = bootstrapped
+        .durable_bootstrap_messages(&f.owner, now, 3)
+        .unwrap();
+    assert!(!documents(&messages));
+    assert_eq!(watermark(&bootstrapped), Some(envelope_of(&sealed).seq));
+}

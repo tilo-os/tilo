@@ -512,7 +512,7 @@ fn launch_live_download(
     release: DesktopRelease,
     cancel: Arc<AtomicBool>,
 ) -> Result<DownloadReceiver, String> {
-    let cache = xdg_paths::cache_dir()
+    let cache = tilo_paths::cache_dir()
         .ok_or("No private cache directory is available for the Desktop package.")?
         .join("tilo-imager-desktop");
     let (sender, receiver) = mpsc::channel();

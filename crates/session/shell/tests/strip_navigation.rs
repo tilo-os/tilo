@@ -137,7 +137,16 @@ struct Harness {
 impl Harness {
     fn new() -> Self {
         let (tree, strip, groups, tabs) = strip_tree();
-        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        Self::with_tree(&tree, strip, groups, tabs)
+    }
+
+    fn with_tree(
+        tree: &WorkspaceTree,
+        strip: StripId,
+        groups: Vec<GroupId>,
+        tabs: Vec<[u64; 2]>,
+    ) -> Self {
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(tree);
         // This fixture minted the tabs, so it explicitly creates their
         // documents before presentation attempts existing-only admission.
         let (records, rendered_tabs) = {
@@ -395,6 +404,194 @@ impl Harness {
             .expect("the active group in the tree");
         (gid, g.active_tab)
     }
+}
+
+/// [`strip_tree`] with a second strip below holding one group, `resident`,
+/// and the document seeded as production trees carry it.
+fn two_strip_harness() -> (Harness, StripId, StripId, GroupId, Vec<GroupId>) {
+    let (mut tree, upper, groups, tabs) = strip_tree();
+    let lower = StripId::new();
+    let resident: GroupId = 2001;
+    tree.desktop.workspaces[0].strips.push(Strip {
+        id: lower,
+        name: "Below".into(),
+        window_groups: vec![WindowGroup {
+            id: resident,
+            tabs: [91, 92]
+                .into_iter()
+                .map(|id| Tab {
+                    id,
+                    title: format!("Below {id}"),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("Test".into()),
+                        label: format!("Below {id}"),
+                    },
+                })
+                .collect(),
+            active_tab: 91,
+            width: WindowWidth::Fraction(GROUP_WIDTH_PERMILLE),
+            maximized: false,
+        }],
+    });
+    tree.desktop.active_group.insert(lower, resident);
+    // The local person owns the desk, so rearranging it is theirs to do.
+    tree.adopt_ownerless_workspaces(&shell::shell::state::local_user_id());
+    tree.seed_doc_from_cache();
+    let h = Harness::with_tree(&tree, upper, groups.clone(), tabs);
+    (h, upper, lower, resident, groups)
+}
+
+/// Each strip's groups, the focused strip and its focused group.
+type Plane = (Vec<(StripId, Vec<GroupId>)>, StripId, Option<GroupId>);
+
+fn plane(h: &Harness) -> Plane {
+    let st = h.chrome.borrow();
+    let tree = st.tree();
+    let active_strip = tree.desktop.active_strip[&tree.desktop.active];
+    let strips = tree.desktop.workspaces[0]
+        .strips
+        .iter()
+        .map(|strip| {
+            (
+                strip.id,
+                strip.window_groups.iter().map(|g| g.id).collect::<Vec<_>>(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let focused = tree.desktop.active_group_for(active_strip);
+    (strips, active_strip, focused)
+}
+
+/// Invoke shell action `id` through the action door, as `tilo-control
+/// actions invoke` and the palette do.
+fn invoke(
+    h: &Harness,
+    id: &str,
+    args: &serde_json::Value,
+) -> Result<(), shell::shell::search::action_api::ActionError> {
+    use shell::shell::search::action_api::ActionError;
+    use shell::shell::search::action_api::{AllVisible, ResourceRef};
+    let mut doc = automerge::AutoCommit::new();
+    let root = automerge::ROOT;
+    let catalog = {
+        let st = h.chrome.borrow();
+        h.host
+            .exact_action_catalog("actions", id, &st, &doc, &root, &AllVisible)
+    };
+    let selected = catalog
+        .select(&ResourceRef::new("actions", id))
+        .ok_or_else(|| ActionError::Refused(format!("{id} is not on the action door")))?;
+    let args = args.as_object().cloned().unwrap_or_default();
+    selected
+        .invoke_json(&mut doc, &root, &h.chrome, &args)
+        .map(drop)
+}
+
+/// Super+Up/Down moves focus between strips and Super+Shift+Up/Down carries
+/// the focused group the same way, whole, into the durable tree; Super+Up no
+/// longer maximizes.
+#[test]
+fn shift_arrows_carry_the_focused_group_between_strips() {
+    let (mut h, upper, lower, resident, groups) = two_strip_harness();
+    let layout = plane;
+    let upper_maximized = |h: &mut Harness| {
+        h.host
+            .group_row_mut_for_tests(upper)
+            .expect("the upper strip is live")
+            .groups
+            .iter()
+            .any(|group| group.maximized)
+    };
+
+    h.key(
+        Key::Named(NamedKey::ArrowDown),
+        ModifiersState::SUPER | ModifiersState::SHIFT,
+    );
+    let (strips, active, focused) = layout(&h);
+    assert_eq!(strips[0], (upper, groups[1..].to_vec()));
+    assert_eq!(
+        strips[1],
+        (lower, vec![resident, groups[0]]),
+        "the carried group lands after the destination's focused group"
+    );
+    assert_eq!(active, lower, "focus follows the carried group");
+    assert_eq!(focused, Some(groups[0]));
+
+    h.key(
+        Key::Named(NamedKey::ArrowDown),
+        ModifiersState::SUPER | ModifiersState::SHIFT,
+    );
+    assert_eq!(
+        layout(&h).0,
+        strips,
+        "carrying past the last strip clamps rather than creating one"
+    );
+
+    h.key(Key::Named(NamedKey::ArrowUp), ModifiersState::SUPER);
+    let (after_up, active, focused) = layout(&h);
+    assert_eq!(after_up, strips, "Super+Up moves focus, not windows");
+    assert_eq!(active, upper);
+    assert_eq!(
+        focused,
+        Some(groups[1]),
+        "the strip a group left keeps focus on its neighbour"
+    );
+    assert!(!upper_maximized(&mut h), "Super+Up no longer maximizes");
+    h.key(Key::Character("m".into()), ModifiersState::SUPER);
+    assert!(
+        upper_maximized(&mut h),
+        "Super+M maximizes the focused group"
+    );
+}
+
+/// The relative window actions run the operation their chord runs, on the
+/// overlay host's next update, with no key event.
+#[test]
+fn window_actions_run_the_operations_their_chords_run() {
+    let (mut h, upper, lower, resident, groups) = two_strip_harness();
+    let none = serde_json::json!({});
+
+    invoke(&h, "group.move-to-strip-next", &none).unwrap();
+    assert_eq!(
+        plane(&h).0[1],
+        (lower, vec![resident]),
+        "an action runs on the host's update, not inside the invocation"
+    );
+    h.host.run_requested_shortcut_actions();
+    let (strips, active, focused) = plane(&h);
+    assert_eq!(strips[1], (lower, vec![resident, groups[0]]));
+    assert_eq!((active, focused), (lower, Some(groups[0])));
+
+    invoke(&h, "strip.focus-previous", &none).unwrap();
+    h.host.run_requested_shortcut_actions();
+    assert_eq!(plane(&h).1, upper);
+
+    invoke(&h, "window.focus-nth", &serde_json::json!({ "index": 3 })).unwrap();
+    h.host.run_requested_shortcut_actions();
+    assert_eq!(
+        plane(&h).2,
+        Some(groups[3]),
+        "the third group of the upper strip, which now starts at the second"
+    );
+    for index in [0, 10] {
+        assert!(
+            invoke(
+                &h,
+                "window.focus-nth",
+                &serde_json::json!({ "index": index })
+            )
+            .is_err(),
+            "index {index} names no Super+N chord"
+        );
+    }
+
+    invoke(&h, "group.move-right", &none).unwrap();
+    h.host.run_requested_shortcut_actions();
+    assert_eq!(
+        plane(&h).0[0].1,
+        vec![groups[1], groups[2], groups[4], groups[3]],
+        "group.move-right is Super+Shift+Right"
+    );
 }
 
 #[test]

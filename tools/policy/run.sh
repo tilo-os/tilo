@@ -29,7 +29,8 @@ run 'Path-filtered package dependency triggers' \
   --check tilo-crypto .forgejo/workflows/ci-development-signing.yml \
   --check fs .forgejo/workflows/ci-filesystem.yml \
   --check tilo-relay .forgejo/workflows/release-relay.yml \
-  --check tilo-runtime .forgejo/workflows/dev-runtime-macos.yml
+  --check tilo-runtime .forgejo/workflows/dev-runtime-macos.yml \
+  --check tilo-app-cli .forgejo/workflows/app-sdk.yml
 run 'Developer docs pages and links' python3 tools/docs/developer_docs.py check
 run 'Repository policy unit tests' \
   python3 -m unittest discover -s tools/tests -p 'test_*.py'
@@ -55,6 +56,8 @@ run 'UI host-inputs contract' python3 tools/policy/check_ui_host_inputs_contract
 run 'UI clock contract' python3 tools/policy/check_ui_clock_contract.py
 run 'Apps and portable SDK crates hold no platform code' \
   python3 tools/policy/check_app_portability.py
+run 'Apps declare the capabilities their code uses' \
+  python3 tools/policy/check_app_capabilities.py
 run 'Raw cryptography stays behind tilo-seal' \
   python3 tools/policy/check_crypto_dependencies.py
 run 'Automerge apply contract' python3 tools/policy/check_automerge_apply_contract.py

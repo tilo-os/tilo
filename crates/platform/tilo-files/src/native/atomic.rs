@@ -6,3 +6,21 @@
 //! layer's path.
 
 pub use atomic_file::*;
+
+/// Where the standard library has no file system (a browser page) there is
+/// no file to hold back: the replacement cannot be blocked.
+///
+/// # Errors
+///
+/// Always [`std::io::ErrorKind::Unsupported`].
+#[cfg(not(any(unix, windows)))]
+pub fn block_replacement(
+    _path: &std::path::Path,
+    _release: std::sync::mpsc::Receiver<()>,
+    _timeout: std::time::Duration,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "this target has no file system to block a replacement on",
+    ))
+}

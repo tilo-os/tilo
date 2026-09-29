@@ -376,12 +376,12 @@ impl FrameSource for MediaFrameSource {
                         if self.rolling.insert(media) {
                             s.engine().play();
                         }
-                        let deadline = std::time::Instant::now() + timeout;
+                        let deadline = ui::time::now() + timeout;
                         loop {
                             if let Some(f) = s.cached_frame_at(target_ms) {
                                 break Some(f);
                             }
-                            if std::time::Instant::now() >= deadline {
+                            if ui::time::now() >= deadline {
                                 break None;
                             }
                             s.poll_into_cache();

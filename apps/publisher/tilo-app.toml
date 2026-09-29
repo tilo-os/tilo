@@ -5,10 +5,18 @@ category = "Utility"
 version = "0.1.0"
 kind = "app"
 runtime = "tilo-runtime/2026.07"
+platforms = ["linux", "macos"]
+platform-reason = "Holds the publisher's signing key in the device's own key store and signs packages with it."
+
+[package.names]
+de = "App-Veröffentlichung"
 
 [package.isa]
 x86_64 = "v3"
 aarch64 = "aarch64"
+
+[capabilities]
+optional = ["clipboard", "threads"]
 
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

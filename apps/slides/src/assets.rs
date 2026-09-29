@@ -13,7 +13,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::Path;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 
@@ -70,12 +69,23 @@ pub fn read_asset(content: &ContentStore, id: &str) -> Option<Vec<u8>> {
 }
 
 pub fn import_asset_file(content: &ContentStore, path: &Path) -> Option<String> {
-    let file = std::fs::File::open(path).ok()?;
-    let mut bytes = Vec::with_capacity(64 * 1024);
-    file.take((MAX_IMAGE_FILE_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .ok()?;
+    let bytes = read_bounded(path, MAX_IMAGE_FILE_BYTES).ok()??;
     store_asset(content, &bytes)
+}
+
+/// The file a chooser named, or `None` when it is larger than `limit`.
+pub(crate) fn read_bounded(path: &Path, limit: usize) -> std::io::Result<Option<Vec<u8>>> {
+    let (dir, name) = tilo_files::file_at(path).map_err(std::io::Error::other)?;
+    let too_big = |len: u64| usize::try_from(len).map_or(true, |len| len > limit);
+    if too_big(
+        tilo_files::blocking::metadata(&dir, &name)
+            .map_err(std::io::Error::other)?
+            .len,
+    ) {
+        return Ok(None);
+    }
+    let bytes = tilo_files::blocking::read(&dir, &name).map_err(std::io::Error::other)?;
+    Ok((!too_big(bytes.len() as u64)).then_some(bytes))
 }
 
 /// Current decode state of one image path.
@@ -122,18 +132,16 @@ impl ImageStore {
         // spawn is represented by `None`; callers then receive `Failed`
         // rather than an eternal loading placeholder.
         let worker_content = content.clone();
-        let request_tx = std::thread::Builder::new()
-            .name("slides-image-decode".into())
-            .spawn(move || {
-                while let Ok(path) = request_rx.recv() {
-                    let state = decode(&worker_content, &path);
-                    if result_tx.send((path, state)).is_err() {
-                        break;
-                    }
+        let request_tx = ui::rt::spawn_thread("slides-image-decode", move || {
+            while let Ok(path) = request_rx.recv() {
+                let state = decode(&worker_content, &path);
+                if result_tx.send((path, state)).is_err() {
+                    break;
                 }
-            })
-            .ok()
-            .map(|_| request_tx);
+            }
+        })
+        .ok()
+        .map(|_| request_tx);
         ImageStore {
             content,
             inner: RefCell::new(HashMap::new()),
