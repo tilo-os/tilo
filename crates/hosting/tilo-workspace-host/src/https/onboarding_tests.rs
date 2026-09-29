@@ -49,6 +49,7 @@ pub(crate) fn request(ingress: &Ingress, target: &str, body: Vec<u8>) -> (Buffer
             cancelled,
             response,
             lease,
+            admission: Admission::unwatched(),
         },
         Probe {
             response: received,
