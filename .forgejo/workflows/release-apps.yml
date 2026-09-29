@@ -481,7 +481,7 @@ jobs:
     if: "github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.count != '0'"
     needs: [plan, authorize-publish]
     name: apps / ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.build_runner }}
     timeout-minutes: 180
     # App feature sets include native media, graphics and portal bindings.
     # Keep those system headers in the versioned CI builder image instead of
@@ -523,6 +523,21 @@ jobs:
           TILO_APP_RELEASE_SEQUENCE: ${{ needs.plan.outputs.publish == 'true' && github.run_number || '' }}
           TILO_APP_COMPILE_ONLY: "1"
         run: |
+          # Every core compiles, bounded by memory: 2 GiB per job is what the
+          # smaller runners have always given this graph.
+          cpus=$(nproc)
+          if read -r quota period 2>/dev/null < /sys/fs/cgroup/cpu.max && [[ $quota != max ]]; then
+            cpus=$(( (quota + period - 1) / period ))
+          fi
+          memory=$(( $(sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo) << 10 ))
+          if read -r limit 2>/dev/null < /sys/fs/cgroup/memory.max && [[ $limit =~ ^[0-9]+$ ]]; then
+            (( limit < memory )) && memory=$limit
+          fi
+          jobs=$(( memory / (2 << 30) ))
+          (( jobs > cpus )) && jobs=$cpus
+          (( jobs < 1 )) && jobs=1
+          export CARGO_BUILD_JOBS=$jobs
+          echo "::notice::cargo jobs: $jobs of $cpus CPUs, $(( memory >> 30 )) GiB"
           build_log=$(mktemp "$RUNNER_TEMP/tilo-app-build.XXXXXX")
           if ! dist/apps/package-apps.sh 2> >(tee "$build_log" >&2); then
             if ! grep -Eq 'truncated or malformed archive|failed to read object file' "$build_log"; then
