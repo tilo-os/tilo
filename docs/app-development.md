@@ -755,6 +755,7 @@ tilo-app package --arch aarch64                      # Tilo OS, thin
 tilo-app package --platform linux --arch x86_64      # dist/<pkg>-linux-x86_64.tapp
 tilo-app package --platform macos --arch aarch64     # dist/<pkg>-macos-aarch64.tapp
 tilo-app package --platform windows --arch x86_64    # dist/<pkg>-windows-x86_64.tapp
+tilo-app package --platform android                  # dist/<pkg>-android-aarch64.tapp, .apk, .aab
 ```
 
 Other Linux desktops, Windows and macOS ship no Tilo toolkit, so a build for
@@ -783,7 +784,8 @@ tilo-app check --platform all                            # lint every other targ
 
 `build` compiles exactly what `package` would, without signing a package.
 `run` and `dev` refuse a platform or architecture this machine cannot execute
-and say where to build it instead. `check --platform` (repeatable, or `all`)
+and say where to build it instead; for `android` they install on a device
+instead ([Android](#android)). `check --platform` (repeatable, or `all`)
 adds, after the host's checks, Clippy for each other platform's target triple
 with warnings denied, and a full web build for `web`; the Rust target must be
 installed (`rustup target add`).
@@ -831,6 +833,26 @@ Node.js and brotli, which the builder image `tilo-app add ci` uses has.
 example a wrapper that runs it on a remote machine and brings `target/web`
 back. A web package's `[budget]` applies to its module as it
 does to a thin binary.
+
+### Android
+
+The same app builds as a standalone Android app, with nothing Android-specific
+in its code or its `Cargo.toml`:
+
+```bash
+tilo-app doctor --platform android   # what the Android toolchain lacks
+tilo-app setup android               # install the SDK side of it
+tilo-app run --platform android      # install on the connected device, stream its log
+tilo-app dev --platform android      # rebuild, reinstall and restart on every save
+tilo-app package --platform android  # dist/<pkg>-android-aarch64.{tapp,apk,aab}
+```
+
+`--arch aarch64|x86_64` picks the ABI (`run` and `dev` default to the
+device's), and `--device` the `adb` serial. The application id, launcher
+label, `versionCode`, icon (`icon.png`) and permissions come from
+`tilo-app.toml`; debug builds use the per-user debug key and `package` a
+release key. [Android](android.md) has the mapping, signing, the toolchain and
+what the Android host does not provide.
 
 ### Publishing
 
