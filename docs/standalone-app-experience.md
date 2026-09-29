@@ -88,9 +88,12 @@ generated Seatbelt profile, and none runs unsandboxed. See
 which includes the Seatbelt caveats (deprecated SPI; the GPU and IOKit
 surface).
 
-Windows already has a native Common Item Dialog adapter. The current macOS
-picker follows the Unix portal path; that gap should be fixed in the shared
-picker backend rather than copied into Windows.
+Both platforms use native choosers through the shared `tilo-dialogs`
+backend: the Common Item Dialog on Windows, `NSOpenPanel` and `NSSavePanel`
+on macOS. A Seatbelt-confined macOS app does not show the panel itself: the
+runtime shows it outside the sandbox and grants the app exactly the picked
+paths with sandbox extensions (see
+[the sandbox doc](app-model/sandbox.md#macos-app-sandbox-or-seatbelt)).
 
 ## Shared implementation boundaries
 
