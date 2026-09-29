@@ -412,7 +412,6 @@ mod tests {
                 room: room.into(),
                 workspace: 1,
                 member_user: collab_types::Ed25519PublicKey::from_bytes([user; 32]),
-                member_device: collab_types::Ed25519PublicKey::from_bytes([user; 32]),
                 role: collab_types::Role::Commenter,
                 invite: [invite; 32],
                 admitted_at_unix_seconds: 1,

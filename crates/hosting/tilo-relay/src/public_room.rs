@@ -276,7 +276,7 @@ impl PublicRoomHosting {
     }
 
     /// Everything [`Envelope::Redeem`](crate::transport::Envelope::Redeem)
-    /// needs to admit `member_device` of `member_user`: the registered,
+    /// needs to admit the person `member_user`: the registered,
     /// unrevoked invitation `invite_id` checks out, the delegation still
     /// covers this relay, and the resulting admission is signed.
     ///
@@ -287,7 +287,6 @@ impl PublicRoomHosting {
         &self,
         invite_id: [u8; 32],
         member_user: [u8; 32],
-        member_device: [u8; 32],
         relay_sk: &ed25519_dalek::SigningKey,
         now: SystemTime,
     ) -> Result<HostAdmissionV1, PublicRoomError> {
@@ -325,7 +324,6 @@ impl PublicRoomHosting {
                 room: self.room.clone(),
                 workspace,
                 member_user: Ed25519PublicKey::from_bytes(member_user),
-                member_device: Ed25519PublicKey::from_bytes(member_device),
                 role,
                 invite: invite_id,
                 admitted_at_unix_seconds: now_unix,
@@ -507,7 +505,7 @@ mod tests {
         });
 
         let admission = hosting
-            .admit(id, [1; 32], [2; 32], &relay, SystemTime::now())
+            .admit(id, [1; 32], &relay, SystemTime::now())
             .unwrap();
         assert_eq!(
             admission.verify(
@@ -518,12 +516,12 @@ mod tests {
         );
 
         assert!(matches!(
-            hosting.admit([9; 32], [1; 32], [2; 32], &relay, SystemTime::now()),
+            hosting.admit([9; 32], [1; 32], &relay, SystemTime::now()),
             Err(PublicRoomError::UnknownInvite)
         ));
         hosting.invites[0].revoked = true;
         assert!(matches!(
-            hosting.admit(id, [1; 32], [2; 32], &relay, SystemTime::now()),
+            hosting.admit(id, [1; 32], &relay, SystemTime::now()),
             Err(PublicRoomError::Revoked)
         ));
     }
@@ -606,7 +604,7 @@ mod tests {
             revoked: false,
         });
         assert!(matches!(
-            hosting.admit(id, [1; 32], [2; 32], &other_relay, SystemTime::now()),
+            hosting.admit(id, [1; 32], &other_relay, SystemTime::now()),
             Err(PublicRoomError::Delegation(_))
         ));
     }

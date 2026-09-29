@@ -145,8 +145,8 @@ pub(in crate::state) fn legacy(
         let identity = if let Some(bytes) = data.identities.get(key.as_str()) {
             serde_json::from_slice(bytes).map_err(Error::LegacyJson)?
         } else {
-            // A device a public room's host admitted is known by its
-            // admission and the certificate its hello carried, never by
+            // A device of a person a public room's host admitted is known by
+            // the admission and the certificate its hello carried, never by
             // governance.
             {
                 let cert = peer
@@ -161,11 +161,13 @@ pub(in crate::state) fn legacy(
                     key_text(&cert.user_public_key).as_str(),
                     now_secs(now),
                 );
-                if !granted {
-                    let admission = peer.held.admission_of_device(source).ok_or(Error::Absent)?;
-                    if admission.member_user.as_bytes() != &cert.user_public_key {
-                        return Err(Error::CertificateMismatch);
-                    }
+                if !granted
+                    && peer
+                        .held
+                        .admission_of_person(&cert.user_public_key)
+                        .is_none()
+                {
+                    return Err(Error::Absent);
                 }
                 GovernedIdentity {
                     device_cert: cert.clone(),

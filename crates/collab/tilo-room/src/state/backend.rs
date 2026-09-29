@@ -1,11 +1,10 @@
 //! One private peer representation; storage qualification cannot be copied.
 use super::{
     AcceptedCheckpoint, Actor, ArtifactKind, AutoCommit, BTreeMap, CachedDocument, CapDecision,
-    CapOverride, ChannelState, DeviceCert, DurableV4, DurableV5, DurableV6, DurableV7,
-    Ed25519PublicKey, ExactAdmissions, GovernedIdentity, NeighbourMsg, Principal,
-    RedemptionReceipt, ResourceRef, RevocationList, Role, Route, Scope, StatePeer, Subject,
-    SystemTime, VecDeque, Verb, VerifiedCertificate, decide_capability, err, now_ns, now_secs,
-    room,
+    CapOverride, ChannelState, DURABLE_VERSION, DeviceCert, DurableState, Ed25519PublicKey,
+    ExactAdmissions, GovernedIdentity, NeighbourMsg, Principal, RedemptionReceipt, ResourceRef,
+    RevocationList, Role, Route, Scope, StatePeer, Subject, SystemTime, VecDeque, Verb,
+    VerifiedCertificate, decide_capability, err, now_ns, now_secs, room,
 };
 use crate::resources::native::NativeDocument;
 pub(super) mod access;

@@ -1692,7 +1692,6 @@ async fn redeem(
         .admit(
             invite_id,
             peer.user_public_key,
-            peer.device_public_key,
             session.own_device_signing_key,
             std::time::SystemTime::now(),
         )

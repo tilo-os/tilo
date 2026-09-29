@@ -85,11 +85,6 @@ fn held(peer: &StatePeer) -> Vec<SignedOp> {
 fn a_sealed_write_becomes_the_durable_record_and_survives_restart() {
     let (mut host, _, b, now) = host();
     let plaintext = host.document(APP, RECORD).unwrap();
-    let unsealed = host.durable().unwrap();
-    assert_eq!(
-        unsealed[0], 5,
-        "a state without sealed writes keeps its v5 bytes"
-    );
     let write = sealed(&host, &b, 1, b"ciphertext the host cannot open");
     let report = host.receive_from_report(origin(&b), write, now).unwrap();
     assert!(
@@ -103,7 +98,7 @@ fn a_sealed_write_becomes_the_durable_record_and_survives_restart() {
         "ciphertext is never merged into the plaintext document"
     );
     let restored = restore(&host, now).unwrap();
-    assert_eq!(host.durable().unwrap()[0], 6);
+    assert_eq!(host.durable().unwrap()[0], 8);
     assert_eq!(held(&restored), held(&host));
     assert_eq!(
         held(&restored)[0].payload,
@@ -234,7 +229,7 @@ fn a_tampered_stored_sealed_history_refuses_to_restore() {
         .unwrap();
     let bytes = host.durable().unwrap();
     let rewrite = |change: &dyn Fn(&mut SealedHistory)| {
-        let mut value: DurableV6<'_> = postcard::from_bytes(&bytes).unwrap();
+        let mut value: DurableState = postcard::from_bytes(&bytes).unwrap();
         change(&mut value.sealed);
         postcard::to_allocvec(&value).unwrap()
     };
@@ -251,7 +246,6 @@ fn a_tampered_stored_sealed_history_refuses_to_restore() {
             rewrite(&|sealed| sealed[0].0.record = "tab:2".into()),
             "history for another record",
         ),
-        (rewrite(&|sealed| sealed.clear()), "an empty sealed section"),
     ] {
         assert!(
             restore_bytes(&host, &tampered, now).is_err(),

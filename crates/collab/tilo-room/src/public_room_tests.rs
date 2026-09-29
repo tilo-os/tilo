@@ -70,9 +70,9 @@ fn room(class: collab_types::ChannelClass) -> World {
     }
 }
 
-/// The host's signed admission of `device` of the person `root`, under the
-/// owner's delegation.
-fn admission(world: &World, root: &SigningKey, device: &SigningKey) -> HostAdmissionV1 {
+/// The host's signed admission of the person `root`, under the owner's
+/// delegation.
+fn admission(world: &World, root: &SigningKey) -> HostAdmissionV1 {
     let workspace = crate::room_workspace_id(ROOM).unwrap();
     let delegation = collab_types::mint_root(
         collab_types::InviteSpec {
@@ -96,7 +96,6 @@ fn admission(world: &World, root: &SigningKey, device: &SigningKey) -> HostAdmis
             room: ROOM.into(),
             workspace,
             member_user: Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
-            member_device: Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             role: Role::Commenter,
             invite: [7; 32],
             admitted_at_unix_seconds: 999_000,
@@ -152,7 +151,7 @@ fn a_host_admitted_stranger_comments_in_a_public_room() {
         .is_err(),
         "a stranger's hello is refused before any admission"
     );
-    let admitted = admission(&world, &stranger_root, &stranger);
+    let admitted = admission(&world, &stranger_root);
     receive(
         &mut world,
         host,
@@ -210,7 +209,7 @@ fn only_a_public_room_admits_by_host() {
     let stranger_root = SigningKey::from_bytes(&[51; 32]);
     let stranger = SigningKey::from_bytes(&[52; 32]);
     let stranger_cert = cert(&stranger_root, &stranger, "reporter");
-    let admitted = admission(&world, &stranger_root, &stranger);
+    let admitted = admission(&world, &stranger_root);
     let host = world.host.verifying_key().to_bytes();
     receive(
         &mut world,
@@ -245,7 +244,7 @@ fn an_admission_the_owner_did_not_delegate_grants_nothing() {
     let stranger_cert = cert(&stranger_root, &stranger, "reporter");
     // Delegated by someone who does not own the room.
     world.owner_root = SigningKey::from_bytes(&[99; 32]);
-    let forged = admission(&world, &stranger_root, &stranger);
+    let forged = admission(&world, &stranger_root);
     let host = world.host.verifying_key().to_bytes();
     receive(
         &mut world,
@@ -276,7 +275,7 @@ fn a_public_room_refuses_sealed_content() {
     let stranger_root = SigningKey::from_bytes(&[71; 32]);
     let stranger = SigningKey::from_bytes(&[72; 32]);
     let stranger_cert = cert(&stranger_root, &stranger, "reporter");
-    let admitted = admission(&world, &stranger_root, &stranger);
+    let admitted = admission(&world, &stranger_root);
     let host = world.host.verifying_key().to_bytes();
     receive(
         &mut world,
@@ -385,5 +384,50 @@ fn a_members_recorder_is_listed_while_it_records() {
     assert!(
         !lists_recorder(&world),
         "a stop holds against an older start replayed later"
+    );
+}
+
+#[test]
+fn every_device_of_an_admitted_person_joins() {
+    let mut world = room(collab_types::ChannelClass::Public);
+    let person = SigningKey::from_bytes(&[81; 32]);
+    // The device that redeemed, and one the person set up later (a browser).
+    let laptop = SigningKey::from_bytes(&[82; 32]);
+    let browser = SigningKey::from_bytes(&[83; 32]);
+    let laptop_cert = cert(&person, &laptop, "laptop");
+    let browser_cert = cert(&person, &browser, "browser");
+    let admitted = admission(&world, &person);
+    let host = world.host.verifying_key().to_bytes();
+    receive(
+        &mut world,
+        host,
+        NeighbourMsg::RoomAdmission {
+            room: ROOM.into(),
+            admission: Box::new(admitted),
+        },
+    )
+    .unwrap();
+    for cert in [&laptop_cert, &browser_cert] {
+        receive(&mut world, cert.device_public_key, hello(cert)).unwrap();
+        assert_eq!(
+            world
+                .peer
+                .permissions(cert.device_public_key, world.now)
+                .unwrap()
+                .0,
+            Role::Commenter
+        );
+    }
+    comment(&mut world, &browser).expect("the browser comments as the admitted person");
+    let stranger = SigningKey::from_bytes(&[84; 32]);
+    let stranger_cert = cert(&stranger, &SigningKey::from_bytes(&[85; 32]), "other");
+    assert!(
+        receive(
+            &mut world,
+            stranger_cert.device_public_key,
+            hello(&stranger_cert)
+        )
+        .is_err(),
+        "another person's device is not admitted by this admission"
     );
 }

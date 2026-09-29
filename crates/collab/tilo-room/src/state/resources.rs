@@ -1,17 +1,11 @@
 //! Outer-state wire schemas accepted by the resource-limited decoder.
 //! Native document reconstruction has a separate admission boundary.
 
-use super::{DurableV4, DurableV5, DurableV6, DurableV7};
+use super::DurableState;
 use crate::resources::outer::{EncodeSchema, Schema};
 
-impl EncodeSchema for DurableV4 {}
-impl EncodeSchema for DurableV5<'_> {}
-impl EncodeSchema for DurableV6<'_> {}
-impl EncodeSchema for DurableV7 {}
-impl Schema<'_> for DurableV4 {}
-impl<'de> Schema<'de> for DurableV5<'de> {}
-impl<'de> Schema<'de> for DurableV6<'de> {}
-impl Schema<'_> for DurableV7 {}
+impl EncodeSchema for DurableState {}
+impl Schema<'_> for DurableState {}
 
 #[cfg(test)]
 mod tests {
@@ -26,18 +20,16 @@ mod tests {
         }
     }
     #[test]
-    fn outer_resources_preserve_v4_v5_stored_bytes() {
+    fn outer_resources_preserve_stored_bytes_with_and_without_exact_evidence() {
         let (mut peer, _, _, _, _) = crate::admission_tests::seeded();
         let v4 = peer.durable().unwrap();
-        let decoded: DurableV4 = outer::decode(&v4, limits()).unwrap();
+        let decoded: DurableState = outer::decode(&v4, limits()).unwrap();
         assert_eq!(postcard::to_allocvec(&decoded).unwrap(), v4);
         peer.select_admission_v5().unwrap();
         let v5 = peer.durable().unwrap();
-        let decoded: DurableV5<'_> = outer::decode(&v5, limits()).unwrap();
+        let decoded: DurableState = outer::decode(&v5, limits()).unwrap();
         assert_eq!(postcard::to_allocvec(&decoded).unwrap(), v5);
-        // The exact index remains a borrow of the literal original envelope.
-        assert!(decoded.exact.as_ptr() >= v5.as_ptr());
-        assert!(decoded.exact.as_ptr_range().end <= v5.as_ptr_range().end);
+        assert!(decoded.exact.is_some());
     }
 
     #[test]

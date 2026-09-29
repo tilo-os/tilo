@@ -37,7 +37,6 @@ fn delivery_admission_selection_is_explicit_and_exact_retry_survives_restore() {
     let message = incremental(&mut author, &key, now, "A");
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
     let before = receiver.durable().unwrap();
-    assert_eq!(before[0], 4);
     assert!(matches!(
         receiver.receive_from_report(origin, message.clone(), now),
         Err(AdmissionError::WriterSelectionRequired)
@@ -53,11 +52,11 @@ fn delivery_admission_selection_is_explicit_and_exact_retry_survives_restore() {
     let first = first.clone();
     assert_eq!(report.settled(), std::slice::from_ref(&first));
     let encoded = receiver.durable().unwrap();
-    assert_eq!(encoded[0], 5);
+    assert_eq!(encoded[0], 8);
     let rows = receiver.rows();
     let later = now + Duration::from_secs(301);
     let mut receiver = restore(&receiver, later);
-    assert_eq!(receiver.durable().unwrap()[0], 5);
+    assert_eq!(receiver.durable().unwrap()[0], 8);
     assert_eq!(receiver.rows(), rows);
     let duplicate = receiver
         .receive_from_report(origin, message, later)

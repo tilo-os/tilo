@@ -5,9 +5,10 @@
 //! itself, whichever transport delivered it:
 //!
 //! - **Host admissions** (`HostAdmissionV1`): a public room's delegated host
-//!   admitted a device that redeemed the room's standing invitation while the
+//!   admitted a person who redeemed the room's standing invitation while the
 //!   owner was away. It verifies against the owner's delegation and grants
-//!   the admitted person a role no higher than Commenter.
+//!   the person a role no higher than Commenter, on every device their root
+//!   certifies.
 //! - **Recording delegations** (`RecordingDelegationV1`): a person's device
 //!   lets their recorder act for them in the room. It verifies against the
 //!   device's certificate and lists the recorder as an agent member for as
@@ -132,11 +133,10 @@ impl HeldRecords {
         Ok(true)
     }
 
-    /// The host admission of the device `device`, when one is held.
-    pub fn admission_of_device(&self, device: &[u8; 32]) -> Option<&HostAdmissionV1> {
-        self.admissions
-            .values()
-            .find(|admission| admission.member_device.as_bytes() == device)
+    /// The host admission of the person whose user root is `user`, when one
+    /// is held: every device that root certifies is theirs in the room.
+    pub fn admission_of_person(&self, user: &[u8; 32]) -> Option<&HostAdmissionV1> {
+        self.admissions.get(user)
     }
 
     /// The memberships host admissions grant in a room of `class` owned by

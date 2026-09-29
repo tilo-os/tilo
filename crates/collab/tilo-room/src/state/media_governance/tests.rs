@@ -327,8 +327,8 @@ fn room_media_security_proof_survives_signed_multi_author_unsorted_roundtrip() {
     )
     .unwrap();
     let exported = peer.durable().unwrap();
-    let mut old: DurableV5<'_> = postcard::from_bytes(&exported).unwrap();
-    let watermarks = &mut old.base.base.documents[0].watermarks;
+    let mut old: DurableState = postcard::from_bytes(&exported).unwrap();
+    let watermarks = &mut old.base.documents[0].watermarks;
     assert_eq!(
         watermarks.len(),
         9,

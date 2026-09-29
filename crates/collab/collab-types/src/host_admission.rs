@@ -4,8 +4,9 @@
 //! team's user root), and its governance is written by that person's device.
 //! People join it by redeeming its standing invitation, and they must be able
 //! to while that device is asleep. The owner therefore delegates exactly one
-//! power to a host: admitting a redeeming device into the room at a role no
-//! higher than Commenter. Hosts never hold the human root, and this module
+//! power to a host: admitting a redeeming person into the room at a role no
+//! higher than Commenter. The admission names the person (their user root),
+//! not one device: every device that root certifies is theirs in the room. Hosts never hold the human root, and this module
 //! keeps it that way.
 //!
 //! The delegation is an ordinary attenuable [`crate::invite::InviteToken`]
@@ -44,7 +45,7 @@ pub const HOST_ADMISSION_DOMAIN_TAG: &str = "tilo-host-admission-v1";
 /// The highest role a delegated host may admit anyone at.
 pub const HOST_ADMISSION_ROLE_CEILING: Role = Role::Commenter;
 
-/// One device admitted into a public room by a delegated host.
+/// One person admitted into a public room by a delegated host.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostAdmissionV1 {
@@ -54,9 +55,6 @@ pub struct HostAdmissionV1 {
     pub workspace: u64,
     /// The admitted person's user root key.
     pub member_user: Ed25519PublicKey,
-    /// The admitted device, as certified by `member_user`; the host bound it
-    /// from the authenticated connection that redeemed.
-    pub member_device: Ed25519PublicKey,
     /// The role admitted at. Never above [`HOST_ADMISSION_ROLE_CEILING`].
     pub role: Role,
     /// Id of the standing invitation that was redeemed.
@@ -80,8 +78,6 @@ pub struct HostAdmissionSpec {
     pub workspace: u64,
     /// See [`HostAdmissionV1::member_user`].
     pub member_user: Ed25519PublicKey,
-    /// See [`HostAdmissionV1::member_device`].
-    pub member_device: Ed25519PublicKey,
     /// See [`HostAdmissionV1::role`].
     pub role: Role,
     /// See [`HostAdmissionV1::invite`].
@@ -123,7 +119,6 @@ struct AdmissionView<'a> {
     room: &'a str,
     workspace: u64,
     member_user: &'a Ed25519PublicKey,
-    member_device: &'a Ed25519PublicKey,
     role: &'a Role,
     invite: &'a [u8; 32],
     admitted_at_unix_seconds: u64,
@@ -148,7 +143,6 @@ impl HostAdmissionV1 {
             room: &self.room,
             workspace: self.workspace,
             member_user: &self.member_user,
-            member_device: &self.member_device,
             role: &self.role,
             invite: &self.invite,
             admitted_at_unix_seconds: self.admitted_at_unix_seconds,
@@ -175,7 +169,6 @@ impl HostAdmissionV1 {
             room: spec.room,
             workspace: spec.workspace,
             member_user: spec.member_user,
-            member_device: spec.member_device,
             role: spec.role,
             invite: spec.invite,
             admitted_at_unix_seconds: spec.admitted_at_unix_seconds,

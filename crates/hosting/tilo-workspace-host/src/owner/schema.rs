@@ -360,10 +360,9 @@ impl Aggregate {
         matches!(self.publication, PublicationStorage::V5 { .. })
             && !self.peer_has_exact_admissions()
     }
-    /// The peer's durable envelope carries exact admission evidence: v5, or
-    /// v6, which is v5 plus the sealed writes of encrypted records.
+    /// The peer's stored state keeps exact admission evidence.
     fn peer_has_exact_admissions(&self) -> bool {
-        matches!(self.peer.first(), Some(5 | 6))
+        tilo_room::durable_keeps_exact_admissions(&self.peer)
     }
     pub(super) fn require_writable(&self) -> Result<()> {
         if self.is_read_only() {
