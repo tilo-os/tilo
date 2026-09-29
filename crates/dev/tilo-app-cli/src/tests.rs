@@ -1600,7 +1600,7 @@ fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
             plan.artifact_dir(),
             Some(plan.app_dir.join("target/scenario-artifacts").as_path())
         );
-        let payload = plan.cases[0].cargo.args.last().unwrap().to_string_lossy();
+        let payload = plan.cases[0].args.last().unwrap().to_string_lossy();
         assert!(payload.contains("\"viewport\":[1024,768]"), "{payload}");
         assert!(payload.contains("\"audit\":true"), "{payload}");
         for artifact in [
@@ -1619,14 +1619,16 @@ fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
         let case = |name: &str, script: &str| ScenarioCasePlan {
             name: name.into(),
             source: temp.path().join(format!("{name}.json")),
-            cargo: CargoPlan {
-                app_dir: temp.path().to_path_buf(),
-                program: OsString::from("/bin/sh"),
-                args: vec![OsString::from("-c"), OsString::from(script)],
-            },
+            args: vec![OsString::from("-c"), OsString::from(script)],
         };
         let plan = ScenarioSuitePlan {
             app_dir: temp.path().to_path_buf(),
+            build: CargoPlan {
+                app_dir: temp.path().to_path_buf(),
+                program: OsString::from("false"),
+                args: Vec::new(),
+            },
+            bin: None,
             artifact_dir: Some(temp.path().join("artifacts")),
             cases: vec![
                 case(
@@ -1638,12 +1640,54 @@ fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
             ],
         };
 
-        let outcome = plan.execute().unwrap();
+        let outcome = plan.run_cases(Path::new("/bin/sh")).unwrap();
         assert!(temp.path().join("artifacts").is_dir());
         assert_eq!(outcome.passed, ["isolated", "continued"]);
         assert_eq!(outcome.failed.len(), 1);
         assert_eq!(outcome.failed[0].name, "failure");
         assert!(outcome.failed[0].detail.contains('7'));
+    }
+
+    // Phase: scenario_build_runs_outside_the_isolated_state.
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = temp.path().join("Cargo.toml");
+        std::fs::write(&manifest, "").unwrap();
+        let app = temp.path().join("app");
+        std::fs::write(
+            &app,
+            "#!/bin/sh\ncase \"$XDG_CONFIG_HOME\" in */tilo-scenario-*) exit 0;; esac\nexit 9\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&app, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let artifact = serde_json::json!({
+            "reason": "compiler-artifact",
+            "manifest_path": manifest.canonicalize().unwrap(),
+            "target": {"name": "app"},
+            "executable": app,
+            "filenames": [app],
+        });
+        let build = format!(
+            "case \"$XDG_CONFIG_HOME\" in */tilo-scenario-*) exit 3;; esac; echo '{artifact}'"
+        );
+        let plan = ScenarioSuitePlan {
+            app_dir: temp.path().to_path_buf(),
+            build: CargoPlan {
+                app_dir: temp.path().to_path_buf(),
+                program: OsString::from("/bin/sh"),
+                args: vec![OsString::from("-c"), OsString::from(build)],
+            },
+            bin: Some("app".into()),
+            artifact_dir: None,
+            cases: vec![ScenarioCasePlan {
+                name: "default".into(),
+                source: temp.path().join("default.json"),
+                args: Vec::new(),
+            }],
+        };
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.passed, ["default"], "{:?}", outcome.failed);
     }
 }
 

@@ -371,6 +371,18 @@ jobs:
           bash tools/test-env.sh cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}
           -E "not ($GOLDEN_FILTER)${{ github.event_name == 'pull_request' && ' and not ($PUSH_ONLY_FILTER)' || '' }}"
 
+      # The saved headless scenarios of each selected example, through the
+      # example's own binary with the native audit: what `tilo-app check`
+      # runs as its scenario stage.
+      - name: Example scenarios of shard ${{ matrix.shard }}
+        if: contains(matrix.test_packages, '-p example-') || contains(matrix.test_packages, '-p tilo-app-cli')
+        env:
+          TILO_REQUIRE_GPU: "1"
+        run: >-
+          bash tools/ci/measure.sh "example scenarios shard ${{ matrix.shard }}" --
+          bash scripts/ci-run.sh "tilo-app scenario run (examples, shard ${{ matrix.shard }})" --
+          bash tools/test-env.sh bash tools/ci/example-scenarios.sh ${{ matrix.test_packages }}
+
       # A package reached only through outside inputs its manifest entry
       # scopes (tools/ci/suites.toml) runs just the tests that read them, with
       # the same environment; their JUnit report joins the shard's.
