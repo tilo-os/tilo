@@ -96,6 +96,8 @@ struct AppHandler {
     /// Who decorates the window, and the header bar when the app does.
     #[cfg(target_os = "linux")]
     decorations: linux_header::Decorations,
+    /// The host OS's appearance, for a standalone app outside Tilo OS.
+    host_appearance: Option<crate::host_appearance::Source>,
 }
 
 #[cfg(target_os = "macos")]
@@ -3061,6 +3063,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.app.root_widget.as_mut(),
             &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
         );
+        if let Some(host) = self.host_appearance.as_mut() {
+            host.note_window_theme(window.theme());
+        }
+        self.apply_host_appearance(false);
         #[cfg(windows)]
         if let Err(reason) = self.init_render(&window) {
             crate::diag!("tilo: {reason}");
@@ -3154,6 +3160,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
             self.text_input_touched = true;
         }
+        self.note_host_appearance_event(&event);
         self.route_window_event(
             event_loop,
             window_id,
@@ -3363,8 +3370,15 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // Run both: Settings' open Appearance pane may intentionally override
         // the file-level base with its richer live accessibility intent.
         let configured_changed = app.reconcile_configured_theme();
+        // A settings change re-themes from the file; outside Tilo OS the host
+        // appearance takes over again.
+        let host_changed = self
+            .host_appearance
+            .as_mut()
+            .and_then(|host| host.take_change(configured_changed))
+            .is_some_and(|appearance| app.apply_host_appearance(appearance));
         let appearance_changed = app.reconcile_appearance();
-        if configured_changed || appearance_changed {
+        if configured_changed || host_changed || appearance_changed {
             app.needs_sync = true;
             request_primary_redraw();
         }
@@ -3796,11 +3810,14 @@ impl App {
             native_scenario.is_none() || self.profiler.is_some(),
             "native performance scenarios require TILO_PROFILE_OUT or TILO_PROFILE"
         );
-        {
+        let host_appearance = {
             let _entry = self.enter_wake_scope();
             setup(proxy);
             self.init_layout();
-        }
+            self.watch_system_settings
+                .then(crate::host_appearance::Source::start)
+                .flatten()
+        };
 
         let mut handler = AppHandler {
             app: self,
@@ -3843,6 +3860,7 @@ impl App {
             host_commands_key: None,
             #[cfg(target_os = "linux")]
             decorations: linux_header::Decorations::Unsettled,
+            host_appearance,
         };
         match event_loop.run_app(&mut handler) {
             Ok(()) => {}
@@ -3853,6 +3871,29 @@ impl App {
                 tracing::error!(%error, "application event loop failed; application exiting");
             }
         }
+    }
+}
+
+impl AppHandler {
+    fn note_host_appearance_event(&mut self, event: &WindowEvent) {
+        let Some(host) = self.host_appearance.as_mut() else {
+            return;
+        };
+        match event {
+            WindowEvent::ThemeChanged(theme) => {
+                host.note_window_theme(Some(*theme));
+                host.refresh();
+            }
+            WindowEvent::Focused(true) => host.refresh(),
+            _ => {}
+        }
+    }
+
+    fn apply_host_appearance(&mut self, force: bool) -> bool {
+        self.host_appearance
+            .as_mut()
+            .and_then(|host| host.take_change(force))
+            .is_some_and(|appearance| self.app.apply_host_appearance(appearance))
     }
 }
 
