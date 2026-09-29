@@ -952,18 +952,10 @@ impl TerminalWidget {
         // the tab. Delete the old objects atomically before `init_crdt`
         // creates blank replacements for the new process. Notes/editor data
         // and the tab itself are separate records and remain untouched.
-        for key in [
-            "terminal_grid",
-            "terminal_grid_alt",
-            "cursor",
-            "terminal_links",
-            "terminal_images",
-            "terminal_title",
-            "terminal_pane_id",
-        ] {
-            let _ = state.delete(root, key);
-        }
-        let _ = state.put(root, "terminal_local_session", session_id);
+        let action = crate::resource::TerminalAction::BindLocalSession {
+            session_id: session_id.to_string(),
+        };
+        let _ = ui::tilo_actions::Action::apply(&action, state);
 
         self.grid_id = None;
         self.alt_grid_id = None;
