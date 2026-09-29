@@ -38,7 +38,8 @@ if args and args[0] == "rustc":
 if args == ["--show-stats", "--stats-format=json"]:
     count = int(state.read_text())
     location = "Local disk" if mode == "local" else (
-        "ghac, name: sccache-v0.test-" + os.environ["SCCACHE_GHA_VERSION"] + ", prefix: /sccache/"
+        "s3, name: " + os.environ["SCCACHE_BUCKET"] + ", prefix: /" +
+        os.environ["SCCACHE_S3_KEY_PREFIX"] + "/"
     )
     stats = {"cache_hits": int(count > 1), "cache_misses": int(count == 1),
              "cache_writes": int(count == 1), "cache_errors": 0,
@@ -61,7 +62,8 @@ class ProbeTests(unittest.TestCase):
         env = os.environ.copy()
         env.update(
             PATH=str(root) + os.pathsep + env["PATH"],
-            SCCACHE_GHA_VERSION="tilo-relay-v1",
+            SCCACHE_BUCKET="test-bucket",
+            SCCACHE_S3_KEY_PREFIX="forgejo-runners/v1",
             TILO_CACHE_PROBE_NONCE="test-run",
             TILO_CACHE_PROBE_TIMEOUT_SECONDS=timeout,
             TILO_FAKE_SCCACHE_MODE=mode,
@@ -83,7 +85,7 @@ class ProbeTests(unittest.TestCase):
 
     def test_failed_or_untrusted_probes_are_rejected_and_stop_server(self):
         for mode, timeout, stderr in (
-            ("local", "1", "did not use the bound remote cache"),
+            ("local", "1", "did not use the bound remote S3 cache"),
             ("io", "1", "authentication or I/O error"),
             # A failing client still stops the server.
             ("auth", "1", None),
