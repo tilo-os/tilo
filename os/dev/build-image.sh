@@ -528,6 +528,7 @@ build_image() {
     "${_tilo_trust_args[@]}" \
     --label "org.tilo.kernel.trust=$TILO_KERNEL_TRUST" \
     --label "org.tilo.rpms.trust=$TILO_RPMS_TRUST" \
+    --label "org.tilo.rpms.ref=$RPMS_REF" \
     --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
     --build-arg "BASE_REF=$BASE_REF" \
     --build-arg "RPMS_REF=$RPMS_REF" \

@@ -180,7 +180,14 @@ export SOURCE_DATE_EPOCH
 mkdir -p "$TMPDIR"
 export TMPDIR
 
+# The dev packages come from the snapshot the base was built from: the one its
+# org.tilo.rpms.ref label records (a base built here may use a local snapshot,
+# which nothing else resolves), else the published one for this commit.
 rpms_ref="${RPMS_REF:-}"
+if [ -z "$rpms_ref" ]; then
+  rpms_ref="$(podman image inspect --format '{{index .Labels "org.tilo.rpms.ref"}}' "$base" 2>/dev/null || true)"
+  case "$rpms_ref" in "<no value>") rpms_ref="" ;; esac
+fi
 if [ -z "$rpms_ref" ]; then
   rpms_ref="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh")"     || die "no fingerprint-resolved RPMS_REF; run snapshot-rpms or set RPMS_REF"
 fi
