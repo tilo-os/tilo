@@ -9,6 +9,7 @@
 
 #[cfg(target_os = "linux")]
 mod mount;
+mod serve;
 
 use std::{
     io,
@@ -60,9 +61,11 @@ impl Projection {
     }
 }
 
-/// The workspace files, shown at their folder's path until dropped.
+/// The workspace files, shown at their folder's path and served on the
+/// profile's [`crate::FILES_SOCKET`] until dropped.
 pub(super) struct WorkspaceFiles {
     _view: View,
+    _server: runtime_fs::workspace_server::WorkspaceServer,
 }
 
 /// Held for its lifetime: dropping it stops the sync or unmounts.
@@ -89,6 +92,11 @@ impl WorkspaceFiles {
         projection: Projection,
     ) -> io::Result<Self> {
         let files = Files::open(&profile.join(FILES), store, endpoint, author)?;
+        let server = runtime_fs::workspace_server::serve_workspace(
+            &profile.join(crate::FILES_SOCKET),
+            Arc::new(serve::Backend(Arc::new(files.quick_fs()?))),
+            tilo_rt::app().handle().clone(),
+        )?;
         let view = match projection {
             Projection::Folder => View::Folder {
                 _watch: files.sync_folder(folder)?.watch(INTERVAL)?,
@@ -109,7 +117,10 @@ impl WorkspaceFiles {
                 }
             }
         };
-        Ok(Self { _view: view })
+        Ok(Self {
+            _view: view,
+            _server: server,
+        })
     }
 }
 

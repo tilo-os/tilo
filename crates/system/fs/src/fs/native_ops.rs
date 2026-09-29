@@ -687,6 +687,68 @@ impl QuickFS {
         self.read_full_blocking(ino).map_err(|e| to_errno(&e))
     }
 
+    /// Up to `len` bytes of the file at `rel` from `offset`, as
+    /// [`Self::read_path`] reads it; only that range is hydrated.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::read_path`].
+    pub fn read_path_range(&self, rel: &Path, offset: u64, len: u64) -> Result<Vec<u8>, i32> {
+        let components = path_components(rel)?;
+        let ino = self.ino_at(&components).ok_or(ENOENT)?;
+        let (attr, hash) = self.ns().attr_and_hash(ino).ok_or(ENOENT)?;
+        if attr.kind == FileType::Directory {
+            return Err(EISDIR);
+        }
+        if self.is_document(ino) || self.buffers().contains_key(&ino) {
+            let whole = self.read_full_blocking(ino).map_err(|e| to_errno(&e))?;
+            let start = usize::try_from(offset)
+                .unwrap_or(usize::MAX)
+                .min(whole.len());
+            let end = usize::try_from(len)
+                .map_or(whole.len(), |len| start.saturating_add(len))
+                .min(whole.len());
+            return Ok(whole.get(start..end).unwrap_or_default().to_vec());
+        }
+        let Some(hash) = hash else {
+            return Ok(Vec::new());
+        };
+        let hydrator = self.hydrator.clone();
+        let rt = hydrator.runtime_handle.clone();
+        tokio::task::block_in_place(|| {
+            rt.block_on(async move { hydrator.read(hash, offset, len).await })
+        })
+        .map_err(|_| EIO)
+    }
+
+    /// The entries of the directory at `rel`, as [`Self::tree_snapshot`]
+    /// describes them.
+    ///
+    /// # Errors
+    ///
+    /// `ENOENT` when `rel` is not here, `ENOTDIR` when it is not a directory.
+    pub fn list_path(&self, rel: &Path) -> Result<Vec<TreeEntry>, i32> {
+        use std::os::unix::ffi::OsStrExt as _;
+        let components = path_components(rel)?;
+        let ino = self.ino_at(&components).ok_or(ENOENT)?;
+        if self.lookup_kind_of(ino) != Some(FileType::Directory) {
+            return Err(ENOTDIR);
+        }
+        let entries = self.visible_entries(ino).unwrap_or_default();
+        Ok(entries
+            .into_iter()
+            .filter(|(_, _, name)| name != "." && name != "..")
+            .filter_map(|(_, _, name)| {
+                let name = std::ffi::OsStr::from_bytes(name.as_bytes());
+                self.entry_at(&rel.join(name))
+            })
+            .collect())
+    }
+
+    fn lookup_kind_of(&self, ino: u64) -> Option<FileType> {
+        self.ns().getattr(ino).map(|attr| attr.kind)
+    }
+
     /// Writes the file at `snapshot` (immutable while this runs) as the
     /// whole file at `rel`, as a create or an open, write and close of the
     /// mount would: a document is imported through its format's codec (an
