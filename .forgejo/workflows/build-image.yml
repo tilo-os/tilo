@@ -850,6 +850,9 @@ jobs:
       # operation has exhausted that headroom on otherwise healthy runners.
       # Serialize the solver so the installed-image and AT-SPI gates are not
       # skipped because an unrelated stage consumed composefs's workspace.
+      # Build / OS dev seals no composefs and runs neither gate; serialized, its
+      # pulls, layer extraction and small stages queued behind each other on
+      # the critical path, so it lets four operations run at once.
       - name: Set up buildx (docker-container driver for cache export)
         id: buildx
         uses: ./.forgejo/actions/setup-buildx
@@ -857,7 +860,7 @@ jobs:
           driver-opts: image=docker.io/moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
           buildkitd-config-inline: |
             [worker.oci]
-              max-parallelism = 1
+              max-parallelism = ${{ github.event_name == 'workflow_call' && 4 || 1 }}
 
       # Reads only the snapshot's metadata layer; BuildKit pulls the package
       # layers when a stage actually mounts them.
