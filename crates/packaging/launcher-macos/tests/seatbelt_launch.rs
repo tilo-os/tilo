@@ -304,7 +304,7 @@ fn user_cache_dir() -> PathBuf {
         )
     };
     assert!(len > 0 && len <= buf.len());
-    buf.truncate(len - 1);
+    buf.truncate(len.saturating_sub(1));
     std::fs::canonicalize(String::from_utf8(buf).unwrap()).unwrap()
 }
 

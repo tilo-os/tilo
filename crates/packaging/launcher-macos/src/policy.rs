@@ -279,15 +279,16 @@ impl SeatbeltPolicy {
         let network = match inputs.egress {
             EgressDecision::Blocked => SeatbeltNetwork::Denied,
             EgressDecision::Unrestricted => SeatbeltNetwork::Unrestricted,
-            EgressDecision::Filtered(_) => match inputs.gate_port {
-                Some(port) => SeatbeltNetwork::Gate(port),
-                None => {
+            EgressDecision::Filtered(_) => {
+                if let Some(port) = inputs.gate_port {
+                    SeatbeltNetwork::Gate(port)
+                } else {
                     not_enforced.push(
                         "filtered egress: no gate is running; the app is offline".to_string(),
                     );
                     SeatbeltNetwork::Denied
                 }
-            },
+            }
         };
 
         Ok(SeatbeltPolicy {
