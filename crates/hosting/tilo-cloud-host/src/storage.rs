@@ -491,6 +491,20 @@ thread_local! {
 pub(crate) fn reconciles_for_test() -> u64 {
     RECONCILES.with(std::cell::Cell::get)
 }
+#[cfg(test)]
+thread_local! {
+    /// Commit publications on this thread that returned after their
+    /// durability barrier (a journal append or a published file).
+    static WRITE_BARRIERS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+#[cfg(test)]
+fn count_write_barrier() {
+    WRITE_BARRIERS.with(|count| count.set(count.get() + 1));
+}
+#[cfg(test)]
+pub(crate) fn write_barriers_for_test() -> u64 {
+    WRITE_BARRIERS.with(std::cell::Cell::get)
+}
 /// Forget only what this process remembered about one Store directory.
 #[cfg(test)]
 pub(crate) fn forget_durable_directory_for_test(directory: &std::fs::File) {
@@ -783,6 +797,8 @@ fn append(
             file.sync_all().map_err(|error| {
                 WriteError::new(PublicationState::PublishedDurabilityUnknown, error)
             })?;
+            #[cfg(test)]
+            count_write_barrier();
             base.journal = Some((identity.clone(), written));
             base.valid_len = written;
             base.records += 1;
@@ -798,6 +814,8 @@ fn append(
                     Privacy::OwnerOnly,
                 )
                 .map_err(WriteError::publication)?;
+            #[cfg(test)]
+            count_write_barrier();
             let identity = directory
                 .open_read(OsStr::new(JOURNAL), Privacy::OwnerOnly)
                 .and_then(|file| FileIdentity::of(&file))
@@ -843,6 +861,8 @@ fn checkpoint(
                 Privacy::OwnerOnly,
             )
             .map_err(WriteError::publication)?;
+        #[cfg(test)]
+        count_write_barrier();
         counters::add(&counters::CHECKPOINTS, 1);
         counters::add(&counters::BYTES_WRITTEN, bytes.len() as u64);
     }
