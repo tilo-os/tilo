@@ -3968,10 +3968,6 @@ fn draw_who_what_pickers(
 /// Paint the "Grant a permission" composer card — header, the who/what
 /// cyclers, the expiry track, the submit button. Returns the card's rect
 /// so the caller can lay out the capability rows beneath it.
-#[expect(
-    clippy::too_many_lines,
-    reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
-)]
 fn draw_permission_composer(
     scene: &mut Scene,
     transform: Affine,
