@@ -199,8 +199,10 @@ impl Channels {
         self.vault_bytes = saved.vault;
         self.vault = VaultKey::new(saved.vault);
         for (room, governor) in saved.governors {
-            self.rooms
-                .insert(room, Governance::Governed(Ed25519PublicKey::from_bytes(governor)));
+            self.rooms.insert(
+                room,
+                Governance::Governed(Ed25519PublicKey::from_bytes(governor)),
+            );
         }
         self.saved = saved
             .members
@@ -810,7 +812,10 @@ mod tests {
         }
         let (_, keys) = keys.expect("admitted");
         let saved = channels.export_if_changed().expect("state to save");
-        assert!(channels.export_if_changed().is_none(), "nothing new to save");
+        assert!(
+            channels.export_if_changed().is_none(),
+            "nothing new to save"
+        );
 
         let mut reloaded = Channels::new(device(&browser), device(&user));
         reloaded.restore(saved);

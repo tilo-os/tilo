@@ -332,13 +332,30 @@ mod tests {
         );
         let count = || delivered.load(std::sync::atomic::Ordering::SeqCst);
         let first = op(vec![1]);
-        assert!(deliver(&channels, &fanout, document(first.clone(), false), |_| "peer".into()));
+        assert!(deliver(
+            &channels,
+            &fanout,
+            document(first.clone(), false),
+            |_| "peer".into()
+        ));
         assert_eq!(count(), 1);
-        assert!(deliver(&channels, &fanout, document(first.clone(), false), |_| "peer".into()));
+        assert!(deliver(
+            &channels,
+            &fanout,
+            document(first.clone(), false),
+            |_| "peer".into()
+        ));
         assert_eq!(count(), 1, "a live repeat is not delivered again");
-        assert!(deliver(&channels, &fanout, document(first, true), |_| "peer".into()));
+        assert!(deliver(&channels, &fanout, document(first, true), |_| {
+            "peer".into()
+        }));
         assert_eq!(count(), 2, "the host's replay reaches the late app");
-        assert!(deliver(&channels, &fanout, document(op(vec![2]), true), |_| "peer".into()));
+        assert!(deliver(
+            &channels,
+            &fanout,
+            document(op(vec![2]), true),
+            |_| "peer".into()
+        ));
         assert_eq!(count(), 2, "another op under a used sequence is refused");
     }
 }

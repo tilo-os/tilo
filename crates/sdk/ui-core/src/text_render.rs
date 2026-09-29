@@ -3070,7 +3070,10 @@ mod tests {
         let end = first_x(&mut renderer, ParagraphAlign::End);
         let (natural, _) = renderer.measure_style("New note", None, &TextStyle::new(16.0));
         assert!(start.abs() < 1.0, "{start}");
-        assert!((center - (400.0 - natural) / 2.0).abs() < 2.0, "{center} of {natural}");
+        assert!(
+            (center - (400.0 - natural) / 2.0).abs() < 2.0,
+            "{center} of {natural}"
+        );
         assert!((end - (400.0 - natural)).abs() < 2.0, "{end} of {natural}");
     }
 

@@ -1221,10 +1221,7 @@ impl Mount {
             Some(ui::scale::composite_transform(viewport.dpr)),
         );
         let gpu = self.gpu.as_mut().ok_or("WebGPU renderer missing")?;
-        let mut shared_guard = gpu
-            .shared
-            .try_borrow_mut()
-            .map_err(|_| "shared GPU busy")?;
+        let mut shared_guard = gpu.shared.try_borrow_mut().map_err(|_| "shared GPU busy")?;
         let shared = &mut *shared_guard;
         let handle = shared
             .cx
