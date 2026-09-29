@@ -1052,6 +1052,13 @@ jobs:
           jobs=$(( memory_mib / per_job_mib ))
           memory_gib=$(( memory_mib / 1024 ))
           (( jobs > $(nproc) )) && jobs=$(nproc)
+          # The ARM shell thin-LTO link was OOM-killed with five cargo jobs on
+          # the 35 GiB release slot (#48581). Keep at most two overlapping
+          # release links there, even when the host advertises more memory
+          # than the job can safely use alongside BuildKit and other slots.
+          if [[ $publish == true && '${{ matrix.arch }}' == aarch64 && $jobs -gt 2 ]]; then
+            jobs=2
+          fi
           (( jobs < 1 )) && jobs=1
           echo "TILO_CARGO_JOBS=$jobs" >> "$GITHUB_ENV"
           echo "::notice::OS integration validation: $validate; publication: $publish; cargo jobs: $jobs of $(nproc) CPUs, ${memory_gib} GiB"
