@@ -22,7 +22,6 @@ thin = ["dep:runtime-dylib"]
 test-support = ["ui/test-support"]
 
 [dependencies]
-tilo-process = { path = "../../crates/platform/tilo-process" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }

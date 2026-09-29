@@ -50,7 +50,6 @@ tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 bounded-command = { path = "../../crates/system/bounded-command", optional = true }
 blake3.workspace = true
-private-fs = { path = "../../crates/system/private-fs" }
 
 # Live YouTube backend (off by default): rustypipe handles InnerTube requests
 # and botguard tokens without ffmpeg or yt-dlp.
