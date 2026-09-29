@@ -6,6 +6,8 @@
 //! ways: a component node mounts a widget an app-owned factory builds
 //! (`src/components/`), and the screen router hosts every screen
 //! registered in `src/screens.rs`, which `tilo-app add screen` maintains.
+//! A navigation button in a screen (the About link) is published as a view
+//! action, so an agent reaches the About screen the way a click does.
 //!
 //! Anything durable still goes through the resource. The native controls
 //! under the screens bind to its actions like in any other app, so the
