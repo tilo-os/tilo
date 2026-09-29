@@ -9215,6 +9215,14 @@ fn resolve_ui_dir(
             "could not locate the Tilo UI toolkit; run inside a Tilo checkout, set TILO_UI_PATH, or pass `--ui-path /path/to/tilo/crates/sdk/ui-core`"
         );
     };
+    // A checkout root also has a Cargo.toml; name its toolkit so the paths
+    // derived from it do not treat the root as a crate inside the checkout.
+    let toolkit = candidate.join("crates/sdk/ui-core");
+    let candidate = if !is_sdk_crate_path(&candidate) && toolkit.join("Cargo.toml").is_file() {
+        toolkit
+    } else {
+        candidate
+    };
     if !candidate.join("Cargo.toml").is_file() {
         bail!(
             "UI path {} does not contain Cargo.toml",
