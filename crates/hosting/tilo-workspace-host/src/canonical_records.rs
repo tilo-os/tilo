@@ -160,6 +160,20 @@ impl CheckedCanonicalApplication {
         self.prepare(peer, caller, checkout, now)
     }
 
+    /// The app's package-primary record, the one document per app and room a
+    /// native app process opens before any window record. `document` is
+    /// `None` when the room already holds it.
+    pub fn prepare_primary(
+        &self,
+        peer: &StatePeer,
+        caller: &DeviceCert,
+        now: SystemTime,
+    ) -> Result<PreparedCanonicalRecord, String> {
+        let checkout =
+            ui::record::RecordCheckout::package_primary(self.definition().record_kind.clone());
+        self.prepare(peer, caller, checkout, now)
+    }
+
     fn prepare(
         &self,
         peer: &StatePeer,
