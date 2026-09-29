@@ -9,6 +9,9 @@
 //! - `dev` (feature `web`) — a throwaway local host for browser development:
 //!   its own user root, the browser listener, and an approver that
 //!   certifies every browser that asks.
+//! - `room` (feature `web`) — a short-lived shared room: like `dev`, but it
+//!   certifies only the browsers whose pairing codes its operator admits
+//!   (`admit <code>` on stdin) and announces each on stdout.
 //! - `status` — print a snapshot of the running daemon's counters
 //!   by reading the on-disk metrics dump.
 //! - `bind-workspace <workspace_id> [--pin]` — add a workspace to
@@ -68,6 +71,10 @@ enum Cmd {
     /// it certifies every browser device that asks).
     #[cfg(feature = "web")]
     Dev(web_cli::DevArgs),
+    /// A short-lived shared room: its own user root and browser listener,
+    /// certifying only the browsers its operator admits on stdin.
+    #[cfg(feature = "web")]
+    Room(web_cli::RoomArgs),
     /// Print current metrics + hosted workspace list.
     Status,
     /// Add a workspace to the config file.
@@ -120,6 +127,10 @@ fn run() -> anyhow::Result<()> {
         #[cfg(feature = "web")]
         Cmd::Dev(args) => {
             tilo_rt::daemon("tilo-relay").run(web_cli::dev(args, wait_for_shutdown()))?
+        }
+        #[cfg(feature = "web")]
+        Cmd::Room(args) => {
+            tilo_rt::daemon("tilo-relay").run(web_cli::room(args, wait_for_shutdown()))?
         }
         Cmd::Status => cmd_status(&cli.config),
         Cmd::BindWorkspace { id, pin } => cmd_bind(&cli.config, id, pin),

@@ -53,6 +53,7 @@ jobs:
     with:
       workflow: .forgejo/workflows/release-registry-server.yml
       event: ${{ github.event_name }}
+      cargo-package: registry-server
 
   build-test-publish:
     needs: applicability

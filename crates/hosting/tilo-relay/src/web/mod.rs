@@ -64,6 +64,11 @@ pub struct WebConfig {
     /// Page origins allowed to call the host cross-origin (the Cloud console
     /// origin, a dev server). Empty allows same-origin pages only.
     pub allowed_origins: Vec<String>,
+    /// A loopback address that also serves the HTTPS routes as plain HTTP,
+    /// for local review in a browser that should not need a certificate
+    /// exception. The live plane then uses the HTTPS stream fallback over
+    /// it; WebTransport stays on `listen`.
+    pub plain_listen: Option<SocketAddr>,
 }
 
 /// A running browser listener. Dropping it stops serving.
@@ -74,6 +79,8 @@ pub struct WebHandle {
     pub origin: String,
     /// SHA-256 of a development certificate, for `serverCertificateHashes`.
     pub certificate_sha256: Option<String>,
+    /// `http://localhost:port` of the plain loopback listener, if any.
+    pub plain_origin: Option<String>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -106,6 +113,14 @@ impl Relay {
     )]
     pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, RelayError> {
         let failed = |message: String| RelayError::Iroh(format!("web listener: {message}"));
+        if config
+            .plain_listen
+            .is_some_and(|plain| !plain.ip().is_loopback())
+        {
+            return Err(failed(
+                "the plain HTTP listener must be a loopback address".into(),
+            ));
+        }
         let identity = tls::Identity::load(&config.tls).map_err(failed)?;
         let tcp = tokio::net::TcpListener::bind(config.listen)
             .await
@@ -167,11 +182,24 @@ impl Relay {
                 }
             }
         }));
+        let mut plain_origin = None;
+        if let Some(plain) = config.plain_listen {
+            let plain = tokio::net::TcpListener::bind(plain)
+                .await
+                .map_err(|error| failed(error.to_string()))?;
+            let port = plain
+                .local_addr()
+                .map_err(|error| failed(error.to_string()))?
+                .port();
+            plain_origin = Some(format!("http://localhost:{port}"));
+            tasks.push(tokio::spawn(plain_accept_loop(plain, web.clone())));
+        }
         tasks.push(tokio::spawn(accept_loop(tcp, acceptor, web)));
         Ok(WebHandle {
             addr,
             origin: format!("https://{addr}"),
             certificate_sha256: identity.pinned_sha256,
+            plain_origin,
             tasks,
         })
     }
@@ -252,16 +280,32 @@ async fn accept_loop(
             else {
                 return;
             };
-            let service = hyper::service::service_fn(move |request| {
-                let web = web.clone();
-                async move { Ok::<_, Infallible>(handle(&web, request).await) }
-            });
-            let _ =
-                hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
-                    .serve_connection(hyper_util::rt::TokioIo::new(tls), service)
-                    .await;
+            serve_connection(tls, web).await;
         });
     }
+}
+
+/// The same routes as plain HTTP on a loopback listener.
+async fn plain_accept_loop(tcp: tokio::net::TcpListener, web: Arc<Web>) {
+    loop {
+        let Ok((stream, _)) = tcp.accept().await else {
+            continue;
+        };
+        tokio::spawn(serve_connection(stream, web.clone()));
+    }
+}
+
+async fn serve_connection<Io>(io: Io, web: Arc<Web>)
+where
+    Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let service = hyper::service::service_fn(move |request| {
+        let web = web.clone();
+        async move { Ok::<_, Infallible>(handle(&web, request).await) }
+    });
+    let _ = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+        .serve_connection(hyper_util::rt::TokioIo::new(io), service)
+        .await;
 }
 
 /// A response body: whole bytes or a live fallback stream.
@@ -411,7 +455,13 @@ async fn route(
     request: Request<hyper::body::Incoming>,
 ) -> Result<Response<Body>, Response<Body>> {
     let path = request.uri().path().to_owned();
-    let Some(route) = path.strip_prefix(API_PREFIX) else {
+    // The live fallback keeps its own paths, outside `API_PREFIX`.
+    let fallback =
+        [FALLBACK_OPEN_PATH, FALLBACK_RESUME_PATH, FALLBACK_SEND_PATH].contains(&path.as_str());
+    let Some(route) = path
+        .strip_prefix(API_PREFIX)
+        .or_else(|| fallback.then_some(""))
+    else {
         return Err(status(StatusCode::NOT_FOUND, "not found"));
     };
     let session = token(&request);
@@ -420,7 +470,7 @@ async fn route(
         .get(FALLBACK_SESSION_HEADER)
         .and_then(|value| value.to_str().ok())
         .and_then(session_id);
-    let limit = if route == "/live/fallback/send" {
+    let limit = if path == FALLBACK_SEND_PATH {
         MAX_SEND_BYTES
     } else {
         MAX_REQUEST_BYTES
