@@ -32,6 +32,9 @@ pub enum TerminalAction {
     SetTitle { title: String },
     /// Append one line to the shared scrollback record.
     AppendScrollback { line: String },
+    /// A new local process is taking this tab. Drop the previous process's
+    /// grid, cursor, links, and images, and record the process id.
+    BindLocalSession { session_id: String },
 }
 
 impl Action for TerminalAction {
@@ -49,6 +52,23 @@ impl Action for TerminalAction {
                 };
                 let index = doc.length(&list);
                 doc.insert(&list, index, line.as_str())?;
+            }
+            Self::BindLocalSession { session_id } => {
+                if session_id.is_empty() || session_id.len() > 128 {
+                    return Err(ActionError::Refused("local session id is invalid".into()));
+                }
+                for key in [
+                    "terminal_grid",
+                    "terminal_grid_alt",
+                    "cursor",
+                    "terminal_links",
+                    "terminal_images",
+                    "terminal_title",
+                    "terminal_pane_id",
+                ] {
+                    let _ = doc.delete(ROOT, key);
+                }
+                doc.put(ROOT, "terminal_local_session", session_id.as_str())?;
             }
         }
         Ok(())
@@ -264,6 +284,35 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("hello")),
             "empty present must not wipe the local grid"
+        );
+    }
+
+    #[test]
+    fn bind_local_session_drops_the_previous_process_record() {
+        use automerge::transaction::Transactable;
+        let mut doc = ui::automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, "terminal_title", "old session")
+            .unwrap();
+        doc.put(automerge::ROOT, "terminal_pane_id", "pane-1")
+            .unwrap();
+        TerminalAction::BindLocalSession {
+            session_id: "process-2".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(
+            doc.get(automerge::ROOT, "terminal_title")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            doc.get(automerge::ROOT, "terminal_pane_id")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            read_string(&doc, "terminal_local_session").as_deref(),
+            Some("process-2")
         );
     }
 }
