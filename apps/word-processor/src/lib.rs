@@ -315,26 +315,15 @@ pub fn open_document_with_records(
             .adopt_existing_file(&state.doc, path.to_path_buf(), bytes, format)
             .map_err(invalid_data)?;
     } else {
-        let containers = tilo_doc::model::init(&mut state.doc, &state.root);
-        let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
-        let mut inputs = tilo_content::ContentInputs::new();
+        // Import through ReplaceFormatted, then start history so opening a
+        // file is the document's baseline rather than an undo step.
+        widget.model_mut().bind(&mut state.doc, &state.root);
+        if !widget
+            .model_mut()
+            .replace_with_format(&mut state.doc, &bytes, format)
         {
-            let mut dm = tilo_doc::DocMut {
-                doc: &mut state.doc,
-                c: &containers,
-                ids: &mut ids,
-            };
-            format
-                .import(&bytes, &mut dm, &mut inputs)
-                .map_err(invalid_data)?;
+            return Err(invalid_data(format!("could not import {}", path.display())));
         }
-        // The document only names the file's images; they are kept before it is.
-        widget
-            .model()
-            .content_store()
-            .put_inputs(&inputs)
-            .map_err(invalid_data)?;
-        // The opened file is where undo begins: the import is not an edit.
         start_history_here(&mut state);
         widget.set_file(path.to_path_buf(), format);
         widget.remember_open_document(&state.doc);
@@ -422,22 +411,17 @@ impl Template {
 pub fn new_from_template(t: Template) -> (ui::State, WordProcessorWidget, WpFormat) {
     let format = WpFormat::Markdown;
     let mut state = ui::State::new();
-    let containers = tilo_doc::model::init(&mut state.doc, &state.root);
-    let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
+    // Import with a throwaway model so the widget handed back stays unbound
+    // until the host's first sync, matching a new document.
     {
-        let mut dm = tilo_doc::DocMut {
-            doc: &mut state.doc,
-            c: &containers,
-            ids: &mut ids,
-        };
+        let mut importer = WordProcessor::new();
+        importer.bind(&mut state.doc, &state.root);
         // Templates are bundled and validated by tests, so import cannot fail
         // in practice; if a malformed one ever shipped, say so on stderr and
         // hand back the empty document rather than killing the process — the
         // release profile sets `panic = "abort"`.
-        // Templates are Markdown and embed no binary content.
-        let mut inputs = tilo_content::ContentInputs::new();
-        if let Err(e) = format.import(t.content().as_bytes(), &mut dm, &mut inputs) {
-            eprintln!("word-processor: bundled template {t:?} failed to import: {e}");
+        if !importer.replace_with_markdown(&mut state.doc, t.content().as_bytes()) {
+            eprintln!("word-processor: bundled template {t:?} failed to import");
         }
     }
     start_history_here(&mut state);
