@@ -67,6 +67,7 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `compositor.md` | strips, window model, input |
 | `collaboration.md` | CRDT sync, presence, peers |
 | `rooms.md` | workspaces, hosts, membership |
+| `room-stack.md` | the one room stack every host runs, and the plan to reach it |
 | `feedback.md` | remarks to Tilo, picking, recordings as silent followers, replay, public community room |
 | `storage.md` | unified storage, sync, records, history and caching (design for review) |
 | `security.md` | sandbox, permissions, capability grants |
