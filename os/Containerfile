@@ -2988,6 +2988,16 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && dnf clean all
 COPY os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/hardware_profile.py os/dev/make-boot-splash.py /usr/local/bin/
 
+# Nothing ships from this stage. It gathers the image's small tool stages, which
+# change with neither the Rust build nor the rootfs, into one target that CI
+# caches with its intermediate steps: the image build then neither repeats
+# their dnf transactions nor pulls the RPM snapshot to run them.
+FROM scratch AS image-tool-stages
+COPY --from=uki-tools /usr/local/bin/uki.sh /uki-tools/
+COPY --from=doubletake-builder /out/ /doubletake/
+COPY --from=fluxcast-builder /src/src/ /fluxcast/
+COPY --from=joycond-builder /out/ /joycond/
+
 FROM uki-tools AS uki
 # The first pass uses a deterministic all-zero placeholder. `bootc install`
 # computes the authoritative digest and os/dev/build-image.sh rewrites only the
