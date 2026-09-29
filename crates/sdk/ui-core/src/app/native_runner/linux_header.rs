@@ -36,6 +36,9 @@ pub(super) struct LiveHeader {
     key: Option<HostCommandsKey>,
     window: Rect,
     pointer: Point,
+    /// The bar changed since it was last painted. It reports no widget
+    /// damage, so the frame after repaints the whole window.
+    repaint: bool,
 }
 
 /// What the runner still has to do after the bar saw an event.
@@ -62,6 +65,15 @@ impl Decorations {
         }
         if let Self::Bar(header) = self {
             header.refresh(app, window);
+        }
+    }
+
+    /// Whether the bar changed since the last frame, which must then repaint
+    /// the whole window rather than only the app's own damage.
+    pub(super) fn take_repaint(&mut self) -> bool {
+        match self {
+            Self::Bar(header) => std::mem::take(&mut header.repaint),
+            Self::Unsettled | Self::Host => false,
         }
     }
 
@@ -96,6 +108,7 @@ impl LiveHeader {
             key: None,
             window: Rect::ZERO,
             pointer: Point::ORIGIN,
+            repaint: true,
         }
     }
 
@@ -118,6 +131,7 @@ impl LiveHeader {
         if !rebuilt && bounds == self.window {
             return;
         }
+        self.repaint = true;
         self.window = bounds;
         self.bar.set_viewport(bounds);
         self.node = self.bar.solve_layout(
@@ -196,6 +210,7 @@ impl LiveHeader {
             },
         );
         routed.consumed = true;
+        self.repaint = true;
         for request in self.bar.take_requests() {
             match request {
                 HeaderRequest::Command(invocation) => {
