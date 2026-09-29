@@ -399,38 +399,18 @@ impl NetGate {
             tokio::net::UnixListener::from_std(listener).map_err(bind_error)?
         };
 
-        let stats = Arc::new(GateStats::default());
-        let (stop, stopped) = oneshot::channel();
-        let gate = NetGate {
-            socket_path: socket_path.to_path_buf(),
-            stats: Arc::clone(&stats),
-            _stop: stop,
-        };
-
         tracing::info!(
             socket = %socket_path.display(),
             hosts = ?policy.hosts(),
             "egress gate listening; the sandbox netns stays empty and this socket is its \
              only route out"
         );
-
-        let policy = Arc::new(policy);
-        runtime.spawn(accept_bounded(
-            listener,
-            max_connections,
-            stopped,
-            move |client| {
-                let policy = Arc::clone(&policy);
-                let stats = Arc::clone(&stats);
-                async move {
-                    if let Err(e) = serve_connection(client, &policy, &stats).await {
-                        tracing::debug!(error = %e, "egress gate connection ended");
-                    }
-                }
-            },
-        ));
-
-        Ok(gate)
+        let (stats, stop) = serve_gate(runtime, listener, policy, max_connections);
+        Ok(NetGate {
+            socket_path: socket_path.to_path_buf(),
+            stats,
+            _stop: stop,
+        })
     }
 
     pub fn socket_path(&self) -> &Path {
@@ -447,6 +427,115 @@ impl Drop for NetGate {
         // `_stop` is dropped right after this, which ends the accept loop.
         let _ = std::fs::remove_file(&self.socket_path);
     }
+}
+
+/// A gate on a loopback TCP port, for a host with no network namespace to
+/// leave empty (macOS): there the sandbox profile admits connections to this
+/// one port, and the proxy environment names it. Same protocols, same policy
+/// and the same device-local rule as [`NetGate`]; dropping it stops it.
+///
+/// Any local process can connect to the port. That grants nothing: an
+/// unconfined process already has the network, and what the gate reaches is
+/// at most what the policy names.
+#[derive(Debug)]
+pub struct LoopbackGate {
+    addr: SocketAddr,
+    stats: Arc<GateStats>,
+    _stop: oneshot::Sender<()>,
+}
+
+impl LoopbackGate {
+    /// Bind a free port on `127.0.0.1` and serve `policy` on it until
+    /// dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GateError::Bind`] if no port can be bound, or
+    /// [`GateError::Runtime`] if the runtime that serves it can't start.
+    pub fn start(policy: EgressPolicy) -> Result<LoopbackGate, GateError> {
+        let bind_error = |source| GateError::Bind {
+            path: PathBuf::from("127.0.0.1:0"),
+            source,
+        };
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(bind_error)?;
+        let addr = listener.local_addr().map_err(bind_error)?;
+        listener.set_nonblocking(true).map_err(bind_error)?;
+        let runtime = egress_runtime().map_err(GateError::Runtime)?;
+        let listener = {
+            let _entered = runtime.enter();
+            tokio::net::TcpListener::from_std(listener).map_err(bind_error)?
+        };
+        tracing::info!(%addr, hosts = ?policy.hosts(), "loopback egress gate listening");
+        let (stats, stop) = serve_gate(runtime, listener, policy, MAX_CONNECTIONS);
+        Ok(LoopbackGate {
+            addr,
+            stats,
+            _stop: stop,
+        })
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    pub fn stats(&self) -> &Arc<GateStats> {
+        &self.stats
+    }
+}
+
+/// Serve every connection `listener` accepts against `policy` on
+/// `runtime`, until the returned sender is dropped.
+fn serve_gate<L>(
+    runtime: &tokio::runtime::Handle,
+    listener: L,
+    policy: EgressPolicy,
+    max_connections: usize,
+) -> (Arc<GateStats>, oneshot::Sender<()>)
+where
+    L: Acceptor,
+    L::Conn: AsyncRead + AsyncWrite + Unpin,
+{
+    let stats = Arc::new(GateStats::default());
+    let (stop, stopped) = oneshot::channel();
+    let policy = Arc::new(policy);
+    let served = Arc::clone(&stats);
+    runtime.spawn(accept_bounded(
+        listener,
+        max_connections,
+        stopped,
+        move |client| {
+            let policy = Arc::clone(&policy);
+            let stats = Arc::clone(&served);
+            async move {
+                if let Err(e) = serve_connection(client, &policy, &stats).await {
+                    tracing::debug!(error = %e, "egress gate connection ended");
+                }
+            }
+        },
+    ));
+    (stats, stop)
+}
+
+/// The proxy environment that sends an ordinary HTTP client through a gate
+/// listening on `127.0.0.1:port`.
+///
+/// Both proxy forms are advertised, since picking one breaks apps:
+/// `HTTP(S)_PROXY` works with no feature flags (`reqwest`'s SOCKS support is
+/// non-default); `ALL_PROXY` is `socks5h://…`, where the `h` sends the
+/// **hostname** to the proxy instead of resolving locally, which a confined
+/// app cannot do.
+pub fn proxy_env(port: u16) -> Vec<(&'static str, String)> {
+    let http = format!("http://127.0.0.1:{port}");
+    let socks = format!("socks5h://127.0.0.1:{port}");
+    ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"]
+        .into_iter()
+        .map(|var| (var, http.clone()))
+        .chain(
+            ["ALL_PROXY", "all_proxy"]
+                .into_iter()
+                .map(|var| (var, socks.clone())),
+        )
+        .collect()
 }
 
 /// The runtime every egress relay in this process serves on — each
@@ -819,8 +908,8 @@ fn head_text(head: Vec<u8>) -> io::Result<String> {
     })
 }
 
-async fn serve_connection(
-    mut client: UnixStream,
+async fn serve_connection<C: AsyncRead + AsyncWrite + Unpin>(
+    mut client: C,
     policy: &EgressPolicy,
     stats: &GateStats,
 ) -> io::Result<()> {
@@ -1492,6 +1581,54 @@ mod tests {
             client.read_exact(&mut replies).unwrap();
             assert_eq!(&replies[..2], &[0x05, 0x00]);
             assert_eq!(replies[3], reply::SUCCESS);
+        }
+    }
+
+    #[test]
+    fn the_loopback_gate_tunnels_granted_hosts_and_refuses_the_rest() {
+        let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = service.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            while let Ok((mut s, _)) = service.accept() {
+                let _ = s.write_all(b"LOCAL-SERVICE");
+            }
+        });
+        let gate = LoopbackGate::start(EgressPolicy::new(v(&["localhost"]))).unwrap();
+        assert!(gate.local_addr().ip().is_loopback());
+        let connect = |target: &str| {
+            let mut client = TcpStream::connect(gate.local_addr()).unwrap();
+            client.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+            client
+                .write_all(format!("CONNECT {target} HTTP/1.1\r\n\r\n").as_bytes())
+                .unwrap();
+            let mut answer = Vec::new();
+            let _ = client.read_to_end(&mut answer);
+            String::from_utf8_lossy(&answer).into_owned()
+        };
+
+        let granted = connect(&format!("localhost:{port}"));
+        assert!(
+            granted.starts_with("HTTP/1.1 200") && granted.ends_with("LOCAL-SERVICE"),
+            "{granted}"
+        );
+        let refused = connect(&format!("127.0.0.1:{port}"));
+        assert!(refused.starts_with("HTTP/1.1 502"), "{refused}");
+        assert_eq!((gate.stats().allowed(), gate.stats().denied()), (1, 1));
+    }
+
+    #[test]
+    fn the_proxy_environment_names_the_gate_for_every_client_convention() {
+        let env = proxy_env(9050);
+        let get = |name: &str| {
+            env.iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.as_str())
+        };
+        for var in ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"] {
+            assert_eq!(get(var), Some("http://127.0.0.1:9050"));
+        }
+        for var in ["ALL_PROXY", "all_proxy"] {
+            assert_eq!(get(var), Some("socks5h://127.0.0.1:9050"));
         }
     }
 

@@ -45,6 +45,31 @@ int main(int argc, char **argv) {
         int fd = socket(AF_INET, SOCK_STREAM, 0);
         return fd >= 0 && connect(fd, (struct sockaddr *)&addr, sizeof addr) == 0 ? 0 : 1;
     }
+    if (strcmp(op, "proxy") == 0) {
+        /* CONNECT to arg (host:port) through $HTTPS_PROXY, as an ordinary
+         * HTTP client would. */
+        const char *proxy = getenv("HTTPS_PROXY");
+        const char *prefix = "http://127.0.0.1:";
+        if (proxy == NULL || strncmp(proxy, prefix, strlen(prefix)) != 0) {
+            return 1;
+        }
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof addr);
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons((unsigned short)atoi(proxy + strlen(prefix)));
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0 || connect(fd, (struct sockaddr *)&addr, sizeof addr) != 0) {
+            return 1;
+        }
+        char request[512];
+        int len = snprintf(request, sizeof request, "CONNECT %s HTTP/1.1\r\n\r\n", arg);
+        if (len <= 0 || write(fd, request, (size_t)len) != len) {
+            return 1;
+        }
+        char reply[13] = {0};
+        return read(fd, reply, 12) == 12 && strcmp(reply, "HTTP/1.1 200") == 0 ? 0 : 1;
+    }
     if (strcmp(op, "unix") == 0) {
         struct sockaddr_un addr;
         memset(&addr, 0, sizeof addr);
