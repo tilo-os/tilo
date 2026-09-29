@@ -267,11 +267,8 @@ jobs:
           elif [[ $profile == lenovo-83ed ]]; then
             # One ARM-only, immutable board image. It must not enter the generic
             # multiarch latest/genN channel or consume its rollback series.
-            # Its publication lane runs on the release class like a generic
-            # publication's; the reproduction runs on the large ARM runners,
-            # since the publication holds the one ARM release slot while it
-            # waits for it.
-            matrix='{"include":[{"arch":"aarch64","runner":"runner-release-arm64"},{"arch":"aarch64","runner":"runner-large-arm64","role":"reproduce"}]}'
+            # Both lanes run on the release class like a generic publication's.
+            matrix='{"include":[{"arch":"aarch64","runner":"runner-release-arm64"},{"arch":"aarch64","runner":"runner-release-arm64","role":"reproduce"}]}'
           elif [[ $publish == true ]]; then
             if [[ $GITHUB_REF == refs/tags/v* ]]; then
               matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"},{"arch":"x86_64","runner":"imager-linux-x86_64","role":"reproduce"},{"arch":"aarch64","runner":"imager-linux-aarch64","role":"reproduce"}]}'
@@ -283,10 +280,11 @@ jobs:
               # 10 GiB. The early KVM probe rejects publishing if nested
               # virtualization is unavailable. Tags retain the dedicated release
               # fleet above.
-              # There is one aarch64 release slot, and a publication lane holds
-              # its slot while it waits for its reproduction, so the aarch64
-              # reproduction runs on the (seed-free) large ARM runners.
-              matrix='{"include":[{"arch":"x86_64","runner":"runner-release"},{"arch":"aarch64","runner":"runner-release-arm64"},{"arch":"x86_64","runner":"runner-release","role":"reproduce"},{"arch":"aarch64","runner":"runner-large-arm64","role":"reproduce"}]}'
+              # A publication lane holds its slot while it waits for its
+              # reproduction, so each class has at least two slots per
+              # architecture: an uncached thin-LTO reproduction on a large ARM
+              # runner (2 jobs) does not fit in three hours.
+              matrix='{"include":[{"arch":"x86_64","runner":"runner-release"},{"arch":"aarch64","runner":"runner-release-arm64"},{"arch":"x86_64","runner":"runner-release","role":"reproduce"},{"arch":"aarch64","runner":"runner-release-arm64","role":"reproduce"}]}'
             fi
           else
             # Main integration images feed both native dev VM architectures.
