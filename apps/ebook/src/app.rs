@@ -3972,6 +3972,29 @@ impl BooksApp {
         self.actions.mark_hosted_for_test();
     }
 
+    /// Test-only: plant a non-empty text selection so hosted reading extras
+    /// bind highlight / note-selection rows.
+    #[cfg(test)]
+    pub(crate) fn select_passage_for_test(
+        &mut self,
+        start_block: usize,
+        start_ch: usize,
+        end_block: usize,
+        end_ch: usize,
+    ) {
+        self.sel = Some(TextSel {
+            anchor: DocPos {
+                block: start_block,
+                ch: start_ch,
+            },
+            head: DocPos {
+                block: end_block,
+                ch: end_ch,
+            },
+        });
+        self.selected_block = Some(start_block);
+    }
+
     /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-page
     /// affordance dispatched: a control and its Ctrl+K entry must build the
     /// identical action.
@@ -5847,15 +5870,15 @@ impl ui::search::capability::SearchSource for BooksApp {
 }
 
 impl ui::resources::PublishesResources for BooksApp {
-    /// Publish the open book + its annotations so the host's Ctrl+K action
-    /// palette scopes to them. When the framework hosts the surface,
-    /// [`tilo_resource::publish`] already owns the library Document door;
-    /// hosted returns nothing rather than a second hand-built tree. Live
-    /// reading-chrome for the open book stays on exact [`Self::resource`]
-    /// lookup.
+    /// Standalone / `--shots` / unit tests publish the library roots. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns the
+    /// library Document door — keep only the live reading-selection extras.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         if self.actions.is_hosted() {
-            return Vec::new();
+            return self
+                .current_book_resource_context()
+                .map(|ctx| crate::actions::live_reading_resources(&ctx))
+                .unwrap_or_default();
         }
         self.publish_resources(doc)
     }
@@ -5870,11 +5893,28 @@ impl ui::resources::PublishesResources for BooksApp {
             [offset] => usize::from(*offset),
             _ => return None,
         };
-        let roots: &[&str] = if self.actions.is_hosted() {
-            &[]
-        } else {
-            &["ebook.library", "ebook.settings"]
-        };
+        if self.actions.is_hosted() {
+            let resources = self
+                .current_book_resource_context()
+                .map(|ctx| crate::actions::live_reading_resources(&ctx))
+                .unwrap_or_default();
+            let total = resources.len();
+            if offset > total {
+                return None;
+            }
+            let take = max_results.min(total.saturating_sub(offset));
+            let next_offset = offset.saturating_add(take);
+            return Some(ui::widget::ActionDirectoryResourcePage {
+                resources: resources.into_iter().skip(offset).take(take).collect(),
+                next_cursor: if next_offset < total {
+                    vec![next_offset as u8]
+                } else {
+                    Vec::new()
+                },
+                exhausted: next_offset >= total,
+            });
+        }
+        let roots: &[&str] = &["ebook.library", "ebook.settings"];
         if offset > roots.len() {
             return None;
         }

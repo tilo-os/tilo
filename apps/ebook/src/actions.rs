@@ -1764,6 +1764,27 @@ fn encode_spec(id: &str, label: &str, action: &EbookAction) -> ActionSpec {
     ActionSpec::immediate(id, label, EBOOK_ACTION_TYPE, action).expect("encode ebook action")
 }
 
+/// Live reading chrome for the open book. Published beside the framework root
+/// when hosted — never a second copy of the library document door. Selection-
+/// bound palette rows (highlight / note / bookmark) and page Views stay
+/// addressable without republishing shelf ops already on [`tilo_resource::publish`].
+pub fn live_reading_resources(ctx: &BookResourceCtx) -> Vec<Resource> {
+    vec![reading_selection_resource(ctx)]
+}
+
+/// Peer-local reading focus: page chrome and selection-bound conveniences.
+/// Annotation Document ops already nest under the published `ebook.book` child.
+fn reading_selection_resource(ctx: &BookResourceCtx) -> Resource {
+    let base = Resource::new(
+        format!("ebook.selection:{}", ctx.book_id),
+        "ebook.selection",
+        "Current reading",
+    );
+    let mut resource = current_book_actions(base, ctx);
+    resource.children.clear();
+    resource
+}
+
 /// Add the controls that are meaningful only for the reader's active book to
 /// an already resolved canonical book resource. This preserves the bounded
 /// directory while retaining the exact same action set as the on-page reader.
@@ -2188,6 +2209,13 @@ impl crate::app::BooksApp {
             let mut settings = settings_resource(doc);
             settings.children.clear();
             return Some(settings);
+        }
+        if let Some(book_id) = id.strip_prefix("ebook.selection:") {
+            let ctx = self.current_book_resource_context()?;
+            if ctx.book_id != book_id {
+                return None;
+            }
+            return Some(reading_selection_resource(&ctx));
         }
 
         if [
