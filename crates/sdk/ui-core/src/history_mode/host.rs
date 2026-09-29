@@ -172,6 +172,7 @@ impl HistoryHost {
 
     /// The newest `limit` changes the timeline would list now, newest first,
     /// whether or not History is open.
+    #[cfg(any(feature = "native", test))]
     pub(crate) fn recent_entries(
         &self,
         doc: &AutoCommit,
